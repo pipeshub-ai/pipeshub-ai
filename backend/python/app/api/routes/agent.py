@@ -251,7 +251,11 @@ def _parse_models(raw_models: List[Any], logger: Logger) -> tuple[List[str], boo
 
 
 def _parse_toolsets(raw_toolsets: List[Any], logger: Logger) -> Dict[str, Dict[str, Any]]:
-    """Parse toolsets with their tools"""
+    """Parse toolsets with their tools.
+
+    The key of the returned dict is the toolset name (lowercase).
+    Each value carries the parsed fields including optional instanceId.
+    """
     toolsets_with_tools = {}
 
     if not raw_toolsets or not isinstance(raw_toolsets, list):
@@ -268,13 +272,22 @@ def _parse_toolsets(raw_toolsets: List[Any], logger: Logger) -> Dict[str, Dict[s
         display_name = toolset_data.get("displayName", toolset_name.replace("_", " ").title())
         toolset_type = toolset_data.get("type", "app")
         tools_list = toolset_data.get("tools", [])
+        # New field: admin-created instance UUID
+        instance_id = toolset_data.get("instanceId", None)
+        instance_name = toolset_data.get("instanceName", None)
 
         if toolset_name not in toolsets_with_tools:
             toolsets_with_tools[toolset_name] = {
                 "displayName": display_name,
                 "type": toolset_type,
-                "tools": []
+                "tools": [],
+                "instanceId": instance_id,
+                "instanceName": instance_name,
             }
+        elif instance_id and not toolsets_with_tools[toolset_name].get("instanceId"):
+            # Update instanceId if not yet set
+            toolsets_with_tools[toolset_name]["instanceId"] = instance_id
+            toolsets_with_tools[toolset_name]["instanceName"] = instance_name
 
         for tool in tools_list:
             if isinstance(tool, dict):
@@ -346,6 +359,8 @@ async def _create_toolset_edges(
         display_name = toolset_data["displayName"]
         toolset_type = toolset_data["type"]
         tools_list = toolset_data["tools"]
+        instance_id = toolset_data.get("instanceId")
+        instance_name = toolset_data.get("instanceName")
 
         toolset_node = {
             "_key": toolset_key,
@@ -357,6 +372,12 @@ async def _create_toolset_edges(
             "createdAtTimestamp": time,
             "updatedAtTimestamp": time
         }
+
+        # Store instanceId in ArangoDB when provided (admin-created instances)
+        if instance_id:
+            toolset_node["instanceId"] = instance_id
+        if instance_name:
+            toolset_node["instanceName"] = instance_name
 
         toolset_nodes.append(toolset_node)
         toolset_mapping[toolset_name] = {
@@ -1146,6 +1167,8 @@ async def create_agent(request: Request) -> JSONResponse:
                     display_name = toolset_data["displayName"]
                     toolset_type = toolset_data["type"]
                     tools_list = toolset_data["tools"]
+                    instance_id = toolset_data.get("instanceId")
+                    instance_name = toolset_data.get("instanceName")
 
                     toolset_node = {
                         "_key": toolset_key,
@@ -1157,6 +1180,12 @@ async def create_agent(request: Request) -> JSONResponse:
                         "createdAtTimestamp": time,
                         "updatedAtTimestamp": time
                     }
+
+                    # Store instanceId in ArangoDB node when provided (admin-created instances)
+                    if instance_id:
+                        toolset_node["instanceId"] = instance_id
+                    if instance_name:
+                        toolset_node["instanceName"] = instance_name
 
                     toolset_nodes.append(toolset_node)
                     toolset_mapping[toolset_name] = {
@@ -2144,30 +2173,45 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     filtered_toolsets.append(toolset_copy)
             agent_toolsets = filtered_toolsets
 
-        # Load toolset configs from etcd using the EXECUTING user's ID, not the owner's.
+        # ============================================================================
+        # LOAD TOOLSET CONFIGS FOR EXECUTING USER (SECURITY-CRITICAL)
+        # ============================================================================
+        # Load toolset configs from ETCD using the EXECUTING user's ID, not the owner's.
         # This ensures that when a shared agent is executed, the credentials of the
         # user making the request are used — not the agent creator's credentials.
-        # All lookups are done concurrently to minimise latency.
-        from app.agents.constants.toolset_constants import normalize_app_name
+        #
+        # SECURITY MODEL:
+        # 1. Toolset nodes in graph DB contain ONLY: instanceId, name, displayName, tools
+        # 2. NO userId is stored in toolset nodes (prevents credential leakage)
+        # 3. User credentials fetched from: /services/toolsets/{instanceId}/{userId}
+        # 4. userId ALWAYS comes from authenticated request context (not stored in DB)
+        # 5. instanceId is the UUID of the admin-created toolset instance
+        # ============================================================================
 
         executing_user_id = user_context["userId"]
-        toolset_configs: dict = {}
+        toolset_configs: dict = {}  # SENSITIVE: Contains user credentials
 
-        # Filter to toolsets that actually have a name before the concurrent fetch
-        named_toolsets = [t for t in agent_toolsets if t.get("name")]
+        # Filter to toolsets that actually have a name or instanceId before the concurrent fetch
+        named_toolsets = [t for t in agent_toolsets if t.get("instanceId") or t.get("name")]
 
         if named_toolsets:
             import asyncio as _asyncio
 
             async def _fetch_toolset_config(toolset: dict) -> tuple[dict, Any]:
-                """Return (toolset, config_or_None) without raising."""
-                toolset_name = toolset["name"]
+                """Return (toolset, config_or_None) without raising.
+
+                Uses instanceId (admin-created instance) if available, otherwise falls
+                back to the legacy toolset name for backward compatibility.
+                """
+                instance_id = toolset.get("instanceId")
+                toolset_name = toolset.get("name", "")
+                lookup_key = instance_id if instance_id else toolset_name
                 try:
-                    etcd_path = get_toolset_config_path(executing_user_id, toolset_name)
+                    etcd_path = get_toolset_config_path(lookup_key, executing_user_id)
                     config = await services["config_service"].get_config(etcd_path)
                     return toolset, config
                 except Exception as exc:
-                    logger.warning(f"Failed to load config for toolset '{toolset_name}': {exc}")
+                    logger.warning(f"Failed to load config for toolset '{toolset_name}' (lookup_key='{lookup_key}'): {exc}")
                     return toolset, None
 
             # Fetch ALL toolset configs in parallel
@@ -2178,27 +2222,30 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             unauthenticated_toolset_display_names: list[str] = []  # config exists but OAuth not completed
 
             for toolset, config in fetch_results:
-                toolset_name = toolset["name"]
-                normalized_name = normalize_app_name(toolset_name)
-                display_name = toolset.get("displayName") or toolset_name.replace("_", " ").title()
+                instance_id = toolset.get("instanceId")
+                toolset_name = toolset.get("name", "")
+                lookup_key = instance_id if instance_id else toolset_name
+                display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
 
                 if config and config.get("isAuthenticated", False):
                     # Fully configured and authenticated — allow
-                    synthetic_id = f"{executing_user_id}_{normalized_name}"
-                    toolset_configs[synthetic_id] = config
+                    # Use instanceId as the toolset_configs key so downstream code
+                    # (_build_tool_to_toolset_map) can look it up correctly.
+                    toolset_configs[lookup_key] = config
                     configured_toolsets.append(toolset)
                 elif config:
                     # Config saved but authentication not completed (e.g. OAuth flow pending)
                     unauthenticated_toolset_display_names.append(display_name)
                     logger.warning(
-                        f"Toolset '{toolset_name}' is configured but not authenticated for user "
-                        f"'{executing_user_id}'. User needs to complete the authentication flow."
+                        f"Toolset '{toolset_name}' (instance='{instance_id}') is configured but not "
+                        f"authenticated for user '{executing_user_id}'. User needs to complete the auth flow."
                     )
                 else:
                     # No config found at all
                     missing_toolset_display_names.append(display_name)
                     logger.warning(
-                        f"Toolset config not found for user '{executing_user_id}' / toolset '{toolset_name}'. "
+                        f"Toolset config not found for user '{executing_user_id}' / "
+                        f"toolset '{toolset_name}' (instance='{instance_id}'). "
                         "User needs to configure this integration."
                     )
 
@@ -2228,12 +2275,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 return StreamingResponse(_toolset_config_error_stream(), media_type="text/event-stream")
 
             agent_toolsets = configured_toolsets
-
-        # Override the stored userId on each toolset with the executing user's ID so that
-        # _build_tool_to_toolset_map (in chat_state.py) constructs synthetic IDs that
-        # match the keys we just stored in toolset_configs above.
-        for toolset in agent_toolsets:
-            toolset["userId"] = executing_user_id
 
         # Build filters and knowledge from agent's knowledge sources
         agent_knowledge = agent.get("knowledge", [])

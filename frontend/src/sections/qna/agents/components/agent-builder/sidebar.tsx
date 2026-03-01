@@ -43,6 +43,7 @@ interface FlowBuilderSidebarProps {
   configuredConnectors: Connector[];
   connectorRegistry: any[];
   toolsets: any[]; // Pre-loaded toolsets with status
+  refreshToolsets: () => Promise<void>; // Refresh toolsets after OAuth
   isBusiness: boolean;
   userId?: string; // For toolsets section
 }
@@ -56,6 +57,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   configuredConnectors,
   connectorRegistry,
   toolsets,
+  refreshToolsets,
   isBusiness,
   userId = '',
 }) => {
@@ -377,6 +379,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                         expandedApps={expandedApps}
                         onAppToggle={handleAppToggle}
                         toolsets={toolsets}
+                        refreshToolsets={refreshToolsets}
                         loading={loading}
                         isBusiness={isBusiness}
                       />

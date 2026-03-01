@@ -1,19 +1,19 @@
 /**
  * Toolset Card
- * 
- * Card component for displaying configured toolset instances.
- * Shows instance status and provides management options.
+ *
+ * Card component for displaying a user's toolset instance from /my-toolsets.
+ * Shows instance auth status and provides a "Manage" button to authenticate.
  */
 
 import React, { useState } from 'react';
-import { 
-  useTheme, 
-  alpha, 
-  Box, 
-  Typography, 
-  Card, 
-  CardContent, 
-  Avatar, 
+import {
+  useTheme,
+  alpha,
+  Box,
+  Typography,
+  Card,
+  CardContent,
+  Avatar,
   Button,
   Chip,
   Stack,
@@ -25,41 +25,42 @@ import clockCircleIcon from '@iconify-icons/mdi/clock-outline';
 import settingsIcon from '@iconify-icons/mdi/settings';
 import boltIcon from '@iconify-icons/mdi/bolt';
 import eyeIcon from '@iconify-icons/mdi/eye';
-import { Toolset } from 'src/types/agent';
+import { MyToolset } from 'src/services/toolset-api';
 import ToolsetConfigDialog from './toolset-config-dialog';
 
 interface ToolsetCardProps {
-  toolset: Toolset;
-  onRefresh?: (showLoader?: boolean, forceRefreshBoth?: boolean) => void;
+  toolset: MyToolset;
+  isAdmin?: boolean;
+  onRefresh?: (showLoader?: boolean) => void;
   onShowToast?: (message: string, severity?: 'success' | 'error' | 'info' | 'warning') => void;
 }
 
-const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
+const ToolsetCard = ({ toolset, isAdmin = false, onRefresh, onShowToast }: ToolsetCardProps) => {
   const theme = useTheme();
   const [configOpen, setConfigOpen] = useState(false);
   const isDark = theme.palette.mode === 'dark';
   const toolsetImage = toolset.iconPath || '/assets/icons/toolsets/default.svg';
 
   const isAuthenticated = toolset.isAuthenticated || false;
-  const isConfigured = toolset.isConfigured || false;
+  const isConfigured = toolset.isConfigured || true; // Admin-created instances are always configured
 
   const getStatusConfig = () => {
     if (isAuthenticated) {
       return {
         label: 'Authenticated',
         color: theme.palette.success.main,
-        bgColor: isDark 
-          ? alpha(theme.palette.success.main, 0.8) 
+        bgColor: isDark
+          ? alpha(theme.palette.success.main, 0.8)
           : alpha(theme.palette.success.main, 0.1),
         icon: checkCircleIcon,
       };
     }
     if (isConfigured) {
       return {
-        label: 'Configured',
+        label: 'Not Authenticated',
         color: theme.palette.warning.main,
-        bgColor: isDark 
-          ? alpha(theme.palette.warning.main, 0.8) 
+        bgColor: isDark
+          ? alpha(theme.palette.warning.main, 0.8)
           : alpha(theme.palette.warning.main, 0.1),
         icon: clockCircleIcon,
       };
@@ -67,8 +68,8 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
     return {
       label: 'Setup Required',
       color: theme.palette.text.secondary,
-      bgColor: isDark 
-        ? alpha(theme.palette.text.secondary, 0.8) 
+      bgColor: isDark
+        ? alpha(theme.palette.text.secondary, 0.8)
         : alpha(theme.palette.text.secondary, 0.08),
       icon: settingsIcon,
     };
@@ -132,8 +133,8 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
         >
           {toolset.category?.toUpperCase() || 'Tool'}
         </Box>
-      
-        {/* Status Dot */}
+
+        {/* Auth Status Dot */}
         {isAuthenticated && (
           <Box
             sx={{
@@ -173,15 +174,15 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
                 transition: theme.transitions.create('transform'),
               }}
             >
-              <img 
-                src={toolsetImage} 
-                alt={toolset.displayName} 
-                width={24} 
+              <img
+                src={toolsetImage}
+                alt={toolset.displayName}
+                width={24}
                 height={24}
                 style={{ objectFit: 'contain' }}
                 onError={(e) => {
                   const target = e.target as HTMLImageElement;
-                  target.src = '/assets/icons/toolsets/default.svg';
+                  target.src = '/assets/icons/connectors/default.svg';
                 }}
               />
             </Avatar>
@@ -196,7 +197,7 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
                   lineHeight: 1.2,
                 }}
               >
-                {toolset.displayName}
+                {toolset.instanceName || toolset.displayName}
               </Typography>
               <Typography
                 variant="caption"
@@ -205,7 +206,7 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
                   fontSize: '0.75rem',
                 }}
               >
-                {toolset.name}
+                {toolset.displayName}
               </Typography>
               <Typography
                 variant="caption"
@@ -215,12 +216,12 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
                   fontSize: '0.6875rem',
                 }}
               >
-                {(toolset as any).appGroup || toolset.group || toolset.category}
+                {toolset.toolsetType}
               </Typography>
             </Box>
           </Stack>
 
-          {/* Status */}
+          {/* Auth Status Chip */}
           <Box sx={{ display: 'flex', justifyContent: 'center' }}>
             <Chip
               icon={<Iconify icon={statusConfig.icon} width={14} height={14} />}
@@ -233,22 +234,20 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
                 backgroundColor: statusConfig.bgColor,
                 color: statusConfig.color,
                 border: `1px solid ${alpha(statusConfig.color, 0.2)}`,
-                '& .MuiChip-icon': {
-                  color: statusConfig.color,
-                },
+                '& .MuiChip-icon': { color: statusConfig.color },
               }}
             />
           </Box>
 
           {/* Features */}
-          <Stack 
-            direction="row" 
-            spacing={0.5} 
-            justifyContent="center" 
+          <Stack
+            direction="row"
+            spacing={0.5}
+            justifyContent="center"
             alignItems="center"
             sx={{ minHeight: 20 }}
           >
-            {toolset.supportedAuthTypes && toolset.supportedAuthTypes.length > 0 && (
+            {toolset.authType && (
               <Typography
                 variant="caption"
                 sx={{
@@ -262,11 +261,11 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
                   border: `1px solid ${alpha(theme.palette.text.secondary, 0.12)}`,
                 }}
               >
-                {toolset.supportedAuthTypes[0].split('_').join(' ')}
+                {toolset.authType.split('_').join(' ')}
               </Typography>
             )}
-            
-            {toolset.toolCount && toolset.toolCount > 0 && (
+
+            {toolset.toolCount > 0 && (
               <Tooltip title={`${toolset.toolCount} tools available`} arrow>
                 <Box
                   sx={{
@@ -283,19 +282,8 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
                     border: `1px solid ${alpha(theme.palette.info.main, 0.2)}`,
                   }}
                 >
-                  <Iconify 
-                    icon={boltIcon} 
-                    width={10} 
-                    height={10}
-                  />
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      fontSize: '0.6875rem',
-                      fontWeight: 500,
-                      color: 'inherit',
-                    }}
-                  >
+                  <Iconify icon={boltIcon} width={10} height={10} />
+                  <Typography variant="caption" sx={{ fontSize: '0.6875rem', fontWeight: 500, color: 'inherit' }}>
                     {toolset.toolCount} tools
                   </Typography>
                 </Box>
@@ -303,71 +291,9 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
             )}
           </Stack>
 
-          {/* Connection Status */}
-          <Box
-            sx={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              px: 1.5,
-              py: 1,
-              borderRadius: 1,
-              backgroundColor: isDark 
-                ? alpha(theme.palette.background.default, 0.3) 
-                : alpha(theme.palette.grey[50], 0.8),
-              border: `1px solid ${theme.palette.divider}`,
-            }}
-          >
-            <Stack direction="row" spacing={0.5} alignItems="center">
-              <Box
-                sx={{
-                  width: 4,
-                  height: 4,
-                  borderRadius: '50%',
-                  backgroundColor: isConfigured 
-                    ? theme.palette.success.main 
-                    : theme.palette.text.disabled,
-                }}
-              />
-              <Typography
-                variant="caption"
-                sx={{
-                  fontSize: '0.75rem',
-                  fontWeight: 500,
-                  color: theme.palette.text.secondary,
-                }}
-              >
-                {isConfigured ? 'Configured' : 'Not configured'}
-              </Typography>
-            </Stack>
-            
-            <Stack direction="row" spacing={0.5} alignItems="center">
-              <Box
-                sx={{
-                  width: 4,
-                  height: 4,
-                  borderRadius: '50%',
-                  backgroundColor: isAuthenticated 
-                    ? theme.palette.success.main 
-                    : theme.palette.text.disabled,
-                }}
-              />
-              <Typography
-                variant="caption"
-                sx={{
-                  fontSize: '0.75rem',
-                  fontWeight: 500,
-                  color: theme.palette.text.secondary,
-                }}
-              >
-                {isAuthenticated ? 'Authenticated' : 'Not authenticated'}
-              </Typography>
-            </Stack>
-          </Box>
-
           {/* Manage Button */}
           <Button
-            fullWidth 
+            fullWidth
             variant="outlined"
             size="medium"
             startIcon={<Iconify icon={eyeIcon} width={16} height={16} />}
@@ -389,21 +315,21 @@ const ToolsetCard = ({ toolset, onRefresh, onShowToast }: ToolsetCardProps) => {
               },
             }}
           >
-            Manage
+            {isAuthenticated ? 'Manage' : 'Authenticate'}
           </Button>
         </CardContent>
       </Card>
 
       {configOpen && (
         <ToolsetConfigDialog
-          toolset={toolset as any}
-          toolsetId={toolset._id || toolset.name}
+          toolset={toolset}
+          toolsetId={toolset.instanceId}
+          isAdmin={isAdmin}
           onClose={() => setConfigOpen(false)}
           onSuccess={() => {
             setConfigOpen(false);
-            // Refresh the toolsets list (only current tab needed for updates/deletes)
             if (onRefresh) {
-              onRefresh(false); // showLoader=false
+              onRefresh(false);
             }
           }}
           onShowToast={onShowToast}

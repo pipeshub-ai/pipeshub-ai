@@ -48,12 +48,12 @@ import { StreamingContext } from 'src/sections/qna/chatbot/components/chat-messa
 import { processStreamingContentLegacy } from 'src/sections/qna/chatbot/utils/styles/content-processing';
 import { useConnectors } from 'src/sections/accountdetails/connectors/hooks/use-connectors';
 import { ConversationStreamingState } from 'src/sections/qna/chatbot/chat-bot';
-import { CHAT_MODES } from 'src/sections/qna/chatbot/utils/utils';
 import AgentApiService, { KnowledgeBase } from './services/api';
 import AgentChatInput from './components/agent-chat-input';
 import AgentChatSidebar from './components/agent-chat-sidebar';
 
 const DRAWER_WIDTH = 300;
+const QUICK_CHAT_MODE = 'quick';
 
 // Store messages per conversation
 interface ConversationMessages {
@@ -76,12 +76,6 @@ export interface Model {
   modelKey: string;
   modelName: string;
   modelFriendlyName?: string;
-}
-
-export interface ChatMode {
-  id: string;
-  name: string;
-  description: string;
 }
 
 export interface Tool {
@@ -592,11 +586,9 @@ const AgentChat = () => {
   const [availableKBs, setAvailableKBs] = useState<KnowledgeBase[]>([]);
   // Model selection state
   const [selectedModel, setSelectedModel] = useState<Model | null>(availableModels[0]);
-  const [selectedChatMode, setSelectedChatMode] = useState<ChatMode | null>(null);
 
   // Refs to store latest values to avoid stale closures in callbacks
   const latestModelRef = useRef(selectedModel);
-  const latestChatModeRef = useRef(selectedChatMode);
   const availableModelsRef = useRef<Model[]>([]);
 
   // Update refs whenever values change
@@ -604,16 +596,12 @@ const AgentChat = () => {
     latestModelRef.current = selectedModel;
   }, [selectedModel]);
 
-  useEffect(() => {
-    latestChatModeRef.current = selectedChatMode;
-  }, [selectedChatMode]);
-
   // Keep availableModels ref in sync
   useEffect(() => {
     availableModelsRef.current = availableModels;
   }, [availableModels]);
 
-  // Helper function to set model and chat mode from conversation modelInfo
+  // Helper function to set model from conversation modelInfo
   const setModelFromConversation = useCallback((conversationModelInfo: any) => {
     if (!conversationModelInfo) return;
 
@@ -633,17 +621,9 @@ const AgentChat = () => {
         setSelectedModel(matchingModel);
       }
     }
-
-    // Set chat mode from conversation if available
-    if (conversationModelInfo.chatMode) {
-      const matchingMode = CHAT_MODES.find((m) => m.id === conversationModelInfo.chatMode);
-      if (matchingMode) {
-        setSelectedChatMode(matchingMode);
-      }
-    }
   }, []);
 
-  // Set default model and chat mode when models are first loaded
+  // Set default model when models are first loaded
   // Only set defaults if no conversation is selected (new chat scenario)
   useEffect(() => {
     // Don't set defaults if we have a selected chat - let the conversation model useEffect handle it
@@ -653,11 +633,7 @@ const AgentChat = () => {
       // Set first model as default if no model is selected and no conversation is selected
       setSelectedModel(availableModels[0]);
     }
-    // Set default chat mode if not already selected
-    if (!selectedChatMode && CHAT_MODES.length > 0) {
-      setSelectedChatMode(CHAT_MODES[0]);
-    }
-  }, [availableModels, selectedModel, selectedChatMode, selectedChat]);
+  }, [availableModels, selectedModel, selectedChat]);
 
   // When models are loaded and we have a selected chat, try to set model from conversation
   useEffect(() => {
@@ -1165,7 +1141,7 @@ const AgentChat = () => {
 
       // Use refs to get the latest values (prevents stale closures)
       const currentModel = latestModelRef.current;
-      const currentMode = latestChatModeRef.current;
+      const resolvedChatMode = chatMode || QUICK_CHAT_MODE;
 
       const wasCreatingNewConversation = !currentConversationId;
       const conversationKey = getConversationKey(currentConversationId);
@@ -1224,7 +1200,7 @@ const AgentChat = () => {
         modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
           ? currentModel.modelFriendlyName.trim() 
           : undefined,
-        chatMode: chatMode || currentMode?.id,
+        chatMode: resolvedChatMode,
 
         // Timezone and current time for LLM context
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -1245,11 +1221,11 @@ const AgentChat = () => {
         },
 
         // Chat mode specific parameters
-        ...(chatMode === 'quick' && {
+        ...(resolvedChatMode === 'quick' && {
           limit: 5,
           quickMode: true,
         }),
-        ...(chatMode === 'standard' && {
+        ...(resolvedChatMode === 'standard' && {
           temperature: 0.7,
           limit: 10,
           quickMode: false,
@@ -1821,7 +1797,6 @@ const AgentChat = () => {
         const token = localStorage.getItem('jwt_access_token');
         // Use refs to get the latest values (prevents stale closures)
         const currentModel = latestModelRef.current;
-        const currentMode = latestChatModeRef.current;
 
         const response = await fetch(
           `${CONFIG.backendUrl}/api/v1/agents/${agentKey}/conversations/${currentConversationId}/message/${messageId}/regenerate`,
@@ -1835,7 +1810,7 @@ const AgentChat = () => {
             body: JSON.stringify({
               modelName: currentModel?.modelName,
               modelProvider: currentModel?.provider,
-              chatMode: currentMode?.id || 'quick',
+              chatMode: QUICK_CHAT_MODE,
             }),
             signal: controller.signal,
           }
@@ -2001,9 +1976,7 @@ const AgentChat = () => {
               disabled={isCurrentConversationLoading || isNavigationBlocked}
               placeholder="Type your message..."
               selectedModel={selectedModel}
-              selectedChatMode={selectedChatMode}
               onModelChange={(model) => setSelectedModel(model)}
-              onChatModeChange={(mode) => setSelectedChatMode(mode)}
               availableModels={availableModels}
               availableKBs={availableKBs}
               agent={agent}

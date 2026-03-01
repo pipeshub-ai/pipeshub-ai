@@ -28,6 +28,21 @@ import {
   reauthenticateToolset,
   getOAuthAuthorizationUrl,
   handleOAuthCallback,
+  // Instance management (new architecture)
+  getToolsetInstances,
+  createToolsetInstance,
+  getToolsetInstance,
+  updateToolsetInstance,
+  deleteToolsetInstance,
+  getMyToolsets,
+  authenticateToolsetInstance,
+  removeToolsetCredentials,
+  reauthenticateToolsetInstance,
+  getInstanceOAuthAuthorizationUrl,
+  getInstanceStatus,
+  listToolsetOAuthConfigs,
+  updateToolsetOAuthConfig,
+  deleteToolsetOAuthConfig,
 } from '../controller/toolsets_controller';
 
 // ============================================================================
@@ -67,6 +82,21 @@ const toolsetTypeParamSchema = z.object({
 const toolsetIdParamSchema = z.object({
   params: z.object({
     toolsetId: z.string().min(1, 'Toolset ID is required'),
+  }),
+});
+
+/**
+ * Schema for creating a toolset instance
+ */
+const createToolsetInstanceSchema = z.object({
+  body: z.object({
+    instanceName: z.string().min(1, 'Instance name is required'),
+    toolsetType: z.string().min(1, 'Toolset type is required'),
+    authType: z.string().min(1, 'Auth type is required'),
+    authConfig: z.record(z.any()).optional(),
+    baseUrl: z.string().optional(),
+    oauthConfigId: z.string().optional(),
+    oauthInstanceName: z.string().optional(),
   }),
 });
 
@@ -304,6 +334,166 @@ export function createToolsetsRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(handleOAuthCallbackSchema),
     handleOAuthCallback(config)
+  );
+
+  // ============================================================================
+  // Instance Management Routes (Admin-Created Instances)
+  // ============================================================================
+
+  /**
+   * GET /my-toolsets
+   * Merged view: admin instances + current user's auth status
+   */
+  router.get(
+    '/my-toolsets',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getMyToolsets(config)
+  );
+
+  /**
+   * GET /instances
+   * List all toolset instances for the organization
+   */
+  router.get(
+    '/instances',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getToolsetInstances(config)
+  );
+
+  /**
+   * POST /instances
+   * Create a new toolset instance (admin only)
+   */
+  router.post(
+    '/instances',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(createToolsetInstanceSchema),
+    createToolsetInstance(config)
+  );
+
+  /**
+   * GET /instances/:instanceId
+   * Get a specific toolset instance
+   */
+  router.get(
+    '/instances/:instanceId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getToolsetInstance(config)
+  );
+
+  /**
+   * PUT /instances/:instanceId
+   * Update a toolset instance (admin only)
+   */
+  router.put(
+    '/instances/:instanceId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    updateToolsetInstance(config)
+  );
+
+  /**
+   * DELETE /instances/:instanceId
+   * Delete a toolset instance (admin only)
+   */
+  router.delete(
+    '/instances/:instanceId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    deleteToolsetInstance(config)
+  );
+
+  /**
+   * POST /instances/:instanceId/authenticate
+   * User authenticates an instance (non-OAuth: API token, bearer, username/password)
+   */
+  router.post(
+    '/instances/:instanceId/authenticate',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    authenticateToolsetInstance(config)
+  );
+
+  /**
+   * DELETE /instances/:instanceId/credentials
+   * Remove user's credentials for an instance
+   */
+  router.delete(
+    '/instances/:instanceId/credentials',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    removeToolsetCredentials(config)
+  );
+
+  /**
+   * POST /instances/:instanceId/reauthenticate
+   * Clear user's OAuth tokens, forcing re-authentication
+   */
+  router.post(
+    '/instances/:instanceId/reauthenticate',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    reauthenticateToolsetInstance(config)
+  );
+
+  /**
+   * GET /instances/:instanceId/oauth/authorize
+   * Get OAuth authorization URL for a specific instance
+   */
+  router.get(
+    '/instances/:instanceId/oauth/authorize',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getInstanceOAuthAuthorizationUrl(config)
+  );
+
+  /**
+   * GET /instances/:instanceId/status
+   * Get authentication status of a specific instance for current user
+   */
+  router.get(
+    '/instances/:instanceId/status',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    getInstanceStatus(config)
+  );
+
+  /**
+   * GET /oauth-configs/:toolsetType
+   * List OAuth configs for a toolset type (admin)
+   */
+  router.get(
+    '/oauth-configs/:toolsetType',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    listToolsetOAuthConfigs(config)
+  );
+
+  /**
+   * PUT /oauth-configs/:toolsetType/:oauthConfigId
+   * Update an OAuth config for a toolset type (admin only).
+   * Deauthenticates all affected users in parallel.
+   */
+  router.put(
+    '/oauth-configs/:toolsetType/:oauthConfigId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    updateToolsetOAuthConfig(config)
+  );
+
+  /**
+   * DELETE /oauth-configs/:toolsetType/:oauthConfigId
+   * Delete an OAuth config (admin only). Safe delete: blocked if instances use it.
+   */
+  router.delete(
+    '/oauth-configs/:toolsetType/:oauthConfigId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    deleteToolsetOAuthConfig(config)
   );
 
   return router;

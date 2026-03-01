@@ -17,7 +17,7 @@ from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.utils.oauth_config import get_oauth_config
 
 # Constants
-MIN_PATH_PARTS_COUNT = 4  # Minimum path parts: services, toolsets, user_id, toolset_type
+MIN_PATH_PARTS_COUNT = 4  # Minimum path parts: services, toolsets, user_id, instance_id_or_type
 
 
 class ToolsetTokenRefreshService:
@@ -67,7 +67,7 @@ class ToolsetTokenRefreshService:
         Check if toolset has valid OAuth credentials stored.
 
         Args:
-            config_path: Toolset config path (e.g., /services/toolsets/{user_id}/{toolset_type})
+            config_path: Toolset config path (e.g., /services/toolsets/{instanceId}/{userId})
 
         Returns:
             True if toolset has refresh_token, False otherwise
@@ -121,7 +121,8 @@ class ToolsetTokenRefreshService:
         """Internal method to refresh tokens for all authenticated toolsets"""
         try:
             # Get all toolset config paths from etcd
-            # Toolsets are stored under /services/toolsets/{user_id}/{toolset_type}
+            # NEW ARCHITECTURE: Toolsets are stored at /services/toolsets/{instanceId}/{userId}
+            # LEGACY: Old format was /services/toolsets/{userId}/{toolset_type}
             try:
                 all_keys = await self.configuration_service.list_keys_in_directory("/services/toolsets/")
                 self.logger.info(f"🔍 Found {len(all_keys)} toolset keys in etcd (scanning /services/toolsets/)")
@@ -143,16 +144,40 @@ class ToolsetTokenRefreshService:
                         if config_path in processed_toolsets:
                             continue
 
-                        # Extract toolset_type from path
-                        # Format: /services/toolsets/{user_id}/{toolset_type}
+                        # Extract instanceId and userId from path
+                        # Format (new):    /services/toolsets/{instanceId}/{userId}
+                        # Format (legacy): /services/toolsets/{userId}/{toolset_type}
                         path_parts = config_path.strip("/").split("/")
-                        if len(path_parts) < MIN_PATH_PARTS_COUNT:  # services, toolsets, user_id, toolset_type
+                        if len(path_parts) < MIN_PATH_PARTS_COUNT:
                             self.logger.info(f"⚠️ Skipping invalid path format: {config_path} (parts: {path_parts}, count: {len(path_parts)}, expected: 4)")
                             skipped_invalid_path += 1
                             continue
 
-                        toolset_type = path_parts[3]
-                        user_id = path_parts[2]
+                        # NEW ARCHITECTURE: /services/toolsets/{instanceId}/{userId}
+                        # path_parts[2] = instanceId (UUID)
+                        # path_parts[3] = userId
+                        instance_id_or_type = path_parts[2]
+                        user_id = path_parts[3]
+
+                        # Check if path_parts[2] is a UUID (new format) or toolset type (legacy)
+                        # New format: instanceId is a UUID (e.g., "107344f6-66cb-46f9-89f1-22d0bdae99cb")
+                        # Legacy format: would be toolset type (e.g., "slack", "jira")
+                        try:
+                            import uuid
+                            # Try to parse as UUID - if it works, it's new format
+                            uuid.UUID(instance_id_or_type)
+                        except (ValueError, AttributeError):
+                            # Not a UUID, so it's old/legacy format
+                            # Skip legacy formats during migration
+                            self.logger.debug(
+                                f"⏭️ Skipping legacy format path (will be migrated): {config_path}. "
+                                f"Expected instanceId (UUID) at path_parts[2], got: {instance_id_or_type}"
+                            )
+                            skipped_invalid_path += 1
+                            continue
+
+                        # At this point, we have confirmed new format with instanceId
+                        instance_id = instance_id_or_type
 
                         # Get config to check authentication
                         config = await self.configuration_service.get_config(config_path)
@@ -161,14 +186,30 @@ class ToolsetTokenRefreshService:
                             skipped_no_config += 1
                             continue
 
+                        # Get toolsetType from stored config (required in new architecture)
+                        toolset_type = config.get("toolsetType")
+                        if not toolset_type:
+                            self.logger.warning(
+                                f"⚠️ No toolsetType in config for {config_path}. "
+                                f"This is required for new architecture. Skipping."
+                            )
+                            skipped_no_config += 1
+                            continue
+
                         # Check if toolset is authenticated and has OAuth
                         if not await self._is_toolset_authenticated(config_path):
-                            self.logger.debug(f"⚠️ Toolset not authenticated or missing refresh_token: {config_path} (user: {user_id}, type: {toolset_type})")
+                            self.logger.debug(
+                                f"⚠️ Toolset not authenticated or missing refresh_token: {config_path} "
+                                f"(instance: {instance_id}, user: {user_id}, type: {toolset_type})"
+                            )
                             skipped_not_authenticated += 1
                             continue
 
                         processed_toolsets.add(config_path)
-                        self.logger.info(f"✅ Found authenticated OAuth toolset: {config_path} (user: {user_id}, type: {toolset_type})")
+                        self.logger.info(
+                            f"✅ Found authenticated OAuth toolset: {config_path} "
+                            f"(instance: {instance_id}, user: {user_id}, type: {toolset_type})"
+                        )
 
                         # Process this toolset for refresh
                         try:
@@ -195,6 +236,49 @@ class ToolsetTokenRefreshService:
     # ============================================================================
     # Helper Methods for OAuth Config Building
     # ============================================================================
+
+    async def _load_admin_oauth_config(
+        self,
+        config_path: str,
+        toolset_type: str
+    ) -> Optional[Dict[str, any]]:
+        """
+        Load admin-created OAuth config for a toolset instance.
+
+        For the new instance-based architecture, the user auth record stores
+        `oauthConfigId` (and `orgId`) so we can look up the admin OAuth config at
+        /services/oauths/toolsets/{toolsetType}.
+
+        Args:
+            config_path: User auth path (/services/toolsets/{userId}/{instanceId})
+            toolset_type: Toolset type (e.g. "googledrive")
+
+        Returns:
+            Admin OAuth config dict, or None if not found.
+        """
+        try:
+            user_config = await self.configuration_service.get_config(config_path)
+            if not user_config:
+                return None
+
+            oauth_config_id = user_config.get("oauthConfigId")
+            org_id = user_config.get("orgId")
+            if not oauth_config_id or not org_id:
+                return None
+
+            admin_path = f"/services/oauths/toolsets/{toolset_type.lower()}"
+            configs = await self.configuration_service.get_config(admin_path, default=[])
+            if not isinstance(configs, list):
+                return None
+
+            for cfg in configs:
+                if cfg.get("_id") == oauth_config_id and cfg.get("orgId") == org_id:
+                    return cfg
+
+            return None
+        except Exception as e:
+            self.logger.debug(f"Could not load admin OAuth config: {e}")
+            return None
 
     def _get_toolset_oauth_config_from_registry(
         self,
@@ -295,13 +379,14 @@ class ToolsetTokenRefreshService:
     ) -> Dict[str, any]:
         """
         Build complete OAuth flow configuration for toolset.
-        Toolsets use direct auth config (no shared OAuth config like connectors).
-        OAuth URLs and scopes come from toolset registry if not in auth_config.
+
+        NEW ARCHITECTURE (2026-03+): OAuth credentials (clientId, clientSecret, etc.)
+        are stored centrally and fetched using get_oauth_credentials_for_toolset helper.
 
         Args:
-            config_path: Toolset config path
+            config_path: Toolset config path (/services/toolsets/{instanceId}/{userId})
             toolset_type: Toolset type
-            auth_config: Auth configuration from toolset config
+            auth_config: Auth configuration from toolset config (may contain oauthConfigId)
 
         Returns:
             Complete OAuth flow config with clientId, clientSecret, and all infrastructure fields
@@ -309,26 +394,74 @@ class ToolsetTokenRefreshService:
         Raises:
             ValueError: If credentials cannot be found
         """
-        # Toolsets use direct auth config (clientId, clientSecret from auth_config)
-        client_id = auth_config.get("clientId")
-        client_secret = auth_config.get("clientSecret")
-
-        if not client_id or not client_secret:
-            raise ValueError(
-                f"No OAuth credentials found for toolset {config_path} "
-                f"in auth config"
+        # Load the full user toolset config to get oauthConfigId and other metadata
+        try:
+            full_user_config = await self.configuration_service.get_config(
+                config_path,
+                default=None,
+                use_cache=False
             )
 
-        # Try to get OAuth config from registry for URLs and scopes
+            if not full_user_config or not isinstance(full_user_config, dict):
+                raise ValueError(f"Could not load toolset config from {config_path}")
+
+            # Use the new centralized OAuth credential fetching
+            from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+
+            oauth_creds = await get_oauth_credentials_for_toolset(
+                toolset_config=full_user_config,
+                config_service=self.configuration_service,
+                logger=self.logger
+            )
+
+            # oauth_creds now contains ALL OAuth config fields dynamically
+            # (clientId, clientSecret, tenantId, domain, scopes, URLs, etc.)
+            client_id = oauth_creds.get("clientId")
+            client_secret = oauth_creds.get("clientSecret")
+
+            if not client_id or not client_secret:
+                raise ValueError(
+                    f"OAuth credentials incomplete for {config_path}. "
+                    f"Available fields: {list(oauth_creds.keys())}"
+                )
+
+            # Merge OAuth credentials into auth_config (preserves all fields)
+            # Priority: oauth_creds (central config) > auth_config (user overrides)
+            for key, value in oauth_creds.items():
+                if key not in auth_config:  # Don't overwrite user overrides
+                    auth_config[key] = value
+
+            self.logger.debug(
+                f"✅ Fetched OAuth credentials for token refresh from centralized config. "
+                f"Fields: {list(oauth_creds.keys())}"
+            )
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to fetch OAuth credentials for {config_path}: {e}. "
+                f"Falling back to legacy auth_config (if available).",
+                exc_info=True
+            )
+            # Fallback to legacy: credentials directly in auth_config
+            client_id = auth_config.get("clientId")
+            client_secret = auth_config.get("clientSecret")
+
+            if not client_id or not client_secret:
+                raise ValueError(
+                    f"No OAuth credentials found for toolset {config_path}. "
+                    f"New architecture fetch failed AND legacy credentials not in auth_config."
+                )
+
+        # Try to get OAuth config from registry for fallback URLs and scopes
         oauth_config_obj = self._get_toolset_oauth_config_from_registry(toolset_type)
 
-        # Build OAuth flow config - prioritize auth_config, fallback to registry
+        # Build OAuth flow config - auth_config now has all fields from oauth_creds merged
         oauth_flow_config = {
             "clientId": client_id,
             "clientSecret": client_secret,
         }
 
-        # Get URLs - prefer stored auth_config values, fallback to registry
+        # Get URLs - prefer auth_config (which now includes oauth_creds), fallback to registry
         if auth_config.get("authorizeUrl"):
             oauth_flow_config["authorizeUrl"] = auth_config["authorizeUrl"]
         elif oauth_config_obj and hasattr(oauth_config_obj, 'authorize_url'):
@@ -343,14 +476,12 @@ class ToolsetTokenRefreshService:
         else:
             oauth_flow_config["tokenUrl"] = ""
 
-        # Redirect URI - prefer stored auth_config value (full URL), fallback to registry
+        # Redirect URI - prefer auth_config value (full URL), fallback to registry
         if auth_config.get("redirectUri"):
             oauth_flow_config["redirectUri"] = auth_config["redirectUri"]
         elif oauth_config_obj and hasattr(oauth_config_obj, 'redirect_uri'):
             # Registry redirect_uri is a path, try to construct full URL
-            # For refresh, we can use the path-only version if needed
             redirect_path = oauth_config_obj.redirect_uri
-            # Try to get base URL from endpoints config
             try:
                 endpoints = await self.configuration_service.get_config("/services/endpoints")
                 if isinstance(endpoints, dict):
@@ -359,24 +490,22 @@ class ToolsetTokenRefreshService:
                 else:
                     oauth_flow_config["redirectUri"] = f"http://localhost:3001/{redirect_path}"
             except Exception:
-                # If we can't get base URL, use path-only (some providers accept this)
                 oauth_flow_config["redirectUri"] = redirect_path
         else:
             oauth_flow_config["redirectUri"] = ""
 
-        # Get scopes - prefer user-provided scopes, fallback to registry
+        # Get scopes - prefer auth_config (which includes oauth_creds), fallback to registry
         user_scopes = auth_config.get("scopes", [])
         if isinstance(user_scopes, list) and len(user_scopes) > 0:
             oauth_flow_config["scopes"] = user_scopes
         elif oauth_config_obj and hasattr(oauth_config_obj, 'scopes'):
             from app.connectors.core.registry.auth_builder import OAuthScopeType
-            # Use AGENT scope type for toolsets
             registry_scopes = oauth_config_obj.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
             oauth_flow_config["scopes"] = registry_scopes if registry_scopes else []
         else:
             oauth_flow_config["scopes"] = []
 
-        # Add optional fields - prefer stored auth_config values
+        # Add optional fields - all available from auth_config now (includes oauth_creds)
         if "tokenAccessType" in auth_config:
             oauth_flow_config["tokenAccessType"] = auth_config["tokenAccessType"]
         elif oauth_config_obj and hasattr(oauth_config_obj, 'token_access_type') and oauth_config_obj.token_access_type:
@@ -392,13 +521,18 @@ class ToolsetTokenRefreshService:
         elif oauth_config_obj and hasattr(oauth_config_obj, 'scope_parameter_name') and oauth_config_obj.scope_parameter_name != "scope":
             oauth_flow_config["scopeParameterName"] = oauth_config_obj.scope_parameter_name
 
-        # Add token_response_path if specified
         if "tokenResponsePath" in auth_config:
             oauth_flow_config["tokenResponsePath"] = auth_config["tokenResponsePath"]
         elif oauth_config_obj and hasattr(oauth_config_obj, 'token_response_path') and oauth_config_obj.token_response_path:
             oauth_flow_config["tokenResponsePath"] = oauth_config_obj.token_response_path
 
-        # Enrich from registry if fields are missing
+        # Add provider-specific fields (tenantId for Microsoft, domain for Slack, etc.)
+        # These are now available in auth_config from oauth_creds
+        for field_name in ["tenantId", "domain", "workspace", "companyUrl", "baseUrl"]:
+            if field_name in auth_config:
+                oauth_flow_config[field_name] = auth_config[field_name]
+
+        # Enrich from registry if fields are still missing
         self._enrich_from_toolset_registry(oauth_flow_config, toolset_type)
 
         return oauth_flow_config
@@ -417,7 +551,7 @@ class ToolsetTokenRefreshService:
         Core token refresh logic - performs the actual OAuth token refresh for toolsets.
 
         Args:
-            config_path: Toolset config path (e.g., /services/toolsets/{user_id}/{toolset_type})
+            config_path: Toolset config path (e.g., /services/toolsets/{instanceId}/{userId})
             toolset_type: The toolset type
             refresh_token: The refresh token to use
 
@@ -435,10 +569,24 @@ class ToolsetTokenRefreshService:
 
         auth_config = config.get("auth", {})
 
-        # Verify OAuth auth type
+        # Verify OAuth auth type (lenient check)
+        # If toolset has refresh_token, we assume it's OAuth even if type is not set
+        # This handles legacy configs and configs created before type field was enforced
         auth_type = auth_config.get("type", "").upper()
-        if auth_type != "OAUTH":
-            raise ValueError(f"Toolset {config_path} is not configured for OAuth (auth_type: {auth_type})")
+        if auth_type and auth_type != "OAUTH":
+            # Only fail if type is explicitly set to non-OAUTH (e.g., "API_TOKEN")
+            raise ValueError(
+                f"Toolset {config_path} is configured for {auth_type}, not OAuth. "
+                f"Token refresh only works for OAuth toolsets."
+            )
+
+        # If type is not set (empty string or None), we trust _is_toolset_authenticated
+        # which already verified the toolset has valid OAuth credentials (refresh_token)
+        if not auth_type:
+            self.logger.debug(
+                f"⚠️ Toolset {config_path} has no auth.type set, but has refresh_token. "
+                f"Assuming OAuth (legacy config)."
+            )
 
         # 2. Build complete OAuth configuration
         oauth_flow_config = await self._build_complete_oauth_config(
@@ -718,7 +866,7 @@ class ToolsetTokenRefreshService:
         If the token needs immediate refresh (delay <= 0), refreshes it immediately then schedules.
 
         Args:
-            config_path: Toolset config path (e.g., /services/toolsets/{user_id}/{toolset_type})
+            config_path: Toolset config path (e.g., /services/toolsets/{instanceId}/{userId})
             toolset_type: Toolset type
             token: Current OAuth token
         """
