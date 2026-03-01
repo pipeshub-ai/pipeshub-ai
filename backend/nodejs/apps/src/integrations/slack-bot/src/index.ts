@@ -1049,8 +1049,7 @@ function splitSlackBlocksByLimit(
 
 async function buildFinalSlackChunks(
   answerBody: string,
-): Promise<any[][]> {  // Changed KnownBlock[][] to any[][] to avoid TS error if KnownBlock is not imported/defined
-  
+): Promise<any[][]> {  
 
   try {
     const tableAwareSegments = splitMarkdownMessageIntoTableAwareSegments(answerBody || "");
@@ -1310,6 +1309,21 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
       elements = [];
     }
   }
+
+  if (elements.length > 0) {
+    blocks.push({
+      "type": "rich_text",
+      "elements": [
+        {
+          "type": "rich_text_section",
+          "elements": [
+            ...elements,
+          ]
+        }
+      ]
+    });
+  }
+
   if (blocks.length > 0) {
     blocks = [ {
       type: "section",
@@ -1445,6 +1459,9 @@ async function processSlackMessage(
       } catch (error) {
         console.error("Error updating Slack waiting message:", error);
         if (blocks && blocks.length > 0) {
+          throw error;
+        } 
+        else {
           try {
             await typedClient.chat.update({
               channel: typedMessage.channel!,
@@ -1457,6 +1474,7 @@ async function processSlackMessage(
               "Error updating Slack waiting message with text fallback:",
               fallbackError,
             );
+            throw fallbackError;
           }
         }
       }
@@ -1470,7 +1488,7 @@ async function processSlackMessage(
         ...(blocks && blocks.length > 0 ? { blocks } : {}),
       });
     } catch (error) {
-      if (!blocks || blocks.length === 0) {
+      if (blocks && blocks.length > 0) {
         throw error;
       }
       console.error("Error posting Slack non-stream blocks message:", error);
@@ -1772,7 +1790,6 @@ async function processSlackMessage(
               completionConversation = (evt.data as ConversationData).conversation;
             }
           } else if (evt.event === "error") {
-            console.log("Error event", evt);
             streamErrorMessage = resolveSlackErrorMessage(evt.data);
             resolveOnce();
             return;
@@ -1865,7 +1882,6 @@ async function processSlackMessage(
     if (streamTs) {
       await stopSlackStream();
       if (firstFinalChunk) {
-        console.log("firstFinalChunk sending");
         try {
           await typedClient.chat.update({
             channel: typedMessage.channel!,
@@ -1873,7 +1889,6 @@ async function processSlackMessage(
             text: "",
             blocks: firstFinalChunk,
           });
-
           for (const remainingChunk of remainingFinalChunks) {
             await postThreadChunkMessage(remainingChunk);
           }
@@ -1881,15 +1896,43 @@ async function processSlackMessage(
             await postThreadChunkMessage(citationChunk);
           }
         } catch (error) {
+          const fallbackErrorMessage =
+            "Something went wrong while generating the response. Please try again later.";
           console.error(
-            "Error updating final streamed Slack message with blocks, retrying with text:",
+            "Error updating final streamed Slack message with blocks, trying delete and repost:",
             error,
           );
-          await typedClient.chat.update({
-            channel: typedMessage.channel!,
-            ts: streamTs,
-            text: "Something went wrong while generating the response. Please try again later.",
-          });
+          let replacedMessageSuccessfully = false;
+          try {
+            await typedClient.apiCall("chat.delete", {
+              channel: typedMessage.channel!,
+              ts: streamTs,
+            });
+            await typedClient.chat.postMessage({
+              channel: typedMessage.channel!,
+              thread_ts: threadId,
+              text: "",
+              blocks: firstFinalChunk,
+            });
+
+            for (const remainingChunk of remainingFinalChunks) {
+              await postThreadChunkMessage(remainingChunk);
+            }
+            for (const citationChunk of citationBlockChunks) {
+              await postThreadChunkMessage(citationChunk);
+            }
+            replacedMessageSuccessfully = true;
+
+          } catch (replacementError) {
+            console.error(
+              "Error replacing failed streamed Slack message, sending fallback error message:",
+              replacementError,
+            );
+          }
+
+          if (!replacedMessageSuccessfully) {
+            await sendOrUpdateNonStreamMessage(fallbackErrorMessage);
+          }
         }
       }
       

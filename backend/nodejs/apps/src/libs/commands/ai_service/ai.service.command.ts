@@ -161,12 +161,14 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       );
 
       if (!response.ok) {
+        let error: FetchCommandError;
         try{
-          throw await this.buildStreamHttpError(response);
+          error = await this.buildStreamHttpError(response);
         }
-        catch {
+        catch (error) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
+        throw error;
       }
 
       if (!response.body) {
