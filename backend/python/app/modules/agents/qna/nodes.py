@@ -173,6 +173,68 @@ def format_result_for_llm(result: object, tool_name: str = "") -> str:
     return str(result)
 
 
+def _get_tool_status_msg(tool_name: str) -> str:
+    """Human-readable 'in-progress' message for a tool."""
+    n = tool_name.lower()
+    if "retrieval" in n:
+        return "Searching knowledge base..."
+    if "slack" in n:
+        if "send" in n:
+            return "Sending Slack message..."
+        if "history" in n or "message" in n:
+            return "Reading Slack messages..."
+        if "conversation" in n:
+            return "Fetching Slack conversations..."
+        return "Working with Slack..."
+    if "confluence" in n:
+        if "create" in n:
+            return "Creating Confluence page..."
+        if "update" in n:
+            return "Updating Confluence page..."
+        return "Retrieving Confluence content..."
+    if "jira" in n:
+        if "create" in n:
+            return "Creating Jira issue..."
+        if "update" in n:
+            return "Updating Jira issue..."
+        return "Searching Jira..."
+    if "gmail" in n or ("email" in n and "outlook" not in n):
+        return "Sending email..." if "send" in n else "Fetching emails..."
+    if "outlook" in n or "calendar" in n:
+        return "Sending email..." if "send" in n else "Fetching calendar/emails..."
+    if "drive" in n or "google" in n:
+        return "Searching Drive..." if ("search" in n or "list" in n) else "Accessing Drive..."
+    display = tool_name.replace("_", " ").replace(".", " ").title()
+    return f"Executing {display}..."
+
+
+def _get_tool_done_msg(tool_name: str) -> str:
+    """Human-readable 'completed' message for a tool."""
+    n = tool_name.lower()
+    if "retrieval" in n:
+        return "Knowledge base search completed"
+    if "slack" in n:
+        return "Slack message sent" if "send" in n else "Slack operation completed"
+    if "confluence" in n:
+        if "create" in n:
+            return "Confluence page created"
+        if "update" in n:
+            return "Confluence page updated"
+        return "Confluence operation completed"
+    if "jira" in n:
+        if "create" in n:
+            return "Jira issue created"
+        if "update" in n:
+            return "Jira issue updated"
+        return "Jira operation completed"
+    if "gmail" in n or ("email" in n and "outlook" not in n):
+        return "Email sent" if "send" in n else "Emails fetched"
+    if "outlook" in n or "calendar" in n:
+        return "Email sent" if "send" in n else "Calendar/emails fetched"
+    display = tool_name.replace("_", " ").replace(".", " ").title()
+    return f"{display} completed"
+
+
 # ============================================================================
 # TOOL RESULT PROCESSING - RELIABLE EXTRACTION
 # ============================================================================
@@ -655,19 +717,28 @@ class PlaceholderResolver:
                     "(e.g. [?(@.key=='value')]) — normalised to [0]. "
                     "The LLM must use simple numeric indices like [0] in placeholders."
                 )
-            log.debug(f"Available data: {str(tool_data)[:200]}")
-            # Try to show the structure for debugging
+            # Show the actual structure to aid debugging (upgrade to WARNING so it's visible)
             if isinstance(tool_data, dict):
-                log.debug(f"Top-level keys: {list(tool_data.keys())}")
+                log.warning(f"  Tool data top-level keys: {list(tool_data.keys())}")
                 if "data" in tool_data and isinstance(tool_data["data"], dict):
-                    log.debug(f"Data keys: {list(tool_data['data'].keys())}")
-                    if "results" in tool_data["data"]:
-                        results = tool_data["data"]["results"]
-                        if isinstance(results, list):
-                            if len(results) == 0:
-                                log.warning("⚠️ Search returned empty results - cannot access index [0]")
-                            elif len(results) > 0:
-                                log.debug(f"First result keys: {list(results[0].keys()) if isinstance(results[0], dict) else 'not a dict'}")
+                    data_keys = list(tool_data["data"].keys())
+                    log.warning(f"  'data' sub-keys: {data_keys}")
+                    # Check each list in data for debugging
+                    for list_key in data_keys:
+                        val = tool_data["data"][list_key]
+                        if isinstance(val, list):
+                            log.warning(f"  'data.{list_key}' is a list with {len(val)} items")
+                            if len(val) == 0:
+                                log.warning(
+                                    f"  ⚠️ 'data.{list_key}' list is EMPTY — placeholder index access "
+                                    f"cannot succeed. Check that the preceding tool returned data."
+                                )
+                            elif len(val) > 0 and isinstance(val[0], dict):
+                                log.warning(f"  First item keys in 'data.{list_key}': {list(val[0].keys())[:10]}")
+                elif isinstance(tool_data, str):
+                    log.warning(f"  Tool data is a raw string (len={len(tool_data)}): {tool_data[:100]}")
+            elif isinstance(tool_data, str):
+                log.warning(f"  Tool data is a raw string (len={len(tool_data)}): {tool_data[:100]}")
 
         return extracted
 
@@ -772,6 +843,692 @@ class PlaceholderResolver:
 
         return None, []
 
+    # ── LLM-mediated batch resolution ────────────────────────────────────────
+
+    # Metadata fields added by API wrappers — never useful for placeholder resolution
+    _RESULT_META_FIELDS: frozenset = frozenset(
+        {"success", "error", "message", "ok", "status", "count", "total", "next_cursor"}
+    )
+
+    @classmethod
+    def _find_main_list(cls, data: Any) -> Optional[List]:
+        """
+        Recursively find the primary list inside a tool result.
+
+        Follows the common SlackResponse / API-wrapper pattern:
+            {success, data: {conversations: [...], count: N}}
+        by first descending into 'data', then searching all values for lists.
+        """
+        if isinstance(data, list):
+            return data if data else None
+
+        if not isinstance(data, dict):
+            return None
+
+        # Prefer the 'data' envelope first (SlackResponse, most REST wrappers)
+        for key in ("data", "results", "items", "records", "values"):
+            if key in data:
+                found = cls._find_main_list(data[key])
+                if found is not None:
+                    return found
+
+        # Scan all non-metadata values for any list
+        for k, v in data.items():
+            if k in cls._RESULT_META_FIELDS:
+                continue
+            if isinstance(v, list) and v:
+                return v
+
+        # Recurse into nested dicts (one level deep)
+        for k, v in data.items():
+            if k in cls._RESULT_META_FIELDS:
+                continue
+            if isinstance(v, dict):
+                found = cls._find_main_list(v)
+                if found is not None:
+                    return found
+
+        return None
+
+    @classmethod
+    def _build_focused_context(
+        cls,
+        results_by_tool: Dict[str, Any],
+        blocked_tools: List[Dict[str, Any]],
+        log: logging.Logger,
+    ) -> str:
+        """
+        Build a minimal, focused context string for the LLM.
+
+        Instead of dumping entire tool results (which can be 15 000+ chars for
+        50 Slack channels), this:
+        1. Parses all {{placeholders}} to find which source tool + array index +
+           leaf field are needed.
+        2. Navigates to the actual list inside each result.
+        3. Returns ONLY the items (up to max index + 1) with ONLY the needed
+           fields — typically < 600 chars for 10 Slack channels.
+        """
+        INDEX_RE = re.compile(r'\[(\d+)\]')
+        PLACEHOLDER_RE = re.compile(r'\{\{([^}]+)\}\}')
+
+        # Collect per-source-tool needs: max index accessed + leaf fields
+        source_needs: Dict[str, Dict[str, Any]] = {}
+
+        for tc in blocked_tools:
+            args_str = json.dumps(tc.get("args", {}), default=str)
+            for m in PLACEHOLDER_RE.finditer(args_str):
+                ph = m.group(1)
+                indices = [int(x) for x in INDEX_RE.findall(ph)]
+                if not indices:
+                    continue  # Non-indexed placeholders resolved by static resolver
+                max_idx = max(indices)
+                # Leaf field = token after the last ']'
+                leaf = INDEX_RE.split(ph)[-1].lstrip(".")
+
+                # Match placeholder to a known source tool (longest match wins)
+                source_tool: Optional[str] = None
+                ph_flat = ph.replace("_", "").replace(".", "").lower()
+                for tool_name in sorted(results_by_tool.keys(), key=len, reverse=True):
+                    tool_flat = tool_name.replace("_", "").replace(".", "").lower()
+                    if ph_flat.startswith(tool_flat) or tool_flat in ph_flat:
+                        source_tool = tool_name
+                        break
+                # Fallback: first available result
+                if source_tool is None and results_by_tool:
+                    source_tool = next(iter(results_by_tool))
+
+                if source_tool is None:
+                    continue
+
+                needs = source_needs.setdefault(source_tool, {"max_index": 0, "fields": set()})
+                needs["max_index"] = max(needs["max_index"], max_idx)
+                if leaf:
+                    needs["fields"].add(leaf)
+
+        if not source_needs:
+            return ""  # Caller will fall back to compact full-result dump
+
+        ctx_parts: List[str] = []
+        for tool_name, needs in source_needs.items():
+            result_data = results_by_tool.get(tool_name)
+            if result_data is None:
+                continue
+
+            max_idx: int = needs["max_index"]
+            fields: set = needs["fields"]
+
+            lst = cls._find_main_list(result_data)
+            if lst is not None:
+                n = min(max_idx + 1, len(lst))
+                rows: List[str] = []
+                for i, item in enumerate(lst[:n]):
+                    if isinstance(item, dict):
+                        entry: Dict[str, Any] = {}
+                        if fields:
+                            for f in fields:
+                                if f in item:
+                                    entry[f] = item[f]
+                        # Always include common identifier fields so the LLM
+                        # can orient itself even if not explicitly requested.
+                        for idf in ("id", "name", "key", "channel_id", "ts"):
+                            if idf not in entry and idf in item:
+                                entry[idf] = item[idf]
+                        if not entry:
+                            entry = item  # fallback: full item
+                    else:
+                        entry = {"value": item}  # type: ignore[assignment]
+                    rows.append(f"  [{i}]: {json.dumps(entry, default=str)}")
+                ctx_parts.append(
+                    f"**{tool_name}** — {n} of {len(lst)} items:\n" + "\n".join(rows)
+                )
+            else:
+                # No list found — show compact filtered dict
+                if isinstance(result_data, dict):
+                    filtered = {
+                        k: v for k, v in result_data.items()
+                        if k not in cls._RESULT_META_FIELDS
+                    }
+                    compact = json.dumps(filtered, default=str, ensure_ascii=False)
+                else:
+                    compact = str(result_data)
+                ctx_parts.append(f"**{tool_name}**:\n{compact[:3000]}")
+
+        return "\n\n".join(ctx_parts)
+
+    @classmethod
+    def _parse_json_array(cls, content: str) -> Optional[List]:
+        """
+        Robustly extract a JSON array from raw LLM output.
+
+        Handles:
+        - Markdown code fences (```json ... ```)
+        - Leading/trailing prose
+        - Trailing commas  (common LLM mistake)
+        - Nested objects/arrays (bracket-depth scan, not regex)
+        """
+        # 1. Strip markdown fences
+        content = re.sub(r"^```(?:json)?\s*", "", content.strip(), flags=re.MULTILINE)
+        content = re.sub(r"\s*```$", "", content.strip(), flags=re.MULTILINE)
+        content = content.strip()
+
+        # 2. Try direct parse
+        try:
+            result = json.loads(content)
+            if isinstance(result, list):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+        # 3. Bracket-depth scan to extract the outermost [...]
+        start = content.find("[")
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(content)):
+            c = content[i]
+            if escape:
+                escape = False
+                continue
+            if c == "\\" and in_string:
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    candidate = content[start : i + 1]
+                    # Try as-is
+                    try:
+                        result = json.loads(candidate)
+                        if isinstance(result, list):
+                            return result
+                    except json.JSONDecodeError:
+                        pass
+                    # Remove trailing commas before } or ]
+                    cleaned = re.sub(r",\s*([}\]])", r"\1", candidate)
+                    try:
+                        result = json.loads(cleaned)
+                        if isinstance(result, list):
+                            return result
+                    except json.JSONDecodeError:
+                        pass
+                    break
+
+        return None
+
+    @classmethod
+    async def llm_batch_resolve(
+        cls,
+        blocked_tools: List[Dict[str, Any]],
+        results_by_tool: Dict[str, Any],
+        llm: "BaseChatModel",
+        log: logging.Logger,
+    ) -> List[Dict[str, Any]]:
+        """
+        Use ONE LLM call to batch-resolve all blocked tool arguments.
+
+        Key properties:
+        - **Focused context**: parses placeholders to identify exactly which
+          list items / fields are needed, then shows ONLY those rows.  For 50
+          Slack channels with 10 dependent tools this is ~600 chars instead of
+          a 15 000-char truncated blob.
+        - **Robust parsing**: bracket-depth JSON extraction, trailing-comma
+          cleanup, markdown-fence stripping.
+        - **Validation**: any resolved args that still contain {{...}} are
+          rejected so the caller can fall back gracefully.
+
+        Returns the same list with resolved args in place; returns the original
+        list unchanged if resolution fails.
+        """
+        from langchain_core.messages import HumanMessage
+
+        try:
+            # 1. Build focused context (smart extraction of only needed data)
+            context = cls._build_focused_context(results_by_tool, blocked_tools, log)
+
+            if not context:
+                # Fallback: compact full results (capped at 5000 chars per tool)
+                ctx_parts: List[str] = []
+                for tn, result in results_by_tool.items():
+                    try:
+                        s = json.dumps(result, default=str, ensure_ascii=False)
+                        if len(s) > 5000:
+                            s = s[:5000] + "\n... (truncated)"
+                    except Exception:
+                        s = str(result)[:5000]
+                    ctx_parts.append(f"**{tn}**:\n{s}")
+                context = "\n\n".join(ctx_parts)
+
+            # 2. Build tool request list
+            tool_requests = [
+                {
+                    "index": i,
+                    "tool": tc.get("_actual_name", tc.get("name", "")),
+                    "args": tc.get("args", {}),
+                }
+                for i, tc in enumerate(blocked_tools)
+            ]
+
+            prompt = (
+                "Resolve cascading tool call arguments.\n"
+                "Replace each {{placeholder}} with the actual value from the data below.\n\n"
+                "## Completed tool data:\n"
+                f"{context}\n\n"
+                "## Tools to resolve:\n"
+                f"{json.dumps(tool_requests, indent=2, default=str)}\n\n"
+                "Rules:\n"
+                "- Extract the exact string/ID value (no descriptions)\n"
+                "- For [N] in the placeholder path: use the item at index N from the list\n"
+                "- Preserve all non-placeholder values exactly as-is\n"
+                "- Every {{placeholder}} MUST be replaced\n\n"
+                "Return ONLY a JSON array (no markdown, no explanation):\n"
+                '[{"index": 0, "resolved_args": {"key": "actual_value", ...}}, ...]'
+            )
+
+            # 3. Call LLM
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            raw = response.content.strip()
+
+            # 4. Parse response
+            resolved_list = cls._parse_json_array(raw)
+
+            if not isinstance(resolved_list, list):
+                log.warning("⚠️ LLM batch resolve: response was not a JSON array")
+                return blocked_tools
+
+            # 5. Apply resolved args with placeholder validation
+            result_tools = [dict(tc) for tc in blocked_tools]
+            resolved_count = 0
+            PLACEHOLDER_CHECK = re.compile(r'\{\{[^}]+\}\}')
+
+            for item in resolved_list:
+                idx = item.get("index")
+                resolved_args = item.get("resolved_args")
+
+                if not (isinstance(idx, int) and 0 <= idx < len(result_tools)):
+                    continue
+                if not isinstance(resolved_args, dict):
+                    continue
+
+                # Reject if LLM left any {{...}} unresolved
+                if PLACEHOLDER_CHECK.search(json.dumps(resolved_args, default=str)):
+                    tool_id = result_tools[idx].get("_actual_name", result_tools[idx].get("name"))
+                    log.warning(f"⚠️ [{idx}] {tool_id}: still has unresolved placeholders — skipped")
+                    continue
+
+                result_tools[idx] = {**result_tools[idx], "args": resolved_args}
+                resolved_count += 1
+                tool_id = result_tools[idx].get("_actual_name", result_tools[idx].get("name"))
+                log.debug(f"✅ [{idx}] {tool_id}: {str(resolved_args)[:120]}")
+
+            log.info(f"🎯 LLM batch resolve: {resolved_count}/{len(blocked_tools)} tools resolved")
+            return result_tools
+
+        except Exception as e:
+            log.error(f"❌ LLM batch resolve error: {e}", exc_info=True)
+            return blocked_tools
+
+
+# ============================================================================
+# CASCADING EXECUTOR - LLM-DRIVEN EXPANSION
+# ============================================================================
+
+class CascadingExecutor:
+    """
+    LLM-driven cascading tool execution with result-based expansion.
+
+    Core difference vs the old placeholder-resolution approach:
+    - Old: planner generates N calls with {{placeholder[i]}} → resolve each 1:1
+    - New: planner generates 1 template call with {{placeholder}} → LLM sees
+      actual results → generates the COMPLETE call list  (1 → N expansion)
+
+    Example — "show me all Slack conversations for last 3 days":
+      Planner plans:  get_user_conversations + get_channel_history({{[0].id}})
+      Phase 1:        get_user_conversations → 30 conversations
+      LLM expansion:  "for each of the 30 conversations call get_channel_history"
+      Phase 2:        30 parallel get_channel_history calls
+    """
+
+    MAX_EXPANDED_CALLS: int = 50   # safety cap on expanded dependent calls
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _tag_tools(
+        planned_tools: List[Dict[str, Any]],
+        tools_by_name: Dict[str, Any],
+        llm: "BaseChatModel",
+    ) -> List[Dict[str, Any]]:
+        """Attach '_actual_name' to each planned tool dict."""
+        from app.modules.agents.qna.tool_system import _sanitize_tool_name_if_needed
+        tagged = []
+        for tc in planned_tools:
+            raw = tc.get("name", "")
+            norm = _sanitize_tool_name_if_needed(raw, llm) if llm else raw
+            actual = norm if norm in tools_by_name else raw
+            tagged.append({**tc, "_actual_name": actual})
+        return tagged
+
+    @staticmethod
+    def _split_independent_dependent(
+        tagged_tools: List[Dict[str, Any]],
+        results_by_tool: Dict[str, Any],
+        log: logging.Logger,
+    ) -> tuple:
+        """Separate tools that are ready to execute from those blocked by placeholders."""
+        independent: List[Dict[str, Any]] = []
+        dependent: List[Dict[str, Any]] = []
+
+        for tc in tagged_tools:
+            args = tc.get("args", {})
+            if not PlaceholderResolver.has_placeholders({"args": args}):
+                independent.append(tc)
+            else:
+                # Try static resolution first (cheap, no LLM)
+                resolved = PlaceholderResolver.resolve_all(args, results_by_tool, log)
+                if not PlaceholderResolver.has_placeholders(resolved):
+                    independent.append({**tc, "args": resolved})
+                else:
+                    dependent.append(tc)
+
+        return independent, dependent
+
+    @staticmethod
+    async def _run_batch(
+        tools: List[Dict[str, Any]],
+        tools_by_name: Dict[str, Any],
+        state: ChatState,
+        log: logging.Logger,
+        writer: StreamWriter,
+        config: RunnableConfig,
+        phase_label: str,
+    ) -> List[Dict[str, Any]]:
+        """Run a batch of tools in parallel, returning raw result dicts."""
+        tasks = []
+        valid_tc: List[Dict[str, Any]] = []
+
+        for tc in tools:
+            actual = tc.get("_actual_name", tc.get("name", ""))
+            if actual not in tools_by_name:
+                log.warning(f"  ⚠️ Tool not found: {tc.get('name')} — skipping")
+                continue
+            safe_stream_write(writer, {"event": "status", "data": {
+                "status": "executing",
+                "message": _get_tool_status_msg(actual),
+            }}, config)
+            valid_tc.append(tc)
+            tasks.append(ToolExecutor._execute_single_tool(
+                tool=tools_by_name[actual],
+                tool_name=actual,
+                tool_args=tc.get("args", {}),
+                tool_id=f"{phase_label}_{actual}",
+                state=state,
+                log=log,
+            ))
+
+        if not tasks:
+            return []
+
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+        results: List[Dict[str, Any]] = []
+        for raw, tc in zip(raw_results, valid_tc):
+            actual = tc.get("_actual_name", tc.get("name", ""))
+            if isinstance(raw, Exception):
+                log.error(f"  ❌ {actual}: unhandled exception: {raw}")
+                results.append({
+                    "tool_name": actual, "status": "error",
+                    "result": str(raw), "tool_id": f"{phase_label}_{actual}",
+                })
+            elif isinstance(raw, dict):
+                if raw.get("status") == "success":
+                    safe_stream_write(writer, {"event": "status", "data": {
+                        "status": "executing",
+                        "message": _get_tool_done_msg(actual),
+                    }}, config)
+                results.append(raw)
+        return results
+
+    # ── LLM expansion ─────────────────────────────────────────────────────────
+
+    @classmethod
+    async def _llm_expand(
+        cls,
+        dependent_plan: List[Dict[str, Any]],
+        results_by_tool: Dict[str, Any],
+        tools_by_name: Dict[str, Any],
+        user_query: str,
+        llm: "BaseChatModel",
+        log: logging.Logger,
+    ) -> List[Dict[str, Any]]:
+        """
+        ONE LLM call that turns a pre-planned template (with {{placeholders}})
+        into the COMPLETE list of concrete tool calls based on actual results.
+
+        Unlike llm_batch_resolve (which resolves N pre-planned slots 1:1), this
+        generates the full N-call list from scratch — critical when the planner
+        only wrote 1 placeholder but the data has 30 items.
+        """
+        from langchain_core.messages import HumanMessage
+
+        try:
+            # Build compact context: ALL items, key fields only
+            ctx_parts: List[str] = []
+            for tool_name, result_data in results_by_tool.items():
+                lst = PlaceholderResolver._find_main_list(result_data)
+                if lst is not None:
+                    rows = []
+                    for i, item in enumerate(lst):
+                        if isinstance(item, dict):
+                            entry: Dict[str, Any] = {}
+                            for k in (
+                                "id", "name", "key", "channel_id", "ts", "user",
+                                "is_im", "is_private", "is_archived", "is_channel",
+                                "is_mpim", "context_team_id", "is_user_deleted",
+                            ):
+                                if k in item:
+                                    entry[k] = item[k]
+                            rows.append(f"  [{i}]: {json.dumps(entry, default=str)}")
+                        else:
+                            rows.append(f"  [{i}]: {json.dumps(item, default=str)}")
+                    ctx_parts.append(
+                        f"**{tool_name}** — {len(lst)} items:\n" + "\n".join(rows)
+                    )
+                else:
+                    if isinstance(result_data, dict):
+                        filtered = {
+                            k: v for k, v in result_data.items()
+                            if k not in PlaceholderResolver._RESULT_META_FIELDS
+                        }
+                        ctx_parts.append(
+                            f"**{tool_name}**:\n"
+                            + json.dumps(filtered, default=str, ensure_ascii=False)[:3000]
+                        )
+                    else:
+                        ctx_parts.append(f"**{tool_name}**: {str(result_data)[:2000]}")
+            context = "\n\n".join(ctx_parts)
+
+            # Build template description: what the planner originally planned
+            templates: List[Dict[str, Any]] = []
+            for tc in dependent_plan:
+                actual_name = tc.get("_actual_name", tc.get("name", ""))
+                tpl: Dict[str, Any] = {
+                    "name": actual_name,
+                    "args_template": tc.get("args", {}),
+                }
+                if actual_name in tools_by_name:
+                    t = tools_by_name[actual_name]
+                    if hasattr(t, "args_schema") and t.args_schema:
+                        try:
+                            schema = t.args_schema.schema()
+                            tpl["arg_types"] = {
+                                k: v.get("type", "string")
+                                for k, v in schema.get("properties", {}).items()
+                            }
+                        except Exception:
+                            pass
+                templates.append(tpl)
+
+            prompt = (
+                f'User asked: "{user_query}"\n\n'
+                "## Data returned by completed tools:\n"
+                f"{context}\n\n"
+                "## Planned tool template(s) ({{placeholders}} = values to fill):\n"
+                f"{json.dumps(templates, indent=2, default=str)}\n\n"
+                "Generate the COMPLETE list of concrete tool calls needed.\n"
+                "Rules:\n"
+                "- For each relevant item in the data, create one tool call\n"
+                "- Use ACTUAL values from the data (no {{placeholders}} in output)\n"
+                "- Keep non-placeholder args exactly as in the template\n"
+                "- Filter by user intent (e.g. skip archived channels, apply date ranges)\n"
+                f"- Maximum {cls.MAX_EXPANDED_CALLS} calls total\n\n"
+                "Return ONLY a JSON array (no markdown, no explanation):\n"
+                '[{"name": "tool_name", "args": {"key": "actual_value", ...}}, ...]'
+            )
+
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            raw = response.content.strip()
+
+            expanded = PlaceholderResolver._parse_json_array(raw)
+            if not isinstance(expanded, list):
+                log.warning("  ⚠️ Expand LLM: response was not a JSON array")
+                return []
+
+            PLACEHOLDER_CHECK = re.compile(r'\{\{[^}]+\}\}')
+            valid: List[Dict[str, Any]] = []
+
+            for item in expanded[:cls.MAX_EXPANDED_CALLS]:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name", "")
+                args = item.get("args", {})
+                if not name or not isinstance(args, dict):
+                    continue
+                # Reject items with remaining placeholders
+                if PLACEHOLDER_CHECK.search(json.dumps(args, default=str)):
+                    log.warning(f"  ⚠️ Expand: '{name}' still has placeholders — skipped")
+                    continue
+                # Resolve actual tool name
+                actual = name if name in tools_by_name else None
+                if actual is None:
+                    name_flat = name.lower().replace("_", "")
+                    for tn in tools_by_name:
+                        if name_flat in tn.lower().replace("_", "") or tn.lower().replace("_", "") in name_flat:
+                            actual = tn
+                            break
+                if actual is None:
+                    log.warning(f"  ⚠️ Expand: tool '{name}' not found — skipped")
+                    continue
+                valid.append({"name": name, "_actual_name": actual, "args": args})
+
+            log.info(
+                f"  🔀 Expand: {len(valid)} concrete calls from {len(expanded)} LLM suggestions"
+            )
+            return valid
+
+        except Exception as e:
+            log.error(f"  ❌ Expand LLM error: {e}", exc_info=True)
+            return []
+
+    # ── main entry point ──────────────────────────────────────────────────────
+
+    @classmethod
+    async def execute(
+        cls,
+        planned_tools: List[Dict[str, Any]],
+        tools_by_name: Dict[str, Any],
+        llm: "BaseChatModel",
+        state: ChatState,
+        log: logging.Logger,
+        writer: StreamWriter,
+        config: RunnableConfig,
+    ) -> List[Dict[str, Any]]:
+        """
+        Full cascading execution with LLM-guided expansion.
+
+        Flow:
+          Phase 1  — Execute independent tools (no placeholders) in parallel.
+          Expand   — ONE LLM call generates the COMPLETE list of dependent calls.
+          Phase 2  — Execute all expanded calls in parallel (batched).
+
+        Returns all tool result dicts (combined from both phases).
+        """
+        all_results: List[Dict[str, Any]] = []
+        results_by_tool: Dict[str, Any] = {}
+
+        tagged = cls._tag_tools(planned_tools, tools_by_name, llm)
+        independent, dependent = cls._split_independent_dependent(tagged, results_by_tool, log)
+
+        log.info(
+            f"🔗 Cascading: {len(independent)} independent | {len(dependent)} dependent"
+        )
+
+        # ── Phase 1: independent tools ────────────────────────────────────────
+        if independent:
+            log.info(f"⚡ Phase 1: {len(independent)} independent tools in parallel")
+            phase1 = await cls._run_batch(
+                independent, tools_by_name, state, log, writer, config, phase_label="p1"
+            )
+            for result in phase1:
+                all_results.append(result)
+                if result.get("status") == "success":
+                    actual = result.get("tool_name", "")
+                    data = ToolResultExtractor.extract_data_from_result(result.get("result"))
+                    if actual:
+                        results_by_tool[actual] = data
+
+        if not dependent:
+            return all_results
+
+        if not results_by_tool:
+            log.warning("  ⚠️ No phase-1 results to expand from — skipping dependent tools")
+            return all_results
+
+        # ── Expand: LLM generates the complete dependent call list ────────────
+        log.info(f"🤖 Expanding {len(dependent)} template(s) into concrete calls…")
+        expanded = await cls._llm_expand(
+            dependent_plan=dependent,
+            results_by_tool=results_by_tool,
+            tools_by_name=tools_by_name,
+            user_query=state.get("query", ""),
+            llm=llm,
+            log=log,
+        )
+
+        # Fallback: if expansion failed, try the old batch-resolve (1:1 resolution)
+        if not expanded:
+            log.warning("  ⚠️ Expansion returned nothing — falling back to batch-resolve")
+            expanded = await PlaceholderResolver.llm_batch_resolve(
+                dependent, results_by_tool, llm, log
+            )
+
+        if not expanded:
+            log.warning("  ⚠️ All resolution attempts failed — skipping dependent tools")
+            return all_results
+
+        # ── Phase 2: expanded dependent tools in parallel (batched) ──────────
+        batch_size = NodeConfig.MAX_PARALLEL_TOOLS
+        total = min(len(expanded), cls.MAX_EXPANDED_CALLS)
+        log.info(f"⚡ Phase 2: {total} expanded calls (batches of {batch_size})")
+
+        for batch_start in range(0, total, batch_size):
+            batch = expanded[batch_start: batch_start + batch_size]
+            batch_label = f"p2b{batch_start // batch_size + 1}"
+            phase2 = await cls._run_batch(
+                batch, tools_by_name, state, log, writer, config, phase_label=batch_label
+            )
+            all_results.extend(phase2)
+
+        return all_results
+
 
 # ============================================================================
 # TOOL EXECUTION - SEQUENTIAL WITH CASCADING SUPPORT
@@ -791,19 +1548,19 @@ class ToolExecutor:
         config: RunnableConfig
     ) -> List[Dict[str, Any]]:
         """
-        Execute tools - sequentially if cascading, parallel otherwise.
+        Execute tools - cascading (LLM expansion) or parallel.
 
         Returns:
             List of tool results with status, result, tool_name, etc.
         """
-        # Detect if we need sequential execution (cascading)
+        # Detect if we need cascading execution
         has_cascading = PlaceholderResolver.has_placeholders(
             {"tools": planned_tools}
         )
 
         if has_cascading:
-            log.info("🔗 Cascading detected - executing sequentially")
-            return await ToolExecutor._execute_sequential(
+            log.info("🔗 Cascading detected - using LLM-expansion executor")
+            return await CascadingExecutor.execute(
                 planned_tools, tools_by_name, llm, state, log, writer, config
             )
         else:
@@ -822,175 +1579,175 @@ class ToolExecutor:
         writer: StreamWriter,
         config: RunnableConfig
     ) -> List[Dict[str, Any]]:
-        """Execute tools sequentially with placeholder resolution"""
+        """
+        Execute tools with LLM-mediated cascading dependency resolution.
+
+        Instead of fragile placeholder string extraction, this groups tools into
+        dependency phases.  After each phase of independent tools runs in parallel,
+        ONE LLM call batch-resolves ALL remaining dependent tool args using the
+        actual results — then those tools also run in parallel.
+
+        Flow (per phase):
+        1. Separate remaining tools into ready (no unresolved deps) and blocked.
+        2. If nothing is ready, issue ONE LLM call to batch-resolve the blocked batch.
+        3. Execute ready tools in parallel (up to MAX_PARALLEL_TOOLS at once).
+        4. Update results_by_tool; set remaining = blocked and repeat.
+        """
         from app.modules.agents.qna.tool_system import _sanitize_tool_name_if_needed
 
-        tool_results = []
-        results_by_tool = {}  # Store successful results for placeholder resolution
-        tool_invocation_counts = {}  # Track how many times each tool has been called
+        all_tool_results: List[Dict[str, Any]] = []
+        results_by_tool: Dict[str, Any] = {}
+        tool_invocation_counts: Dict[str, int] = {}
 
-        for i, tool_call in enumerate(planned_tools):
-            tool_name = tool_call.get("name", "")
-            tool_args = tool_call.get("args", {})
+        # Tag each tool with its normalised actual name upfront
+        remaining: List[Dict[str, Any]] = []
+        for tc in planned_tools:
+            raw_name = tc.get("name", "")
+            norm_name = _sanitize_tool_name_if_needed(raw_name, llm) if llm else raw_name
+            actual = norm_name if norm_name in tools_by_name else raw_name
+            remaining.append({**tc, "_actual_name": actual})
 
-            # Normalize tool name
-            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
-            actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
+        MAX_PHASES = 4
+        phase = 0
 
-            if actual_tool_name not in tools_by_name:
-                log.warning(f"❌ Tool not found: {tool_name}")
-                tool_results.append({
-                    "tool_name": tool_name,
-                    "result": f"Error: Tool '{tool_name}' not found",
-                    "status": "error",
-                    "tool_id": f"call_{i}_{tool_name}"
-                })
-                continue
+        while remaining and phase < MAX_PHASES:
+            phase += 1
 
-            # Resolve placeholders
-            resolved_args = PlaceholderResolver.resolve_all(tool_args, results_by_tool, log)
+            # ── Separate into ready (resolved) vs blocked (unresolved deps) ──
+            ready: List[Dict[str, Any]] = []
+            blocked: List[Dict[str, Any]] = []
 
-            # Check for unresolved placeholders
-            if PlaceholderResolver.has_placeholders(resolved_args):
-                unresolved = PlaceholderResolver.PLACEHOLDER_PATTERN.findall(json.dumps(resolved_args))
-                log.warning(f"⚠️ Unresolved placeholders in {actual_tool_name}: {unresolved} — stripping to None and proceeding (Pydantic will catch required fields)")
+            for tc in remaining:
+                args = tc.get("args", {})
+                if not PlaceholderResolver.has_placeholders({"args": args}):
+                    ready.append(tc)
+                else:
+                    # Try standard static resolution with current results
+                    resolved = PlaceholderResolver.resolve_all(args, results_by_tool, log)
+                    if not PlaceholderResolver.has_placeholders(resolved):
+                        ready.append({**tc, "args": resolved})
+                    else:
+                        blocked.append(tc)
 
-                # Strip unresolved placeholders to None so optional fields are
-                # simply omitted and the tool can still run.  Required fields
-                # that end up as None will be rejected by Pydantic validation.
-                resolved_args, stripped_placeholders = PlaceholderResolver.strip_unresolved(resolved_args)
-                log.debug(f"  Stripped {len(stripped_placeholders)} placeholder(s): {stripped_placeholders}")
+            # ── If nothing is ready, use LLM to batch-resolve blocked tools ──
+            if not ready and blocked:
+                if llm and results_by_tool:
+                    log.info(
+                        f"🤖 LLM cascading: batch-resolving {len(blocked)} "
+                        f"dependent tools in 1 LLM call"
+                    )
+                    try:
+                        resolved_batch = await PlaceholderResolver.llm_batch_resolve(
+                            blocked, results_by_tool, llm, log
+                        )
+                        remaining = resolved_batch
+                        continue  # Re-evaluate now that args are resolved
+                    except Exception as e:
+                        log.warning(f"⚠️ LLM batch resolve failed: {e} — stripping placeholders")
 
-                # If placeholders still remain after stripping (shouldn't happen),
-                # something is structurally wrong – fail the tool call.
-                if PlaceholderResolver.has_placeholders(resolved_args):
-                    still_unresolved = PlaceholderResolver.PLACEHOLDER_PATTERN.findall(json.dumps(resolved_args))
-                    log.error(f"❌ Could not strip all placeholders in {actual_tool_name}: {still_unresolved}")
+                # Fallback: strip remaining placeholders and proceed (old behaviour)
+                for tc in blocked:
+                    stripped, _ = PlaceholderResolver.strip_unresolved(
+                        PlaceholderResolver.resolve_all(tc.get("args", {}), results_by_tool, log)
+                    )
+                    ready.append({**tc, "args": stripped})
+                blocked = []
 
-                    # Check if this is due to empty search results - provide helpful error
-                    error_msg = f"Error: Unresolved placeholders: {', '.join(set(still_unresolved))}"
-                    for placeholder in still_unresolved:
-                        # Check if placeholder references a search that returned empty
-                        if "search" in placeholder.lower() and "results[0]" in placeholder:
-                            for tn in results_by_tool:
-                                if tn in placeholder or placeholder.startswith(tn.split('.')[-1]):
-                                    tool_data = results_by_tool[tn]
-                                    if isinstance(tool_data, dict) and "data" in tool_data:
-                                        data = tool_data["data"]
-                                        if isinstance(data, dict) and "results" in data:
-                                            results = data["results"]
-                                            if isinstance(results, list) and len(results) == 0:
-                                                error_msg += f" (Search '{tn}' returned empty results - check conversation history for page_id instead)"
-                                                break
+            if not ready:
+                break
 
-                    tool_results.append({
-                        "tool_name": actual_tool_name,
-                        "result": error_msg,
+            # ── Execute ready batch in parallel ───────────────────────────────
+            log.info(f"⚡ Phase {phase}: executing {len(ready)} tools in parallel")
+
+            phase_tasks: List[Any] = []
+            valid_tc: List[Dict[str, Any]] = []
+
+            for tc in ready[:NodeConfig.MAX_PARALLEL_TOOLS]:
+                actual_name = tc.get("_actual_name", tc.get("name", ""))
+                if actual_name not in tools_by_name:
+                    log.warning(f"❌ Tool not found: {tc.get('name')}")
+                    all_tool_results.append({
+                        "tool_name": tc.get("name"),
+                        "result": f"Error: Tool '{tc.get('name')}' not found",
                         "status": "error",
-                        "tool_id": f"call_{i}_{actual_tool_name}"
+                        "tool_id": f"p{phase}_{tc.get('name')}",
                     })
                     continue
 
-            # Stream detailed status with context
-            tool_display_name = actual_tool_name.replace("_", " ").title()
-            # Extract meaningful info from tool name
-            if "retrieval" in actual_tool_name.lower():
-                status_msg = "Searching knowledge base for relevant information..."
-            elif "confluence" in actual_tool_name.lower():
-                if "create" in actual_tool_name.lower():
-                    status_msg = "Creating Confluence page..."
-                elif "update" in actual_tool_name.lower():
-                    status_msg = "Updating Confluence page..."
-                elif "get" in actual_tool_name.lower() or "search" in actual_tool_name.lower():
-                    status_msg = "Retrieving Confluence content..."
-                else:
-                    status_msg = f"Working with Confluence: {tool_display_name}..."
-            elif "jira" in actual_tool_name.lower():
-                if "create" in actual_tool_name.lower():
-                    status_msg = "Creating Jira issue..."
-                elif "update" in actual_tool_name.lower():
-                    status_msg = "Updating Jira issue..."
-                elif "search" in actual_tool_name.lower() or "get" in actual_tool_name.lower():
-                    status_msg = "Searching Jira for information..."
-                else:
-                    status_msg = f"Working with Jira: {tool_display_name}..."
-            else:
-                status_msg = f"Executing {tool_display_name}..."
-
-            safe_stream_write(writer, {
-                "event": "status",
-                "data": {"status": "executing", "message": status_msg}
-            }, config)
-
-            # Execute tool
-            result_dict = await ToolExecutor._execute_single_tool(
-                tool=tools_by_name[actual_tool_name],
-                tool_name=actual_tool_name,
-                tool_args=resolved_args,
-                tool_id=f"call_{i}_{actual_tool_name}",
-                state=state,
-                log=log
-            )
-
-            tool_results.append(result_dict)
-
-            # Send completion status
-            if result_dict.get("status") == "success":
-                if "retrieval" in actual_tool_name.lower():
-                    completion_msg = "Knowledge base search completed"
-                elif "confluence" in actual_tool_name.lower():
-                    if "create" in actual_tool_name.lower():
-                        completion_msg = "Confluence page created successfully"
-                    elif "update" in actual_tool_name.lower():
-                        completion_msg = "Confluence page updated successfully"
-                    else:
-                        completion_msg = "Confluence operation completed"
-                elif "jira" in actual_tool_name.lower():
-                    if "create" in actual_tool_name.lower():
-                        completion_msg = "Jira issue created successfully"
-                    elif "update" in actual_tool_name.lower():
-                        completion_msg = "Jira issue updated successfully"
-                    else:
-                        completion_msg = "Jira operation completed"
-                else:
-                    completion_msg = f"{actual_tool_name.replace('_', ' ').title()} completed"
-
-                safe_stream_write(writer, {
-                    "event": "status",
-                    "data": {"status": "executing", "message": completion_msg}
-                }, config)
-            else:
-                # Tool failed - send error status
-                error_msg = result_dict.get("error", "Unknown error")
-                safe_stream_write(writer, {
-                    "event": "status",
-                    "data": {"status": "error", "message": f"Operation failed: {error_msg[:100]}"}
-                }, config)
-
-            # Store successful results for next placeholder resolution
-            if result_dict.get("status") == "success":
-                # Extract clean data for placeholder resolution
-                result_data = ToolResultExtractor.extract_data_from_result(
-                    result_dict.get("result")
+                safe_stream_write(
+                    writer,
+                    {"event": "status", "data": {
+                        "status": "executing",
+                        "message": _get_tool_status_msg(actual_name),
+                    }},
+                    config,
+                )
+                valid_tc.append(tc)
+                phase_tasks.append(
+                    ToolExecutor._execute_single_tool(
+                        tool=tools_by_name[actual_name],
+                        tool_name=actual_name,
+                        tool_args=tc.get("args", {}),
+                        tool_id=f"p{phase}_{actual_name}",
+                        state=state,
+                        log=log,
+                    )
                 )
 
-                # Track tool invocation count for multiple calls to the same tool
-                if actual_tool_name not in tool_invocation_counts:
-                    tool_invocation_counts[actual_tool_name] = 0
-                    # Store first invocation without suffix
-                    results_by_tool[actual_tool_name] = result_data
-                    log.debug(f"✅ Stored result for {actual_tool_name} (keys: {list(result_data.keys()) if isinstance(result_data, dict) else type(result_data).__name__})")
-                else:
-                    # For subsequent invocations, store with suffix
-                    tool_invocation_counts[actual_tool_name] += 1
-                    suffix_number = tool_invocation_counts[actual_tool_name] + 1
-                    storage_key = f"{actual_tool_name}_{suffix_number}"
-                    results_by_tool[storage_key] = result_data
-                    log.debug(f"✅ Stored result for {storage_key} (keys: {list(result_data.keys()) if isinstance(result_data, dict) else type(result_data).__name__})")
-            else:
-                log.debug(f"❌ Skipped storing failed tool: {actual_tool_name}")
+            if phase_tasks:
+                phase_results = await asyncio.gather(*phase_tasks, return_exceptions=True)
 
-        return tool_results
+                for result, tc in zip(phase_results, valid_tc):
+                    if isinstance(result, Exception):
+                        log.error(f"❌ Tool execution exception: {result}")
+                        continue
+                    if not isinstance(result, dict):
+                        continue
+
+                    all_tool_results.append(result)
+                    actual_name = tc.get("_actual_name", tc.get("name", ""))
+
+                    if result.get("status") == "success":
+                        safe_stream_write(
+                            writer,
+                            {"event": "status", "data": {
+                                "status": "executing",
+                                "message": _get_tool_done_msg(actual_name),
+                            }},
+                            config,
+                        )
+                        result_data = ToolResultExtractor.extract_data_from_result(
+                            result.get("result")
+                        )
+                        if actual_name not in tool_invocation_counts:
+                            tool_invocation_counts[actual_name] = 0
+                            results_by_tool[actual_name] = result_data
+                            log.debug(
+                                f"✅ Stored result for {actual_name} "
+                                f"(type: {type(result_data).__name__})"
+                            )
+                        else:
+                            tool_invocation_counts[actual_name] += 1
+                            suffix_key = f"{actual_name}_{tool_invocation_counts[actual_name] + 1}"
+                            results_by_tool[suffix_key] = result_data
+                            log.debug(f"✅ Stored result for {suffix_key}")
+                    else:
+                        err_msg = result.get("error", "Unknown error")
+                        safe_stream_write(
+                            writer,
+                            {"event": "status", "data": {
+                                "status": "error",
+                                "message": f"Operation failed: {err_msg[:100]}",
+                            }},
+                            config,
+                        )
+                        log.debug(f"❌ Skipped storing failed tool: {actual_name}")
+
+            # Tools beyond MAX_PARALLEL_TOOLS go back as remaining for the next phase
+            leftover = ready[NodeConfig.MAX_PARALLEL_TOOLS:]
+            remaining = leftover + blocked
+
+        return all_tool_results
 
     @staticmethod
     async def _execute_parallel(
@@ -1715,438 +2472,519 @@ After getting history, the respond node will:
 4. NEVER tell the user to run more tools
 """
 
-PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
+PLANNER_SYSTEM_PROMPT = """You are the planning brain of an enterprise AI assistant. Your sole output is a JSON execution plan — the exact tools to call, in the exact order, with exact arguments — to fulfill the user's request.
 
-## Core Planning Logic - Understanding User Intent
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## CORE DECISION TREE — Follow in Strict Order, Every Time
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**Decision Tree (Follow in Order):**
-1. **Simple greeting/thanks?** → `can_answer_directly: true`
-2. **User asks about the conversation itself?** (meta-questions like "what did we discuss", "summarize our conversation") → `can_answer_directly: true`
-3. **User wants to PERFORM an action?** (create/update/delete/modify) → Use appropriate service tools
-4. **User wants data FROM a specific service?**
-   - *Explicit:* names the service ("list Jira issues", "Confluence pages", "my Gmail")
-   - *Implicit:* uses service-specific nouns — **"tickets/issues/bugs/epics/stories/sprints/backlog"** → Jira; **"pages/spaces/wiki"** → Confluence; **"emails/inbox"** → Gmail; **"messages/channels/DMs"** → Slack
-   → Use the matching service tool. **If that service is ALSO indexed (see DUAL-SOURCE APPS), add retrieval in parallel.**
-5. **DEFAULT: Any information query** → Use `retrieval.search_internal_knowledge`
+Evaluate each node in order. Stop at the FIRST node that matches.
 
-## CRITICAL: Retrieval is the Default
+```
+START
+  │
+  ▼
+[Node 1] Is this a greeting, thanks, or meta-question about the conversation?
+  (e.g. "hi", "thanks", "what did we discuss", "summarize our chat")
+  → YES: can_answer_directly: true, tools: []   ◄ STOP
+  → NO: continue ↓
 
-**⚠️ RULE: When in doubt, USE RETRIEVAL. Never clarify for read/info queries.**
-**⚠️ RULE: If you have 0 tools planned and needs_clarification=false and can_answer_directly=false, you MUST add retrieval.**
+[Node 2] Is this a WRITE action (create/update/delete/send/post/assign/comment)?
+  → YES: Is a REQUIRED parameter missing that only the user can supply?
+      → YES: needs_clarification: true, tools: []   ◄ STOP
+      → NO: Does the content of this write action need knowledge from internal KB
+            (e.g. "send a report about X", "write a summary of our policy on Y",
+             "update ticket with info about Z", "email detailed info about W")?
+          → YES: Plan retrieval tools ONLY in this cycle. The system will automatically
+                 continue to Phase 2 where you will receive the actual retrieved content
+                 in your context and can write the email/comment/page body inline using
+                 that real data. Do NOT include write tools in this Phase 1 plan.   ◄ STOP
+          → NO: continue to select write tool directly ↓
 
-Examples of retrieval queries:
-- "Tell me about X" → retrieval
-- "What is X" → retrieval
-- "Find X" → retrieval
-- "Show me X" (where X is a concept/document/topic) → retrieval
+[Node 3] Does the query want to FIND/SEARCH/LEARN about content BY TOPIC, KEYWORD, or MEANING?
+  (not by an exact ID/key, not asking purely for current live status)
+  Signals: "find tickets about X", "search for issues related to X",
+           "[topic] tickets", "[topic] issues", "[topic] bugs", "[topic] pages" — service noun WITHOUT explicit live-filter verb,
+           "show me anything about X", "what are the errors/bugs/issues about X",
+           "find documents/pages about X", "anything about X", topical/semantic searches,
+           "tell me about X", "what is X", "explain X", "show me X about [app topic]",
+           "what happened with X", "who worked on X", "find [content] in [app]",
+           "search [app] for [topic]", "is there anything about X in [app]" —
+           ANY informational/discovery query
+  ── CRITICAL: Check the 🧠 KNOWLEDGE & DATA SOURCES section above ──
 
-## Tool Selection Principles
+  ⚠️ SERVICE NOUN RULE: If the query uses a service-specific resource noun
+  (tickets, issues, bugs, epics, stories, backlog, pages, spaces, wiki, emails, messages, channels)
+  WITHOUT an explicit live-filter verb (my/open/assigned/current/unread/today),
+  treat it as a FIND/SEARCH query → fall through to EVALUATE IN ORDER below.
 
-**Read tool descriptions carefully** - Each tool has a description, parameters, and usage examples. Use these to determine if a tool matches the user's intent.
+  EVALUATE IN ORDER:
 
-**Use SERVICE TOOLS when:**
-- User wants **LIVE/REAL-TIME data** from a connected service (e.g., "list items", "show records", "get data from X")
-- User wants to **PERFORM an action** (create/update/delete/modify resources)
-- User wants **current status** of items in a service
-- User explicitly asks for data **from** a specific service
-- User uses **service-specific resource nouns** (even without naming the service):
-  - `tickets` / `issues` / `bugs` / `epics` / `stories` / `sprints` / `backlog` → **Jira** search/list tool
-  - `pages` / `spaces` / `wiki` → **Confluence** search/list tool
-  - `emails` / `inbox` / `drafts` → **Gmail** search tool
-  - `messages` / `channels` / `DMs` → **Slack** search tool
-- Tool description matches the user's request
+  → Is RETRIEVAL available (any KB or indexed app listed in 📚 INDEXED KNOWLEDGE)
+    AND do live SEARCH API tools exist for the relevant app/topic
+    (check 🔍 MANDATORY HYBRID SEARCH section — tools with "search" in name)?
+      → ⚠️ MANDATORY: Plan BOTH in PARALLEL in the SAME tools array:
+          1. `retrieval.search_internal_knowledge` with `"filters": {{}}` (empty, no app filter)
+             UNLESS the specific app is listed in "Indexed App Connectors" — then add filters.apps
+          2. The matching live search tool for the relevant app
+             (e.g. `confluence.search_pages`, `jira.search_issues`, `slack.search_messages`)
+        **CRITICAL**: Both tools MUST appear in the same tools array for parallel execution.
+        Retrieval searches the KB snapshot (historical/semantic). Live API searches current data.
+        The LLM synthesizes the most accurate answer from BOTH sources.   ◄ STOP
 
-**Use RETRIEVAL when:**
-- User wants **INFORMATION ABOUT** a topic/person/concept (e.g., "what is X", "tell me about Y", "who is Z")
-- User wants **DOCUMENTATION** or **KNOWLEDGE** (e.g., "how to X", "best practices for Y")
-- User asks **GENERAL QUESTIONS** that could be answered from knowledge base
-- Query is **AMBIGUOUS** and could be answered from indexed knowledge
-- No service tool description matches the request
+  → Is RETRIEVAL available but NO live search API exists for this topic?
+      → Use only `retrieval.search_internal_knowledge`   ◄ STOP
 
-**Key Distinction:**
-- **LIVE data requests (explicit):** "list/get/show/fetch [items] from [service]" → Use service tools
-- **LIVE data requests (implicit — SERVICE NOUN):** "[topic] tickets", "[topic] issues", "[topic] bugs", "[topic] pages" — service resource noun used → **Use BOTH the matching service search tool AND retrieval (if that service is indexed).** This rule takes priority over the "ambiguous → retrieval only" default.
-- **Information requests:** "what/explain/tell me about [topic]" (no service resource noun) → Use retrieval only
-- **Action requests:** "create/update/delete [resource]" → Use service tools
-- **DUAL-SOURCE:** If the query references a service that is BOTH indexed AND has live API → use BOTH retrieval + service search API in parallel
+  → Is RETRIEVAL NOT available but live search APIs DO exist?
+      → Use the matching live search API tool   ◄ STOP
 
-**⚠️ SERVICE NOUN OVERRIDE:** When the query contains a service-specific resource noun (tickets, issues, bugs, epics, stories, pages, spaces, emails, messages), it ALWAYS triggers the matching service tool — even if the query otherwise seems ambiguous or like a general information request. The "retrieval DEFAULT" rule does NOT apply when a service noun is present.
+  → NO match (no relevant indexed source, no API): continue ↓
 
-**Important:** Service data might also be indexed in the knowledge base. When it is:
-- User uses a service resource noun ("[topic] tickets", "[topic] pages") → BOTH retrieval + service search tool (parallel)
-- User wants current/live data with filters (status, assigned, sprint) → Service tools only
-- User wants information/explanation with no service resource noun → Retrieval only
+[Node 4] Does the request explicitly ask for CURRENT/LIVE data by a specific filter?
+  Signals: "list MY issues", "get issues ASSIGNED to me", "show THIS WEEK's tickets",
+           "current sprint", "open PRs", "today's calendar", "unread emails",
+           "get issue PA-123" (exact key/ID), live status/metrics/counts
+  → YES: Use the matching live API service tool   ◄ STOP
+        ⚠️ If the app is ALSO indexed AND the query is ambiguous (could benefit from historical context),
+        ADD retrieval in parallel for a richer, more complete answer.
+  → NO: continue ↓
 
-## Available Tools
+[Node 5] Is this an information/knowledge/explanation query about a topic or concept?
+  Signals: "what is X", "tell me about X", "explain X", "who is X",
+           "how does X work", "our policy on X", "find document about X",
+           "what are best practices for X", any vague or ambiguous query
+  → YES: Check the 🔍 MANDATORY HYBRID SEARCH section above — are live search APIs available?
+      → YES (live search APIs exist + retrieval is available):
+             ⚠️ MANDATORY: Use BOTH retrieval AND the matching live API search tool (parallel)   ◄ STOP
+             Retrieval gives KB/indexed knowledge; live API gives current data.
+             Combining BOTH produces a more accurate and complete answer than either alone.
+      → NO (retrieval only, no live search APIs): Use retrieval.search_internal_knowledge only   ◄ STOP
+  → NO: continue ↓
+
+[Node 6] Does the query require BOTH knowledge AND a live service action?
+  (Hybrid case — e.g. "find the SOP and create a Confluence page from it")
+  → YES: Plan retrieval FIRST, then service tool   ◄ STOP
+  → NO: continue ↓
+
+[Node 7] DEFAULT — When in doubt: Use retrieval.search_internal_knowledge.
+  If a dual-source app is relevant, use BOTH retrieval + live API search.
+  Never leave tools: [] unless can_answer_directly or needs_clarification is true.
+  ◄ STOP
+```
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## RETRIEVAL IS THE INTELLIGENT DEFAULT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**⚠️ RULE: When in doubt → USE RETRIEVAL + any available live SEARCH APIs in parallel. Never clarify for read/info queries.**
+**⚠️ RULE: If tools: [] and needs_clarification: false and can_answer_directly: false → this is INVALID. Add retrieval (or BOTH).**
+**⚠️ RULE: If live SEARCH APIs exist (see 🔍 MANDATORY HYBRID SEARCH section) AND query is informational → ALWAYS call them alongside retrieval.**
+
+For the queries below, ALWAYS check the 🔍 MANDATORY HYBRID SEARCH section first.
+If live search APIs exist alongside retrieval → use BOTH in parallel. Otherwise → retrieval only.
+
+- "[topic] tickets / [topic] issues / [topic] pages" (service noun, no live filter) → BOTH if live search APIs available; else retrieval
+- "Tell me about X" → BOTH if live search APIs available; else retrieval(query="X")
+- "What is X" → BOTH if live search APIs available; else retrieval(query="X")
+- "Find X" → BOTH if live search APIs available; else retrieval(query="X") — even if vague
+- "Find X in [app]" → ALWAYS use the live search API for that app + retrieval in parallel
+- "Show me X" where X is a concept/doc → BOTH if live search APIs available; else retrieval
+- "Who is X" where X is a person → retrieval (not jira.search_users)
+- "Our policy on X" → retrieval (KB content; use BOTH if live search APIs are also available)
+- "How does X work" → retrieval (or BOTH if live search APIs are available)
+- Ambiguous query with no clear service → BOTH if live search APIs available; else retrieval
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## TOOL TAXONOMY — Two Categories, Both First-Class
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+### Category A — Internal Knowledge: `retrieval.search_internal_knowledge`
+Performs SEMANTIC SEARCH across ALL indexed sources simultaneously — KB documents, app connector snapshots (Jira, Confluence, Slack, Drive, etc.), SOPs, policies, wiki pages, and more.
+
+**USE retrieval when:**
+- User wants to FIND or DISCOVER content BY TOPIC, KEYWORD, or MEANING (not by ID)
+- User asks "what is X", "tell me about X", "explain X", "who is W", "how does Z work"
+- User asks about a topic, policy, process, person, or document
+- The relevant app IS LISTED in the 📚 INDEXED KNOWLEDGE section above (check it!)
+- Query is about finding/searching across indexed app content (e.g., "find Jira tickets about upload errors" — if Jira is indexed)
+- Query is ambiguous — search first, clarify later only if search fails
+- You need org context alongside a service action
+
+**⚠️ Retrieval returns formatted TEXT, NOT structured JSON.** Never cascade retrieval output into a service tool needing structured IDs/keys.
+
+### Category B — Connected Service Tools
+Live API integrations: Jira, Confluence, Slack, Gmail, Google Drive, etc.
+
+**USE service tools when:**
+- User asks for **live/current data** that must reflect the latest state ("list my open Jira issues", "get current sprint tickets", "show unread emails")
+- User needs to filter by live/real-time fields (assignee, status, priority, date, current sprint)
+- User wants to get a specific item by its ID/key (e.g., "get issue PA-123")
+- User wants to **take an action** (create, update, delete, send, post, assign, comment)
+
+**⚠️ Even if a service (e.g. Jira) is INDEXED, use the LIVE API when:**
+- The user needs the current/up-to-date state of tickets (not a snapshot)
+- The user is filtering by live fields (open issues, assigned to me, this sprint)
+- The user wants to perform a write action
+
+**Key distinction — apply this before every tool selection:**
+| Query pattern | Tool |
+|---|---|
+| "[topic] tickets / [topic] issues / [topic] bugs / [topic] pages" (service noun, no live filter) | ⚠️ **MANDATORY: BOTH** retrieval + live search API (parallel) |
+| "what is X / tell me about X / explain X" AND live SEARCH APIs available | ⚠️ **MANDATORY: BOTH** retrieval + live search API (parallel) |
+| "what is X / tell me about X / explain X" AND NO live SEARCH APIs | retrieval only |
+| "find/search [topic] in [app]" AND live search API exists for that app | ⚠️ **MANDATORY: BOTH** retrieval + live search API (parallel in same tools array) |
+| "find/search [topic] in [app]" AND no live search API (retrieval only) | retrieval only |
+| "list MY / current / open / this-week's [items]" | live API service tool |
+| "get [item] by key/ID" (e.g., PA-123) | live API service tool |
+| "create / update / delete / send / comment [something]" | live API service write tool |
+| "find X" where X is a topic/concept AND live search API available | ⚠️ **MANDATORY: BOTH** retrieval + live search API (parallel in same tools array) |
+| "find X" where X is a live status/filter (open, urgent, today) | live API service tool |
+| Ambiguous — live search API available | ⚠️ **BOTH** retrieval + live search API (default when uncertain) |
+| Ambiguous — no live search API available | retrieval (default) |
+
+### Hybrid — Use Both When Genuinely Required
+**⚠️ Parallel search (MANDATORY when app is both indexed AND has live API):**
+
+**⚠️ RETRIEVAL FILTER RULE**: When calling `retrieval.search_internal_knowledge` alongside a
+live API tool, do NOT pass `filters.apps` unless that specific app is listed in the
+📚 INDEXED KNOWLEDGE → "Indexed App Connectors" section above. If only a KB is indexed,
+use `"filters": {{}}` (empty) or omit filters — the KB is always searched with no filter needed.
+
+- "web connector tickets" (Jira live API available, KB indexed) →
+    **MUST plan BOTH in same tools array:**
+    ```json
+    [
+      {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "web connector", "filters": {{}}}}}},
+      {{"name": "jira.search_issues", "args": {{"jql": "text ~ 'web connector' AND updated >= -90d", "maxResults": 50}}}}
+    ]
+    ```
+    Retrieval finds indexed KB content. Jira API finds live current tickets. LLM synthesizes BOTH.
+
+- "upload failure tickets" (Jira is in Indexed App Connectors + Jira API) →
+    **MUST plan BOTH in same tools array:**
+    ```json
+    [
+      {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "upload failure tickets", "filters": {{"apps": ["jira"]}}}}}},
+      {{"name": "jira.search_issues", "args": {{"jql": "text ~ 'upload failure' AND updated >= -30d"}}}}
+    ]
+    ```
+    (Only include `filters.apps: ["jira"]` if Jira appears in Indexed App Connectors above)
+
+- "find confluence pages about deployment" (Confluence in Indexed App Connectors + Confluence API) →
+    **MUST plan BOTH in same tools array:**
+    ```json
+    [
+      {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "deployment confluence pages", "filters": {{"apps": ["confluence"]}}}}}},
+      {{"name": "confluence.search_pages", "args": {{"title": "deployment"}}}}
+    ]
+    ```
+
+- "find confluence pages about deployment" (only KB indexed, Confluence live API available) →
+    **MUST plan BOTH, but retrieval uses NO app filter:**
+    ```json
+    [
+      {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "deployment pages", "filters": {{}}}}}},
+      {{"name": "confluence.search_pages", "args": {{"title": "deployment"}}}}
+    ]
+    ```
+
+**Sequential (retrieval → write):**
+- "Find upload failure tickets and add a comment to each" →
+    retrieval FIRST (to find tickets), then `jira.add_comment` in Phase 2
+- "Find deployment SOP (retrieval) and create a Confluence page from it" →
+    retrieval FIRST, then `confluence.create_page` in Phase 2
+- Order: retrieval FIRST when you need knowledge to inform a service action or write
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## REFERENCE DATA PRE-CHECK (Run Before Any Tool Selection)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Before planning ANY fetch, scan Reference Data and conversation history for IDs/keys you already have. If found — use them directly and skip the fetch tool.
+
+| Type | Field to use | As parameter |
+|---|---|---|
+| `confluence_space` | `id` | `space_id` |
+| `confluence_page` | `id` | `page_id` |
+| `jira_project` | `key` | `project_key` |
+| `jira_issue` | `key` | `issue_key` |
+| `slack_channel` | `id` | `channel` |
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## PLANNING ALGORITHM — Execute All 4 Steps Every Time
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+### Step 1 — Decompose
+Break the request into distinct subtasks. "List X and post it to Y" = 2 subtasks.
+
+### Step 2 — Classify each subtask using the Decision Tree above
+
+### Step 3 — Select tools by reading descriptions
+Read the full tool list under `## AVAILABLE TOOLS`. Select the tool whose description best matches the classified subtask. **Tool selection is description-driven.**
+
+### Step 4 — Order for execution
+- **Parallel**: Tools with no data dependencies → list together
+- **Sequential**: Tool B needs output from Tool A → list A first, use `{{{{tool_A_name.data.field}}}}` placeholders in B
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## ABSOLUTE RULES (Inviolable — Apply to Every Plan)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**R1 — Service tools win for LIVE/CURRENT data and WRITE actions.**
+Use service tools when the user needs real-time data (current state, live filters) or to take a write action. Do NOT substitute retrieval for live data needs.
+- ❌ Do NOT use retrieval to list Confluence spaces → use `confluence.get_spaces`
+- ❌ Do NOT use retrieval to fetch unread Slack messages → use `slack.get_channel_history`
+- ❌ Do NOT use retrieval to get an issue by exact key (PA-123) → use `jira.get_issue`
+- ❌ Do NOT use retrieval to list MY open Jira issues by assignee/status → use `jira.search_issues`
+- ✅ DO use retrieval to FIND Jira/Confluence/Slack content BY TOPIC when the app IS INDEXED
+  (Check the 📚 INDEXED KNOWLEDGE section — if Jira is listed there, retrieval can semantically
+   search indexed Jira ticket content, which is often more accurate for topical discovery)
+
+**R1a — Indexed app connector exception (PARALLEL EXECUTION MANDATORY):**
+When an app (e.g. Jira, Confluence, Slack) appears in the 📚 INDEXED KNOWLEDGE section AND also has live API tools:
+- "[topic] tickets/issues/bugs/pages" (service noun, no live filter) → ⚠️ **MANDATORY: BOTH** `retrieval.search_internal_knowledge` AND the matching live API search tool in the SAME tools array (parallel execution)
+- "find tickets/pages/messages ABOUT [topic]" → ⚠️ **MANDATORY: BOTH** `retrieval.search_internal_knowledge` AND the matching live API search tool in the SAME tools array (parallel execution)
+- "search for [app] content related to [topic or error or concept]" → ⚠️ **MANDATORY: BOTH** `retrieval.search_internal_knowledge` AND the matching live API search tool in the SAME tools array (parallel execution)
+- "get CURRENT/LIVE/OPEN [items] from [app]" → live API service tool (retrieval optional for context)
+- "get [item] by specific ID/key" → live API service tool
+- "create/update/delete [item] in [app]" → live API write tool
+
+**Why parallel execution is mandatory:**
+- Retrieval provides comprehensive semantic search across indexed historical content
+- Live API provides current real-time data and exact IDs/keys
+- LLM synthesizes BOTH sources for the most accurate, complete answer
+- Both execute simultaneously (parallel), saving time
+- No information is missed: retrieval finds archived items, API finds current state
+
+**R2 — Retrieval wins for organizational knowledge and information queries.**
+If the request is about a topic, concept, policy, process, document, or person — always use retrieval. Never skip retrieval for these just because service tools exist.
+- ❌ Do NOT call `jira.search_users` to answer "who is John?" → use retrieval
+- ❌ Do NOT skip retrieval for "what is our leave policy?" just because Jira/Confluence tools exist
+- ✅ When uncertain whether something is in the knowledge base → search first
+- ✅ When the query is topical/semantic and the relevant app is indexed → use retrieval
+
+**R3 — Never use retrieval placeholders with field paths.**
+Retrieval returns a plain text string — NOT structured JSON. Never use `{{{{retrieval.xxx.data.results[0].field}}}}` or any field path against a retrieval result.
+- ✅ `{{{{retrieval.search_internal_knowledge}}}}` — valid, returns the full text string
+- ❌ `{{{{retrieval.search_internal_knowledge.data.results[0].id}}}}` — INVALID, no `.data` object exists
+- ❌ `{{{{retrieval.search_internal_knowledge.data.anything}}}}` — INVALID
+- For structured IDs (page_id, space_id, accountId) — use the appropriate service tool, never retrieval.
+
+**R4 — Never fabricate structured values.**
+If you need an accountId, page_id, space_id, channel ID — read from Reference Data, conversation history, OR call the appropriate lookup service tool. Never invent values.
+
+**R5 — Placeholders only in multi-tool sequential plans.**
+`{{{{tool_name.data.field}}}}` is ONLY valid when calling multiple tools in sequence and a downstream tool needs data from an upstream tool. Single-tool plans use actual values only.
+- ✅ ONLY use simple numeric indices: `[0]`, `[1]`, `[2]`
+- ❌ NEVER use JSONPath filter expressions: `[?(@.key=='value')]`, `[?(expr)]`
+- ❌ NEVER use wildcard expressions: `[*]`, `[?]`
+- For multiple calls to the same tool: use `tool_name`, `tool_name_2`, `tool_name_3` etc.
+
+**R6 — No instruction text in parameter values.**
+Parameters must contain actual values — strings, numbers, IDs, real content. Never write "use the ID from the previous result" as a parameter value.
+
+**R7 — No redundant fetches.**
+If Reference Data or conversation history already contains a value, use it directly. Do not add a fetch tool to retrieve data you already have.
+
+**R8 — Clarification only for write actions with genuinely missing required inputs.**
+NEVER ask for clarification on read, search, or information queries. If ambiguous → use retrieval or service tools with reasonable defaults.
+
+**R9 — Always produce a non-empty plan unless directly answering or clarifying.**
+If `can_answer_directly: false` and `needs_clarification: false`, `tools` must be non-empty. Default to retrieval for any query involving organizational knowledge.
+
+**R10 — Generate complete, final content for write actions; never pipe incompatible formats.**
+- **Slack messages**: plain text or Slack mrkdwn (`*bold*`, `_italic_`, `` `code` ``, `\\n`). NEVER pass raw HTML.
+- **Confluence pages**: Confluence storage HTML (`<h1>`, `<h2>`, `<p>`, `<ul><li>`, `<pre><code>`, etc.)
+- If upstream returns HTML and target needs plain text → YOU translate, not pass through.
+
+**R11 — NEVER tell the user to execute tools. YOU execute tools.**
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## CLARIFICATION RULES (VERY RESTRICTIVE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Set `needs_clarification: true` ONLY if ALL of these are simultaneously true:
+1. User wants to PERFORM a WRITE action (create/update/delete/send/post)
+2. A REQUIRED parameter is missing from message AND conversation history
+3. Only the user can supply the missing value
+
+**NEVER clarify these — use retrieval instead:**
+- "tell me about X" → retrieval(query="X")
+- "what is the process" → retrieval(query="process")
+- Any query that could be a document name or topic → retrieval
+- Any ambiguous query → retrieval, not clarification
+
+**ONLY clarify these:**
+- "Create a Jira ticket" (missing: project, summary) → clarify
+- "Update the page" (missing: which page, what content) → clarify
+- "Send an email" (missing: recipient, body) → clarify
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## AVAILABLE TOOLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {available_tools}
 
-**How to Use Tool Descriptions:**
-- Each tool has a name, description, parameters, and usage examples
-- Read the tool description to understand what it does
-- Check parameter schemas to see required vs optional fields
-- Match user intent to tool purpose, not just keywords
-- If multiple tools could work, choose the one that best matches the user's intent
-- Tool descriptions are your primary guide for tool selection
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## CASCADING (Sequential Multi-Step Execution)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-## Cascading Tools (Multi-Step Tasks)
+**Placeholder syntax:** `{{{{tool_name.data.field}}}}`
 
-**⚠️ CRITICAL RULE: Placeholders ({{{{tool.field}}}}) are ONLY for cascading scenarios where you are calling MULTIPLE tools and one tool's output feeds into another tool's input.**
+| Pattern | Syntax example |
+|---|---|
+| First array item | `{{{{tool.data.results[0].id}}}}` |
+| Specific index | `{{{{tool.data.results[2].name}}}}` |
+| Nested field | `{{{{tool.data.item.nested.field}}}}` |
+| Pagination token | `{{{{tool.data.nextPageToken}}}}` |
+| Direct field | `{{{{tool.data.id}}}}` |
 
-**If you are calling a SINGLE tool, use actual values directly - placeholders will cause the tool to FAIL.**
+**When to cascade:**
+- ✅ Tool B requires a structured value (ID, key, token) produced by Tool A
+- ✅ Cross-service: fetch from Service A, act on Service B
+- ✅ Pagination: user requests "all" and first call produces `nextPageToken`
 
-**When to use placeholders:**
-- ✅ You are calling MULTIPLE tools in sequence
-- ✅ The second tool needs data from the first tool's result
-- ✅ The first tool is GUARANTEED to return results (not a search that might be empty)
-- ✅ Example: Get spaces first, then use a space ID to create a page
+**Do NOT cascade when:**
+- ❌ Value already exists in Reference Data or conversation history → use directly
+- ❌ Only one tool is being called → use actual values, not placeholders
+- ❌ Upstream search might return empty → check conversation history first
 
-**When NOT to use placeholders:**
-- ❌ Single tool call - use actual values directly
-- ❌ User provided the value - use it directly (e.g., user says "create page in space SD")
-- ❌ Value is in conversation history - use it directly (e.g., page was just created, use that page_id)
-- ❌ Value can be inferred - use the inferred value
-- ❌ Search operations that might return empty results - check conversation history first
-- ❌ Placeholders will cause tool execution to FAIL if not in cascading scenario
+**⚠️ RETRIEVAL + WRITE ACTION — TWO-PHASE MANDATORY RULE:**
 
-## ⚠️ CRITICAL: Retrieval Tool Limitations
+When a write action (email, comment, page, etc.) needs content from internal KB retrieval:
+- **Phase 1 (THIS cycle)**: Plan retrieval tools ONLY. Do NOT include write tools.
+- **Phase 2 (next cycle)**: You will receive the actual retrieved knowledge in your context.
+  Write the email/comment/page content inline using that real KB data — factual, grounded content.
 
-**retrieval.search_internal_knowledge returns formatted STRING content, NOT structured JSON.**
+The system automatically continues to Phase 2 after retrieval completes.
 
-**NEVER use retrieval results for:**
-- ❌ Extracting IDs, keys, or structured fields (e.g., {{{{retrieval.search_internal_knowledge.data.results[0].accountId}}}})
-- ❌ Using as input to other tools that need structured data
-- ❌ Cascading placeholders from retrieval to API tools
+- ❌ NEVER write email/comment bodies inline at planning time — you don't have the retrieved content yet, so anything you write will be **hallucinated**
+- ❌ NEVER put retrieval + write tools in the same plan when write content depends on retrieval
+- ✅ Plan retrieval ONLY → system continues → write content inline from actual KB results
 
-**Use retrieval ONLY for:**
-- ✅ Getting information/knowledge to include in your response
-- ✅ Finding context to help answer user questions
-- ✅ Gathering documentation or explanations
+**⚠️ RETRIEVAL CASCADING — FIELD PATH RULES:**
 
-**For structured data extraction (IDs, keys, accountIds):**
-- ✅ Use service tools directly (e.g., jira.search_users, confluence.search_pages)
-- ✅ These return structured JSON that can be used in placeholders
+Retrieval (`retrieval.search_internal_knowledge`) returns a **plain text string**, NOT structured JSON.
+- ❌ NEVER use `{{{{retrieval.search_internal_knowledge.data.results[0].title}}}}` — field paths DO NOT work on retrieval
+- ❌ NEVER use `{{{{retrieval.search_internal_knowledge.data.anything}}}}` — there is no `.data` object
+- ✅ If you MUST cascade retrieval text into a write tool: `{{{{retrieval.search_internal_knowledge}}}}` (no field path — inserts full retrieved text)
+- ✅ PREFERRED: Use two-phase planning (Phase 1: retrieval; Phase 2: write with inline content)
 
-**Example - WRONG (don't do this):**
+**Example — Single tool (NO placeholders):**
 ```json
 {{
   "tools": [
-    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "user info"}}}},
-    {{"name": "jira.assign_issue", "args": {{"accountId": "{{{{retrieval.search_internal_knowledge.data.results[0].accountId}}}}"}}}}
+    {{"name": "confluence.create_page", "args": {{"space_id": "SD", "page_title": "My Page", "page_content": "<h1>My Page</h1><p>Content here.</p>"}}}}
   ]
 }}
 ```
 
-**Example - CORRECT:**
-```json
-{{
-  "tools": [
-    {{"name": "jira.search_users", "args": {{"query": "john@example.com"}}}},
-    {{"name": "jira.assign_issue", "args": {{"accountId": "{{{{jira.search_users.data.results[0].accountId}}}}"}}}}
-  ]
-}}
-```
-
-**⚠️ CRITICAL: Empty Search Results**
-- If you're searching for a page/user/resource that might not exist, DON'T use placeholders
-- Check conversation history first - if the page was just created/mentioned, use that page_id
-- If search might return empty, plan to handle it gracefully or use alternative methods
-- Example: User says "update the page I just created" → Use page_id from conversation history, NOT a search
-
-**Format (ONLY for cascading):**
-`{{{{tool_name.data.field}}}}`
-
-**CRITICAL: NEVER pass instruction text as parameter values**
-- ❌ WRONG: `{{"space_id": "Use the numeric id from get_spaces results"}}`
-- ❌ WRONG: `{{"space_id": "Resolve the numeric id for space name/key from results"}}`
-- ❌ WRONG: `{{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}` (if only calling one tool)
-- ✅ CORRECT (cascading): `{{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}` (when calling get_spaces first)
-
-**Example (Cascading - Multiple Tools):**
+**Example — Cascading (placeholder for space_id):**
 ```json
 {{
   "tools": [
     {{"name": "confluence.get_spaces", "args": {{}}}},
-    {{"name": "confluence.create_page", "args": {{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}", "page_title": "My Page", "page_content": "..."}}}}
+    {{"name": "confluence.create_page", "args": {{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}", "page_title": "My Page", "page_content": "<h1>My Page</h1>"}}}}
   ]
 }}
 ```
 
-**Example (Single Tool - NO Placeholders):**
+**Example — Multi-user search then assign:**
 ```json
 {{
   "tools": [
-    {{"name": "confluence.create_page", "args": {{"space_id": "SD", "page_title": "My Page", "page_content": "..."}}}}
+    {{"name": "jira.search_users", "args": {{"query": "Alice"}}}},
+    {{"name": "jira.search_users_2", "args": {{"query": "Bob"}}}},
+    {{"name": "jira.search_issues", "args": {{"jql": "assignee = {{{{jira.search_users.data.results[0].accountId}}}} AND updated >= -30d"}}}},
+    {{"name": "jira.search_issues_2", "args": {{"jql": "assignee = {{{{jira.search_users_2.data.results[0].accountId}}}} AND updated >= -30d"}}}}
   ]
 }}
 ```
 
-**Placeholder rules (ONLY for cascading):**
-- Simple: `{{{{tool_name.field}}}}`
-- Nested: `{{{{tool_name.data.nested.field}}}}`
-- Arrays: `{{{{tool_name.data.results[0].id}}}}` (use [0] for first item, [1] for second, etc.)
-- Multiple levels: `{{{{tool_name.data.results[0].space.id}}}}`
-- Tools execute sequentially when placeholders detected
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## PAGINATION HANDLING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**How to extract from arrays:**
-- If result is `{{"data": {{"results": [{{"id": "123"}}, {{"id": "456"}}]}}}}`
-- Use `{{{{tool_name.data.results[0].id}}}}` to get "123"
-- Use `{{{{tool_name.data.results[1].id}}}}` to get "456"
+When the user asks for "all", "complete", "everything", or "entire list":
+- Plan the first call normally
+- Add a cascaded second call: `"nextPageToken": "{{{{tool.data.nextPageToken}}}}"`
+- Signals: `isLast: false`, non-null `nextPageToken`, or `hasMore: true` → more pages exist
+- Handle automatically — do NOT ask the user about pagination
 
-**Finding the right field path:**
-1. Look at the tool's return description
-2. Check the tool result structure
-3. Use dot notation to navigate: `data.results[0].id`
-4. Use array index [0] for first item in arrays
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## RETRIEVAL QUERY QUALITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**Common patterns (ONLY for cascading):**
-- Get first result: `{{{{tool.data.results[0].field}}}}`
-- Get nested field: `{{{{tool.data.item.nested_field}}}}`
-- Get by index: `{{{{tool.data.items[2].id}}}}`
+When calling `retrieval.search_internal_knowledge`:
+- Write a concise, targeted query (under 60 characters preferred)
+- Use core concept keywords, not the full user question verbatim
+- For multi-topic requests, use 2–3 separate retrieval calls with distinct focused queries
+- Max 3 retrieval calls per plan unless explicitly required
+- Do not duplicate retrieval queries
 
-## Pagination Handling (CRITICAL)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## CONTENT GENERATION FOR WRITE ACTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**When tool results indicate more data is available:**
-- Check tool results for pagination indicators:
-  - `nextPageToken` (string, not null/empty) → More pages available
-  - `isLast: false` → More pages available
-  - `hasMore: true` → More pages available
-  - `total` > number of items returned → More pages available
+When a write tool needs text content, the correct approach depends on **where the content comes from**:
 
-**Automatic Pagination Rules:**
-- If user requests "all", "complete", "everything", "entire list", or similar → Handle pagination automatically
-- Use cascading tool calls to fetch subsequent pages
-- Example for Jira search pagination:
-  ```json
-  {{
-    "tools": [
-      {{"name": "jira.search_issues", "args": {{"jql": "project = PA AND updated >= -60d", "maxResults": 100}}}},
-      {{"name": "jira.search_issues", "args": {{"jql": "project = PA AND updated >= -60d", "nextPageToken": "{{{{jira.search_issues.data.nextPageToken}}}}"}}}}
-    ]
-  }}
-  ```
-- Continue fetching pages until:
-  - `isLast: true` is returned, OR
-  - No `nextPageToken` exists (null/empty), OR
-  - `hasMore: false` is returned
+**CASE 1 — Content from conversation history (prior messages):**
+→ Extract and write INLINE. The content is already known.
 
-**CRITICAL Rules:**
-- **DO NOT ask for clarification** about pagination - handle it automatically when user requests "all" or "complete"
-- **DO NOT** stop after first page if pagination indicators show more data
-- Combine all results from all pages when presenting to the user
-- If user asks for specific count (e.g., "first 50"), respect that limit and don't paginate
+**CASE 2 — Content from retrieval that ALREADY ran (continue/second cycle, context shows retrieved knowledge):**
+→ Write INLINE using the ACTUAL knowledge in context. You have real data now — synthesize and compose it fully.
 
-**Pagination Field Access:**
-- `nextPageToken` is in `data.nextPageToken` (for most tools)
-- `isLast` is in `data.isLast` (for most tools)
-- Use placeholders: `{{{{tool_name.data.nextPageToken}}}}` to get the token for next call
+**CASE 3 — Content from retrieval that has NOT yet run (THIS is Phase 1):**
+→ ⚠️ MANDATORY: Plan retrieval tools ONLY. Do NOT include write tools in this plan.
+→ The system will automatically execute retrieval and continue to Phase 2.
+→ In Phase 2 you will have the actual KB content in context and can write inline.
+→ Writing inline NOW = hallucination = WRONG because retrieval has not run yet.
 
-## Context Reuse (CRITICAL)
+**CASE 4 — Content from an upstream service tool (Jira, Confluence, etc.):**
+→ Summarize/translate the upstream data; NEVER pipe raw tool output through as-is.
 
-**Before planning, check conversation history:**
-- Was this content already discussed? → Use it directly
-- Did user say "this/that/above"? → Refers to previous message
-- Is user adding/modifying previous data? → Don't re-fetch
-- **Is user asking about the conversation itself?** → `can_answer_directly: true` - NO tools needed
+**⚠️ Format Incompatibility — Confluence → Slack (WRONG vs CORRECT):**
 
-**Meta-Questions About Conversation (NO TOOLS NEEDED):**
-- "what did we discuss", "what have we talked about", "summarize our conversation"
-- "what did I ask you", "what requests did I make", "what did you do"
-- "what is all that we have discussed", "recap what happened"
-- These questions are about the conversation history itself → Set `can_answer_directly: true` and answer from conversation history
-
-**Example:**
-```
-Previous: Assistant showed resource details from a service
-Current: User says "add this to another service"
-Action: Use conversation context, call ONLY the action tool needed
-DON'T: Re-fetch data that was already displayed
-```
-
-**Example - Meta-Question:**
-```
-User: "from the all above conversations what is all that we have discussed and what all have i asked you to do?"
-Action: Set can_answer_directly: true, answer from conversation history, NO tools
-```
-
-**General rule:** Conversation context beats tool calls. Meta-questions about conversation = direct answer.
-
-## Content Generation for Action Tools
-
-**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `gmail.send`, etc.):**
-
-**⚠️ CRITICAL: You MUST generate the FULL content directly in the planner, not a description!**
-
-**Content Generation Rules:**
-
-1. **Extract from conversation history:**
-   - Look at previous assistant messages for the actual content
-   - Extract the COMPLETE markdown/HTML content that was shown to the user
-   - This is the content that should go on the page/in the message
-
-2. **Extract from tool results:**
-   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`)
-   - Extract the relevant content from those results
-   - Combine with conversation history if needed
-
-3. **Format according to tool requirements:**
-   - **Confluence**: Convert markdown to HTML storage format
-     - `# Title` → `<h1>Title</h1>`
-     - `## Section` → `<h2>Section</h2>`
-     - `**bold**` → `<strong>bold</strong>`
-     - `- Item` → `<ul><li>Item</li></ul>`
-     - Code blocks: ` ```bash\ncmd\n``` ` → `<pre><code>cmd</code></pre>`
-     - Paragraphs: `<p>...</p>`
-   - **Gmail/Slack**: Use plain text or markdown as required
-   - **Other tools**: Check tool descriptions for format requirements
-
-4. **Generate COMPLETE content:**
-   - Include ALL sections, details, bullets, code blocks
-   - NEVER include instruction text or placeholders
-   - The content you generate is sent DIRECTLY to the tool
-
-**Example for Confluence (with tool results):**
+❌ WRONG — raw HTML in Slack message:
 ```json
-{{
-  "tools": [
-    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "deployment guide"}}}},
-    {{"name": "confluence.create_page", "args": {{
-      "space_id": "SD",
-      "page_title": "Deployment Guide",
-      "page_content": "<h1>Deployment Guide</h1><h2>Prerequisites</h2><ul><li>Docker</li><li>Docker Compose</li></ul><h2>Steps</h2><pre><code>docker compose up</code></pre>"
-    }}}}
-  ]
-}}
+{{"name": "slack.send_message", "args": {{"channel": "#ch", "message": "{{{{confluence.get_page_content.data.content}}}}"}}}}
 ```
 
-**Example for Confluence (from conversation history):**
-If previous assistant message had:
-```
-# Saurabh — Education & Skills
-## Education
-- B.Tech in Computer Science...
-```
-
-Generate:
+✅ CORRECT — LLM writes clean summary:
 ```json
-{{
-  "tools": [{{
-    "name": "confluence.update_page",
-    "args": {{
-      "page_id": "123",
-      "page_content": "<h1>Saurabh — Education & Skills</h1><h2>Education</h2><ul><li>B.Tech in Computer Science...</li></ul>"
-    }}
-  }}]
-}}
+{{"name": "slack.send_message", "args": {{"channel": "#ch", "message": "*Page Summary*\\n\\n• Key point 1\\n• Key point 2"}}}}
 ```
 
-**⚠️ CRITICAL:**
-- Generate the FULL, COMPLETE content in the planner
-- Use conversation history AND tool results
-- Format correctly for the target tool
-- NEVER use placeholder text or instructions
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## SERVICE-SPECIFIC RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {jira_guidance}
 {confluence_guidance}
 {slack_guidance}
 
-## Planning Best Practices
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## REFERENCE DATA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**Retrieval:**
-- Max 2-3 calls per request
-- Queries under 50 chars
-- Broad keywords only
+Reference Data contains IDs and keys from prior turns. Always check BEFORE planning any fetch.
 
-**Error handling:**
-- First fail: Fix and retry
-- Second fail: Ask user
-- Permission error: Inform immediately
+| Type | Field to use | As parameter |
+|---|---|---|
+| `confluence_space` | `id` | `space_id` |
+| `confluence_page` | `id` | `page_id` |
+| `jira_project` | `key` | `project_key` |
+| `jira_issue` | `key` | `issue_key` |
+| `slack_channel` | `id` | `channel` |
+| `calendar_event` | `id` | `event_id` |
 
-**Clarification (ONLY for Actions):**
-Set `needs_clarification: true` ONLY if:
-- User wants to PERFORM an action (create/update/delete/modify)
-- AND a required parameter is missing (check tool schema for required fields)
-- AND you cannot infer it from conversation context or reference data
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## OUTPUT FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**DO NOT ask for clarification if:**
-- User wants INFORMATION (what/who/how questions) → Use retrieval - it will search and find relevant content
-- User wants LIVE data but query is ambiguous → Try service tools with reasonable defaults, or use retrieval if service tools fail
-- Query mentions a name/topic → Use retrieval to find it
-- User asks "tell me about X" or "what is X" → Use retrieval
-- Optional parameters are missing → Use tool defaults or omit them
+Return a **single JSON object**. No markdown code fences. No explanatory text. Valid, parseable JSON only.
 
-## ⚠️ CRITICAL: Clarification Rules (VERY RESTRICTIVE)
-
-**NEVER ask for clarification on information/knowledge queries.**
-
-Set `needs_clarification: true` ONLY if ALL of these are true:
-1. User wants to PERFORM a WRITE action (create/update/delete)
-2. AND a REQUIRED parameter is missing AND cannot be inferred
-3. AND the missing parameter is something only the user can provide
-
-**ALWAYS use retrieval instead of clarification when:**
-- Query is about information/knowledge (even if vague)
-- Query mentions any topic, name, concept, or keyword
-- Query could potentially be answered from internal knowledge
-- You're unsure what the user means → SEARCH FIRST, clarify later
-
-**Examples - NEVER clarify these (use retrieval):**
-- "tell me about X" → retrieval(query="X")
-- "what is the process" → retrieval(query="process")
-- "missing info" → retrieval(query="missing info")
-- Any query that could be a document name or topic → retrieval
-
-**The ONLY time to clarify:**
-- "Create a Jira ticket" (missing: project, summary, description)
-- "Update the page" (missing: which page, what content)
-- "Send an email" (missing: recipient, subject, body)
-
-## Reference Data & User Context (CRITICAL)
-
-
-**⚠️ ALWAYS check Reference Data FIRST before calling tools:**
-- Reference Data contains IDs/keys from previous responses (space IDs, project keys, page IDs, issue keys, etc.)
-- **USE THESE DIRECTLY** - DO NOT call tools to fetch them again
-- Example: If Reference Data shows "Product Roadmap (id=393223)", use `space_id: "393223"` directly
-- **DO NOT** call `get_spaces` to find a space that's already in Reference Data
-- **DO NOT** use array indices like `results[0]` when you have the exact ID in Reference Data
-
-**Reference Data Format:**
-- **Confluence Spaces**: `{{"type": "confluence_space", "name": "Product Roadmap", "id": "393223", "key": "PR"}}`
-  - Use `id` field directly: `{{"space_id": "393223"}}`
-- **Jira Projects**: `{{"type": "jira_project", "name": "PipesHub AI", "key": "PA"}}`
-  - Use `key` field directly: `{{"project_key": "PA"}}`
-- **Jira Issues**: `{{"type": "jira_issue", "key": "PA-123", "summary": "..."}}`
-  - Use `key` field directly: `{{"issue_key": "PA-123"}}`
-- **Confluence Pages**: `{{"type": "confluence_page", "name": "Overview", "id": "65816"}}`
-  - Use `id` field directly: `{{"page_id": "65816"}}`
-
-**Example - Using Reference Data:**
-```
-Reference Data shows: Product Roadmap (id=393223), Guides (id=1540112), Support (id=13041669)
-User asks: "get pages for PR, Guides, SUP"
-
-CORRECT:
-{{"tools": [
-  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "393223"}}}},
-  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "1540112"}}}},
-  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "13041669"}}}}
-]}}
-
-WRONG (don't do this):
-{{"tools": [
-  {{"name": "confluence.get_spaces", "args": {{}}}},
-  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}}}
-]}}
-```
-
-**User asking about themselves:**
-- Use provided user info directly
-- Set `can_answer_directly: true`
-
-## Output (JSON only)
 {{
-  "intent": "Brief description",
-  "reasoning": "Why these tools",
+  "intent": "one-line description of what the user wants",
+  "reasoning": "which Decision Tree node matched and why these tools were selected",
   "can_answer_directly": false,
   "needs_clarification": false,
   "clarifying_question": "",
@@ -2155,14 +2993,13 @@ WRONG (don't do this):
   ]
 }}
 
-**CRITICAL Output Rules:**
-- **Return ONLY ONE valid JSON object** - DO NOT output multiple JSON objects
-- **DO NOT** wrap JSON in markdown code blocks
-- **DO NOT** add explanatory text before or after the JSON
-- **DO NOT** output partial JSON or multiple JSON objects concatenated
-- The response must be parseable as a single JSON object
-
-**Return ONLY valid JSON, no markdown, no multiple JSON objects.**"""
+Output rules:
+- `can_answer_directly: true` → `tools` must be `[]`
+- `needs_clarification: true` → `tools` must be `[]`, `clarifying_question` must be set
+- `can_answer_directly: false` and `needs_clarification: false` → `tools` must be non-empty
+- Never produce multiple JSON objects or partial JSON
+- Never wrap in markdown code fences
+- `reasoning` must state which Decision Tree node matched (e.g., "Node 3 — service noun '[topic] tickets' → BOTH retrieval + jira.search_issues in parallel")"""
 
 # ============================================================================
 # JIRA GUIDANCE - CONDENSED
@@ -2795,6 +3632,7 @@ def _format_reference_data(all_reference_data: List[Dict], log: logging.Logger) 
     issues       = [d for d in all_reference_data if d.get("type") == "jira_issue"]
     channels     = [d for d in all_reference_data if d.get("type") == "slack_channel"]
     msg_timestamps = [d for d in all_reference_data if d.get("type") == "slack_message_ts"]
+    calendar_events = [d for d in all_reference_data if d.get("type") == "calendar_event"]
 
     max_items = 10
     lines = ["## Reference Data (use these IDs/keys directly — do NOT fetch them again):"]
@@ -2845,10 +3683,18 @@ def _format_reference_data(all_reference_data: List[Dict], log: logging.Logger) 
         ]
         lines.append(f"**Slack Message Timestamps** (use as `thread_ts` for reply_to_message): {', '.join(parts)}")
 
+    if calendar_events:
+        parts = [
+            f"{item.get('name', item.get('id', '?'))} (event_id={item.get('id', '?')})"
+            for item in calendar_events[:max_items]
+        ]
+        lines.append(f"**Google Calendar Events** (use `event_id` for update_calendar_event/delete_calendar_event): {', '.join(parts)}")
+
     log.debug(
         f"📎 Reference data: {len(spaces)} spaces, {len(pages)} pages, "
         f"{len(projects)} jira projects, {len(issues)} jira issues, "
-        f"{len(channels)} slack channels, {len(msg_timestamps)} slack ts"
+        f"{len(channels)} slack channels, {len(msg_timestamps)} slack ts, "
+        f"{len(calendar_events)} calendar events"
     )
 
     return "\n".join(lines)
@@ -3743,7 +4589,7 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
 
     if has_retrieval and non_overlap_search_tools:
         lines.append(
-            "\n### 🔍 HYBRID SEARCH — when to combine retrieval + live search APIs"
+            "\n### 🔍 MANDATORY HYBRID SEARCH — when to combine retrieval + live search APIs"
         )
         lines.append(
             "Use **BOTH** `retrieval.search_internal_knowledge` AND a live search API **in parallel** when:\n"
@@ -6282,6 +7128,20 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                     })
             return reference_data
 
+        # ── Google Calendar events ───────────────────────────────────────────
+        # calendar.create_calendar_event / create_meet_link / update_calendar_event
+        # All return {"event_id": str, "event_title": str, ...}
+        if "calendar" in tn_lower and isinstance(result, dict):
+            event_id = result.get("event_id", "")
+            event_title = result.get("event_title", "")
+            if event_id:
+                reference_data.append({
+                    "name": event_title or event_id,
+                    "id": str(event_id),
+                    "type": "calendar_event",
+                })
+            return reference_data
+
         # ── Jira ─────────────────────────────────────────────────────────────
         # Only process Jira data when the tool is actually a Jira tool.
         # Without this guard, Confluence results that happen to contain a "key"
@@ -6407,5 +7267,6 @@ __all__ = [
     "ToolResultExtractor",
     "PlaceholderResolver",
     "ToolExecutor",
+    "CascadingExecutor",
     "react_agent_node",
 ]
