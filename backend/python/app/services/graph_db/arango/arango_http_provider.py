@@ -14342,16 +14342,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
-
             query = f"""
             LET org_id = @org_id
-            LET connector = FIRST(
-                FOR doc IN {CollectionNames.APPS.value}
-                    FILTER doc._key == @connector_id
-                    RETURN doc
-            )
 
-            LET records = (
+            LET grouped = (
                 FOR doc IN {CollectionNames.RECORDS.value}
                     FILTER doc.orgId == org_id
                     FILTER doc.origin == "CONNECTOR"
@@ -14366,43 +14360,46 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     )
 
                     FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
-                    RETURN doc
+                    COLLECT recordType = doc.recordType, indexingStatus = doc.indexingStatus WITH COUNT INTO cnt
+                    RETURN {{ recordType, indexingStatus, cnt }}
             )
 
             LET total_stats = {{
-                total: LENGTH(records),
+                total: SUM(grouped[*].cnt),
                 indexingStatus: {{
-                    NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                    IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                    COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                    FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                    FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                    AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                    ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                    EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                    QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                    PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
+                    NOT_STARTED: SUM(grouped[* FILTER CURRENT.indexingStatus == "NOT_STARTED"].cnt),
+                    IN_PROGRESS: SUM(grouped[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"].cnt),
+                    COMPLETED: SUM(grouped[* FILTER CURRENT.indexingStatus == "COMPLETED"].cnt),
+                    FAILED: SUM(grouped[* FILTER CURRENT.indexingStatus == "FAILED"].cnt),
+                    FILE_TYPE_NOT_SUPPORTED: SUM(grouped[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"].cnt),
+                    AUTO_INDEX_OFF: SUM(grouped[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"].cnt),
+                    ENABLE_MULTIMODAL_MODELS: SUM(grouped[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"].cnt),
+                    EMPTY: SUM(grouped[* FILTER CURRENT.indexingStatus == "EMPTY"].cnt),
+                    QUEUED: SUM(grouped[* FILTER CURRENT.indexingStatus == "QUEUED"].cnt),
+                    PAUSED: SUM(grouped[* FILTER CURRENT.indexingStatus == "PAUSED"].cnt),
+                    CONNECTOR_DISABLED: SUM(grouped[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"].cnt),
                 }}
             }}
 
             LET by_record_type = (
-                FOR record_type IN UNIQUE(records[*].recordType)
+                FOR record_type IN UNIQUE(grouped[*].recordType)
                     FILTER record_type != null
-                    LET type_records = records[* FILTER CURRENT.recordType == record_type]
+                    LET type_rows = grouped[* FILTER CURRENT.recordType == record_type]
                     RETURN {{
                         recordType: record_type,
-                        total: LENGTH(type_records),
+                        total: SUM(type_rows[*].cnt),
                         indexingStatus: {{
-                            NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                            IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                            COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                            FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                            FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                            AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                            ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                            EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                            QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                            PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
+                            NOT_STARTED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "NOT_STARTED"].cnt),
+                            IN_PROGRESS: SUM(type_rows[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"].cnt),
+                            COMPLETED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "COMPLETED"].cnt),
+                            FAILED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "FAILED"].cnt),
+                            FILE_TYPE_NOT_SUPPORTED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"].cnt),
+                            AUTO_INDEX_OFF: SUM(type_rows[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"].cnt),
+                            ENABLE_MULTIMODAL_MODELS: SUM(type_rows[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"].cnt),
+                            EMPTY: SUM(type_rows[* FILTER CURRENT.indexingStatus == "EMPTY"].cnt),
+                            QUEUED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "QUEUED"].cnt),
+                            PAUSED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "PAUSED"].cnt),
+                            CONNECTOR_DISABLED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"].cnt),
                         }}
                     }}
             )
@@ -14456,6 +14453,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 "EMPTY": 0,
                                 "QUEUED": 0,
                                 "PAUSED": 0,
+                                "CONNECTOR_DISABLED": 0,
                             }
                         },
                         "byRecordType": []
