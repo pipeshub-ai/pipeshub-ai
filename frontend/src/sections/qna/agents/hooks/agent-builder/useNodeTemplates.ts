@@ -2,7 +2,7 @@
 import { useMemo } from 'react';
 import brainIcon from '@iconify-icons/mdi/brain';
 import chatIcon from '@iconify-icons/mdi/chat';
-import databaseIcon from '@iconify-icons/mdi/database';
+import collectionIcon from '@iconify-icons/mdi/folder-multiple';
 import emailIcon from '@iconify-icons/mdi/email';
 import apiIcon from '@iconify-icons/mdi/api';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
@@ -55,7 +55,7 @@ export const useAgentBuilderNodeTemplates = (
       type: `connector-group-${connector._key}`,
       label: normalizeDisplayName(connector.name),
       description: `${connector.type} connector instance - Use in Tools or Knowledge`,
-      icon: databaseIcon, // Will be overridden by dynamic icon in sidebar
+      icon: collectionIcon, // Will be overridden by dynamic icon in sidebar
       defaultConfig: {
         id: connector._key,
         name: connector.name,
@@ -202,9 +202,9 @@ export const useAgentBuilderNodeTemplates = (
       // Knowledge Base Group Node
       {
         type: 'kb-group',
-        label: 'Knowledge Bases',
-        description: `All knowledge bases (${availableKnowledgeBases.length} KBs)`,
-        icon: databaseIcon,
+        label: 'Collections',
+        description: `All collections (${availableKnowledgeBases.length} collections)`,
+        icon: collectionIcon,
         defaultConfig: {
           knowledgeBases: availableKnowledgeBases.map((k) => ({ 
             id: k.id, 
@@ -226,9 +226,9 @@ export const useAgentBuilderNodeTemplates = (
       // Individual Knowledge Base Nodes (for granular control)
       ...availableKnowledgeBases.map((kb) => ({
         type: `kb-${kb.id}`,
-        label: `KB: ${truncateText(kb.name, 20)}`,
-        description: truncateText(`Knowledge base for information retrieval`, 40),
-        icon: databaseIcon,
+        label: `${truncateText(kb.name, 20)}`,
+        description: truncateText(`Collection for information retrieval`, 40),
+        icon: collectionIcon,
         defaultConfig: {
           kbId: kb.id, // KB ID (record group ID)
           kbName: kb.name,

@@ -112,7 +112,7 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
               height={18}
               style={{ objectFit: 'contain' }}
               onError={(e) => {
-                e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                e.currentTarget.src = '/assets/icons/connectors/collections-gray.svg';
               }}
             />
           ) : (
@@ -157,7 +157,7 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
           
           {/* Configure Icon */}
           {showConfigureIcon && onConfigureClick && (
-            <Tooltip title="Configure connector" placement="right">
+            <Tooltip title="Configure toolset" placement="right">
               <IconButton
                 size="small"
                 onClick={(e) => {
@@ -175,6 +175,25 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
                 <Icon icon={UI_ICONS.settings} width={16} height={16} />
               </IconButton>
             </Tooltip>
+          )}
+          {!showConfigureIcon && (
+            <Tooltip title="Toolset is authenticated" placement="right">
+              <IconButton
+                size="small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                }}
+                sx={{
+                  ml: 0.5,
+                  color: theme.palette.success.main,
+                  '&:hover': {
+                    backgroundColor: alpha(theme.palette.success.main, 0.1),
+                  },
+                }}
+              >
+                <Icon icon={UI_ICONS.authenticated} width={16} height={16} />
+              </IconButton>
+              </Tooltip>
           )}
         </Box>
       </ListItem>

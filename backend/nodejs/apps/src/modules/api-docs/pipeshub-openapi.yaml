@@ -2927,6 +2927,10 @@ components:
         systemPrompt:
           type: string
           description: System instructions that define agent behavior
+        instructions:
+          type: string
+          nullable: true
+          description: Optional additional instructions for the agent (e.g., always respond in French, use bullet points, focus on concise answers)
         tools:
           type: array
           items:
@@ -14653,6 +14657,10 @@ paths:
                 systemPrompt:
                   type: string
                   description: System instructions for the agent
+                instructions:
+                  type: string
+                  nullable: true
+                  description: Optional additional instructions for the agent (e.g., always respond in French, use bullet points, focus on concise answers)
                 tools:
                   type: array
                   items:
@@ -14786,6 +14794,10 @@ paths:
                   type: string
                 systemPrompt:
                   type: string
+                instructions:
+                  type: string
+                  nullable: true
+                  description: Optional additional instructions for the agent (e.g., always respond in French, use bullet points, focus on concise answers)
                 tools:
                   type: array
                   items:

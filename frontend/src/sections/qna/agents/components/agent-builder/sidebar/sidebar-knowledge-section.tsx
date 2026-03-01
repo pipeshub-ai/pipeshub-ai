@@ -195,11 +195,11 @@ export const SidebarKnowledgeSection: React.FC<SidebarKnowledgeSectionProps> = (
         </SidebarCategory>
       )}
 
-      {/* Knowledge Bases group with dropdown */}
+      {/* Collections group with dropdown */}
       {kbGroupNode && (
         <SidebarCategory
-          groupLabel="Knowledge Bases"
-          groupIcon="/assets/icons/connectors/database.svg"
+          groupLabel="Collections"
+          groupIcon="/assets/icons/connectors/collections-gray.svg"
           itemCount={individualKBs.length}
           isExpanded={expandedApps['knowledge-bases'] || false}
           onToggle={() => onAppToggle('knowledge-bases')}

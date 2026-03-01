@@ -114,7 +114,7 @@ export const PADDING_LEVELS = {
  */
 export const DEFAULT_ICONS = {
   /** Default connector icon */
-  CONNECTOR: '/assets/icons/connectors/default.svg',
+  CONNECTOR: '/assets/icons/connectors/collections-gray.svg',
   /** Default model icon */
   MODEL: '/assets/icons/models/default.svg',
   /** Default generic icon */

@@ -159,7 +159,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
             c.name.toUpperCase() === appName.toUpperCase() ||
             c.name === appName
         );
-        itemIcon = connector?.iconPath || '/assets/icons/connectors/default.svg';
+        itemIcon = connector?.iconPath || '/assets/icons/connectors/collections-gray.svg';
       } else {
         if (typeof appIcon === 'string' || appIcon.toString().includes('/assets/icons/connectors/')) {
           isDynamicIcon = true;
@@ -169,7 +169,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     } else if (sectionType === 'tools' && template.defaultConfig?.appName) {
       itemIcon = getToolIcon(template.type, template.defaultConfig.appName);
     } else if (sectionType === 'connectors' && template.defaultConfig?.name) {
-      itemIcon = template.defaultConfig.iconPath || '/assets/icons/connectors/default.svg';
+      itemIcon = template.defaultConfig.iconPath || '/assets/icons/connectors/collections-gray.svg';
       isDynamicIcon = true;
     }
 
