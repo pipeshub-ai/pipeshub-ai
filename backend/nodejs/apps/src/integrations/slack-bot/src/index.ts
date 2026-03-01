@@ -6,11 +6,12 @@ import { connect } from "./utils/db";
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
 
 import axios from "axios";
+import { markdownToBlocks } from "@tryfabric/mack";
 import app from "./slackApp";
 import receiver from "./receiver";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
-import { markdownToSlackMrkdwn } from "./utils/md_to_mrkdwn";
+import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
 
 import {
   type SlackBotConfig,
@@ -58,54 +59,28 @@ interface StreamEvent {
 const STREAM_UPDATE_THROTTLE_MS = 900;
 const SLACK_MAX_TEXT_LENGTH = 39000;
 const SLACK_STREAM_MARKDOWN_LIMIT = 12000;
+const MAX_SLACK_ERROR_BODY_LENGTH = 64000;
+const SLACK_BLOCKS_PER_MESSAGE_LIMIT = 50;
+const SLACK_SECTION_TEXT_LIMIT = 3000;
+const SLACK_SECTION_FIELD_TEXT_LIMIT = 2000;
+const SLACK_SECTION_FIELDS_PER_BLOCK_LIMIT = 10;
 const DEFAULT_SLACK_ERROR_MESSAGE = "Something went wrong! Please try again later.";
 const MAX_USER_VISIBLE_ERROR_LENGTH = 320;
 const SLACK_MENTION_REGEX = /<@[A-Z0-9]+>/g;
 const STREAM_FAILURE_MESSAGE =
   "I ran into an issue while streaming the response. Please try again.";
+const TABLE_STREAMING_PAUSED_HINT =
+  "\n\n:hourglass_flowing_sand:";
 
-const SLACK_FRIENDLY_ERROR_MAPPINGS: Array<{
-  pattern: RegExp;
-  message: string;
-}> = [
-  {
-    pattern: /no results found/i,
-    message: "I couldn't find relevant information for that query.",
-  },
-  {
-    pattern: /failed to (initialize|start).*(llm|model)/i,
-    message: "I couldn't initialize the AI service right now. Please try again shortly.",
-  },
-  {
-    pattern: /(stream error|error in llm streaming|failed to start slack stream)/i,
-    message: "I hit an issue while generating the response. Please try again.",
-  },
-  {
-    pattern: /(econnrefused|etimedout|enotfound|service unavailable|network error)/i,
-    message: "I couldn't reach the backend service right now. Please try again in a moment.",
-  },
-  {
-    pattern: /back(end)?_url environment variable is not set/i,
-    message: "This service is temporarily unavailable. Please try again later.",
-  },
-];
 
-const SLACK_TECHNICAL_ERROR_PATTERNS: RegExp[] = [
-  /traceback/i,
-  /\bat\s+[^\n]+:\d+:\d+/i,
-  /file\s+"[^"]+",\s+line\s+\d+/i,
-  /(internalservererror|httpexception|typeerror|referenceerror|valueerror|syntaxerror)/i,
-  /(mongodb|redis|neo4j|postgres|sql|kafka)/i,
-  /(stack|stack trace)/i,
-  /(status code\s*\d{3}|\b5\d{2}\b)/i,
-  /(api\/v1\/|https?:\/\/[^\s]+)/i,
-  /(bearer\s+[a-z0-9\.\-_]+)/i,
-  /(back(end)?_url|slack_bot|jwt|token|secret)/i,
-];
+
+
 
 interface StreamStartResult {
   ts?: string;
 }
+
+type SlackBlock = Record<string, unknown>;
 
 interface SlackMessagePayload {
   subtype?: string;
@@ -150,11 +125,13 @@ interface TypedSlackClient {
       channel: string;
       thread_ts?: string;
       text: string;
+      blocks?: SlackBlock[];
     }) => Promise<{ ts?: string }>;
     update: (params: {
       channel: string;
       ts: string;
       text: string;
+      blocks?: SlackBlock[];
     }) => Promise<{ ts?: string }>;
   };
   apiCall: (
@@ -171,8 +148,6 @@ interface TypedSlackContext {
   matchedBotTeamId?: string;
   matchedBotAgentId?: string | null;
 }
-
-
 
 function parseSSEEvents(buffer: string): { events: StreamEvent[]; remainder: string } {
   const rawEvents = buffer.split("\n\n");
@@ -233,7 +208,7 @@ function readMessageFromObject(value: unknown): string | null {
   }
 
   const record = value as Record<string, unknown>;
-  const directKeys = ["message", "error", "detail", "reason"] as const;
+  const directKeys = ["message", "error", "detail", "reason", "msg"] as const;
 
   for (const key of directKeys) {
     const candidate = record[key];
@@ -246,6 +221,106 @@ function readMessageFromObject(value: unknown): string | null {
     const nestedErrorMessage = readMessageFromObject(record.error);
     if (nestedErrorMessage) {
       return nestedErrorMessage;
+    }
+  }
+
+  return null;
+}
+
+function isReadableStreamLike(value: unknown): value is NodeJS.ReadableStream {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.on === "function";
+}
+
+function readMessageFromTextPayload(payload: string): string | null {
+  const normalizedPayload = payload.trim();
+  if (!normalizedPayload) {
+    return null;
+  }
+
+  const isSSEPayload =
+    normalizedPayload.includes("event:") && normalizedPayload.includes("data:");
+  if (isSSEPayload) {
+    const payloadForParser = normalizedPayload.endsWith("\n\n")
+      ? normalizedPayload
+      : `${normalizedPayload}\n\n`;
+    const { events } = parseSSEEvents(payloadForParser);
+    for (const event of events) {
+      if (event.event !== "error") {
+        continue;
+      }
+      const streamMessage =
+        readMessageFromObject(event.data) ||
+        (typeof event.data === "string" ? event.data.trim() : null);
+      if (streamMessage) {
+        return streamMessage;
+      }
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(normalizedPayload);
+    const parsedMessage = readMessageFromObject(parsed);
+    if (parsedMessage) {
+      return parsedMessage;
+    }
+  } catch {
+    // Ignore JSON parsing errors and fall back to plain text.
+  }
+
+  return normalizedPayload;
+}
+
+async function readStreamToText(stream: NodeJS.ReadableStream): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const chunks: string[] = [];
+    let collectedLength = 0;
+
+    stream.setEncoding?.("utf8");
+
+    stream.on("data", (chunk: string | Buffer) => {
+      if (collectedLength >= MAX_SLACK_ERROR_BODY_LENGTH) {
+        return;
+      }
+      const chunkText = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      const remainingLength = MAX_SLACK_ERROR_BODY_LENGTH - collectedLength;
+      const clippedChunk = chunkText.slice(0, remainingLength);
+      chunks.push(clippedChunk);
+      collectedLength += clippedChunk.length;
+    });
+
+    stream.on("end", () => resolve(chunks.join("")));
+    stream.on("error", (error) => reject(error));
+  });
+}
+
+async function readMessageFromAxiosResponseData(data: unknown): Promise<string | null> {
+  if (!data) {
+    return null;
+  }
+
+  if (typeof data === "string") {
+    return readMessageFromTextPayload(data);
+  }
+
+  if (Buffer.isBuffer(data)) {
+    return readMessageFromTextPayload(data.toString("utf8"));
+  }
+
+  const messageFromObject = readMessageFromObject(data);
+  if (messageFromObject) {
+    return messageFromObject;
+  }
+
+  if (isReadableStreamLike(data)) {
+    try {
+      const streamText = await readStreamToText(data);
+      return readMessageFromTextPayload(streamText);
+    } catch {
+      return null;
     }
   }
 
@@ -280,41 +355,65 @@ function extractSlackErrorMessage(error: unknown): string {
   return DEFAULT_SLACK_ERROR_MESSAGE;
 }
 
-function normalizeSlackErrorMessage(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
+async function extractSlackErrorMessageAsync(error: unknown): Promise<string> {
+  if (!error) {
+    return DEFAULT_SLACK_ERROR_MESSAGE;
+  }
 
-function mapFriendlySlackErrorMessage(message: string): string | null {
-  for (const mapping of SLACK_FRIENDLY_ERROR_MAPPINGS) {
-    if (mapping.pattern.test(message)) {
-      return mapping.message;
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (axios.isAxiosError(error)) {
+    const responseMessage = await readMessageFromAxiosResponseData(
+      error.response?.data,
+    );
+    if (responseMessage) {
+      return responseMessage;
     }
   }
-  return null;
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  const objectMessage = readMessageFromObject(error);
+  if (objectMessage) {
+    return objectMessage;
+  }
+
+  return DEFAULT_SLACK_ERROR_MESSAGE;
 }
 
-function isTechnicalSlackErrorMessage(message: string): boolean {
-  return SLACK_TECHNICAL_ERROR_PATTERNS.some((pattern) => pattern.test(message));
-}
-
-function resolveSlackErrorMessage(error: unknown): string {
-  const rawMessage = extractSlackErrorMessage(error);
+function formatSlackErrorMessage(rawMessage: string): string {
   const normalizedMessage = normalizeSlackErrorMessage(rawMessage);
 
   if (!normalizedMessage) {
     return DEFAULT_SLACK_ERROR_MESSAGE;
   }
 
-  const mappedMessage = mapFriendlySlackErrorMessage(normalizedMessage);
-  if (mappedMessage) {
-    return mappedMessage;
-  }
 
-  if (isTechnicalSlackErrorMessage(normalizedMessage)) {
-    return DEFAULT_SLACK_ERROR_MESSAGE;
-  }
+
 
   return truncateFromEnd(normalizedMessage, MAX_USER_VISIBLE_ERROR_LENGTH);
+}
+
+function normalizeSlackErrorMessage(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+
+
+
+
+function resolveSlackErrorMessage(error: unknown): string {
+  const rawMessage = extractSlackErrorMessage(error);
+  return formatSlackErrorMessage(rawMessage);
+}
+
+async function resolveSlackErrorMessageAsync(error: unknown): Promise<string> {
+  const rawMessage = await extractSlackErrorMessageAsync(error);
+  return formatSlackErrorMessage(rawMessage);
 }
 
 function truncateForSlack(text: string): string {
@@ -337,7 +436,7 @@ async function sendUserFacingSlackErrorMessage(
     return;
   }
 
-  const errorMessage = resolveSlackErrorMessage(errorOrMessage);
+  const errorMessage = await resolveSlackErrorMessageAsync(errorOrMessage);
   const threadId = resolveThreadId(typedMessage);
 
   try {
@@ -371,22 +470,6 @@ function truncateFromEnd(text: string, limit: number): string {
   return `${text.slice(0, limit - 3)}...`;
 }
 
-function buildFinalStreamOverwriteMessage(
-  answerBody: string,
-  sourcesLine: string,
-): string {
-  if (!sourcesLine) {
-    return truncateFromEnd(answerBody, SLACK_STREAM_MARKDOWN_LIMIT);
-  }
-
-  if (sourcesLine.length >= SLACK_STREAM_MARKDOWN_LIMIT) {
-    return truncateFromEnd(sourcesLine, SLACK_STREAM_MARKDOWN_LIMIT);
-  }
-
-  const bodyLimit = SLACK_STREAM_MARKDOWN_LIMIT - sourcesLine.length;
-  return `${truncateFromEnd(answerBody, bodyLimit)}${sourcesLine}`;
-}
-
 function splitByLengthPreferringNewlines(text: string, limit: number): string[] {
   if (!text) {
     return [];
@@ -410,6 +493,586 @@ function splitByLengthPreferringNewlines(text: string, limit: number): string[] 
   }
 
   return chunks;
+}
+
+function splitSectionTextObjectByLimit(
+  textObject: unknown,
+  limit: number,
+): { chunks: Record<string, unknown>[]; didSplit: boolean; hasTextObject: boolean } {
+  if (!textObject || typeof textObject !== "object" || Array.isArray(textObject)) {
+    return { chunks: [], didSplit: false, hasTextObject: false };
+  }
+
+  const textRecord = textObject as Record<string, unknown>;
+  const textValue = textRecord.text;
+  if (typeof textValue !== "string") {
+    return { chunks: [textRecord], didSplit: false, hasTextObject: true };
+  }
+
+  const splitChunks = splitByLengthPreferringNewlines(textValue, limit);
+  if (splitChunks.length <= 1) {
+    return { chunks: [textRecord], didSplit: false, hasTextObject: true };
+  }
+
+  return {
+    chunks: splitChunks.map((chunk) => ({
+      ...textRecord,
+      text: chunk,
+    })),
+    didSplit: true,
+    hasTextObject: true,
+  };
+}
+
+function splitSectionFieldsByLimit(fields: unknown): {
+  groups: unknown[][];
+  didSplit: boolean;
+  hasFieldsArray: boolean;
+} {
+  if (!Array.isArray(fields)) {
+    return {
+      groups: [],
+      didSplit: false,
+      hasFieldsArray: false,
+    };
+  }
+
+  const expandedFields: unknown[] = [];
+  let didSplit = false;
+  for (const field of fields) {
+    if (!field || typeof field !== "object" || Array.isArray(field)) {
+      expandedFields.push(field);
+      continue;
+    }
+
+    const fieldRecord = field as Record<string, unknown>;
+    const fieldText = fieldRecord.text;
+    if (typeof fieldText !== "string") {
+      expandedFields.push(fieldRecord);
+      continue;
+    }
+
+    const fieldChunks = splitByLengthPreferringNewlines(
+      fieldText,
+      SLACK_SECTION_FIELD_TEXT_LIMIT,
+    );
+    if (fieldChunks.length <= 1) {
+      expandedFields.push(fieldRecord);
+      continue;
+    }
+
+    didSplit = true;
+    for (const fieldChunk of fieldChunks) {
+      expandedFields.push({
+        ...fieldRecord,
+        text: fieldChunk,
+      });
+    }
+  }
+
+  const groups: unknown[][] = [];
+  for (let i = 0; i < expandedFields.length; i += SLACK_SECTION_FIELDS_PER_BLOCK_LIMIT) {
+    groups.push(expandedFields.slice(i, i + SLACK_SECTION_FIELDS_PER_BLOCK_LIMIT));
+  }
+
+  if (groups.length > 1) {
+    didSplit = true;
+  }
+
+  return {
+    groups,
+    didSplit,
+    hasFieldsArray: true,
+  };
+}
+
+function splitSectionBlockForSlackLimits(block: any): any[] {
+  if (!block || typeof block !== "object" || Array.isArray(block) || block.type !== "section") {
+    return [block];
+  }
+
+  const sectionBlock = block as Record<string, unknown>;
+  const textSplit = splitSectionTextObjectByLimit(
+    sectionBlock.text,
+    SLACK_SECTION_TEXT_LIMIT,
+  );
+  const fieldsSplit = splitSectionFieldsByLimit(sectionBlock.fields);
+
+  if (!textSplit.didSplit && !fieldsSplit.didSplit) {
+    return [block];
+  }
+
+  const normalizedBlocks: any[] = [];
+  const textChunks = textSplit.hasTextObject ? textSplit.chunks : [];
+
+  if (textChunks.length > 0) {
+    for (let chunkIndex = 0; chunkIndex < textChunks.length; chunkIndex += 1) {
+      const normalizedChunk: Record<string, unknown> = {
+        ...sectionBlock,
+        text: textChunks[chunkIndex],
+      };
+
+      if (fieldsSplit.hasFieldsArray) {
+        if (chunkIndex === 0 && fieldsSplit.groups.length > 0) {
+          normalizedChunk.fields = fieldsSplit.groups[0];
+        } else {
+          delete normalizedChunk.fields;
+        }
+      }
+
+      if (chunkIndex > 0) {
+        delete normalizedChunk.accessory;
+        delete normalizedChunk.block_id;
+      }
+
+      normalizedBlocks.push(normalizedChunk);
+    }
+
+    for (let fieldGroupIndex = 1; fieldGroupIndex < fieldsSplit.groups.length; fieldGroupIndex += 1) {
+      const fieldsOnlyChunk: Record<string, unknown> = {
+        ...sectionBlock,
+        fields: fieldsSplit.groups[fieldGroupIndex],
+      };
+      delete fieldsOnlyChunk.text;
+      delete fieldsOnlyChunk.accessory;
+      delete fieldsOnlyChunk.block_id;
+      normalizedBlocks.push(fieldsOnlyChunk);
+    }
+
+    return normalizedBlocks;
+  }
+
+  if (!fieldsSplit.hasFieldsArray || fieldsSplit.groups.length === 0) {
+    return [block];
+  }
+
+  for (let groupIndex = 0; groupIndex < fieldsSplit.groups.length; groupIndex += 1) {
+    const normalizedFieldsChunk: Record<string, unknown> = {
+      ...sectionBlock,
+      fields: fieldsSplit.groups[groupIndex],
+    };
+    if (groupIndex > 0) {
+      delete normalizedFieldsChunk.accessory;
+      delete normalizedFieldsChunk.block_id;
+    }
+    normalizedBlocks.push(normalizedFieldsChunk);
+  }
+
+  return normalizedBlocks;
+}
+
+function normalizeSlackBlocksForLimits(blocks: any[]): any[] {
+  const normalizedBlocks: any[] = [];
+  for (const block of blocks) {
+    normalizedBlocks.push(...splitSectionBlockForSlackLimits(block));
+  }
+  return normalizedBlocks;
+}
+
+type MarkdownTableSegment =
+  | { type: "markdown"; content: string }
+  | { type: "table"; header: string[]; rows: string[][] };
+
+type FenceMarker = "`" | "~";
+
+interface ParsedMarkdownTable {
+  header: string[];
+  rows: string[][];
+  nextLineIndex: number;
+}
+
+function isMarkdownTableRow(line: string): boolean {
+  return /^\s*\|.*\|\s*$/.test(line);
+}
+
+function isMarkdownTableSeparatorRow(line: string): boolean {
+  return /^\s*\|[\s:]*-{3,}[\s:]*(\|[\s:]*-{3,}[\s:]*)*\|\s*$/.test(line);
+}
+
+function parseMarkdownTableCells(row: string): string[] {
+  return row
+    .replace(/^\s*\|/, "")
+    .replace(/\|\s*$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function getFenceMarker(line: string): FenceMarker | null {
+  if (/^\s*`{3,}/.test(line)) {
+    return "`";
+  }
+  if (/^\s*~{3,}/.test(line)) {
+    return "~";
+  }
+  return null;
+}
+
+function isFenceClosingLine(line: string, marker: FenceMarker): boolean {
+  if (marker === "`") {
+    return /^\s*`{3,}/.test(line);
+  }
+  return /^\s*~{3,}/.test(line);
+}
+
+function tryParseMarkdownTableAtLine(
+  lines: string[],
+  startLineIndex: number,
+): ParsedMarkdownTable | null {
+  const headerLine = lines[startLineIndex];
+  const separatorLine = lines[startLineIndex + 1];
+  const firstDataLine = lines[startLineIndex + 2];
+
+  if (!headerLine || !separatorLine || !firstDataLine) {
+    return null;
+  }
+
+  if (
+    !isMarkdownTableRow(headerLine) ||
+    !isMarkdownTableSeparatorRow(separatorLine) ||
+    !isMarkdownTableRow(firstDataLine)
+  ) {
+    return null;
+  }
+
+  const header = parseMarkdownTableCells(headerLine);
+  const rows: string[][] = [];
+  let rowIndex = startLineIndex + 2;
+
+  while (rowIndex < lines.length) {
+    const rowLine = lines[rowIndex];
+    if (!rowLine || !isMarkdownTableRow(rowLine)) {
+      break;
+    }
+    rows.push(parseMarkdownTableCells(rowLine));
+    rowIndex += 1;
+  }
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return {
+    header,
+    rows,
+    nextLineIndex: rowIndex,
+  };
+}
+
+function hasMarkdownTableStartOutsideCodeFences(content: string): boolean {
+  if (!content) {
+    return false;
+  }
+
+  const normalizedContent = content.replace(/\r\n/g, "\n");
+  const lines = normalizedContent.split("\n");
+  let activeFenceMarker: FenceMarker | null = null;
+
+  for (let lineIndex = 0; lineIndex < lines.length - 1; lineIndex += 1) {
+    const line = lines[lineIndex] ?? "";
+
+    if (activeFenceMarker) {
+      if (isFenceClosingLine(line, activeFenceMarker)) {
+        activeFenceMarker = null;
+      }
+      continue;
+    }
+
+    const openingFenceMarker = getFenceMarker(line);
+    if (openingFenceMarker) {
+      activeFenceMarker = openingFenceMarker;
+      continue;
+    }
+
+    const nextLine = lines[lineIndex + 1] ?? "";
+    if (isMarkdownTableRow(line) && isMarkdownTableSeparatorRow(nextLine)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function splitMarkdownMessageIntoTableAwareSegments(content: string): MarkdownTableSegment[] {
+  if (!content) {
+    return [];
+  }
+
+  const normalizedContent = content.replace(/\r\n/g, "\n");
+  const lines = normalizedContent.split("\n");
+  const segments: MarkdownTableSegment[] = [];
+  const markdownBuffer: string[] = [];
+  let activeFenceMarker: FenceMarker | null = null;
+
+  const flushMarkdownBuffer = () => {
+    if (markdownBuffer.length === 0) {
+      return;
+    }
+    const markdownContent = markdownBuffer.join("\n");
+    markdownBuffer.length = 0;
+    if (markdownContent.length === 0) {
+      return;
+    }
+    segments.push({
+      type: "markdown",
+      content: markdownContent,
+    });
+  };
+
+  for (let lineIndex = 0; lineIndex < lines.length;) {
+    const line = lines[lineIndex] ?? "";
+
+    if (activeFenceMarker) {
+      markdownBuffer.push(line);
+      if (isFenceClosingLine(line, activeFenceMarker)) {
+        activeFenceMarker = null;
+      }
+      lineIndex += 1;
+      continue;
+    }
+
+    const openingFenceMarker = getFenceMarker(line);
+    if (openingFenceMarker) {
+      activeFenceMarker = openingFenceMarker;
+      markdownBuffer.push(line);
+      lineIndex += 1;
+      continue;
+    }
+
+    const parsedTable = tryParseMarkdownTableAtLine(lines, lineIndex);
+    if (parsedTable) {
+      flushMarkdownBuffer();
+      segments.push({
+        type: "table",
+        header: parsedTable.header,
+        rows: parsedTable.rows,
+      });
+      lineIndex = parsedTable.nextLineIndex;
+      continue;
+    }
+
+    markdownBuffer.push(line);
+    lineIndex += 1;
+  }
+
+  flushMarkdownBuffer();
+  return segments;
+}
+
+function buildSlackRichTextTextElement(text: string, makeBold: boolean): Record<string, unknown> {
+  text = markdownToText(text);
+  const element: Record<string, unknown> = {
+    type: "text",
+    text,
+  };
+  if (makeBold) {
+    element.style = {
+      bold: true,
+    };
+  }
+  return element;
+}
+
+function buildSlackRichTextLinkElement(
+  url: string,
+  label: string | undefined,
+  makeBold: boolean,
+): Record<string, unknown> {
+  const element: Record<string, unknown> = {
+    type: "link",
+    url,
+  };
+  if (label && label !== url) {
+    element.text = label;
+  }
+  if (makeBold) {
+    element.style = {
+      bold: true,
+    };
+  }
+  return element;
+}
+
+function splitTrailingPunctuationFromUrl(value: string): { url: string; trailingText: string } {
+  let url = value;
+  let trailingText = "";
+
+  while (url.length > 0 && /[),.;!?]$/.test(url)) {
+    trailingText = `${url.slice(-1)}${trailingText}`;
+    url = url.slice(0, -1);
+  }
+
+  return {
+    url,
+    trailingText,
+  };
+}
+
+function appendTextWithClickableUrls(
+  text: string,
+  elements: Record<string, unknown>[],
+  makeBold: boolean,
+): void {
+  if (!text) {
+    return;
+  }
+
+  const bareUrlRegex = /https?:\/\/[^\s<>()]+/g;
+  let cursor = 0;
+  bareUrlRegex.lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = bareUrlRegex.exec(text)) !== null) {
+    const matchedUrl = match[0] ?? "";
+    if (!matchedUrl) {
+      continue;
+    }
+
+    if (match.index > cursor) {
+      const plainTextChunk = text.slice(cursor, match.index);
+      if (plainTextChunk.length > 0) {
+        elements.push(buildSlackRichTextTextElement(plainTextChunk, makeBold));
+      }
+    }
+
+    const { url, trailingText } = splitTrailingPunctuationFromUrl(matchedUrl);
+    if (url.length > 0) {
+      elements.push(buildSlackRichTextLinkElement(url, undefined, makeBold));
+    } else {
+      elements.push(buildSlackRichTextTextElement(matchedUrl, makeBold));
+    }
+
+    if (trailingText.length > 0) {
+      elements.push(buildSlackRichTextTextElement(trailingText, makeBold));
+    }
+
+    cursor = match.index + matchedUrl.length;
+  }
+
+  if (cursor < text.length) {
+    const remainingText = text.slice(cursor);
+    if (remainingText.length > 0) {
+      elements.push(buildSlackRichTextTextElement(remainingText, makeBold));
+    }
+  }
+}
+
+function buildSlackTableCellElements(
+  cellText: string,
+  isHeaderCell: boolean,
+): Record<string, unknown>[] {
+  const elements: Record<string, unknown>[] = [];
+  const markdownLinkRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  let cursor = 0;
+  markdownLinkRegex.lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = markdownLinkRegex.exec(cellText)) !== null) {
+    const fullMatch = match[0] ?? "";
+    if (!fullMatch) {
+      continue;
+    }
+
+    const label = match[1] ?? "";
+    const rawUrl = match[2] ?? "";
+    const leadingText = cellText.slice(cursor, match.index);
+    appendTextWithClickableUrls(leadingText, elements, isHeaderCell);
+
+    const { url, trailingText } = splitTrailingPunctuationFromUrl(rawUrl);
+    if (url.length > 0) {
+      elements.push(buildSlackRichTextLinkElement(url, label, isHeaderCell));
+    } else {
+      appendTextWithClickableUrls(fullMatch, elements, isHeaderCell);
+    }
+
+    if (trailingText.length > 0) {
+      elements.push(buildSlackRichTextTextElement(trailingText, isHeaderCell));
+    }
+
+    cursor = match.index + fullMatch.length;
+  }
+
+  const trailingText = cellText.slice(cursor);
+  appendTextWithClickableUrls(trailingText, elements, isHeaderCell);
+
+  if (elements.length === 0) {
+    elements.push(buildSlackRichTextTextElement("", isHeaderCell));
+  }
+
+  return elements;
+}
+
+function buildSlackTableCell(cellText: string, isHeaderCell: boolean): Record<string, unknown> {
+  return {
+    type: "rich_text",
+    elements: [
+      {
+        type: "rich_text_section",
+        elements: buildSlackTableCellElements(cellText, isHeaderCell),
+      },
+    ],
+  };
+}
+
+function buildSlackTableBlockFromMarkdownSegment(
+  segment: Extract<MarkdownTableSegment, { type: "table" }>,
+): Record<string, unknown> {
+  const allRows = [segment.header, ...segment.rows];
+  const columnCount = allRows.reduce((max, row) => Math.max(max, row.length), 0);
+  const normalizedRows = allRows.map((row, rowIndex) =>
+    Array.from({ length: columnCount }, (_, columnIndex) =>
+      buildSlackTableCell(row[columnIndex] ?? "", rowIndex === 0),
+    ),
+  );
+
+  return {
+    type: "table",
+    rows: normalizedRows,
+  };
+}
+
+
+function splitSlackBlocksByLimit(
+  blocks: any[],
+  maxBlocksPerMessage: number = SLACK_BLOCKS_PER_MESSAGE_LIMIT
+): any[][] {
+  if (blocks.length === 0) {
+    return [];
+  }
+  const result = [];
+  for (let i = 0; i < blocks.length; i += maxBlocksPerMessage) {
+    result.push(blocks.slice(i, i + maxBlocksPerMessage));
+  }
+  return result;
+}
+
+async function buildFinalSlackChunks(
+  answerBody: string,
+): Promise<any[][]> {  
+
+  try {
+    const tableAwareSegments = splitMarkdownMessageIntoTableAwareSegments(answerBody || "");
+    const combinedBlocks: any[] = [];
+
+    for (const segment of tableAwareSegments) {
+      if (segment.type === "markdown") {
+        if (segment.content.trim().length === 0) {
+          continue;
+        }
+        const markdownBlocks = await markdownToBlocks(segment.content);
+        const normalizedMarkdownBlocks = normalizeSlackBlocksForLimits(markdownBlocks);
+        combinedBlocks.push(...normalizedMarkdownBlocks);
+        continue;
+      }
+
+      combinedBlocks.push(buildSlackTableBlockFromMarkdownSegment(segment));
+    }
+
+    const blockChunks = splitSlackBlocksByLimit(combinedBlocks);
+
+    return blockChunks;
+  } catch (error) {
+    throw error;
+  }
 }
 
 function parseSlackTimestamp(ts?: string): number | null {
@@ -609,9 +1272,10 @@ function getCitationWebUrl(webUrl?: string): string {
   return `${process.env.FRONTEND_PUBLIC_URL || ""}${webUrl}`;
 }
 
-function buildCitationSources(citations?: CitationData[]): string[] {
-  const citationLinks: string[] = [];
+function buildCitationSources(citations?: CitationData[]): any[]  {
 
+  let blocks: any[] = [];
+  let elements: any[] = [];
   for (const citation of citations || []) {
     const webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
     if (!webUrl) {
@@ -620,14 +1284,56 @@ function buildCitationSources(citations?: CitationData[]): string[] {
 
     const chunkIndex = citation.citationData.chunkIndex;
     if (chunkIndex) {
-      citationLinks.push(`<${webUrl}|[${chunkIndex}]>`);
-      continue;
+
+      elements.push({
+        "type": "link",
+        "url": webUrl,
+        "text": ` [${chunkIndex}]`,
+      });
     }
-    citationLinks.push(`<${webUrl}|${webUrl}>`);
+
+    if (elements.length == 10) {
+      blocks.push({
+        "type": "rich_text",
+        "elements": [
+          {
+            "type": "rich_text_section",
+            "elements": [
+              ...elements,
+            ]
+          }
+        ]
+      });
+      elements = [];
+    }
   }
 
-  return citationLinks;
+  if (elements.length > 0) {
+    blocks.push({
+      "type": "rich_text",
+      "elements": [
+        {
+          "type": "rich_text_section",
+          "elements": [
+            ...elements,
+          ]
+        }
+      ]
+    });
+  }
+
+  if (blocks.length > 0) {
+    blocks = [ {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "*Sources:*",
+      },
+    }, ...blocks];
+  }
+  return blocks;
 }
+
 
 
 function buildChatStreamUrl(
@@ -652,48 +1358,12 @@ function buildChatStreamUrl(
 }
 
 async function resolveSlackBotForEvent(
-  // typedMessage: SlackMessagePayload,
-  // typedContext: TypedSlackContext,
 ): Promise<SlackBotConfig | null> {
-  // let latestBots: SlackBotConfig[] = [];
-  // try {
-  //   latestBots = await refreshSlackBotRegistry({ force: true });
-  // } catch (error) {
-  //   console.error("Failed to refresh Slack bot registry for event routing:", error);
-  //   latestBots = getCachedSlackBots();
-  // }
-
-  // if (latestBots.length === 0) {
-  //   return null;
-  // }
-
   const matchedFromRequestContext = getCurrentMatchedSlackBot();
   if (matchedFromRequestContext) {
     return matchedFromRequestContext;
-    // const refreshedMatchedBot = findSlackBotByIdentity(latestBots, {
-    //   teamId: matchedFromRequestContext.teamId,
-    //   botId: matchedFromRequestContext.botId,
-    //   botUserId: matchedFromRequestContext.botUserId,
-    // });
-    // if (refreshedMatchedBot) {
-    //   return refreshedMatchedBot;
-    // }
   }
 
-  // const matchedFromContext = findSlackBotByIdentity(latestBots, {
-  //   teamId: typedContext.matchedBotTeamId || typedContext.teamId,
-  //   botId: typedContext.matchedBotId || typedMessage.bot_id,
-  //   botUserId: typedContext.matchedBotUserId || typedContext.botUserId,
-  // });
-  // if (matchedFromContext) {
-  //   return matchedFromContext;
-  // }
-
-  // return findSlackBotByIdentity(latestBots, {
-  //   teamId: typedContext.teamId,
-  //   botId: typedMessage.bot_id,
-  //   botUserId: typedContext.botUserId,
-  // });
   return null;
 }
 
@@ -766,26 +1436,84 @@ async function processSlackMessage(
   let streamStopped = false;
   let waitingMessageTs: string | null = null;
 
-  const sendOrUpdateNonStreamMessage = async (text: string): Promise<void> => {
+  const sendOrUpdateNonStreamMessage = async (
+    text: string,
+    blocks?: any[],
+  ): Promise<void> => {
+    
     const truncatedText = truncateForSlack(text);
+    if (!text && (!blocks || blocks.length === 0)) {
+      return;
+    }
     if (waitingMessageTs) {
       try {
         await typedClient.chat.update({
           channel: typedMessage.channel!,
           ts: waitingMessageTs,
           text: truncatedText,
+          ...(blocks && blocks.length > 0 ? { blocks } : {}),
         });
         return;
       } catch (error) {
         console.error("Error updating Slack waiting message:", error);
+        if (blocks && blocks.length > 0) {
+          throw error;
+        } 
+        else {
+          try {
+            await typedClient.chat.update({
+              channel: typedMessage.channel!,
+              ts: waitingMessageTs,
+              text: truncatedText,
+            });
+            return;
+          } catch (fallbackError) {
+            console.error(
+              "Error updating Slack waiting message with text fallback:",
+              fallbackError,
+            );
+            throw fallbackError;
+          }
+        }
       }
     }
 
-    await typedClient.chat.postMessage({
-      channel: typedMessage.channel!,
-      thread_ts: threadId,
-      text: truncatedText,
-    });
+    try {
+      await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
+        thread_ts: threadId,
+        text: truncatedText,
+        ...(blocks && blocks.length > 0 ? { blocks } : {}),
+      });
+    } catch (error) {
+      if (blocks && blocks.length > 0) {
+        throw error;
+      }
+      console.error("Error posting Slack non-stream blocks message:", error);
+      await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
+        thread_ts: threadId,
+        text: truncatedText,
+      });
+    }
+  };
+
+  const postThreadChunkMessage = async (chunk: any[]): Promise<void> => {
+    try {
+      await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
+        thread_ts: threadId,
+        text: "",
+        blocks: chunk,
+      });
+    } catch (error) {
+      console.error("Error posting Slack chunk as blocks, retrying with text:", error);
+      await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
+        thread_ts: threadId,
+        text: "Something went wrong while generating the response. Please try again later.",
+      });
+    }
   };
 
   const stopSlackStream = async (markdownText?: string): Promise<boolean> => {
@@ -863,6 +1591,9 @@ async function processSlackMessage(
     let streamErrorMessage: string | null = null;
     let completionConversation: ConversationData["conversation"] | null = null;
     let queuedStreamAppend: Promise<void> = Promise.resolve();
+    let tableStreamingDisabled = false;
+    let streamTableProbeText = "";
+    let tablePauseHintSent = false;
 
     const pushTextToSlackStream = async (text: string): Promise<void> => {
       if (text.length === 0) {
@@ -945,9 +1676,76 @@ async function processSlackMessage(
         });
     };
 
+    const sendTableStreamingPausedHint = async (): Promise<void> => {
+      if (tablePauseHintSent) {
+        return;
+      }
+      tablePauseHintSent = true;
+
+      if (streamTs) {
+        const renderedHint = markdownToSlackMrkdwn(TABLE_STREAMING_PAUSED_HINT, {
+          preserveTrailingWhitespace: true,
+        });
+        if (!renderedHint) {
+          return;
+        }
+
+        try {
+          await typedClient.apiCall("chat.appendStream", {
+            channel: typedMessage.channel!,
+            ts: streamTs,
+            markdown_text: truncateForSlackStreamMarkdown(renderedHint),
+          });
+        } catch (error) {
+          console.error("Error appending Slack table formatting hint:", error);
+        }
+        return;
+      }
+
+      if (!waitingMessageTs) {
+        return;
+      }
+
+      try {
+        await typedClient.chat.update({
+          channel: typedMessage.channel!,
+          ts: waitingMessageTs,
+          text: truncateForSlack(TABLE_STREAMING_PAUSED_HINT),
+        });
+      } catch (error) {
+        console.error("Error updating Slack waiting message with table hint:", error);
+      }
+    };
+
     await new Promise<void>((resolve, reject) => {
       responseStream.setEncoding("utf8");
-      responseStream.on("data", (chunk: string) => {
+      let settled = false;
+
+      const cleanupListeners = (): void => {
+        responseStream.removeListener("data", onData);
+        responseStream.removeListener("end", onEnd);
+        responseStream.removeListener("error", onError);
+      };
+
+      const resolveOnce = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanupListeners();
+        resolve();
+      };
+
+      const rejectOnce = (error: unknown): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanupListeners();
+        reject(error);
+      };
+
+      const onData = (chunk: string): void => {
         sseBuffer += chunk;
         const { events, remainder } = parseSSEEvents(sseBuffer);
         sseBuffer = remainder;
@@ -956,6 +1754,22 @@ async function processSlackMessage(
           if (evt.event === "answer_chunk" || evt.event === "chunk") {
             const nextChunk = extractStreamChunk(evt.data);
             if (nextChunk.length === 0) {
+              continue;
+            }
+
+            if (tableStreamingDisabled) {
+              continue;
+            }
+
+            streamTableProbeText += nextChunk;
+            if (hasMarkdownTableStartOutsideCodeFences(streamTableProbeText)) {
+              tableStreamingDisabled = true;
+              pendingAppendText = "";
+              queuedStreamAppend = queuedStreamAppend
+                .then(async () => sendTableStreamingPausedHint())
+                .catch((error) => {
+                  console.error("Error sending Slack table formatting hint:", error);
+                });
               continue;
             }
 
@@ -975,12 +1789,23 @@ async function processSlackMessage(
             }
           } else if (evt.event === "error") {
             streamErrorMessage = resolveSlackErrorMessage(evt.data);
+            resolveOnce();
+            return;
           }
         }
-      });
+      };
 
-      responseStream.on("end", () => resolve());
-      responseStream.on("error", (error) => reject(error));
+      const onEnd = (): void => {
+        resolveOnce();
+      };
+
+      const onError = (error: unknown): void => {
+        rejectOnce(error);
+      };
+
+      responseStream.on("data", onData);
+      responseStream.on("end", onEnd);
+      responseStream.on("error", onError);
     });
 
     flushPendingAppend();
@@ -1039,37 +1864,94 @@ async function processSlackMessage(
       return;
     }
 
-    if (!streamTs && botResponse.content) {
+    if (!streamTs && !tableStreamingDisabled && botResponse.content) {
       await pushTextToSlackStream(botResponse.content);
     }
+    
 
-    const citationLinks = buildCitationSources(botResponse.citations);
-
-    const convertedFinalText = markdownToSlackMrkdwn(botResponse.content || "");
-    const sourcesLine =
-      citationLinks.length > 0
-        ? `\n\n*Sources:* ${citationLinks.join(" ")}`
-        : "";
-
-    const finalMessageText = `${convertedFinalText}${sourcesLine}`;
-    const finalStreamMessageText = buildFinalStreamOverwriteMessage(
-      convertedFinalText,
-      sourcesLine,
-    );
-
+    const citationBlocks = buildCitationSources(botResponse.citations);
+    const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
+    const answerBody = botResponse.content || "" ;
+    const finalChunks = await buildFinalSlackChunks(answerBody);
+    
+    
+    const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
+    
     if (streamTs) {
       await stopSlackStream();
-      await typedClient.apiCall("chat.update", {
-        channel: typedMessage.channel!,
-        ts: streamTs,
-        markdown_text: finalStreamMessageText,
-      });
+      if (firstFinalChunk) {
+        try {
+          await typedClient.chat.update({
+            channel: typedMessage.channel!,
+            ts: streamTs,
+            text: "",
+            blocks: firstFinalChunk,
+          });
+          for (const remainingChunk of remainingFinalChunks) {
+            await postThreadChunkMessage(remainingChunk);
+          }
+          for (const citationChunk of citationBlockChunks) {
+            await postThreadChunkMessage(citationChunk);
+          }
+        } catch (error) {
+          const fallbackErrorMessage =
+            "Something went wrong while generating the response. Please try again later.";
+          console.error(
+            "Error updating final streamed Slack message with blocks, trying delete and repost:",
+            error,
+          );
+          let replacedMessageSuccessfully = false;
+          try {
+            await typedClient.apiCall("chat.delete", {
+              channel: typedMessage.channel!,
+              ts: streamTs,
+            });
+            await typedClient.chat.postMessage({
+              channel: typedMessage.channel!,
+              thread_ts: threadId,
+              text: "",
+              blocks: firstFinalChunk,
+            });
+
+            for (const remainingChunk of remainingFinalChunks) {
+              await postThreadChunkMessage(remainingChunk);
+            }
+            for (const citationChunk of citationBlockChunks) {
+              await postThreadChunkMessage(citationChunk);
+            }
+            replacedMessageSuccessfully = true;
+
+          } catch (replacementError) {
+            console.error(
+              "Error replacing failed streamed Slack message, sending fallback error message:",
+              replacementError,
+            );
+          }
+
+          if (!replacedMessageSuccessfully) {
+            await sendOrUpdateNonStreamMessage(fallbackErrorMessage);
+          }
+        }
+      }
+      
     } else {
-      await sendOrUpdateNonStreamMessage(truncateForSlack(finalMessageText));
+      if (firstFinalChunk) {
+        await sendOrUpdateNonStreamMessage(
+          "",
+          firstFinalChunk,
+        );
+
+        for (const remainingChunk of remainingFinalChunks) {
+          await postThreadChunkMessage(remainingChunk);
+        }
+        for (const citationChunk of citationBlockChunks) {
+          await postThreadChunkMessage(citationChunk);
+        }
+      }
+      
     }
   } catch (error) {
-    console.error("Error calling the Chat API:", error);
-    const errorMessage = resolveSlackErrorMessage(error);
+    const errorMessage = await resolveSlackErrorMessageAsync(error);
     if (streamTs) {
       const stopStreamSucceeded = await stopSlackStream(errorMessage);
       if (!stopStreamSucceeded) {

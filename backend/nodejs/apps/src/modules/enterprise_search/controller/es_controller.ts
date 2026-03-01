@@ -116,7 +116,7 @@ const hydrateScopedRequestAsUser = async (
   
   
   if (!user) {
-    throw new NotFoundError('User not found');
+    throw new NotFoundError('User not found, create an account on the Pipeshub platform first.');
   }
 
   const authTokenService = new AuthTokenService(

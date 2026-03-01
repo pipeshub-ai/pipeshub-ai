@@ -17924,7 +17924,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
 
             if not result or len(result) == 0 or result[0] is None:
-                self.logger.warning(f"No permissions found for user {user_id} on agent {agent_id}")
+                self.logger.warning(f"No agent/permissions found for user {user_id} on agent {agent_id}")
                 return None
 
             agent = result[0]
