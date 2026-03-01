@@ -407,13 +407,11 @@ function normalizeSlackErrorMessage(text: string): string {
 
 
 function resolveSlackErrorMessage(error: unknown): string {
-  console.log("Resolving Slack error message", error);
   const rawMessage = extractSlackErrorMessage(error);
   return formatSlackErrorMessage(rawMessage);
 }
 
 async function resolveSlackErrorMessageAsync(error: unknown): Promise<string> {
-  console.log("Resolving Slack error message", error);
   const rawMessage = await extractSlackErrorMessageAsync(error);
   return formatSlackErrorMessage(rawMessage);
 }
