@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -177,6 +178,8 @@ class OneDriveConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
 
     async def init(self) -> bool:
+        logging.getLogger("azure").setLevel(logging.ERROR)
+
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
         if not config:
             self.logger.error("OneDrive config not found")
@@ -1420,6 +1423,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Syncing user drives...")
             await self._process_users_in_batches(users)
 
+            #TODO: Cleanup as this method is not used anymore
             # Step 4: Detect and handle permission changes
             self.logger.info("Checking for permission changes...")
             await self._detect_and_handle_permission_changes()
