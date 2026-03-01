@@ -51,6 +51,7 @@ export interface AgentBuilderHeaderProps {
   shareWithOrg: boolean;
   setShareWithOrg: (value: boolean) => void;
   hasToolsets: boolean; // Whether the current flow has toolsets (blocks org sharing)
+  isReadOnly?: boolean;
 }
 
 export interface AgentBuilderCanvasWrapperProps {
@@ -62,6 +63,7 @@ export interface AgentBuilderCanvasWrapperProps {
   configuredConnectors: Connector[];
   connectorRegistry: any[];
   toolsets: any[];
+  refreshToolsets: () => Promise<void>;
   isBusiness: boolean;
   nodes: any[];
   edges: any[];
@@ -76,6 +78,7 @@ export interface AgentBuilderCanvasWrapperProps {
   onNodeEdit?: (nodeId: string, data: any) => void;
   onNodeDelete?: (nodeId: string) => void;
   onError?: (error: string | AgentBuilderError) => void;
+  isReadOnly?: boolean;
 }
 
 export interface AgentBuilderError {
@@ -123,6 +126,7 @@ export interface UseAgentBuilderDataReturn {
   loadedAgent: Agent | null;
   error: string | AgentBuilderError | null;
   setError: (error: string | AgentBuilderError | null) => void;
+  refreshToolsets: () => Promise<void>; // Refresh toolsets after OAuth authentication
 }
 
 export interface UseAgentBuilderStateReturn {

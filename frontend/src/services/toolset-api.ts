@@ -6,6 +6,49 @@ import {
   Tool,
 } from '../types/agent';
 
+// ============================================================================
+// Instance-based types (new architecture)
+// ============================================================================
+
+export interface ToolsetInstance {
+  /** Admin-created instance UUID */
+  _id: string;
+  instanceName: string;
+  toolsetType: string;
+  authType: 'OAUTH' | 'API_TOKEN' | 'BEARER_TOKEN' | 'USERNAME_PASSWORD' | 'NONE';
+  oauthConfigId?: string;
+  orgId: string;
+  createdBy: string;
+  createdAtTimestamp: number;
+  updatedAtTimestamp: number;
+  // Enriched from registry
+  displayName?: string;
+  description?: string;
+  iconPath?: string;
+  toolCount?: number;
+}
+
+/** Merged view item from GET /my-toolsets */
+export interface MyToolset {
+  instanceId: string;
+  instanceName: string;
+  toolsetType: string;
+  authType: 'OAUTH' | 'API_TOKEN' | 'BEARER_TOKEN' | 'USERNAME_PASSWORD' | 'NONE';
+  oauthConfigId?: string;
+  displayName: string;
+  description: string;
+  iconPath: string;
+  category: string;
+  supportedAuthTypes: string[];
+  toolCount: number;
+  tools: Array<{ name: string; fullName: string; description: string }>;
+  isConfigured: boolean;
+  isAuthenticated: boolean;
+  createdBy?: string;
+  createdAtTimestamp?: number;
+  updatedAtTimestamp?: number;
+}
+
 /**
  * Toolset API Service
  * Handles all toolset-related API calls for registry, configuration, and auth status
@@ -516,6 +559,331 @@ class ToolsetApiService {
       throw error;
     }
   }
+
+  // ============================================================================
+  // Instance Management (New Admin-Created Instance Architecture)
+  // ============================================================================
+
+  /**
+   * Get all admin-created toolset instances for the organization.
+   */
+  static async getToolsetInstances(params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+  }): Promise<{
+    instances: ToolsetInstance[];
+    pagination: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+      hasNext: boolean;
+      hasPrev: boolean;
+    };
+  }> {
+    try {
+      const queryParams = new URLSearchParams();
+      if (params?.page) queryParams.append('page', params.page.toString());
+      if (params?.limit) queryParams.append('limit', params.limit.toString());
+      if (params?.search) queryParams.append('search', params.search);
+
+      const response = await axios.get(
+        `/api/v1/toolsets/instances?${queryParams.toString()}`
+      );
+      return {
+        instances: response.data.instances || [],
+        pagination: response.data.pagination || {
+          page: 1, limit: 50, total: 0, totalPages: 0, hasNext: false, hasPrev: false,
+        },
+      };
+    } catch (error) {
+      console.error('Failed to fetch toolset instances:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get a single toolset instance by ID.
+   */
+  static async getToolsetInstance(instanceId: string): Promise<ToolsetInstance> {
+    try {
+      const response = await axios.get(`/api/v1/toolsets/instances/${instanceId}`);
+      return response.data.instance;
+    } catch (error) {
+      console.error('Failed to fetch toolset instance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a new admin toolset instance.
+   * Admin only.
+   */
+  static async createToolsetInstance(params: {
+    instanceName: string;
+    toolsetType: string;
+    authType: string;
+    baseUrl?: string;
+    authConfig?: {
+      clientId?: string;
+      clientSecret?: string;
+      [key: string]: any;
+    };
+    [key: string]: any;
+  }): Promise<ToolsetInstance> {
+    try {
+      const response = await axios.post('/api/v1/toolsets/instances', params);
+      return response.data.instance;
+    } catch (error) {
+      console.error('Failed to create toolset instance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update an admin toolset instance (rename, update OAuth credentials, or switch oauthConfigId).
+   * Admin only. Changing oauthConfigId or credentials will deauthenticate all users.
+   */
+  static async updateToolsetInstance(
+    instanceId: string,
+    params: {
+      instanceName?: string;
+      baseUrl?: string;
+      oauthConfigId?: string;
+      authConfig?: {
+        clientId?: string;
+        clientSecret?: string;
+        [key: string]: any;
+      };
+    }
+  ): Promise<ToolsetInstance> {
+    try {
+      const response = await axios.put(`/api/v1/toolsets/instances/${instanceId}`, params);
+      return response.data.instance;
+    } catch (error) {
+      console.error('Failed to update toolset instance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete an admin toolset instance.
+   * Admin only.
+   */
+  static async deleteToolsetInstance(instanceId: string): Promise<void> {
+    try {
+      await axios.delete(`/api/v1/toolsets/instances/${instanceId}`);
+    } catch (error) {
+      console.error('Failed to delete toolset instance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get merged view: admin instances + current user's auth status.
+   * This replaces getConfiguredToolsets() for the new architecture.
+   */
+  static async getMyToolsets(params?: {
+    search?: string;
+  }): Promise<{ toolsets: MyToolset[] }> {
+    try {
+      const queryParams = new URLSearchParams();
+      if (params?.search) queryParams.append('search', params.search);
+
+      const response = await axios.get(
+        `/api/v1/toolsets/my-toolsets?${queryParams.toString()}`
+      );
+      return { toolsets: response.data.toolsets || [] };
+    } catch (error) {
+      console.error('Failed to fetch my toolsets:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Authenticate an instance with API token, bearer token, or username/password.
+   * For OAUTH, use getInstanceOAuthAuthorizationUrl instead.
+   */
+  static async authenticateToolsetInstance(
+    instanceId: string,
+    credentials: {
+      apiToken?: string;
+      bearerToken?: string;
+      username?: string;
+      password?: string;
+      [key: string]: any;
+    }
+  ): Promise<{ isAuthenticated: boolean }> {
+    try {
+      const response = await axios.post(
+        `/api/v1/toolsets/instances/${instanceId}/authenticate`,
+        { credentials }
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Failed to authenticate toolset instance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Remove the current user's credentials for a toolset instance.
+   */
+  static async removeToolsetCredentials(instanceId: string): Promise<void> {
+    try {
+      await axios.delete(`/api/v1/toolsets/instances/${instanceId}/credentials`);
+    } catch (error) {
+      console.error('Failed to remove toolset credentials:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Clear OAuth credentials for re-authentication.
+   */
+  static async reauthenticateToolsetInstance(instanceId: string): Promise<void> {
+    try {
+      await axios.post(`/api/v1/toolsets/instances/${instanceId}/reauthenticate`);
+    } catch (error) {
+      console.error('Failed to reauthenticate toolset instance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get OAuth authorization URL for a toolset instance.
+   */
+  static async getInstanceOAuthAuthorizationUrl(
+    instanceId: string,
+    baseUrl?: string
+  ): Promise<{ success: boolean; authorizationUrl: string; state: string }> {
+    try {
+      const queryParams = new URLSearchParams();
+      if (baseUrl) queryParams.append('base_url', baseUrl);
+
+      const response = await axios.get(
+        `/api/v1/toolsets/instances/${instanceId}/oauth/authorize?${queryParams.toString()}`
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Failed to get instance OAuth authorization URL:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get authentication status for a specific instance (current user).
+   */
+  static async getInstanceStatus(instanceId: string): Promise<{
+    isConfigured: boolean;
+    isAuthenticated: boolean;
+    authType?: string;
+    instanceName?: string;
+    toolsetType?: string;
+  }> {
+    try {
+      const response = await axios.get(
+        `/api/v1/toolsets/instances/${instanceId}/status`
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Failed to get instance status:', error);
+      return { isConfigured: false, isAuthenticated: false };
+    }
+  }
+
+  /**
+   * List OAuth configurations for a toolset type (admin).
+   * Admins also see clientId, authorizeUrl, tokenUrl, scopes, redirectUri.
+   * clientSecret is never returned; clientSecretSet indicates if one is stored.
+   */
+  static async listToolsetOAuthConfigs(toolsetType: string): Promise<{
+    oauthConfigs: OAuthConfigSummary[];
+    total: number;
+  }> {
+    try {
+      const response = await axios.get(
+        `/api/v1/toolsets/oauth-configs/${toolsetType}`
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Failed to list toolset OAuth configs:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update an admin-level OAuth configuration for a toolset type.
+   * This will deauthenticate all users of all instances using this config.
+   * Returns the number of deauthenticated users.
+   */
+  static async updateToolsetOAuthConfig(
+    toolsetType: string,
+    oauthConfigId: string,
+    params: {
+      authConfig: {
+        clientId?: string;
+        clientSecret?: string;
+        authorizeUrl?: string;
+        tokenUrl?: string;
+        scopes?: string[];
+        redirectUri?: string;
+        [key: string]: any;
+      };
+      baseUrl?: string;
+    }
+  ): Promise<{ oauthConfigId: string; message: string; deauthenticatedUserCount: number }> {
+    try {
+      const response = await axios.put(
+        `/api/v1/toolsets/oauth-configs/${toolsetType}/${oauthConfigId}`,
+        params
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Failed to update toolset OAuth config:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete an admin-level OAuth configuration.
+   * SAFE DELETE: fails if any toolset instance references this config.
+   */
+  static async deleteToolsetOAuthConfig(
+    toolsetType: string,
+    oauthConfigId: string
+  ): Promise<void> {
+    try {
+      await axios.delete(`/api/v1/toolsets/oauth-configs/${toolsetType}/${oauthConfigId}`);
+    } catch (error) {
+      console.error('Failed to delete toolset OAuth config:', error);
+      throw error;
+    }
+  }
+}
+
+// ============================================================================
+// Supporting Types
+// ============================================================================
+
+/** Summary of an admin-level OAuth config (clientSecret never returned). */
+export interface OAuthConfigSummary {
+  _id: string;
+  oauthInstanceName: string;
+  orgId: string;
+  toolsetType: string;
+  createdBy?: string;
+  createdAtTimestamp?: number;
+  updatedAtTimestamp?: number;
+  // Admin-only fields (populated when is_admin=true)
+  clientId?: string;
+  /** Whether a clientSecret is stored (never the actual secret) */
+  clientSecretSet?: boolean;
+  authorizeUrl?: string;
+  tokenUrl?: string;
+  scopes?: string[];
+  redirectUri?: string;
 }
 
 export default ToolsetApiService;

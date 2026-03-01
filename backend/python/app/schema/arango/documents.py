@@ -920,10 +920,12 @@ toolset_schema = {
         "type": "object",
         "properties": {
             "_key": {"type": "string"},
-            "name": {"type": "string"},  # Normalized name for etcd path (e.g., "slack")
+            "name": {"type": "string"},  # Normalized name (e.g., "slack")
             "displayName": {"type": "string"},
             "type": {"type": "string"},  # "app", "utility", etc
-            "userId": {"type": "string"},  # Owner (used for etcd path)
+            "userId": {"type": "string"},  # Executing user (used for etcd auth path lookup)
+            "instanceId": {"type": "string"},  # Admin-created instance UUID (new architecture)
+            "instanceName": {"type": "string"},  # Human-readable instance name
             "createdBy": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"}

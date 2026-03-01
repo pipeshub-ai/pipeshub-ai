@@ -65,6 +65,12 @@ export interface Agent {
   isActive?: boolean;
   isDeleted?: boolean;
   shareWithOrg?: boolean; // Whether agent is shared with the whole organization
+  can_view?: boolean;
+  can_share?: boolean;
+  can_edit?: boolean;
+  can_delete?: boolean;
+  user_role?: string;
+  access_type?: string;
   flow?: {
     nodes: any[];
     edges: any[];
@@ -277,6 +283,7 @@ export interface ToolRef {
  */
 export interface ToolsetReference {
   id: string;
+  instanceId?: string; // NEW: the specific instance identifier
   name: string;
   displayName: string;
   type: string;

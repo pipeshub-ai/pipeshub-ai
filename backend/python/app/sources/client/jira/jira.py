@@ -372,14 +372,15 @@ class JiraClient(IClient):
         if not toolset_config:
             raise ValueError("Toolset configuration is required")
 
-        auth_config = toolset_config.get("auth", {})
+        logger.debug(f"Building Jira client from toolset config: {toolset_config}")
+
         credentials_config = toolset_config.get("credentials", {})
         is_authenticated = toolset_config.get("isAuthenticated", False)
 
         if not is_authenticated:
             raise ValueError("Toolset is not authenticated. Please complete authentication first.")
 
-        auth_type = auth_config.get("type", "").upper()
+        auth_type = toolset_config.get("authType", "").upper()
 
         try:
             if auth_type == "OAUTH":
