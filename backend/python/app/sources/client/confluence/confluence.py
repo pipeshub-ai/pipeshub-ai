@@ -339,13 +339,12 @@ class ConfluenceClient(IClient):
                 raise ValueError("Toolset config is required for Confluence client")
 
             # Extract auth configuration from toolset config
-            auth_config = toolset_config.get("auth", {}) or {}
             credentials_config = toolset_config.get("credentials", {}) or {}
-            auth_type = auth_config.get("type", "BEARER_TOKEN")
+            auth_type = toolset_config.get("authType", "BEARER_TOKEN")
 
             # Create appropriate client based on auth type
             if auth_type == "BEARER_TOKEN":
-                token = auth_config.get("bearerToken", "")
+                token = toolset_config.get("bearerToken", "")
                 if not token:
                     raise ValueError("Token required for bearer token auth type")
 

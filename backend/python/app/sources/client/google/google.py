@@ -347,22 +347,25 @@ class GoogleClient(IClient):
         toolset_config: Dict[str, Any],
         service_name: str,
         logger: logging.Logger,
+        config_service: Optional[ConfigurationService] = None,
         version: str = "v3",
         scopes: Optional[List[str]] = None,
     ) -> 'GoogleClient':
         """
         Build GoogleClient from toolset configuration stored in etcd.
 
-        This is the new architecture for creating clients - toolset configs
-        are stored per-user at /services/toolsets/{user_id}/{toolset_type}
+        ARCHITECTURE NOTE: OAuth credentials (clientId/clientSecret) are fetched from
+        the OAuth config using the oauthConfigId stored in toolset_config. This keeps
+        credentials centralized and secure while allowing per-user authentication.
 
         Args:
             toolset_config: Toolset configuration from etcd containing:
-                - auth: { clientId, clientSecret, type }
                 - credentials: { access_token, refresh_token, expires_in }
                 - isAuthenticated: bool
+                - oauthConfigId: ID of the OAuth config (for fetching clientId/clientSecret)
             service_name: Name of Google service (drive, calendar, gmail)
             logger: Logger instance
+            config_service: ConfigurationService for fetching OAuth config (required for OAuth)
             version: API version (v1, v3, etc.)
             scopes: Optional scopes to use
 
@@ -401,23 +404,46 @@ class GoogleClient(IClient):
         refresh_token = credentials_config.get("refresh_token")  # May be None if not provided by provider
         expires_in = credentials_config.get("expires_in")
 
-        # Get OAuth client credentials from auth config
-        # Support both camelCase and snake_case for compatibility
-        client_id = auth_config.get("clientId") or auth_config.get("client_id")
-        client_secret = auth_config.get("clientSecret") or auth_config.get("client_secret")
-
         if not access_token:
             raise ValueError(
                 f"Access token not found in toolset credentials. "
                 f"Available credential keys: {list(credentials_config.keys())}"
             )
 
-        if not client_id or not client_secret:
-            raise ValueError(
-                "OAuth client credentials (clientId/clientSecret) not found in toolset auth config. "
-                f"Available auth keys: {list(auth_config.keys())}. "
-                "Please ensure the toolset is configured with OAuth credentials."
+        # Fetch complete OAuth configuration from centralized OAuth config
+        # This includes clientId, clientSecret, and any provider-specific fields
+        try:
+            from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+
+            if not config_service:
+                raise ValueError(
+                    "ConfigurationService is required to fetch OAuth configuration. "
+                    "Please pass config_service parameter to build_from_toolset."
+                )
+
+            # Get complete OAuth config (all fields)
+            oauth_config = await get_oauth_credentials_for_toolset(
+                toolset_config=toolset_config,
+                config_service=config_service,
+                logger=logger
             )
+
+            # Extract required fields (support both camelCase and snake_case)
+            client_id = oauth_config.get("clientId") or oauth_config.get("client_id")
+            client_secret = oauth_config.get("clientSecret") or oauth_config.get("client_secret")
+
+            if not client_id or not client_secret:
+                raise ValueError(
+                    f"OAuth configuration is missing clientId or clientSecret. "
+                    f"Available fields: {list(oauth_config.keys())}"
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to fetch OAuth configuration for Google {service_name}: {e}")
+            raise ValueError(
+                f"Failed to retrieve OAuth configuration: {str(e)}. "
+                f"Please ensure the toolset instance has a valid OAuth configuration."
+            ) from e
 
         # Warn if refresh_token is missing (will cause refresh failures when token expires)
         # Google's OAuth library requires refresh_token to automatically refresh expired tokens

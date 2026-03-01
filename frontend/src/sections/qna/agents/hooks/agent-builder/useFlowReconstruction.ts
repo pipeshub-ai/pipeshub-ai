@@ -408,6 +408,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           const toolsetName = toolset.name || '';
           const toolsetDisplayName = toolset.displayName || toolset.name || 'Toolset';
           const toolsetType = toolset.type || toolsetName;
+          const toolsetInstanceId = toolset.instanceId as string | undefined; // NEW
           const normalizedToolsetName = toolsetName.toLowerCase().replace(/[^a-zA-Z0-9]/g, '-');
           const iconPath = `/assets/icons/connectors/${normalizedToolsetName}.svg`;
           
@@ -451,6 +452,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
               icon: iconPath,
               category: 'toolset',
               config: {
+                instanceId: toolsetInstanceId,  // NEW
                 toolsetName,
                 displayName: toolsetDisplayName,
                 iconPath,

@@ -648,3 +648,497 @@ export const handleOAuthCallback =
       next(handledError);
     }
   };
+
+// ============================================================================
+// Instance Management Controllers (Admin-Created Instances)
+// ============================================================================
+
+/**
+ * Get all toolset instances for the organization.
+ */
+export const getToolsetInstances =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { userId } = req.user || {};
+      if (!userId) throw new UnauthorizedError('User authentication required');
+
+      const { page, limit, search } = req.query;
+      const queryParams = new URLSearchParams();
+      if (page) queryParams.append('page', String(page));
+      if (limit) queryParams.append('limit', String(limit));
+      if (search) queryParams.append('search', String(search));
+
+      logger.info(`Getting toolset instances for user ${userId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances?${queryParams.toString()}`,
+        HttpMethod.GET,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Getting toolset instances', 'Toolset instances not found');
+    } catch (error: any) {
+      logger.error('Error getting toolset instances', { error: error.message, userId: req.user?.userId });
+      next(handleBackendError(error, 'get toolset instances'));
+    }
+  };
+
+/**
+ * Create a new admin toolset instance.
+ */
+export const createToolsetInstance =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { userId } = req.user || {};
+      if (!userId) throw new UnauthorizedError('User authentication required');
+
+      const body = req.body;
+      if (!body.instanceName) throw new BadRequestError('instanceName is required');
+      if (!body.toolsetType) throw new BadRequestError('toolsetType is required');
+      if (!body.authType) throw new BadRequestError('authType is required');
+
+      logger.info(`Creating toolset instance '${body.instanceName}' for user ${userId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances`,
+        HttpMethod.POST,
+        headers,
+        body
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Creating toolset instance', 'Failed to create toolset instance');
+    } catch (error: any) {
+      logger.error('Error creating toolset instance', { error: error.message, userId: req.user?.userId });
+      next(handleBackendError(error, 'create toolset instance'));
+    }
+  };
+
+/**
+ * Get a specific toolset instance.
+ */
+export const getToolsetInstance =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { instanceId } = req.params;
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Getting toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${instanceId}`,
+        HttpMethod.GET,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Getting toolset instance', 'Toolset instance not found');
+    } catch (error: any) {
+      logger.error('Error getting toolset instance', { error: error.message, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'get toolset instance'));
+    }
+  };
+
+/**
+ * Update a toolset instance (admin only).
+ */
+export const updateToolsetInstance =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { instanceId } = req.params;
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Updating toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${instanceId}`,
+        HttpMethod.PUT,
+        headers,
+        req.body
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Updating toolset instance', 'Failed to update toolset instance');
+    } catch (error: any) {
+      logger.error('Error updating toolset instance', { error: error.message, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'update toolset instance'));
+    }
+  };
+
+/**
+ * Delete a toolset instance (admin only).
+ */
+export const deleteToolsetInstance =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { instanceId } = req.params;
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Deleting toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${instanceId}`,
+        HttpMethod.DELETE,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Deleting toolset instance', 'Failed to delete toolset instance');
+    } catch (error: any) {
+      logger.error('Error deleting toolset instance', { error: error.message, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'delete toolset instance'));
+    }
+  };
+
+/**
+ * Get merged view of toolset instances + user auth status (My Toolsets).
+ */
+export const getMyToolsets =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { userId } = req.user || {};
+      if (!userId) throw new UnauthorizedError('User authentication required');
+
+      const { search } = req.query;
+      const queryParams = new URLSearchParams();
+      if (search) queryParams.append('search', String(search));
+
+      logger.info(`Getting my toolsets for user ${userId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/my-toolsets?${queryParams.toString()}`,
+        HttpMethod.GET,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Getting my toolsets', 'My toolsets not found');
+    } catch (error: any) {
+      logger.error('Error getting my toolsets', { error: error.message, userId: req.user?.userId });
+      next(handleBackendError(error, 'get my toolsets'));
+    }
+  };
+
+/**
+ * Authenticate user against a toolset instance (non-OAuth).
+ */
+export const authenticateToolsetInstance =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { instanceId } = req.params;
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Authenticating toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${instanceId}/authenticate`,
+        HttpMethod.POST,
+        headers,
+        req.body
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Authenticating toolset instance', 'Failed to authenticate toolset instance');
+    } catch (error: any) {
+      logger.error('Error authenticating toolset instance', { error: error.message, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'authenticate toolset instance'));
+    }
+  };
+
+/**
+ * Remove user's credentials for a toolset instance.
+ */
+export const removeToolsetCredentials =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { instanceId } = req.params;
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Removing credentials for toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${instanceId}/credentials`,
+        HttpMethod.DELETE,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Removing toolset credentials', 'Failed to remove credentials');
+    } catch (error: any) {
+      logger.error('Error removing toolset credentials', { error: error.message, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'remove toolset credentials'));
+    }
+  };
+
+/**
+ * Re-authenticate (clear credentials) for a toolset instance.
+ */
+export const reauthenticateToolsetInstance =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { instanceId } = req.params;
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Re-authenticating toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${instanceId}/reauthenticate`,
+        HttpMethod.POST,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Re-authenticating toolset instance', 'Failed to re-authenticate');
+    } catch (error: any) {
+      logger.error('Error re-authenticating toolset instance', { error: error.message, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'reauthenticate toolset instance'));
+    }
+  };
+
+/**
+ * Get OAuth authorization URL for a toolset instance.
+ */
+export const getInstanceOAuthAuthorizationUrl =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { instanceId } = req.params;
+      const { base_url } = req.query;
+
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Getting OAuth authorization URL for toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const queryParams = new URLSearchParams();
+      if (base_url) queryParams.append('base_url', String(base_url));
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${instanceId}/oauth/authorize?${queryParams.toString()}`,
+        HttpMethod.GET,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Getting instance OAuth URL', 'Failed to get OAuth authorization URL');
+    } catch (error: any) {
+      logger.error('Error getting instance OAuth authorization URL', { error: error.message, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'get instance OAuth authorization URL'));
+    }
+  };
+
+/**
+ * Get instance authentication status for current user.
+ */
+export const getInstanceStatus =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { instanceId } = req.params;
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Getting status for toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${instanceId}/status`,
+        HttpMethod.GET,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Getting instance status', 'Instance status not found');
+    } catch (error: any) {
+      logger.error('Error getting instance status', { error: error.message, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'get instance status'));
+    }
+  };
+
+/**
+ * List OAuth configs for a toolset type (admin).
+ */
+export const listToolsetOAuthConfigs =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { toolsetType } = req.params;
+      if (!toolsetType) throw new BadRequestError('toolsetType is required');
+
+      logger.info(`Listing OAuth configs for toolset type ${toolsetType}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/oauth-configs/${toolsetType}`,
+        HttpMethod.GET,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Listing toolset OAuth configs', 'OAuth configs not found');
+    } catch (error: any) {
+      logger.error('Error listing toolset OAuth configs', { error: error.message, toolsetType: req.params.toolsetType });
+      next(handleBackendError(error, 'list toolset OAuth configs'));
+    }
+  };
+
+/**
+ * Update an OAuth configuration for a toolset type (admin only).
+ * Deauthenticates all users of affected instances in parallel.
+ */
+export const updateToolsetOAuthConfig =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { toolsetType, oauthConfigId } = req.params;
+      if (!toolsetType) throw new BadRequestError('toolsetType is required');
+      if (!oauthConfigId) throw new BadRequestError('oauthConfigId is required');
+
+      logger.info(`Admin updating OAuth config ${oauthConfigId} for toolset type ${toolsetType}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/oauth-configs/${toolsetType}/${oauthConfigId}`,
+        HttpMethod.PUT,
+        headers,
+        req.body
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Updating toolset OAuth config', 'Failed to update OAuth configuration');
+    } catch (error: any) {
+      logger.error('Error updating toolset OAuth config', { error: error.message, toolsetType: req.params.toolsetType, oauthConfigId: req.params.oauthConfigId });
+      next(handleBackendError(error, 'update toolset OAuth config'));
+    }
+  };
+
+/**
+ * Delete an OAuth configuration for a toolset type (admin only).
+ * Safe delete: rejected if any instance references this config.
+ */
+export const deleteToolsetOAuthConfig =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { toolsetType, oauthConfigId } = req.params;
+      if (!toolsetType) throw new BadRequestError('toolsetType is required');
+      if (!oauthConfigId) throw new BadRequestError('oauthConfigId is required');
+
+      logger.info(`Admin deleting OAuth config ${oauthConfigId} for toolset type ${toolsetType}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/oauth-configs/${toolsetType}/${oauthConfigId}`,
+        HttpMethod.DELETE,
+        headers
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Deleting toolset OAuth config', 'Failed to delete OAuth configuration');
+    } catch (error: any) {
+      logger.error('Error deleting toolset OAuth config', { error: error.message, toolsetType: req.params.toolsetType, oauthConfigId: req.params.oauthConfigId });
+      next(handleBackendError(error, 'delete toolset OAuth config'));
+    }
+  };

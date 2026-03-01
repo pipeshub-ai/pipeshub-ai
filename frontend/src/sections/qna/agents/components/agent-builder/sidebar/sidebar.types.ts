@@ -214,6 +214,8 @@ export interface SidebarCategoryProps {
   borderColor?: string;
   /** Whether to show configuration icon */
   showConfigureIcon?: boolean;
+  /** Whether to show authenticated indicator (green checkmark) */
+  showAuthenticatedIndicator?: boolean;
   /** Callback when configure is clicked */
   onConfigureClick?: () => void;
   /** Additional drag data */

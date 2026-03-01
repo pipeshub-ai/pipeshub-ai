@@ -33,6 +33,7 @@ from app.migrations.permission_edge_migration import (
 from app.migrations.record_group_app_edge_migration import (
     run_record_group_app_edge_migration,
 )
+from app.migrations.toolset_instance_migration import run_toolset_instance_migration
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.logger import create_logger
@@ -362,12 +363,50 @@ async def initialize_container(container) -> bool:
 
         logger.info("✅ Container initialization completed successfully")
 
+        migration_state = await get_migration_state()
+
+
+        if migration_completed(migration_state, "toolsetInstancePaths"):
+            logger.info("⏭️ Toolset Instance Path migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Toolset Instance Path migration...")
+            # Use graph_provider from data_store which is already resolved
+            # This avoids potential coroutine reuse issues with container.graph_provider()
+            result_toolset_migration = await run_toolset_instance_migration(
+                graph_provider=data_store.graph_provider,
+                config_service=config_service,
+                logger=logger
+            )
+            if result_toolset_migration.get("success"):
+                agents_deleted = result_toolset_migration.get("agents_deleted", 0)
+                toolsets_deleted = result_toolset_migration.get("toolsets_deleted", 0)
+                tools_deleted = result_toolset_migration.get("tools_deleted", 0)
+                edges_deleted = result_toolset_migration.get("edges_deleted", 0)
+                instances_created = result_toolset_migration.get("instances_created", 0)
+                oauth_configs_created = result_toolset_migration.get("oauth_configs_created", 0)
+                users_migrated = result_toolset_migration.get("users_migrated", 0)
+                users_deleted = result_toolset_migration.get("users_deleted", 0)
+                logger.info(
+                    f"✅ Toolset Instance migration completed:\n"
+                    f"   - {agents_deleted} agents hard deleted\n"
+                    f"   - {toolsets_deleted} toolset nodes deleted\n"
+                    f"   - {tools_deleted} tool nodes deleted\n"
+                    f"   - {edges_deleted} edges/relationships deleted\n"
+                    f"   - {instances_created} instances created\n"
+                    f"   - {oauth_configs_created} OAuth configs created\n"
+                    f"   - {users_migrated} admin users migrated (NOT authenticated - require re-auth)\n"
+                    f"   - {users_deleted} non-admin users deleted"
+                )
+                await mark_migration_completed("toolsetInstancePaths", result_toolset_migration)
+            else:
+                error_msg = result_toolset_migration.get("message", "Unknown error")
+                logger.error(f"❌ Toolset Instance Path migration failed: {error_msg}")
+
         # Skip all migrations if Neo4j is configured (migrations are ArangoDB-specific)
         if data_store != "arangodb":
             logger.info(f"⏭️ Skipping all migrations (DATA_STORE={data_store}, migrations are ArangoDB-specific)")
             return True
 
-        migration_state = await get_migration_state()
 
         if migration_completed(migration_state, "knowledgeBase"):
             logger.info("⏭️ Knowledge Base migration already completed, skipping.")

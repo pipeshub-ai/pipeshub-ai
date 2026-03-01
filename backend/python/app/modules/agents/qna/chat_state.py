@@ -75,9 +75,10 @@ class ChatState(TypedDict):
     tool_records: Optional[List[Dict[str, Any]]]  # Full record data from tools (for citation normalization)
 
     # Toolset-based tool execution (NEW - replaces old connector-based system)
-    tool_to_toolset_map: Optional[Dict[str, str]]  # Maps "slack.send_message" -> toolset_id
-    toolset_configs: Optional[Dict[str, Dict]]  # Cached toolset auth configs from etcd: toolset_id -> config
-    agent_toolsets: Optional[List[Dict]]  # Full toolset nodes loaded via graph traversal
+    # SECURITY NOTE: These fields contain sensitive authentication data and should be handled carefully
+    tool_to_toolset_map: Optional[Dict[str, str]]  # Maps "tool.name" -> instanceId (e.g. "slack.send_message" -> "uuid")
+    toolset_configs: Optional[Dict[str, Dict]]  # SENSITIVE: Auth configs keyed by instanceId (contains credentials)
+    agent_toolsets: Optional[List[Dict]]  # Toolset metadata from graph (instanceId, name, tools) - NO userId stored
 
     # Planner-based execution fields
     execution_plan: Optional[Dict[str, Any]]  # Planned execution from planner node
@@ -143,53 +144,47 @@ class ChatState(TypedDict):
 
 def _build_tool_to_toolset_map(toolsets: List[Dict[str, Any]]) -> Dict[str, str]:
     """
-    Build a mapping from tool full name to synthetic toolset ID.
+    Build a mapping from tool full name to toolset instance ID.
 
-    Maps tool names like "slack.send_message" to their parent toolset ID
-    in synthetic format: {user_id}_{normalized_toolset_type}
+    Maps tool names like "slack.send_message" to their parent toolset instance ID.
+    The instance ID is used to look up toolset configs in the state.
 
-    This matches the etcd path structure: /services/toolsets/{user_id}/{normalized_toolset_type}
+    Security: The toolset nodes from the graph DB only contain instanceId, not userId.
+    The userId always comes from the authenticated request context.
 
     Args:
-        toolsets: List of toolset objects with tools array
+        toolsets: List of toolset objects with tools array and instanceId
 
     Returns:
-        Dictionary mapping tool full name to synthetic toolset ID ({user_id}_{normalized_toolset_type})
+        Dictionary mapping tool full name to toolset instanceId
     """
     if not toolsets:
         return {}
-
-    # Import normalization function
-    from app.agents.constants.toolset_constants import normalize_app_name
 
     tool_to_toolset = {}
     for toolset in toolsets:
         if isinstance(toolset, dict):
             toolset_name = toolset.get("name", "")
-            user_id = toolset.get("userId", "")
+            instance_id = toolset.get("instanceId", "")
             tools = toolset.get("tools", [])
             selected_tools = toolset.get("selectedTools", [])
 
-            # Create synthetic toolset ID: {user_id}_{normalized_toolset_type}
-            # Normalize to match etcd path structure
-            if not user_id or not toolset_name:
+            # Require instanceId - if missing, skip this toolset
+            if not instance_id:
                 continue
-
-            normalized_toolset_name = normalize_app_name(toolset_name)
-            synthetic_toolset_id = f"{user_id}_{normalized_toolset_name}"
 
             # Map tools from expanded tools array
             for tool in tools:
                 if isinstance(tool, dict):
                     full_name = tool.get("fullName") or f"{toolset_name}.{tool.get('name', '')}"
                     if full_name:
-                        tool_to_toolset[full_name] = synthetic_toolset_id
+                        tool_to_toolset[full_name] = instance_id
 
             # Map tools from selectedTools if no expanded tools
             if not tools and selected_tools:
                 for tool_name in selected_tools:
                     full_name = tool_name if "." in tool_name else f"{toolset_name}.{tool_name}"
-                    tool_to_toolset[full_name] = synthetic_toolset_id
+                    tool_to_toolset[full_name] = instance_id
 
     return tool_to_toolset
 
