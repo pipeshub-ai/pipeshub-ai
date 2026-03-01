@@ -262,7 +262,7 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
             if not worker_loop or not worker_loop.is_running():
                 raise Exception("Worker loop not initialized")
 
-            async def _reconnect():
+            async def _reconnect() -> None:
                 if graph_provider.client.driver:
                     try:
                         await graph_provider.client.driver.close()
