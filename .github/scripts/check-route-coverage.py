@@ -45,7 +45,7 @@ if not CONFIG_PATH.exists():
 with open(CONFIG_PATH) as _f:
     _config = yaml.safe_load(_f)
 
-MOUNT_TO_SPEC_OVERRIDES: Dict[str, str] = _config.get("mount_to_spec_overrides", {})
+MOUNT_TO_SPEC_OVERRIDES: Dict[str, str] = _config.get("mount_to_spec_overrides") or {}
 INLINE_ROUTES: Dict[str, List[str]] = _config.get("inline_routes", {})
 KNOWN_MISSING: Set[Tuple[str, str]] = {
     tuple(entry) for entry in _config.get("known_missing", [])
@@ -201,7 +201,8 @@ def mount_to_spec_prefix(mount_path: str) -> str:
     else:
         # Root-level mounts like /.well-known
         prefix = mount_path
-    return MOUNT_TO_SPEC_OVERRIDES.get(prefix, prefix)
+    override = MOUNT_TO_SPEC_OVERRIDES.get(prefix, prefix)
+    return prefix if override is None else override
 
 
 # =====================================================================
