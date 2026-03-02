@@ -103,6 +103,7 @@ import {
   EntitiesEventProducer,
   SyncEventProducer,
 } from '../services/kafka_events.service';
+import { SamlController } from '../../auth/controller/saml.controller';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
@@ -115,6 +116,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
   const syncEventService =
     container.get<SyncEventProducer>('SyncEventProducer');
+  const samlController = container.get<SamlController>('SamlController');
   const configService = container.get<ConfigService>('ConfigService');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   // storage config routes
@@ -444,7 +446,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(ssoConfigSchema),
-    setSsoAuthConfig(keyValueStoreService),
+    setSsoAuthConfig(keyValueStoreService, samlController),
   );
 
   // OAuth config routes
