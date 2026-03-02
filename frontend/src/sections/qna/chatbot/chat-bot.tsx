@@ -841,12 +841,8 @@ const ChatInterface = () => {
     // Set chat mode from conversation if available
     if (conversationModelInfo.chatMode) {
       const chatModes = [
-        { id: 'quick', name: 'Quick', description: 'Quick responses with minimal context' },
-        {
-          id: 'standard',
-          name: 'Standard',
-          description: 'Balanced responses with moderate creativity',
-        },
+        { id: 'internal_search', name: 'Internal Search', description: 'Answer only from internal knowledge base' },
+        { id: 'web_search', name: 'Web Search', description: 'Search the web for answers' },
       ];
       const matchingMode = chatModes.find((m) => m.id === conversationModelInfo.chatMode);
       if (matchingMode) {

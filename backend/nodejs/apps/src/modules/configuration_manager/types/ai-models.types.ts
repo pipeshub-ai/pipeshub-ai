@@ -23,6 +23,7 @@ export interface AIModelsConfig {
   llm?: AIModelConfiguration[];
   reasoning?: AIModelConfiguration[];
   multiModal?: AIModelConfiguration[];
-  customSystemPrompt?: string;
+  customSystemPromptInternal?: string;
+  customSystemPromptWebSearch?: string;
 }
 

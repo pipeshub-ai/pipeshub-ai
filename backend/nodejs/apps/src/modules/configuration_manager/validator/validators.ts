@@ -613,3 +613,81 @@ export const deleteProviderSchema = z.object({
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });
+
+// Web Search Provider Schemas
+export const webSearchProviderType = z.enum([
+  'duckduckgo',
+  'serper',
+  'tavily',
+]);
+
+export const webSearchConfigurationSchema = z
+  .record(z.any())
+  .describe(
+    'Provider-specific configuration (e.g., apiKey, cx, endpoint, engine)',
+  );
+
+export const webSearchProviderConfigSchema = z.object({
+  provider: webSearchProviderType,
+  configuration: webSearchConfigurationSchema,
+  isDefault: z
+    .boolean()
+    .default(false)
+    .describe('Whether this should be the default provider'),
+});
+
+export const addWebSearchProviderSchema = z.object({
+  body: z.object({
+    provider: webSearchProviderType,
+    configuration: webSearchConfigurationSchema,
+    isDefault: z
+      .boolean()
+      .default(false)
+      .describe('Whether this should be the default provider'),
+  }),
+});
+
+export const updateWebSearchProviderSchema = z.object({
+  params: z.object({
+    providerKey: z.string().min(1, { message: 'Provider key is required' }),
+  }),
+  body: z.object({
+    provider: webSearchProviderType,
+    configuration: webSearchConfigurationSchema,
+    isDefault: z
+      .boolean()
+      .default(false)
+      .describe('Whether this should be the default provider'),
+  }),
+});
+
+export const deleteWebSearchProviderSchema = z.object({
+  params: z.object({
+    providerKey: z.string().min(1, { message: 'Provider key is required' }),
+  }),
+});
+
+export const updateDefaultWebSearchProviderSchema = z.object({
+  params: z.object({
+    providerKey: z.string().min(1, { message: 'Provider key is required' }),
+  }),
+});
+
+export const webSearchSettingsSchema = z
+  .object({
+    includeImages: z.boolean(),
+    maxImages: z.number().int().min(1).max(500).optional(),
+  })
+  .superRefine((settings, ctx) => {
+    if (settings.includeImages && settings.maxImages === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['maxImages'],
+        message: 'maxImages is required when includeImages is true',
+      });
+    }
+  });
+
+export const updateWebSearchSettingsSchema = z.object({
+  body: webSearchSettingsSchema,
+});

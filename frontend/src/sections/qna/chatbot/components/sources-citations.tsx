@@ -419,7 +419,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                 textTransform: 'capitalize',
               }}
             >
-              {modelInfo.chatMode}
+              {modelInfo.chatMode?.replace(/_/g, ' ')}
             </Box>
           )}
         </Typography>
@@ -531,7 +531,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                     textTransform: 'capitalize',
                   }}
                 >
-                  {modelInfo.chatMode}
+                  {modelInfo.chatMode?.replace(/_/g, ' ')}
                 </Box>
               )}
             </Typography>

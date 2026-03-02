@@ -35,7 +35,7 @@ from app.utils.chat_helpers import (
     get_flattened_results,
     get_record,
 )
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.image_utils import get_extension_from_mimetype
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: Dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}

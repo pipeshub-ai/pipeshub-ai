@@ -33,7 +33,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.logger import create_logger
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.image_utils import get_extension_from_mimetype
 
 group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value,GroupType.TEXT_SECTION.value]
 
@@ -1028,7 +1028,7 @@ def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str
     return result_blocks
 
 
-def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> str|None:
+def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None, is_multimodal_llm: bool = False) -> List[Dict[str, Any]]:
     """
     Convert a record JSON object to message content format matching get_message_content.
 
@@ -1041,11 +1041,13 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
     """
 
     try:
-        record_string = ""
+
         context_metadata = record.get("context_metadata", "")
-        record_string += f"""<record>\n{context_metadata}
-Record blocks (sorted):\n\n"""
-        # Process blocks
+        content = []
+        content.append({
+            "type": "text",
+            "text": f"<record>\n{context_metadata}\nRecord blocks (sorted):\n\n"
+        })
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
         block_groups = block_containers.get("block_groups", [])
@@ -1071,20 +1073,39 @@ Record blocks (sorted):\n\n"""
         except Exception:
             return []
 
-        # Group blocks with parent_index (like table rows) for processing as block groups
-
-        # Process individual blocks
         for block in blocks:
             block_index = block.get("index", 0)
             block_type = block.get("type")
 
             block_number = f"R{record_number}-{block_index}"
             data = block.get("data", "")
-
-            if block_type == BlockType.IMAGE.value:
+            if not data:
                 continue
+            if block_type == BlockType.IMAGE.value:
+
+                if isinstance(data, dict) and is_multimodal_llm:
+                    image_uri = data.get("uri")
+                    if image_uri:
+                        content.append({
+                            "type": "text",
+                            "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content:"
+                        })
+                        mime_type = image_uri.split(";")[0].split(":")[1]
+                        image_base64 = image_uri.split(",")[1]
+                        content.append({
+                            "type": "image",
+                            "base64": image_base64,
+                            "mime_type": mime_type,
+                        })
+                    else:
+                        continue
+                else:
+                    continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
-                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                })
             elif block_type == BlockType.TABLE_ROW.value:
                 # Group table rows by their parent_index for block group processing
                 block_group_index = block.get("parent_index")
@@ -1137,12 +1158,14 @@ Record blocks (sorted):\n\n"""
                             template = Template(table_prompt)
                             rendered_form = template.render(
                                 block_group_index=block_group_index,
-                                table_summary=table_summary,
+                                table_summary="Not available",
                                 table_rows=child_results,
                                 record_number=record_number,
                             )
-                            record_string += f"{rendered_form}\n\n"
-
+                            content.append({
+                                "type": "text",
+                                "text": f"{rendered_form}\n\n"
+                            })
 
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
@@ -1165,16 +1188,22 @@ Record blocks (sorted):\n\n"""
                     blocks=group_blocks,
                     record_number=record_number,
                 )
-                record_string += f"{rendered_form}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"{rendered_form}\n\n"
+                })
             else:
-                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
+                })
 
-        return record_string
+        return content
     except Exception as e:
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str, logger, mode: str = "json") -> str:
+def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str, logger, mode: str = "json"):
     content = []
 
     # Use simple prompt for quick mode
@@ -1271,14 +1300,18 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 block_index = result.get("block_index")
                 block_number = f"R{record_number}-{block_index}"
                 if block_type == BlockType.IMAGE.value:
-                    if result.get("content").startswith("data:image/"):
+                    if result.get("content") and result.get("content").startswith("data:image/"):
+                        image_uri = result.get("content")
                         content.append({
                             "type": "text",
                             "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content:"
                         })
+                        mime_type = image_uri.split(";")[0].split(":")[1]
+                        image_base64 = image_uri.split(",")[1]
                         content.append({
-                            "type": "image_url",
-                            "image_url": {"url": result.get("content")}
+                            "type": "image",
+                            "base64": image_base64,
+                            "mime_type": mime_type,
                         })
                     else:
                         content.append({
@@ -1350,24 +1383,27 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
             seen_virtual_record_ids.add(virtual_record_id)
             virtual_record_id_to_record_number[virtual_record_id] = record_number
             record_number = record_number + 1
-    all_record_strings = []
+    all_contents = []
+
     seen_blocks = set()
     seen_virtual_record_ids.clear()
     record_ids =[]
-    record_string = ""
+    content = []
     for i,result in enumerate(flattened_results):
         virtual_record_id = result.get("virtual_record_id")
         if virtual_record_id not in seen_virtual_record_ids:
             if i > 0:
-                all_record_strings.append(record_string)
-                record_string = ""
+                all_contents.append(content)
+                content = []
             seen_virtual_record_ids.add(virtual_record_id)
             record = virtual_record_id_to_result[virtual_record_id]
             if record is None:
                 continue
 
-            record_string += f"""<record>\n{record.get("context_metadata", "")}
-Record blocks (sorted):\n\n"""
+            content.append({
+                "type": "text",
+                "text": f"<record>\n{record.get('context_metadata', '')}\nRecord blocks (sorted):\n\n"
+            })
             record_ids.append(record.get("id"))
 
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
@@ -1379,29 +1415,60 @@ Record blocks (sorted):\n\n"""
             if record_number is None:
                 continue
             block_number = f"R{record_number}-{block_index}"
-            if block_type == GroupType.TABLE.value:
-                table_summary,child_results = result.get("content")
+            if block_type == BlockType.IMAGE.value:
+                if result.get("content"):
+                    if result.get("content").startswith("data:image/"):
+                        image_uri = result.get("content")
+                        content.append({
+                            "type": "text",
+                            "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content:"
+                        })
+                        mime_type = image_uri.split(";")[0].split(":")[1]
+                        image_base64 = image_uri.split(",")[1]
+                        content.append({
+                            "type": "image",
+                            "base64": image_base64,
+                            "mime_type": mime_type,
+                        })
+                    else:
+                        content.append({
+                            "type": "text",
+                            "text": f"* Block Number: {block_number}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
+                        })
+            elif block_type == GroupType.TABLE.value:
+                _,child_results = result.get("content")
                 if child_results:
                     template = Template(table_prompt)
                     rendered_form = template.render(
                         block_group_index=result.get("block_group_index"),
-                        table_summary=table_summary,
+                        table_summary="Not available",
                         table_rows=child_results,
                         record_number=record_number,
                     )
-                    record_string += f"{rendered_form}\n\n"
-                else:
-                    record_string += f"* Block Group Number: R{record_number}-{result.get('block_group_index')}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
+                    content.append({
+                        "type": "text",
+                        "text": f"{rendered_form}\n\n"
+                    })
             elif block_type == BlockType.TEXT.value:
-                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                })
             elif block_type != BlockType.IMAGE.value:
-                record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                content.append({
+                    "type": "text",
+                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
+                })
         else:
             continue
+    
+    content.append({
+        "type": "text",
+        "text": "</record>"
+    })
+    all_contents.append(content)
 
-    all_record_strings.append(record_string)
-
-    return all_record_strings
+    return all_contents
 
 def block_group_to_message_content(tool_result: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     content = []
@@ -1463,6 +1530,14 @@ def block_group_to_message_content(tool_result: Dict[str, Any], final_results: L
     return content
 
 
+def count_tokens_in_content_list(content: list[dict[str, Any]],enc) -> int:
+    total_tokens = 0
+    for item in content:
+        if item.get("type") == "text":
+            total_tokens += count_tokens_text(item.get("text", ""), enc)
+
+    return total_tokens
+
 def count_tokens_in_messages(messages: List[Any],enc) -> int:
     """
     Count the total number of tokens in a messages array.
@@ -1512,7 +1587,6 @@ def count_tokens_in_messages(messages: List[Any],enc) -> int:
 
     return total_tokens
 
-
 def count_tokens_text(text: str,enc) -> int:
     """Count tokens in text using tiktoken or fallback heuristic"""
     if not text:
@@ -1520,8 +1594,9 @@ def count_tokens_text(text: str,enc) -> int:
     if enc is not None:
         try:
             return len(enc.encode(text))
-        except Exception:
+        except Exception as e:
             logger.warning("tiktoken encoding failed, falling back to heuristic.")
+            logger.error(f"Error in count_tokens_text: {str(e)}")
             pass
     else:
         try:
@@ -1538,7 +1613,7 @@ def count_tokens_text(text: str,enc) -> int:
 
     return max(1, len(text) // 4)
 
-def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int, int]:
+def count_tokens(messages: List[Any], message_contents: List[list[dict[str, Any]]]) -> Tuple[int, int]:
     # Lazy import tiktoken; fall back to a rough heuristic if unavailable
     enc = None
     try:
@@ -1557,11 +1632,9 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
     new_tokens = 0
 
     for message_content in message_contents:
-        new_tokens += count_tokens_text(message_content,enc)
-
+        new_tokens += count_tokens_in_content_list(message_content,enc)
 
     return current_message_tokens, new_tokens
-
 
 
 FRAGMENT_WORD_COUNT = 4

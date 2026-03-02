@@ -10,6 +10,7 @@ class config_node_constants(Enum):
     QDRANT = "/services/qdrant"
     REDIS = "/services/redis"
     AI_MODELS = "/services/aiModels"
+    WEB_SEARCH = "/services/webSearch"
     KAFKA = "/services/kafka"
     ENDPOINTS = "/services/endpoints"
     SECRET_KEYS = "/services/secretKeys"

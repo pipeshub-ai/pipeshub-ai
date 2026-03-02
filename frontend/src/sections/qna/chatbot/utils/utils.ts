@@ -3,14 +3,14 @@ import { ChatMode } from '../types';
 // Define chat modes locally in the frontend
 export const CHAT_MODES: ChatMode[] = [
   {
-    id: 'quick',
-    name: 'Quick',
-    description: 'Quick responses with minimal context',
+    id: 'internal_search',
+    name: 'Internal Search',
+    description: 'Answer only from internal knowledge base',
   },
   {
-    id: 'standard',
-    name: 'Standard',
-    description: 'Balanced responses with moderate creativity',
+    id: 'web_search',
+    name: 'Web Search',
+    description: 'Search the web for answers',
   },
 ];
 
