@@ -46,9 +46,13 @@ with open(CONFIG_PATH) as _f:
     _config = yaml.safe_load(_f)
 
 MOUNT_TO_SPEC_OVERRIDES: Dict[str, str] = _config.get("mount_to_spec_overrides") or {}
-INLINE_ROUTES: Dict[str, List[str]] = _config.get("inline_routes", {})
+INLINE_ROUTES: Dict[str, List[str]] = _config.get("inline_routes") or {}
 KNOWN_MISSING: Set[Tuple[str, str]] = {
     tuple(entry) for entry in _config.get("known_missing", [])
+}
+# Internal service-to-service routes (scoped token auth) excluded from coverage
+INTERNAL_ROUTES: Set[Tuple[str, str]] = {
+    tuple(entry) for entry in _config.get("internal_routes", [])
 }
 
 # Routes to exclude from coverage check
@@ -327,8 +331,10 @@ def parse_express_routes() -> Tuple[Set[Tuple[str, str]], Dict[Tuple[str, str], 
 # EXCLUSION LOGIC
 # =====================================================================
 
-def should_exclude(method: str, path: str) -> bool:  # noqa: ARG001
+def should_exclude(method: str, path: str) -> bool:
     """Check if a route should be excluded from coverage check."""
+    if (method, path) in INTERNAL_ROUTES:
+        return True
     for substring in EXCLUDE_PATH_CONTAINS:
         if substring in path:
             return True

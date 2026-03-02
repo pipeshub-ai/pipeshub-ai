@@ -15499,6 +15499,114 @@ paths:
         '404':
           description: Connector or filter not found
 
+  # -------------------- Legacy Token Exchange --------------------
+  /connectors/getTokenFromCode:
+    post:
+      tags:
+        - Connector OAuth
+      summary: Exchange Google authorization code for tokens
+      deprecated: true
+      description: |
+        <b>⚠️ Deprecated:</b> Legacy Google Workspace token exchange endpoint. Use the generic
+        OAuth flow via <code>/connectors/{connectorId}/oauth/authorize</code> instead.<br><br>
+        <b>Overview:</b><br>
+        Exchanges a Google OAuth authorization code for access and refresh tokens,
+        stores the credentials, and enables the Google Workspace connector.<br><br>
+        <b>What Happens:</b><br>
+        <ol>
+        <li>Retrieves Google Workspace OAuth config (client ID/secret)</li>
+        <li>Exchanges the authorization code for tokens via Google's token endpoint</li>
+        <li>Verifies the ID token</li>
+        <li>Stores access and refresh tokens in configuration manager</li>
+        <li>Creates or enables the Google Workspace connector</li>
+        <li>Publishes an AppEnabledEvent for the sync service</li>
+        </ol>
+        <b>Admin Only:</b><br>
+        Requires organization admin privileges.
+      operationId: getTokenFromCode
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tempCode
+              properties:
+                tempCode:
+                  type: string
+                  description: Google OAuth authorization code received from the consent flow
+      responses:
+        '200':
+          description: Existing connector enabled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Connector is now enabled
+                  connector:
+                    type: object
+                    properties:
+                      _id:
+                        type: string
+                      orgId:
+                        type: string
+                      name:
+                        type: string
+                      isEnabled:
+                        type: boolean
+                      lastUpdatedBy:
+                        type: string
+                      createdAt:
+                        type: string
+                        format: date-time
+                      updatedAt:
+                        type: string
+                        format: date-time
+        '201':
+          description: New connector created and enabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Connector google_workspace created and enabled
+                  connector:
+                    type: object
+                    properties:
+                      _id:
+                        type: string
+                      orgId:
+                        type: string
+                      name:
+                        type: string
+                      isEnabled:
+                        type: boolean
+                      lastUpdatedBy:
+                        type: string
+                      createdAt:
+                        type: string
+                        format: date-time
+                      updatedAt:
+                        type: string
+                        format: date-time
+        '400':
+          description: Error exchanging authorization code
+        '401':
+          description: Unauthorized
+        '404':
+          description: Google Workspace configuration missing (client ID or secret)
+        '500':
+          description: Internal server error
+
   # ==================== TOOLSETS ENDPOINTS ====================
   # -------------------- Toolset Registry --------------------
   /toolsets/registry:
