@@ -24,16 +24,7 @@ jobs:
       - name: Lint OpenAPI spec with Spectral
         run: spectral lint backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml --ruleset .spectral.yaml --fail-severity error
 
-      # Step 2: Detect breaking changes against main
-      - name: Detect breaking changes with oasdiff
-        if: github.event_name == 'pull_request'
-        uses: oasdiff/oasdiff-action/breaking@main
-        with:
-          base: https://raw.githubusercontent.com/${{ github.repository }}/main/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
-          revision: backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
-          fail-on: ERR
-
-      # Step 3: Check route coverage (code routes vs spec)
+      # Step 2: Check route coverage (code routes vs spec)
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -44,7 +35,7 @@ jobs:
           pip install pyyaml
           python .github/scripts/check-route-coverage.py
 
-      # Step 4: Check that API route changes include spec updates
+      # Step 3: Check that API route changes include spec updates
       - name: Check OpenAPI spec is updated with route changes
         if: github.event_name == 'pull_request'
         run: |
@@ -116,3 +107,12 @@ jobs:
           else
             echo "No API route changes detected. OpenAPI spec update not required."
           fi
+
+      # Step 4: Detect breaking changes against main (last — slowest step)
+      - name: Detect breaking changes with oasdiff
+        if: github.event_name == 'pull_request'
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: https://raw.githubusercontent.com/${{ github.repository }}/main/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
+          revision: backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
+          fail-on: ERR
