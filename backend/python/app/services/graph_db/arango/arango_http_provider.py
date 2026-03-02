@@ -27,7 +27,6 @@ from app.config.constants.arangodb import (
     GraphNames,
     OriginTypes,
     ProgressStatus,
-    RecordsPersistentIndex,
     RecordTypes,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
@@ -83,6 +82,7 @@ from app.schema.arango.edges import (
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.utils import build_connector_stats_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants for ArangoDB document ID format
@@ -489,15 +489,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Indexes are built here: each call to ensure_persistent_index() creates (or ensures)
         the index via the ArangoDB HTTP API (see arango_http_client.ensure_persistent_index).
+
+        Currently no custom indexes are required - edge collections have automatic
+        indexes on _from and _to fields which optimize graph traversals.
         """
-        try:
-            # Compound index used by get_connector_stats (and similar connector-scoped queries)
-            await self.http_client.ensure_persistent_index(
-                CollectionNames.RECORDS.value,
-                list(RecordsPersistentIndex.CONNECTOR_SCOPE.value),
-            )
-        except Exception as e:
-            self.logger.warning(f"Index creation failed (non-fatal): {str(e)}")
+        pass
 
     async def _ensure_departments_seed(self) -> None:
         """Initialize departments collection with predefined department types if missing."""
@@ -14365,28 +14361,39 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
             query = f"""
-            FOR doc IN {CollectionNames.RECORDS.value}
-                FILTER doc.orgId == @org_id
-                FILTER doc.origin == "CONNECTOR"
-                FILTER doc.connectorId == @connector_id
-                FILTER doc.recordType != @drive_record_type
-                FILTER doc.isDeleted != true
+            LET app = DOCUMENT(CONCAT("apps/", @connector_id))
 
-                LET targetDoc = FIRST(
-                    FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
-                        LIMIT 1
-                        RETURN v
-                )
+            LET allRecordGroups = (
+                FOR rg IN 1..10 INBOUND app._id {CollectionNames.BELONGS_TO.value}
+                    OPTIONS {{ bfs: true, uniqueVertices: "global" }}
+                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg._id)
+                    RETURN rg._id
+            )
 
-                FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
-                COLLECT recordType = doc.recordType, indexingStatus = doc.indexingStatus WITH COUNT INTO cnt
+            LET allRecords = (
+                FOR rgId IN allRecordGroups
+                    FOR doc IN 1..1 INBOUND rgId {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", doc._id)
+                        FILTER doc.recordType != @drive_record_type
+
+                        LET targetDoc = FIRST(
+                            FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
+                                LIMIT 1
+                                RETURN v
+                        )
+                        FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
+
+                        RETURN {{ recordType: doc.recordType, indexingStatus: doc.indexingStatus }}
+            )
+
+            FOR r IN allRecords
+                COLLECT recordType = r.recordType, indexingStatus = r.indexingStatus WITH COUNT INTO cnt
                 RETURN {{ recordType, indexingStatus, cnt }}
             """
 
             rows = await self.http_client.execute_aql(
                 query,
                 bind_vars={
-                    "org_id": org_id,
                     "connector_id": connector_id,
                     "drive_record_type": RecordTypes.DRIVE.value
                 },
@@ -14394,40 +14401,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             rows = rows or []
-
-            # Pivot aggregated rows into the response shape (same logic as Neo4j provider)
-            indexing_status_counts = {s: 0 for s in statuses}
-            record_type_counts = {}
-            total = 0
-
-            for row in rows:
-                cnt = row.get("cnt", 0)
-                total += cnt
-                st = row.get("indexingStatus")
-                if st in indexing_status_counts:
-                    indexing_status_counts[st] += cnt
-                rt = row.get("recordType")
-                if rt:
-                    if rt not in record_type_counts:
-                        record_type_counts[rt] = {
-                            "recordType": rt,
-                            "total": 0,
-                            "indexingStatus": {s: 0 for s in statuses},
-                        }
-                    record_type_counts[rt]["total"] += cnt
-                    if st in statuses:
-                        record_type_counts[rt]["indexingStatus"][st] += cnt
-
-            result = {
-                "orgId": org_id,
-                "connectorId": connector_id,
-                "origin": "CONNECTOR",
-                "stats": {
-                    "total": total,
-                    "indexingStatus": indexing_status_counts,
-                },
-                "byRecordType": list(record_type_counts.values()),
-            }
+            result = build_connector_stats_response(rows, statuses, org_id, connector_id)
 
             self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
             return {

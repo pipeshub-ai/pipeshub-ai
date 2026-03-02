@@ -57,6 +57,7 @@ from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_f
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
+from app.services.graph_db.utils import build_connector_stats_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants
@@ -438,12 +439,6 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_md5_checksum IF NOT EXISTS "
             "FOR (n:Record) ON (n.md5Checksum)"
-        )
-
-        # COMPOSITE: orgId + origin + connectorId (stats and connector-scoped queries)
-        indexes.append(
-            "CREATE INDEX record_org_origin_connector IF NOT EXISTS "
-            "FOR (n:Record) ON (n.orgId, n.origin, n.connectorId)"
         )
 
         # ==================== USER INDEXES (High Priority) ====================
@@ -6452,14 +6447,11 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
-            # Aggregate: return counts by recordType and indexingStatus
             query = """
-            MATCH (r:Record)
-            WHERE r.orgId = $org_id
-            AND r.origin = "CONNECTOR"
-            AND r.connectorId = $connector_id
-            AND r.isDeleted <> true
-            AND NOT EXISTS {
+            MATCH (app:App {id: $connector_id})
+            MATCH (app)<-[:BELONGS_TO*1..10]-(rg:RecordGroup)
+            MATCH (rg)<-[:BELONGS_TO]-(r:Record)
+            WHERE NOT EXISTS {
                 MATCH (r)-[:IS_OF_TYPE]->(f:File)
                 WHERE f.isFile = false
             }
@@ -6468,45 +6460,12 @@ class Neo4jProvider(IGraphDBProvider):
 
             results = await self.client.execute_query(
                 query,
-                parameters={"org_id": org_id, "connector_id": connector_id},
+                parameters={"connector_id": connector_id},
                 txn_id=transaction
             )
 
             rows = results or []
-
-            # Build stats from aggregated rows
-            indexing_status_counts = {s: 0 for s in statuses}
-            record_type_counts = {}
-            total = 0
-
-            for row in rows:
-                cnt = row.get("cnt", 0)
-                total += cnt
-                st = row.get("indexingStatus")
-                if st in indexing_status_counts:
-                    indexing_status_counts[st] += cnt
-                rt = row.get("recordType")
-                if rt:
-                    if rt not in record_type_counts:
-                        record_type_counts[rt] = {
-                            "recordType": rt,
-                            "total": 0,
-                            "indexingStatus": {s: 0 for s in statuses}
-                        }
-                    record_type_counts[rt]["total"] += cnt
-                    if st in statuses:
-                        record_type_counts[rt]["indexingStatus"][st] += cnt
-
-            result = {
-                "orgId": org_id,
-                "connectorId": connector_id,
-                "origin": "CONNECTOR",
-                "stats": {
-                    "total": total,
-                    "indexingStatus": indexing_status_counts
-                },
-                "byRecordType": list(record_type_counts.values())
-            }
+            result = build_connector_stats_response(rows, statuses, org_id, connector_id)
 
             self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
             return {
