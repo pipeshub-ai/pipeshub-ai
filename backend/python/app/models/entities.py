@@ -848,9 +848,9 @@ class TicketRecord(Record):
     assignee_source_timestamp: Optional[int] = None
     creator_source_timestamp: Optional[int] = None
     reporter_source_timestamp: Optional[int] = None
-    labels:List[str] = Field(default_factory=list)
-    is_email_hidden:bool = False # this means reporters, assignees... emails are hidden and represents connector's native id
-    assignee_source_id:List[str] = Field(default_factory=list) # this means reporters  source ids in the connector system
+    labels: Optional[List[str]] = Field(default_factory=list)
+    is_email_hidden: bool = False # this means reporters, assignees... emails are hidden and represents connector's native id
+    assignee_source_id: Optional[List[str]] = Field(default_factory=list) # this means reporters  source ids in the connector system
     reporter_source_id:Optional[str]=None
 
     def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
