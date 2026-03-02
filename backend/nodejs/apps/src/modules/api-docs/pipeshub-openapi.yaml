@@ -8895,7 +8895,7 @@ paths:
           description: Unauthorized - Valid authentication required
 
   # ==================== USER GROUPS ENDPOINTS ====================
-  /user-groups:
+  /userGroups:
     post:
       tags:
         - User Groups
@@ -9008,7 +9008,7 @@ paths:
         '403':
           description: Forbidden - Admin privileges required
 
-  /user-groups/{groupId}:
+  /userGroups/{groupId}:
     get:
       tags:
         - User Groups
@@ -9162,7 +9162,7 @@ paths:
         '404':
           description: User group not found
 
-  /user-groups/add-users:
+  /userGroups/add-users:
     post:
       tags:
         - User Groups
@@ -9242,7 +9242,7 @@ paths:
         '404':
           description: Group or one or more users not found
 
-  /user-groups/remove-users:
+  /userGroups/remove-users:
     post:
       tags:
         - User Groups
@@ -9317,7 +9317,7 @@ paths:
         '404':
           description: Group not found
 
-  /user-groups/users/{userId}:
+  /userGroups/users/{userId}:
     get:
       tags:
         - User Groups
@@ -9369,7 +9369,7 @@ paths:
         '404':
           description: User not found
 
-  /user-groups/{groupId}/users:
+  /userGroups/{groupId}/users:
     get:
       tags:
         - User Groups
@@ -9408,7 +9408,7 @@ paths:
         '404':
           description: Group not found
 
-  /user-groups/stats/list:
+  /userGroups/stats/list:
     get:
       tags:
         - User Groups
