@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -881,7 +882,34 @@ class AzureFilesConnector(BaseConnector):
     ) -> None:
         """Remove old PARENT_CHILD relationships for a record."""
         try:
-            deleted_count = await tx_store.delete_parent_child_edge_to_record(record_id)
+            deleted_count = 0
+
+            # Prefer calling the underlying graph provider directly with the correct
+            # edge-collection argument. This avoids relying on any outdated
+            # TransactionStore convenience wrappers that might not match the current
+            # provider signature.
+            graph_provider = getattr(tx_store, "graph_provider", None)
+            txn = getattr(tx_store, "txn", None)
+
+            if graph_provider is not None and txn is not None:
+                deleted = await graph_provider.delete_parent_child_edge_to_record(
+                    record_id,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    transaction=txn,
+                )
+                # Neo4jProvider currently returns a boolean; normalize to count.
+                deleted_count = 1 if deleted else 0
+            elif hasattr(tx_store, "delete_parent_child_edge_to_record"):
+                # Fallback for environments where the TransactionStore wrapper has
+                # already been updated to accept only record_id.
+                deleted_raw = await tx_store.delete_parent_child_edge_to_record(
+                    record_id
+                )
+                try:
+                    deleted_count = int(deleted_raw)
+                except (TypeError, ValueError):
+                    deleted_count = 1 if deleted_raw else 0
+
             if deleted_count > 0:
                 self.logger.info(
                     f"Removed {deleted_count} old parent relationship(s) for record {record_id}"
@@ -1013,18 +1041,26 @@ class AzureFilesConnector(BaseConnector):
                             f"Stored revision missing for {normalized_path}, processing record"
                         )
             elif current_revision_id:
-                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection)
+                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection).
+                # IMPORTANT: Only treat this as a move when the previous record lived in the SAME share.
+                # This avoids misclassifying independent files with identical content (same MD5/etag) in
+                # different shares as moves, which would incorrectly "teleport" records between shares.
                 async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_revision_id(
-                        connector_id=self.connector_id, external_revision_id=current_revision_id
+                    candidate = await tx_store.get_record_by_external_revision_id(
+                        connector_id=self.connector_id,
+                        external_revision_id=current_revision_id,
                     )
 
-                if existing_record:
+                if candidate and getattr(candidate, "external_record_group_id", None) == share_name:
+                    existing_record = candidate
                     is_move = True
                     self.logger.info(
                         f"Move/rename detected: {normalized_path} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
                 else:
+                    # Either no matching revision, or it belongs to a different share.
+                    # In both cases, treat this as an independent new item.
+                    existing_record = None
                     self.logger.debug(f"New item: {normalized_path}")
             else:
                 self.logger.debug(f"New item: {normalized_path} (no revision available)")
@@ -1050,13 +1086,28 @@ class AzureFilesConnector(BaseConnector):
             else:
                 web_url = self._generate_web_url(share_name, normalized_path)
 
-            record_id = existing_record.id if existing_record else str(uuid.uuid4())
+            # For move/rename detection we prefer to create a fresh record node at the
+            # new location and explicitly delete the old one. This guarantees that the
+            # old externalRecordId no longer resolves in the graph, matching the
+            # expectations of the integration tests and avoiding duplicate nodes.
+            if is_move and existing_record:
+                record_id = str(uuid.uuid4())
+                old_record_id = existing_record.id
+            else:
+                record_id = existing_record.id if existing_record else str(uuid.uuid4())
+                old_record_id = None
             record_name = normalized_path.rstrip("/").split("/")[-1] or normalized_path.rstrip("/")
 
-            # For moves/renames, remove old parent relationship
-            if is_move and existing_record:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await self._remove_old_parent_relationship(record_id, tx_store)
+            # For moves/renames, delete the old record node (including its relationships)
+            # so that the old externalRecordId no longer exists, and only the new one
+            # remains in the graph.
+            if is_move and old_record_id:
+                try:
+                    await self.data_entities_processor.on_record_deleted(old_record_id)
+                except Exception as e:
+                    self.logger.warning(
+                        f"Error deleting old record {old_record_id} during move/rename: {e}"
+                    )
 
             if not existing_record:
                 version = 0

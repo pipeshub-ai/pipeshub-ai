@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -930,9 +931,38 @@ class AzureBlobConnector(BaseConnector):
     ) -> None:
         """Remove old PARENT_CHILD relationships for a record."""
         try:
-            deleted_count = await tx_store.delete_parent_child_edge_to_record(record_id)
+            deleted_count = 0
+
+            # Prefer calling the underlying graph provider directly with the correct
+            # edge-collection argument. This avoids relying on any outdated
+            # TransactionStore convenience wrappers that might not match the current
+            # provider signature.
+            graph_provider = getattr(tx_store, "graph_provider", None)
+            txn = getattr(tx_store, "txn", None)
+
+            if graph_provider is not None and txn is not None:
+                deleted = await graph_provider.delete_parent_child_edge_to_record(
+                    record_id,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    transaction=txn,
+                )
+                # Neo4jProvider currently returns a boolean; normalize to count.
+                deleted_count = 1 if deleted else 0
+            elif hasattr(tx_store, "delete_parent_child_edge_to_record"):
+                # Fallback for environments where the TransactionStore wrapper has
+                # already been updated to accept only record_id.
+                deleted_raw = await tx_store.delete_parent_child_edge_to_record(
+                    record_id
+                )
+                try:
+                    deleted_count = int(deleted_raw)
+                except (TypeError, ValueError):
+                    deleted_count = 1 if deleted_raw else 0
+
             if deleted_count > 0:
-                self.logger.info(f"Removed {deleted_count} old parent relationship(s) for record {record_id}")
+                self.logger.info(
+                    f"Removed {deleted_count} old parent relationship(s) for record {record_id}"
+                )
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
@@ -1100,14 +1130,22 @@ class AzureBlobConnector(BaseConnector):
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
-                if current_revision_id and stored_revision and current_revision_id == stored_revision:
+                if (
+                    current_revision_id
+                    and stored_revision
+                    and current_revision_id == stored_revision
+                ):
                     self.logger.debug(
                         f"Skipping {normalized_name}: externalRecordId and externalRevisionId unchanged"
                     )
                     return None, []
 
                 # Content changed or missing revision - sync properly from Azure Blob
-                if current_revision_id and stored_revision and current_revision_id != stored_revision:
+                if (
+                    current_revision_id
+                    and stored_revision
+                    and current_revision_id != stored_revision
+                ):
                     self.logger.info(
                         f"Content change detected: {normalized_name} - externalRevisionId changed from {stored_revision} to {current_revision_id}"
                     )
@@ -1121,18 +1159,29 @@ class AzureBlobConnector(BaseConnector):
                             f"Stored revision missing for {normalized_name}, processing record"
                         )
             elif current_revision_id:
-                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection)
+                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection).
+                # IMPORTANT: Only treat this as a move when the previous record lived in the SAME
+                # container. This avoids misclassifying independent blobs with identical content
+                # (same MD5/etag) in different containers as moves, which would incorrectly
+                # "teleport" records between containers.
                 async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_revision_id(
-                        connector_id=self.connector_id, external_revision_id=current_revision_id
+                    candidate = await tx_store.get_record_by_external_revision_id(
+                        connector_id=self.connector_id,
+                        external_revision_id=current_revision_id,
                     )
 
-                if existing_record:
+                if candidate and getattr(
+                    candidate, "external_record_group_id", None
+                ) == container_name:
+                    existing_record = candidate
                     is_move = True
                     self.logger.info(
                         f"Move/rename detected: {normalized_name} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
                 else:
+                    # Either no matching revision, or it belongs to a different container.
+                    # In both cases, treat this as an independent new item.
+                    existing_record = None
                     self.logger.debug(f"New document: {normalized_name}")
             else:
                 self.logger.debug(f"New document: {normalized_name} (no revision available)")
