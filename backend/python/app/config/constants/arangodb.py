@@ -195,6 +195,12 @@ class CollectionNames(Enum):
     AGENT_HAS_TOOLSET = "agentHasToolset"
     TOOLSET_HAS_TOOL = "toolsetHasTool"
 
+
+class RecordsPersistentIndex(Enum):
+    """Persistent index definitions for the records collection. Used by _ensure_indexes()."""
+    CONNECTOR_SCOPE = ("orgId", "origin", "connectorId", "isDeleted")
+
+
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
 

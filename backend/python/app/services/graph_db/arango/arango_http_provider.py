@@ -27,6 +27,7 @@ from app.config.constants.arangodb import (
     GraphNames,
     OriginTypes,
     ProgressStatus,
+    RecordsPersistentIndex,
     RecordTypes,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
@@ -484,12 +485,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return False
 
     async def _ensure_indexes(self) -> None:
-        """Create persistent indexes for frequent query patterns."""
+        """Create persistent indexes for frequent query patterns.
+
+        Indexes are built here: each call to ensure_persistent_index() creates (or ensures)
+        the index via the ArangoDB HTTP API (see arango_http_client.ensure_persistent_index).
+        """
         try:
             # Compound index used by get_connector_stats (and similar connector-scoped queries)
             await self.http_client.ensure_persistent_index(
                 CollectionNames.RECORDS.value,
-                ["orgId", "origin", "connectorId", "isDeleted"],
+                list(RecordsPersistentIndex.CONNECTOR_SCOPE.value),
             )
         except Exception as e:
             self.logger.warning(f"Index creation failed (non-fatal): {str(e)}")
@@ -14377,8 +14382,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 COLLECT recordType = doc.recordType, indexingStatus = doc.indexingStatus WITH COUNT INTO cnt
                 RETURN {{ recordType, indexingStatus, cnt }}
             """
-
-            from app.config.constants.arangodb import RecordTypes
 
             rows = await self.http_client.execute_aql(
                 query,
