@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import datetime
 from collections.abc import Sequence
 from typing import List
 
 from github import (
     Github,  # type: ignore
-    Invitation,  # type: ignore
 )
 from github.AuthenticatedUser import AuthenticatedUser  # type: ignore
 from github.Branch import Branch  # type: ignore
@@ -13,18 +13,21 @@ from github.Commit import Commit  # type: ignore
 from github.ContentFile import ContentFile  # type: ignore
 from github.Deployment import Deployment  # type: ignore
 from github.DeploymentStatus import DeploymentStatus  # type: ignore
+from github.File import File  # type: ignore
 from github.GitBlob import GitBlob  # type: ignore
 from github.GitRef import GitRef  # type: ignore
 from github.GitRelease import GitRelease  # type: ignore
 from github.GitTag import GitTag  # type: ignore
 from github.GitTree import GitTree  # type: ignore
 from github.Hook import Hook  # type: ignore
+from github.Invitation import Invitation  # type: ignore
 from github.Issue import Issue  # type: ignore
 from github.IssueComment import IssueComment  # type: ignore
 from github.Label import Label  # type: ignore
 from github.NamedUser import NamedUser  # type: ignore
 from github.Organization import Organization  # type: ignore
 from github.PullRequest import PullRequest  # type: ignore
+from github.PullRequestComment import PullRequestComment  # type: ignore
 from github.RateLimit import RateLimit  # type: ignore
 from github.Repository import Repository  # type: ignore
 from github.Tag import Tag  # type: ignore
@@ -94,7 +97,7 @@ class GitHubDataSource:
     def list_user_repos(self, user: str, type: str = "owner") -> GitHubResponse[list[Repository]]:
         """List repositories for a given user. `type` in {'all','owner','member'}."""
         try:
-            u = self._sdk.get_user(user)
+            u = self._sdk.get_user()
             repos = list(u.get_repos(type=type))
             return GitHubResponse(success=True, data=repos)
         except Exception as e:
@@ -130,11 +133,11 @@ class GitHubDataSource:
             return GitHubResponse(success=False, error=str(e))
 
 
-    def list_issues(self, owner: str, repo: str, state: str = "open", labels: Sequence[str] | None = None, assignee: str | None = None) -> GitHubResponse[list[Issue]]:
+    def list_issues(self, owner: str, repo: str, state: str = "open", labels: Sequence[str] | None = None, assignee: str | None = None,since:str |None = None) -> GitHubResponse[list[Issue]]:
         """List issues with filters."""
         try:
             r = self._repo(owner, repo)
-            params = self._not_none(labels=labels, assignee=assignee)
+            params = self._not_none(labels=labels, assignee=assignee, since=since)
             issues = list(r.get_issues(state=state, **params))
             return GitHubResponse(success=True, data=issues)
         except Exception as e:
@@ -184,16 +187,28 @@ class GitHubDataSource:
             return GitHubResponse(success=False, error=str(e))
 
 
-    def list_issue_comments(self, owner: str, repo: str, number: int) -> GitHubResponse[list[IssueComment]]:
+    def list_issue_comments(self, owner: str, repo: str, number: int,since:datetime.datetime|None=None) -> GitHubResponse[list[IssueComment]]:
         """List comments on an issue."""
         try:
             r = self._repo(owner, repo)
             issue = r.get_issue(number)
-            comments = list(issue.get_comments())
+            if since is None:
+                comments=list(issue.get_comments())
+            else:
+                comments = list(issue.get_comments(since=since))
             return GitHubResponse(success=True, data=comments)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
+    def get_issue_comment(self, owner: str, repo: str,number:int, comment_id: int) -> GitHubResponse[IssueComment]:
+        """Get a single issue comment by ID."""
+        try:
+            r = self._repo(owner, repo)
+            issue = r.get_issue(number=number)
+            comment = issue.get_comment(id=comment_id)
+            return GitHubResponse(success=True, data=comment)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
 
     def list_pulls(self, owner: str, repo: str, state: str = "open", head: str | None = None, base: str | None = None) -> GitHubResponse[list[PullRequest]]:
         """List PRs."""
@@ -215,6 +230,36 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
+    def get_pull_commits(self, owner: str, repo: str, number: int) -> GitHubResponse[list[Commit]]:
+        """Get commits of a PR."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            commits = list(pr.get_commits())
+            return GitHubResponse(success=True, data=commits)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def get_pull_file_changes(self, owner: str, repo: str, number: int) -> GitHubResponse[list[File]]:
+        """Get file changes of a PR."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            files = list(pr.get_files())
+            # file_dicts = [file.raw_data for file in files]
+            return GitHubResponse(success=True, data=files)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def get_pull_review_comments(self, owner: str, repo: str, number: int) -> GitHubResponse[list[PullRequestComment]]:
+        """Get review comments of a PR."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            comments = list(pr.get_review_comments())
+            return GitHubResponse(success=True, data=comments)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
 
     def create_pull(self, owner: str, repo: str, title: str, head: str, base: str, body: str | None = None, draft: bool = False) -> GitHubResponse[PullRequest]:
         """Create a PR."""
@@ -300,7 +345,6 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
     def get_file_contents(self, owner: str, repo: str, path: str, ref: str | None = None) -> GitHubResponse[ContentFile]:
         """Get file contents."""
         try:
@@ -310,7 +354,6 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=content)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-
 
     def create_file(self, owner: str, repo: str, path: str, message: str, content: bytes, branch: str | None = None) -> GitHubResponse[dict[str, object]]:
         """Create a file."""

@@ -1754,6 +1754,24 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_app_creator_user(
+        self,
+        connector_id: str,
+        transaction:Optional[str]=None
+    )->Optional['User']:
+        """
+        Resolve the creator of an App/Connector by connectorId, using the
+        `createdBy` field on the app document to fetch the user from `users`.
+
+        Args:
+            connector_id: Connector/App id (_key)
+            transaction: Optional transaction context
+
+        Returns:
+            User if found, otherwise None
+        """
+        pass
     # ==================== Organization Operations ====================
 
     @abstractmethod
