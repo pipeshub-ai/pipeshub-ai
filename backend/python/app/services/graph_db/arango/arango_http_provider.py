@@ -36,6 +36,7 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
+    IndexingStatus,
     LinkRecord,
     MailRecord,
     Person,
@@ -469,7 +470,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 self.logger.info("Knowledge graph already exists, skipping creation")
 
-            # 3. Seed departments collection with predefined department types
+            # 3. Ensure persistent indexes for frequent query patterns
+            await self._ensure_indexes()
+
+            # 4. Seed departments collection with predefined department types
             await self._ensure_departments_seed()
 
             self.logger.info("✅ ArangoDB schema ensured successfully")
@@ -478,6 +482,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Error ensuring schema: {str(e)}")
             return False
+
+    async def _ensure_indexes(self) -> None:
+        """Create persistent indexes for frequent query patterns."""
+        try:
+            # Compound index used by get_connector_stats (and similar connector-scoped queries)
+            await self.http_client.ensure_persistent_index(
+                CollectionNames.RECORDS.value,
+                ["orgId", "origin", "connectorId", "isDeleted"],
+            )
+        except Exception as e:
+            self.logger.warning(f"Index creation failed (non-fatal): {str(e)}")
 
     async def _ensure_departments_seed(self) -> None:
         """Initialize departments collection with predefined department types if missing."""
@@ -14340,82 +14355,32 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns:
             Dict: Statistics data with success status
         """
+        statuses = [s.value for s in IndexingStatus]
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
+
             query = f"""
-            LET org_id = @org_id
+            FOR doc IN {CollectionNames.RECORDS.value}
+                FILTER doc.orgId == @org_id
+                FILTER doc.origin == "CONNECTOR"
+                FILTER doc.connectorId == @connector_id
+                FILTER doc.recordType != @drive_record_type
+                FILTER doc.isDeleted != true
 
-            LET grouped = (
-                FOR doc IN {CollectionNames.RECORDS.value}
-                    FILTER doc.orgId == org_id
-                    FILTER doc.origin == "CONNECTOR"
-                    FILTER doc.connectorId == @connector_id
-                    FILTER doc.recordType != @drive_record_type
-                    FILTER doc.isDeleted != true
+                LET targetDoc = FIRST(
+                    FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
+                        LIMIT 1
+                        RETURN v
+                )
 
-                    LET targetDoc = FIRST(
-                        FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
-                            LIMIT 1
-                            RETURN v
-                    )
-
-                    FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
-                    COLLECT recordType = doc.recordType, indexingStatus = doc.indexingStatus WITH COUNT INTO cnt
-                    RETURN {{ recordType, indexingStatus, cnt }}
-            )
-
-            LET total_stats = {{
-                total: SUM(grouped[*].cnt),
-                indexingStatus: {{
-                    NOT_STARTED: SUM(grouped[* FILTER CURRENT.indexingStatus == "NOT_STARTED"].cnt),
-                    IN_PROGRESS: SUM(grouped[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"].cnt),
-                    COMPLETED: SUM(grouped[* FILTER CURRENT.indexingStatus == "COMPLETED"].cnt),
-                    FAILED: SUM(grouped[* FILTER CURRENT.indexingStatus == "FAILED"].cnt),
-                    FILE_TYPE_NOT_SUPPORTED: SUM(grouped[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"].cnt),
-                    AUTO_INDEX_OFF: SUM(grouped[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"].cnt),
-                    ENABLE_MULTIMODAL_MODELS: SUM(grouped[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"].cnt),
-                    EMPTY: SUM(grouped[* FILTER CURRENT.indexingStatus == "EMPTY"].cnt),
-                    QUEUED: SUM(grouped[* FILTER CURRENT.indexingStatus == "QUEUED"].cnt),
-                    PAUSED: SUM(grouped[* FILTER CURRENT.indexingStatus == "PAUSED"].cnt),
-                    CONNECTOR_DISABLED: SUM(grouped[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"].cnt),
-                }}
-            }}
-
-            LET by_record_type = (
-                FOR record_type IN UNIQUE(grouped[*].recordType)
-                    FILTER record_type != null
-                    LET type_rows = grouped[* FILTER CURRENT.recordType == record_type]
-                    RETURN {{
-                        recordType: record_type,
-                        total: SUM(type_rows[*].cnt),
-                        indexingStatus: {{
-                            NOT_STARTED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "NOT_STARTED"].cnt),
-                            IN_PROGRESS: SUM(type_rows[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"].cnt),
-                            COMPLETED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "COMPLETED"].cnt),
-                            FAILED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "FAILED"].cnt),
-                            FILE_TYPE_NOT_SUPPORTED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"].cnt),
-                            AUTO_INDEX_OFF: SUM(type_rows[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"].cnt),
-                            ENABLE_MULTIMODAL_MODELS: SUM(type_rows[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"].cnt),
-                            EMPTY: SUM(type_rows[* FILTER CURRENT.indexingStatus == "EMPTY"].cnt),
-                            QUEUED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "QUEUED"].cnt),
-                            PAUSED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "PAUSED"].cnt),
-                            CONNECTOR_DISABLED: SUM(type_rows[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"].cnt),
-                        }}
-                    }}
-            )
-
-            RETURN {{
-                orgId: org_id,
-                connectorId: @connector_id,
-                origin: "CONNECTOR",
-                stats: total_stats,
-                byRecordType: by_record_type
-            }}
+                FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
+                COLLECT recordType = doc.recordType, indexingStatus = doc.indexingStatus WITH COUNT INTO cnt
+                RETURN {{ recordType, indexingStatus, cnt }}
             """
 
             from app.config.constants.arangodb import RecordTypes
 
-            results = await self.http_client.execute_aql(
+            rows = await self.http_client.execute_aql(
                 query,
                 bind_vars={
                     "org_id": org_id,
@@ -14425,47 +14390,54 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            if results and results[0]:
-                self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
-                return {
-                    "success": True,
-                    "data": results[0]
-                }
-            else:
-                self.logger.warning(f"⚠️ No data found for connector: {connector_id}")
-                return {
-                    "success": False,
-                    "message": "No data found for the specified connector",
-                    "data": {
-                        "org_id": org_id,
-                        "connector_id": connector_id,
-                        "origin": "CONNECTOR",
-                        "stats": {
+            rows = rows or []
+
+            # Pivot aggregated rows into the response shape (same logic as Neo4j provider)
+            indexing_status_counts = {s: 0 for s in statuses}
+            record_type_counts = {}
+            total = 0
+
+            for row in rows:
+                cnt = row.get("cnt", 0)
+                total += cnt
+                st = row.get("indexingStatus")
+                if st in indexing_status_counts:
+                    indexing_status_counts[st] += cnt
+                rt = row.get("recordType")
+                if rt:
+                    if rt not in record_type_counts:
+                        record_type_counts[rt] = {
+                            "recordType": rt,
                             "total": 0,
-                            "indexingStatus": {
-                                "NOT_STARTED": 0,
-                                "IN_PROGRESS": 0,
-                                "COMPLETED": 0,
-                                "FAILED": 0,
-                                "FILE_TYPE_NOT_SUPPORTED": 0,
-                                "AUTO_INDEX_OFF": 0,
-                                "ENABLE_MULTIMODAL_MODELS": 0,
-                                "EMPTY": 0,
-                                "QUEUED": 0,
-                                "PAUSED": 0,
-                                "CONNECTOR_DISABLED": 0,
-                            }
-                        },
-                        "byRecordType": []
-                    }
-                }
+                            "indexingStatus": {s: 0 for s in statuses},
+                        }
+                    record_type_counts[rt]["total"] += cnt
+                    if st in statuses:
+                        record_type_counts[rt]["indexingStatus"][st] += cnt
+
+            result = {
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "origin": "CONNECTOR",
+                "stats": {
+                    "total": total,
+                    "indexingStatus": indexing_status_counts,
+                },
+                "byRecordType": list(record_type_counts.values()),
+            }
+
+            self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
+            return {
+                "success": True,
+                "data": result,
+            }
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get connector stats: {str(e)}")
             return {
                 "success": False,
                 "message": str(e),
-                "data": None
+                "data": None,
             }
 
     def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> Tuple[str, Dict[str, Any]]:

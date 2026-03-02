@@ -440,6 +440,12 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.md5Checksum)"
         )
 
+        # COMPOSITE: orgId + origin + connectorId (stats and connector-scoped queries)
+        indexes.append(
+            "CREATE INDEX record_org_origin_connector IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.origin, n.connectorId)"
+        )
+
         # ==================== USER INDEXES (High Priority) ====================
 
         # SINGLE: email (authentication, lookups)
@@ -6442,8 +6448,7 @@ class Neo4jProvider(IGraphDBProvider):
         Returns:
             Dict: Statistics data with success status
         """
-        statuses = ["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "FAILED", "FILE_TYPE_NOT_SUPPORTED",
-                   "AUTO_INDEX_OFF", "ENABLE_MULTIMODAL_MODELS", "EMPTY", "QUEUED", "PAUSED", "CONNECTOR_DISABLED"]
+        statuses = [s.value for s in IndexingStatus]
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 

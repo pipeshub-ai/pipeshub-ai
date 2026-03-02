@@ -839,6 +839,42 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error creating collection: {str(e)}")
             return False
 
+    async def ensure_persistent_index(
+        self,
+        collection_name: str,
+        fields: List[str],
+    ) -> bool:
+        """
+        Create a persistent index on a collection (idempotent).
+
+        Args:
+            collection_name: Collection to index
+            fields: List of field names for the compound index
+
+        Returns:
+            bool: True if index exists or was created
+        """
+        url = f"{self.base_url}/_db/{self.database}/_api/index?collection={collection_name}"
+        payload = {
+            "type": "persistent",
+            "fields": fields,
+        }
+        try:
+            session = await self._get_session()
+            async with session.post(url, json=payload) as resp:
+                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
+                    self.logger.info(
+                        f"✅ Persistent index on {fields} in '{collection_name}' ensured"
+                    )
+                    return True
+                else:
+                    error = await resp.text()
+                    self.logger.error(f"❌ Failed to create index: {error}")
+                    return False
+        except Exception as e:
+            self.logger.error(f"❌ Error creating index: {str(e)}")
+            return False
+
     async def update_collection_schema(
         self,
         name: str,
