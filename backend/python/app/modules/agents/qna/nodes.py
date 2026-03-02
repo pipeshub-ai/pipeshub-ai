@@ -2270,6 +2270,7 @@ CONFLUENCE_GUIDANCE = r"""
 | List pages in a space | `confluence.get_pages_in_space` | `space_id` |
 | Read / get page content | `confluence.get_page_content` | `page_id` |
 | Search for a page by title | `confluence.search_pages` | `title` |
+| Search for content by topic/keyword | `confluence.search_content` | `query` |
 | Create a new page | `confluence.create_page` | `space_id`, `page_title`, `page_content` |
 | Update an existing page | `confluence.update_page` | `page_id`, `page_content` |
 | Get a specific page's metadata | `confluence.get_page` | `page_id` |
@@ -2302,6 +2303,7 @@ Retrieval returns formatted text, not structured JSON — you cannot extract IDs
 
 **R-CONF-5: Exact parameter names (never substitute).**
 - `confluence.search_pages` → parameter is `title` (NOT `query`, NOT `cql`)
+- `confluence.search_content` → parameter is `query` (NOT `title`, NOT `cql`)
 - `confluence.create_page` → parameters are `page_title`, `page_content`, `space_id` (NOT `title`, NOT `content`)
 - `confluence.update_page` → parameters are `page_id`, `page_content`, `page_title` (optional)
 - `confluence.get_page_content` → parameter is `page_id` (NOT `id`, NOT `pageId`)
@@ -2322,6 +2324,55 @@ When generating page content for `create_page` or `update_page`, use HTML storag
 - List pages in a space → `confluence.get_pages_in_space`
 - Read page → `confluence.get_page_content`
 - None of these should ever be replaced by retrieval
+
+**R-CONF-8: For information queries about topics/concepts, use `confluence.search_content` — NEVER ask for space_id/page_id.**
+When the user asks about a topic, concept, policy, process, or any information query (even if vague), use `confluence.search_content` to search across all Confluence content. This tool searches full page content, comments, and labels — exactly like the Confluence search bar.
+
+**CRITICAL: NEVER ask for space_id or page_id when the user is asking an information query.**
+
+Examples:
+- ❌ "What is HR policy?" → Do NOT ask for space_id/page_id → ✅ Use `confluence.search_content` with `query="HR policy"`
+- ❌ "Tell me about deployment process" → Do NOT ask for space_id/page_id → ✅ Use `confluence.search_content` with `query="deployment process"`
+- ❌ "Find information about onboarding" → Do NOT ask for space_id/page_id → ✅ Use `confluence.search_content` with `query="onboarding"`
+- ❌ "What are the API guidelines?" → Do NOT ask for space_id/page_id → ✅ Use `confluence.search_content` with `query="API guidelines"`
+- ✅ "Get page content for page 12345" → Use `confluence.get_page_content` with `page_id="12345"` (user provided specific page ID)
+- ✅ "List pages in space SD" → Use `confluence.get_pages_in_space` with `space_id="SD"` (user provided specific space)
+
+**When to use `confluence.search_content`:**
+- User asks "what is X", "tell me about X", "find information about X", "search for X"
+- User asks about a topic, concept, policy, process, or documentation
+- User query is an information/knowledge request (not a specific page/space request)
+- Query could match content across multiple pages/spaces
+
+**When NOT to use `confluence.search_content`:**
+- User provides a specific page_id → Use `confluence.get_page_content`
+- User provides a specific space_id and wants pages in that space → Use `confluence.get_pages_in_space`
+- User provides a specific page title → Use `confluence.search_pages` (title-only search)
+- User wants to create/update a page → Use `confluence.create_page` / `confluence.update_page`
+
+**Parameter usage:**
+- `query`: The search query string (e.g., "HR policy", "deployment process")
+- `space_id`: Optional — only use if user explicitly mentions a specific space to limit search
+- `content_types`: Optional — defaults to both "page" and "blogpost"
+- `limit`: Optional — defaults to 25 results
+
+**Example — information query:**
+```json
+{
+  "tools": [
+    {"name": "confluence.search_content", "args": {"query": "HR policy"}}
+  ]
+}
+```
+
+**Example — information query with space restriction:**
+```json
+{
+  "tools": [
+    {"name": "confluence.search_content", "args": {"query": "onboarding process", "space_id": "HR"}}
+  ]
+}
+```
 """
 
 PLANNER_USER_TEMPLATE = """Query: {query}

@@ -43,7 +43,9 @@ interface FlowBuilderSidebarProps {
   configuredConnectors: Connector[];
   connectorRegistry: any[];
   toolsets: any[]; // Pre-loaded toolsets with status
+  refreshToolsets: () => Promise<void>; // Refresh toolsets after OAuth
   isBusiness: boolean;
+  activeToolsetTypes?: string[];
   userId?: string; // For toolsets section
 }
 
@@ -56,7 +58,9 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   configuredConnectors,
   connectorRegistry,
   toolsets,
+  refreshToolsets,
   isBusiness,
+  activeToolsetTypes = [],
   userId = '',
 }) => {
   const theme = useTheme();
@@ -232,6 +236,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
           easing: theme.transitions.easing.easeInOut,
           duration: theme.transitions.duration.standard,
         }),
+        height: '100%',
         '& .MuiDrawer-paper': {
           width: sidebarWidth,
           boxSizing: 'border-box',
@@ -377,8 +382,10 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                         expandedApps={expandedApps}
                         onAppToggle={handleAppToggle}
                         toolsets={toolsets}
+                        refreshToolsets={refreshToolsets}
                         loading={loading}
                         isBusiness={isBusiness}
+                        activeToolsetTypes={activeToolsetTypes}
                       />
                     ) : config.name === 'LLM Models' ? (
                       <List dense sx={{ py: 0 }}>

@@ -242,9 +242,8 @@ class SlackClient(IClient):
                 raise ValueError("Toolset config is required for Slack client")
 
             # Extract auth configuration from toolset config
-            auth_config = toolset_config.get("auth", {}) or {}
             credentials_config = toolset_config.get("credentials", {}) or {}
-            auth_type = auth_config.get("type", "userOAuthAccessToken")
+            auth_type = toolset_config.get("authType", "").upper()
 
             # Create appropriate client based on auth type
             if auth_type == "OAUTH":
@@ -257,7 +256,7 @@ class SlackClient(IClient):
             elif auth_type == "API_TOKEN":
                 # For API_TOKEN (bot token), use the api_token from auth config
                 # API_TOKEN is typically a bot token like "xoxb-..." stored in auth_config
-                token = auth_config.get("api_token", "") or auth_config.get("apiToken", "")
+                token = toolset_config.get("api_token", "") or toolset_config.get("apiToken", "")
                 if not token:
                     raise ValueError("API token required for API_TOKEN auth type")
                 client = SlackRESTClientViaToken(token)

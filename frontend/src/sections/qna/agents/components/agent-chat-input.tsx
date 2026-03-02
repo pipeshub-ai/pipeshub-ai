@@ -7,7 +7,6 @@ import closeIcon from '@iconify-icons/mdi/close';
 import searchIcon from '@iconify-icons/mdi/magnify';
 import toolIcon from '@iconify-icons/mdi/tools';
 import databaseIcon from '@iconify-icons/mdi/database';
-import sparklesIcon from '@iconify-icons/mdi/star-four-points';
 import cogIcon from '@iconify-icons/mdi/cog';
 import checkIcon from '@iconify-icons/mdi/check';
 import {
@@ -45,12 +44,6 @@ export interface Model {
   modelFriendlyName?: string;
 }
 
-export interface ChatMode {
-  id: string;
-  name: string;
-  description: string;
-}
-
 export type ChatInputProps = {
   onSubmit: (
     message: string,
@@ -65,28 +58,13 @@ export type ChatInputProps = {
   disabled?: boolean;
   placeholder?: string;
   selectedModel: Model | null;
-  selectedChatMode: ChatMode | null;
   onModelChange: (model: Model) => void;
-  onChatModeChange: (mode: ChatMode) => void;
   availableModels: Model[];
   availableKBs: KnowledgeBase[];
   agent?: any;
   activeConnectors: Connector[];
 };
-
-// Define chat modes with compact styling
-const CHAT_MODES: ChatMode[] = [
-  {
-    id: 'standard',
-    name: 'Standard',
-    description: 'Standard responses',
-  },
-  {
-    id: 'quick',
-    name: 'Quick',
-    description: 'Fast responses with minimal context',
-  },
-];
+const QUICK_CHAT_MODE = 'quick';
 
 interface ToolOption {
   id: string; // This will be app_name.tool_name format
@@ -154,9 +132,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   disabled = false,
   placeholder = 'Type your message...',
   selectedModel,
-  selectedChatMode,
   onModelChange,
-  onChatModeChange,
   availableModels,
   availableKBs,
   agent,
@@ -471,7 +447,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
         trimmedValue,
         selectedModel?.modelKey,        
         selectedModel?.modelName,        
-        selectedChatMode?.id,            
+        QUICK_CHAT_MODE,
         selectedTools,                  
         selectedKBs,                     
         selectedApps                     
@@ -493,7 +469,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
     disabled,
     onSubmit,
     selectedModel,
-    selectedChatMode,
     selectedTools, // These remain persistent
     selectedKBs, // These remain persistent
     selectedApps, // These remain persistent
@@ -520,10 +495,6 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   const handleModelSelect = (model: Model) => {
     onModelChange(model);
     handleModelMenuClose();
-  };
-
-  const handleChatModeSelect = (mode: ChatMode) => {
-    onChatModeChange(mode);
   };
 
   // Toggle functions - using the correct IDs for API - these are persistent
@@ -774,46 +745,10 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
               py: 0.5,
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'space-between',
+              justifyContent: 'flex-end',
               borderTop: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
             }}
           >
-            {/* Chat Mode Buttons */}
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              {CHAT_MODES.map((mode) => (
-                <Chip
-                  key={mode.id}
-                  label={mode.name}
-                  onClick={() => handleChatModeSelect(mode)}
-                  size="small"
-                  variant={selectedChatMode?.id === mode.id ? 'filled' : 'outlined'}
-                  icon={<Icon icon={sparklesIcon} width={12} height={12} />}
-                  sx={{
-                    height: 24,
-                    fontSize: '0.7rem',
-                    fontWeight: 500,
-                    borderRadius: '12px',
-                    cursor: 'pointer',
-                    '& .MuiChip-icon': { width: 12, height: 12 },
-                    color: selectedChatMode?.id === mode.id ? '#fff' : theme.palette.text.secondary,
-                    bgcolor:
-                      selectedChatMode?.id === mode.id ? theme.palette.primary.main : 'transparent',
-                    borderColor:
-                      selectedChatMode?.id === mode.id
-                        ? theme.palette.primary.main
-                        : alpha(theme.palette.divider, 0.5),
-                    '&:hover': {
-                      borderColor: theme.palette.primary.main,
-                      bgcolor:
-                        selectedChatMode?.id === mode.id
-                          ? theme.palette.primary.dark
-                          : alpha(theme.palette.primary.main, 0.1),
-                    },
-                  }}
-                />
-              ))}
-            </Box>
-
             {/* Right Controls */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
               {/* Resources Button */}

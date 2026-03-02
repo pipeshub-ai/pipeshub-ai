@@ -15599,7 +15599,7 @@ class Neo4jProvider(IGraphDBProvider):
                 name: ts.name,
                 displayName: ts.displayName,
                 type: ts.type,
-                userId: ts.userId,
+                instanceId: ts.instanceId,
                 selectedTools: ts.selectedTools,
                 tools: tools
             }} AS toolset
@@ -15943,6 +15943,414 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Failed to delete agent: {str(e)}")
             return False
+
+    async def hard_delete_agent(self, agent_id: str, transaction: Optional[str] = None) -> Dict[str, int]:
+        """
+        Hard delete a single agent and all its related edges/nodes.
+
+        This deletes (in order):
+        1. Collect knowledge IDs, delete agent -> knowledge relationships, delete knowledge nodes
+        2. Collect toolset IDs, collect tool IDs, delete toolset -> tool relationships, delete tool nodes
+        3. Delete agent -> toolset relationships, delete toolset nodes
+        4. Delete permission relationships pointing to the agent
+        5. DETACH DELETE the agent node (catches any unexpected remaining relationships)
+
+        Returns:
+            Dict with counts: {"agents_deleted": 1, "toolsets_deleted": X, "tools_deleted": Y, "knowledge_deleted": Z, "edges_deleted": W}
+        """
+        try:
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            toolset_label = collection_to_label(CollectionNames.AGENT_TOOLSETS.value)
+            tool_label = collection_to_label(CollectionNames.AGENT_TOOLS.value)
+            knowledge_label = collection_to_label(CollectionNames.AGENT_KNOWLEDGE.value)
+            has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
+            has_tool_rel = edge_collection_to_relationship(CollectionNames.TOOLSET_HAS_TOOL.value)
+            has_knowledge_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_KNOWLEDGE.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            toolsets_deleted = 0
+            tools_deleted = 0
+            knowledge_deleted = 0
+            edges_deleted = 0
+            agents_deleted = 0
+
+            # Step 1: Collect knowledge node IDs BEFORE deleting edges
+            result = await self.client.execute_query(
+                f"""
+                MATCH (agent:{agent_label} {{id: $agent_id}})-[:{has_knowledge_rel}]->(knowledge:{knowledge_label})
+                RETURN collect(DISTINCT knowledge.id) as knowledge_ids
+                """,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+            knowledge_ids = result[0].get("knowledge_ids", []) if result else []
+
+            # Step 2: Delete agent -> knowledge relationships
+            result = await self.client.execute_query(
+                f"""
+                MATCH (:{agent_label} {{id: $agent_id}})-[kr:{has_knowledge_rel}]->(:{knowledge_label})
+                DELETE kr
+                RETURN count(kr) as rel_count
+                """,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+            if result:
+                edges_deleted += result[0].get("rel_count", 0) or 0
+
+            # Step 3: Delete knowledge nodes (now isolated after edge deletion)
+            if knowledge_ids:
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (knowledge:{knowledge_label})
+                    WHERE knowledge.id IN $knowledge_ids
+                    DELETE knowledge
+                    RETURN count(knowledge) as knowledge_count
+                    """,
+                    parameters={"knowledge_ids": knowledge_ids},
+                    txn_id=transaction
+                )
+                if result:
+                    knowledge_deleted = result[0].get("knowledge_count", 0) or 0
+
+            # Step 4: Collect toolset IDs BEFORE deleting edges
+            result = await self.client.execute_query(
+                f"""
+                MATCH (:{agent_label} {{id: $agent_id}})-[:{has_toolset_rel}]->(toolset:{toolset_label})
+                RETURN collect(DISTINCT toolset.id) as toolset_ids
+                """,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+            toolset_ids = result[0].get("toolset_ids", []) if result else []
+
+            if toolset_ids:
+                # Step 5: Collect tool IDs BEFORE deleting edges
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (toolset:{toolset_label})-[:{has_tool_rel}]->(tool:{tool_label})
+                    WHERE toolset.id IN $toolset_ids
+                    RETURN collect(DISTINCT tool.id) as tool_ids
+                    """,
+                    parameters={"toolset_ids": toolset_ids},
+                    txn_id=transaction
+                )
+                tool_ids = result[0].get("tool_ids", []) if result else []
+
+                # Step 6: Delete toolset -> tool relationships
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (toolset:{toolset_label})-[tr:{has_tool_rel}]->(:{tool_label})
+                    WHERE toolset.id IN $toolset_ids
+                    DELETE tr
+                    RETURN count(tr) as rel_count
+                    """,
+                    parameters={"toolset_ids": toolset_ids},
+                    txn_id=transaction
+                )
+                if result:
+                    edges_deleted += result[0].get("rel_count", 0) or 0
+
+                # Step 7: Delete tool nodes (now isolated after edge deletion)
+                if tool_ids:
+                    result = await self.client.execute_query(
+                        f"""
+                        MATCH (tool:{tool_label})
+                        WHERE tool.id IN $tool_ids
+                        DELETE tool
+                        RETURN count(tool) as tool_count
+                        """,
+                        parameters={"tool_ids": tool_ids},
+                        txn_id=transaction
+                    )
+                    if result:
+                        tools_deleted = result[0].get("tool_count", 0) or 0
+
+            # Step 8: Delete agent -> toolset relationships
+            result = await self.client.execute_query(
+                f"""
+                MATCH (:{agent_label} {{id: $agent_id}})-[tsr:{has_toolset_rel}]->(:{toolset_label})
+                DELETE tsr
+                RETURN count(tsr) as rel_count
+                """,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+            if result:
+                edges_deleted += result[0].get("rel_count", 0) or 0
+
+            # Step 9: Delete toolset nodes (now isolated after edge deletion)
+            if toolset_ids:
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (toolset:{toolset_label})
+                    WHERE toolset.id IN $toolset_ids
+                    DELETE toolset
+                    RETURN count(toolset) as toolset_count
+                    """,
+                    parameters={"toolset_ids": toolset_ids},
+                    txn_id=transaction
+                )
+                if result:
+                    toolsets_deleted = result[0].get("toolset_count", 0) or 0
+
+            # Step 10: Delete all permission relationships pointing to this agent
+            result = await self.client.execute_query(
+                f"""
+                MATCH ()-[pr:{permission_rel}]->(:{agent_label} {{id: $agent_id}})
+                DELETE pr
+                RETURN count(pr) as perm_count
+                """,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+            if result:
+                edges_deleted += result[0].get("perm_count", 0) or 0
+
+            # Step 11: DETACH DELETE the agent node (handles any unexpected remaining relationships)
+            await self.client.execute_query(
+                f"""
+                MATCH (agent:{agent_label} {{id: $agent_id}})
+                DETACH DELETE agent
+                """,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+            agents_deleted = 1
+
+            self.logger.info(
+                f"Hard deleted agent {agent_id}: {agents_deleted} agent, "
+                f"{toolsets_deleted} toolsets, {tools_deleted} tools, "
+                f"{knowledge_deleted} knowledge, {edges_deleted} relationships"
+            )
+
+            return {
+                "agents_deleted": agents_deleted,
+                "toolsets_deleted": toolsets_deleted,
+                "tools_deleted": tools_deleted,
+                "knowledge_deleted": knowledge_deleted,
+                "edges_deleted": edges_deleted,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to hard delete agent {agent_id}: {e}")
+            return {
+                "agents_deleted": 0,
+                "toolsets_deleted": 0,
+                "tools_deleted": 0,
+                "knowledge_deleted": 0,
+                "edges_deleted": 0,
+            }
+
+    async def hard_delete_all_agents(self, transaction: Optional[str] = None) -> Dict[str, int]:
+        """
+        Hard delete ALL agents (including soft-deleted ones) and all their related edges/nodes.
+
+        This method is used for migrations and cleanup operations.
+        It deletes (in order):
+        1. Collect knowledge IDs, delete agent -> knowledge relationships, delete knowledge nodes
+        2. Collect toolset IDs, collect tool IDs, delete toolset -> tool relationships, delete tool nodes
+        3. Delete agent -> toolset relationships, delete toolset nodes
+        4. Delete all permission relationships pointing to agents
+        5. Count agents, then DETACH DELETE all agent nodes (catches any unexpected remaining relationships)
+
+        Returns:
+            Dict with counts: {"agents_deleted": X, "toolsets_deleted": Y, "tools_deleted": Z, "knowledge_deleted": W, "edges_deleted": V}
+        """
+        try:
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            toolset_label = collection_to_label(CollectionNames.AGENT_TOOLSETS.value)
+            tool_label = collection_to_label(CollectionNames.AGENT_TOOLS.value)
+            knowledge_label = collection_to_label(CollectionNames.AGENT_KNOWLEDGE.value)
+            has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
+            has_tool_rel = edge_collection_to_relationship(CollectionNames.TOOLSET_HAS_TOOL.value)
+            has_knowledge_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_KNOWLEDGE.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            agents_deleted = 0
+            toolsets_deleted = 0
+            tools_deleted = 0
+            knowledge_deleted = 0
+            edges_deleted = 0
+
+            # Step 1: Collect all knowledge node IDs BEFORE deleting edges
+            result = await self.client.execute_query(
+                f"""
+                MATCH (:{agent_label})-[:{has_knowledge_rel}]->(knowledge:{knowledge_label})
+                RETURN collect(DISTINCT knowledge.id) as knowledge_ids
+                """,
+                txn_id=transaction
+            )
+            knowledge_ids = result[0].get("knowledge_ids", []) if result else []
+
+            # Step 2: Delete all agent -> knowledge relationships
+            result = await self.client.execute_query(
+                f"""
+                MATCH (:{agent_label})-[kr:{has_knowledge_rel}]->(:{knowledge_label})
+                DELETE kr
+                RETURN count(kr) as rel_count
+                """,
+                txn_id=transaction
+            )
+            if result:
+                edges_deleted += result[0].get("rel_count", 0) or 0
+                self.logger.debug(f"Deleted {result[0].get('rel_count', 0)} agent -> knowledge relationships")
+
+            # Step 3: Delete all knowledge nodes (now isolated after edge deletion)
+            if knowledge_ids:
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (knowledge:{knowledge_label})
+                    WHERE knowledge.id IN $knowledge_ids
+                    DELETE knowledge
+                    RETURN count(knowledge) as knowledge_count
+                    """,
+                    parameters={"knowledge_ids": knowledge_ids},
+                    txn_id=transaction
+                )
+                if result:
+                    knowledge_deleted = result[0].get("knowledge_count", 0) or 0
+                    self.logger.debug(f"Deleted {knowledge_deleted} knowledge nodes")
+
+            # Step 4: Collect all toolset IDs BEFORE deleting edges
+            result = await self.client.execute_query(
+                f"""
+                MATCH (:{agent_label})-[:{has_toolset_rel}]->(toolset:{toolset_label})
+                RETURN collect(DISTINCT toolset.id) as toolset_ids
+                """,
+                txn_id=transaction
+            )
+            toolset_ids = result[0].get("toolset_ids", []) if result else []
+            if toolset_ids:
+                self.logger.debug(f"Found {len(toolset_ids)} toolsets connected to agents")
+
+            if toolset_ids:
+                # Step 5: Collect all tool IDs BEFORE deleting edges
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (toolset:{toolset_label})-[:{has_tool_rel}]->(tool:{tool_label})
+                    WHERE toolset.id IN $toolset_ids
+                    RETURN collect(DISTINCT tool.id) as tool_ids
+                    """,
+                    parameters={"toolset_ids": toolset_ids},
+                    txn_id=transaction
+                )
+                tool_ids = result[0].get("tool_ids", []) if result else []
+
+                # Step 6: Delete toolset -> tool relationships
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (toolset:{toolset_label})-[tr:{has_tool_rel}]->(:{tool_label})
+                    WHERE toolset.id IN $toolset_ids
+                    DELETE tr
+                    RETURN count(tr) as rel_count
+                    """,
+                    parameters={"toolset_ids": toolset_ids},
+                    txn_id=transaction
+                )
+                if result:
+                    edges_deleted += result[0].get("rel_count", 0) or 0
+                    self.logger.debug(f"Deleted {result[0].get('rel_count', 0)} toolset -> tool relationships")
+
+                # Step 7: Delete tool nodes (now isolated after edge deletion)
+                if tool_ids:
+                    result = await self.client.execute_query(
+                        f"""
+                        MATCH (tool:{tool_label})
+                        WHERE tool.id IN $tool_ids
+                        DELETE tool
+                        RETURN count(tool) as tool_count
+                        """,
+                        parameters={"tool_ids": tool_ids},
+                        txn_id=transaction
+                    )
+                    if result:
+                        tools_deleted = result[0].get("tool_count", 0) or 0
+                        self.logger.debug(f"Deleted {tools_deleted} tool nodes")
+
+            # Step 8: Delete all agent -> toolset relationships
+            result = await self.client.execute_query(
+                f"""
+                MATCH (:{agent_label})-[tsr:{has_toolset_rel}]->(:{toolset_label})
+                DELETE tsr
+                RETURN count(tsr) as rel_count
+                """,
+                txn_id=transaction
+            )
+            if result:
+                edges_deleted += result[0].get("rel_count", 0) or 0
+                self.logger.debug(f"Deleted {result[0].get('rel_count', 0)} agent -> toolset relationships")
+
+            # Step 9: Delete all toolset nodes (now isolated after edge deletion)
+            if toolset_ids:
+                result = await self.client.execute_query(
+                    f"""
+                    MATCH (toolset:{toolset_label})
+                    WHERE toolset.id IN $toolset_ids
+                    DELETE toolset
+                    RETURN count(toolset) as toolset_count
+                    """,
+                    parameters={"toolset_ids": toolset_ids},
+                    txn_id=transaction
+                )
+                if result:
+                    toolsets_deleted = result[0].get("toolset_count", 0) or 0
+                    self.logger.debug(f"Deleted {toolsets_deleted} toolset nodes")
+
+            # Step 10: Delete all permission relationships pointing to agents
+            result = await self.client.execute_query(
+                f"""
+                MATCH ()-[pr:{permission_rel}]->(:{agent_label})
+                DELETE pr
+                RETURN count(pr) as perm_count
+                """,
+                txn_id=transaction
+            )
+            if result:
+                edges_deleted += result[0].get("perm_count", 0) or 0
+                self.logger.debug(f"Deleted {result[0].get('perm_count', 0)} permission relationships")
+
+            # Step 11: Count agents first, then DETACH DELETE all agent nodes
+            # (DETACH DELETE ensures no dangling edges remain from any unexpected relationships)
+            result = await self.client.execute_query(
+                f"""
+                MATCH (agent:{agent_label})
+                RETURN count(agent) as agent_count
+                """,
+                txn_id=transaction
+            )
+            agents_deleted = result[0].get("agent_count", 0) if result else 0
+
+            await self.client.execute_query(
+                f"""
+                MATCH (agent:{agent_label})
+                DETACH DELETE agent
+                """,
+                txn_id=transaction
+            )
+
+            self.logger.info(
+                f"Hard deleted {agents_deleted} agents, {toolsets_deleted} toolsets, "
+                f"{tools_deleted} tools, {knowledge_deleted} knowledge, and {edges_deleted} relationships"
+            )
+
+            return {
+                "agents_deleted": agents_deleted,
+                "toolsets_deleted": toolsets_deleted,
+                "tools_deleted": tools_deleted,
+                "knowledge_deleted": knowledge_deleted,
+                "edges_deleted": edges_deleted,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to hard delete all agents: {e}")
+            return {
+                "agents_deleted": 0,
+                "toolsets_deleted": 0,
+                "tools_deleted": 0,
+                "knowledge_deleted": 0,
+                "edges_deleted": 0,
+            }
 
     async def share_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[bool]:
         """Share an agent to users and teams"""

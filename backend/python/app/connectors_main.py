@@ -51,12 +51,6 @@ async def get_initialized_container() -> ConnectorAppContainer:
             ]
         )
         setattr(get_initialized_container, "_initialized", True)
-        # Start token refresh service at app startup (use graph_provider from data_store)
-        try:
-            data_store = await container.data_store()
-            await startup_service.initialize(container.config_service(), data_store.graph_provider)
-        except Exception as e:
-            container.logger().warning(f"Startup token refresh service failed to initialize: {e}")
     return container
 
 
@@ -448,8 +442,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Resume sync services - pass already resolved graph_provider and data_store
     asyncio.create_task(resume_sync_services(app_container, data_store))
 
-    # Refresh toolset tokens (run in background)
-    asyncio.create_task(refresh_toolset_tokens(app_container))
+    # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
+    # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
 
     yield
     logger.info("🔄 Shut down application started")
