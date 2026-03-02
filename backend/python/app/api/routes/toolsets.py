@@ -839,7 +839,7 @@ async def _create_or_update_toolset_oauth_config(
                     await config_service.set_config(path, oauth_configs)
                     return oauth_config_id
             # Not found - fall through to create
-            logger.warning(f"OAuth config not found for {toolset_type}, creating new one")
+            logger.warning("OAuth config not found, creating new one")
 
         # Create new OAuth config
         enriched = await _prepare_toolset_auth_config(
@@ -1185,7 +1185,6 @@ async def create_toolset_instance(
                         base_url = DEFAULT_BASE_URL
                 else:
                     base_url = DEFAULT_BASE_URL
-                logger.debug(f"Resolved base_url for OAuth: {base_url}")
             except Exception as e:
                 logger.warning(f"Failed to resolve frontend endpoint from config: {e}. Using default: {DEFAULT_BASE_URL}")
                 base_url = DEFAULT_BASE_URL
@@ -1200,7 +1199,7 @@ async def create_toolset_instance(
                     detail=f"OAuth configuration '{oauth_config_id_from_body}' not found."
                 )
             oauth_config_id = oauth_config_id_from_body
-            logger.debug(f"Using existing OAuth config {oauth_config_id} for instance {instance_name}")
+            logger.debug(f"Using existing OAuth config for instance {instance_name}")
 
         # Case 2: Create new OAuth config (if credentials provided)
         else:
@@ -1227,11 +1226,6 @@ async def create_toolset_instance(
 
             # Check if actual credentials (not just infrastructure fields) are provided
             if _has_oauth_credentials(auth_config):
-                credential_fields = [k for k in auth_config if k not in OAUTH_INFRASTRUCTURE_FIELDS]
-                logger.debug(
-                    f"Creating OAuth config '{oauth_app_name}' for instance '{instance_name}' "
-                    f"with credential fields: {credential_fields}"
-                )
 
                 oauth_config_id = await _create_or_update_toolset_oauth_config(
                     toolset_type=toolset_type,
@@ -1246,7 +1240,7 @@ async def create_toolset_instance(
 
                 if oauth_config_id:
                     logger.debug(
-                        f"Successfully created OAuth config (ID: {oauth_config_id}) "
+                        f"Successfully created OAuth config"
                         f"for toolset instance '{instance_name}'"
                     )
                 else:
@@ -1646,7 +1640,6 @@ async def delete_toolset_instance(
     try:
         # set_config will automatically invalidate cache for this path
         await config_service.set_config(instances_path, updated)
-        logger.debug(f"Successfully deleted toolset instance {instance_id} ('{instance.get('instanceName', instance_id)}') from org {org_id}")
         logger.info("Toolset instance deleted successfully.")
     except Exception as e:
         logger.error(f"Failed to delete toolset instance from {instances_path}: {e}", exc_info=True)
