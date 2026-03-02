@@ -9,14 +9,60 @@ class AnswerWithMetadataDict(TypedDict):
     answer: str
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
-    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
+    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record","Web Search"]
 
 class AnswerWithMetadataJSON(BaseModel):
     """Schema for the answer with metadata"""
     answer: str
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
-    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
+    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record", "Web Search"]
+
+
+web_search_system_prompt = """You are a helpful web research assistant."""
+
+web_search_user_prompt = """Query: {{ query }}
+
+CRITICAL: Use fetch_url tool only if the existing context/snippets, if any, are insufficient to answer the query.
+
+- If the query includes URLs and can be answered entirely using the content from those URLs, use the fetch_url tool directly instead of calling the web_search tool first
+- Generate answer in fully valid markdown format with proper headings and formatting
+- Generate rich markdown text for the answer including tables, lists, bold, italic, sub sections, etc.
+- Do not summarize or omit important details
+- Cite blocks from tool results, if any, using [{citation_id}] format. For example, cite blocks as [W1-0], [W1-1], etc. where W1-0 & W1-1 are the citation ids.
+
+
+<output_format>
+  {% if mode == "json" %}
+  Output format:
+  {
+    "answer": "<Answer the query in rich markdown format with citations like [W1-0][W1-2] placed immediately after each relevant claim.>",
+    "reason": "<Explain how the answer was derived using the tool results and reasoning>",
+    "confidence": "<Very High | High | Medium | Low>",
+    "answerMatchType": "<Web Search>",
+    "blockNumbers": [<verbatimBlockNumber>]
+  }
+  <example>
+  ✅ Example Output:
+    {
+      "answer": "The latest news about the company is that they are hiring for a new position [W1-0]. The company is also working on a new product [W1-2].",
+      "reason": "Derived from block number W1-0 which mentions the latest news about the company, and W1-2 which mentions the company is working on a new product.",
+      "confidence": "High",
+      "answerMatchType": "Web Search",
+      "blockNumbers": ["W1-0", "W1-2"]
+    }
+  </example>
+  {% else %}
+  Output format:
+  Provide your answer directly in rich markdown format with citations like [W1-0][W1-2] placed immediately after each relevant claim.
+  Do not wrap your response in JSON. Simply provide the answer text.
+
+  <example>
+  ✅ Example Output:
+  The latest news about the company is that they are hiring for a new position [W1-0]. The company is also working on a new product [W1-2].
+  </example>
+  {% endif %}
+</output_format>"""
 
 
 

@@ -26,6 +26,7 @@ export interface AIModelsConfig {
   imageGeneration?: AIModelConfiguration[];
   tts?: AIModelConfiguration[];
   stt?: AIModelConfiguration[];
-  customSystemPrompt?: string;
+  customSystemPromptInternal?: string;
+  customSystemPromptWebSearch?: string;
 }
 

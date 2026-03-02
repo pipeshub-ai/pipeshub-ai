@@ -488,10 +488,11 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 flexDirection: 'row',
                 width: '100%',
                 justifyContent: 'space-between',
+                flexWrap: 'wrap',
               }}
             >
               {/* Chat Mode Selector */}
-              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              <Box sx={{ display: 'flex', gap: 1,}}>
                 {CHAT_MODES.map((mode) => (
                   <Chip
                     key={mode.id}
@@ -531,33 +532,35 @@ const ChatInput: React.FC<ChatInputProps> = ({
               <Box
                 sx={{ display: 'flex', gap: 1, flexDirection: 'row', mr: 2, alignItems: 'center', }}
               >
-                {/* Unified Resources selector with badge */}
-                <Tooltip title="Select apps and collections">
-                  <Badge
-                    badgeContent={selectedApps.length + selectedKbIds.length}
-                    color="primary"
-                    max={99}
-                  >
-                    <IconButton
-                      onClick={openResourcesMenu}
-                      size="small"
-                      sx={{
-                        width: 28,
-                        height: 28,
-                        borderRadius: '50%',
-                        bgcolor: 'transparent',
-                        border: `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.12)}`,
-                        color: isDark ? alpha('#fff', 0.8) : alpha('#000', 0.7),
-                        '&:hover': {
-                          bgcolor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.06),
-                          borderColor: isDark ? alpha('#fff', 0.2) : alpha('#000', 0.2),
-                        },
-                      }}
+                {/* Unified Resources selector with badge — internal search only */}
+                {selectedChatMode?.id === 'internal_search' && (
+                  <Tooltip title="Select apps and collections">
+                    <Badge
+                      badgeContent={selectedApps.length + selectedKbIds.length}
+                      color="primary"
+                      max={99}
                     >
-                      <Icon icon={filterIcon} width={14} height={14} />
-                    </IconButton>
-                  </Badge>
-                </Tooltip>
+                      <IconButton
+                        onClick={openResourcesMenu}
+                        size="small"
+                        sx={{
+                          width: 28,
+                          height: 28,
+                          borderRadius: '50%',
+                          bgcolor: 'transparent',
+                          border: `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.12)}`,
+                          color: isDark ? alpha('#fff', 0.8) : alpha('#000', 0.7),
+                          '&:hover': {
+                            bgcolor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.06),
+                            borderColor: isDark ? alpha('#fff', 0.2) : alpha('#000', 0.2),
+                          },
+                        }}
+                      >
+                        <Icon icon={filterIcon} width={14} height={14} />
+                      </IconButton>
+                    </Badge>
+                  </Tooltip>
+                )}
 
                 {/* Model Selector */}
                 <Tooltip
@@ -793,8 +796,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
           setSelectedKbIds={setSelectedKbIds}
         />
 
-        {/* Selected Filters Preview */}
-        {(selectedApps.length > 0 || selectedKbIds.length > 0) && (
+        {/* Selected Filters Preview — internal search only */}
+        {selectedChatMode?.id === 'internal_search' && (selectedApps.length > 0 || selectedKbIds.length > 0) && (
           <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap', px: 0.5 }}>
             {selectedApps.slice(0, 3).map((id) => {
               const app = appItems.find((a) => a.id === id);

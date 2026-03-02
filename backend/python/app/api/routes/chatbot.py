@@ -1,6 +1,8 @@
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from jinja2 import Template
+
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -25,7 +27,13 @@ from app.utils.chat_helpers import (
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.execute_query import create_execute_query_tool, has_sql_connector_configured
 from app.utils.query_decompose import QueryDecompositionExpansionService
+from app.utils.fetch_url_tool import create_fetch_url_tool
+from app.utils.web_search_tool import create_web_search_tool
 from app.utils.query_transform import setup_followup_query_transformation
+from app.modules.qna.prompt_templates import (
+    web_search_system_prompt,
+    web_search_user_prompt,
+)
 from app.utils.streaming import (
     create_sse_event,
     stream_llm_response_with_tools,
@@ -33,6 +41,8 @@ from app.utils.streaming import (
 from app.utils.time_conversion import build_llm_time_context
 
 DEFAULT_CONTEXT_LENGTH = 128000
+DEFAULT_WEB_SEARCH_INCLUDE_IMAGES = False
+DEFAULT_WEB_SEARCH_MAX_IMAGES = 3
 
 router = APIRouter()
 
@@ -47,11 +57,36 @@ class ChatQuery(BaseModel):
     # New fields for multi-model support
     modelKey: str | None = None  # e.g., "uuid-of-the-model"
     modelName: str | None = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
-    chatMode: str | None = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
+    chatMode: str | None = "internal_search"  # "quick", "analysis", "deep_research", "creative", "precise"
     mode: str | None = "json"  # "json" for full metadata, "simple" for answer only
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
+
+
+def normalize_web_search_image_settings(settings: Any) -> Tuple[bool, int]:
+    include_images = DEFAULT_WEB_SEARCH_INCLUDE_IMAGES
+    max_images = DEFAULT_WEB_SEARCH_MAX_IMAGES
+
+    if isinstance(settings, dict):
+        raw_include_images = settings.get("includeImages")
+        if isinstance(raw_include_images, bool):
+            include_images = raw_include_images
+
+        raw_max_images = settings.get("maxImages")
+        parsed_max_images: Optional[int] = None
+        if isinstance(raw_max_images, int) and not isinstance(raw_max_images, bool):
+            parsed_max_images = raw_max_images
+        elif isinstance(raw_max_images, str):
+            try:
+                parsed_max_images = int(raw_max_images)
+            except ValueError:
+                parsed_max_images = None
+
+        if parsed_max_images is not None and 1 <= parsed_max_images <= 500:
+            max_images = parsed_max_images
+
+    return include_images, max_images
 
 
 # Dependency injection functions
@@ -106,11 +141,6 @@ async def _build_llm_user_context_string(
 def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
     """Get model configuration based on chat mode and user selection"""
     mode_configs = {
-        "quick": {
-            "temperature": 0.1,
-            "max_tokens": 4096,
-            "system_prompt": "You are an assistant. Answer queries in a professional, enterprise-appropriate format."
-        },
         "analysis": {
             "temperature": 0.3,
             "max_tokens": 8192,
@@ -135,9 +165,25 @@ def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
             "temperature": 0.2,
             "max_tokens": 16384,
             "system_prompt": "You are an enterprise questions answering expert"
+        },
+        "internal_search": {
+            "temperature": 0.1,
+            "max_tokens": 4096,
+            "system_prompt": (
+                "You are an assistant. Answer queries in a professional, enterprise-appropriate format. "
+                "You MUST ONLY answer based on the provided internal knowledge base documents. "
+                "Do NOT use your own training knowledge. "
+                "If the answer is not present in the provided context blocks, respond with: "
+                "'This information is not available in the internal knowledge base.'"
+            )
+        },
+        "web_search": {
+            "temperature": 0.1,
+            "max_tokens": 4096,
+            "system_prompt": web_search_system_prompt,
         }
     }
-    return mode_configs.get(chat_mode, mode_configs["standard"])
+    return mode_configs.get(chat_mode, mode_configs["internal_search"])
 
 
 _CITATION_SYSTEM_RULES = (
@@ -252,7 +298,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
 
     return llm_configs, ai_models
 
-async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> tuple[BaseChatModel, dict, dict]:
+async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "internal_search") -> tuple[BaseChatModel, dict, dict]:
     """Get LLM instance based on user selection or fallback to default
 
     Returns:
@@ -323,6 +369,7 @@ async def _iter_prepare_chat_queries_for_retrieval(
     all_queries = [followup_query]
     yield ("queries", all_queries)
 
+#     return ai
 
 @router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
@@ -348,7 +395,8 @@ async def askAIStream(
             
             container = request.app.container
             logger = container.logger()
-            logger.info("Processing query...")
+
+
             # Send initial status immediately upon connection
             yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
 
@@ -365,7 +413,7 @@ async def askAIStream(
                 context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
 
-                if llm is None :
+                if llm is None:
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
 
 
@@ -384,15 +432,11 @@ async def askAIStream(
                 # Execute search
                 org_id = request.state.user.get('orgId')
                 user_id = request.state.user.get('userId')
+                
 
-                yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
-
-                result = await retrieval_service.search_with_filters(
-                    queries=all_queries,
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=query_info.limit,
-                    filter_groups=query_info.filters,
+                # ── Shared setup ─────────────────────────────────────────────
+                blob_store = BlobStorage(
+                    logger=logger, config_service=config_service, graph_provider=graph_provider
                 )
 
                 # Process search results
@@ -449,11 +493,13 @@ async def askAIStream(
                         blob_store=blob_store,
                     ))
 
-                tool_runtime_kwargs = {
-                    "blob_store": blob_store,
-                    "graph_provider": graph_provider,
-                    "org_id": org_id,
-                }
+                    messages.append({
+                        "role": "user",
+                        "content": Template(web_search_user_prompt).render(
+                            query=query_info.query,
+                            mode=query_info.mode,
+                        ),
+                    })
 
             except HTTPException as e:
                 logger.error(f"HTTPException: {str(e)}", exc_info=True)
@@ -475,9 +521,7 @@ async def askAIStream(
                 return
 
             # Stream response with enhanced tool support using your existing implementation
-            org_id = request.state.user.get('orgId')
-            user_id = request.state.user.get('userId')
-
+            logger.debug("Starting LLM stream")
             try:
                 async for stream_event in stream_llm_response_with_tools(
                     llm=llm,
@@ -501,6 +545,8 @@ async def askAIStream(
                     event_type = stream_event["event"]
                     event_data = stream_event["data"]
                     yield create_sse_event(event_type, event_data)
+
+                logger.info("Chat stream completed successfully")
             except Exception as stream_error:
                 logger.error(f"Error during LLM streaming: {str(stream_error)}", exc_info=True)
                 yield create_sse_event("error", {"error": f"Stream error: {str(stream_error)}"})
