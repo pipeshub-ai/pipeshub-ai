@@ -152,6 +152,17 @@ class EventService:
                     # Continue with sync even if sync point deletion fails
                     self.logger.warning("Continuing with sync despite sync point deletion failure")
 
+                try:
+                    deleted_edges, success = await self.graph_provider.delete_connector_sync_edges(
+                        connector_id=connector_id
+                    )
+                    if success:
+                        self.logger.info(f"Successfully deleted {deleted_edges} sync edges for connector {connector_id}")
+                    else:
+                        self.logger.warning(f"Failed to delete some sync edges for connector {connector_id}, continuing with sync")
+                except Exception as edge_error:
+                    self.logger.error(f"Error deleting connector sync edges for {connector_id}: {str(edge_error)}")
+
             # Run the sync — at most one task per connector at a time
             await sync_task_manager.start_sync(connector_id, connector.run_sync())
             self.logger.info(f"Started sync for {connector_name} {connector_id} connector")

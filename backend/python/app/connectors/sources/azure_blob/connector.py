@@ -5,7 +5,6 @@ Connector for synchronizing data from Azure Blob Storage containers. This connec
 uses the native Azure Blob Storage API with connection string authentication.
 """
 
-import asyncio
 import base64
 import mimetypes
 import uuid
@@ -939,33 +938,19 @@ class AzureBlobConnector(BaseConnector):
     async def _ensure_parent_folders_exist(
         self, container_name: str, path_segments: List[str]
     ) -> None:
-        """Ensure folder records exist for each path segment (root to leaf). No duplicates.
+        """Ensure folder records exist for each path segment (root to leaf).
 
         Azure Blob Storage, like S3, represents folders implicitly via blob names.
-        For each segment (e.g. 'a', 'a/b', 'a/b/c'), create a folder record if one does not
-        already exist (by external_id = container_name/segment). Process in order so parent
-        exists before child. Aligns with S3 _ensure_parent_folders_exist pattern.
+        For each segment (e.g. 'a', 'a/b', 'a/b/c'), upsert a folder record and its edges.
+        Always processes all segments so that edges are re-created after full sync.
+        Process in order so parent exists before child. The processor handles existing
+        records by external_record_id and re-creates edges without duplicating nodes.
         """
         if not path_segments:
             return
         timestamp_ms = get_epoch_timestamp_in_ms()
-        external_ids = [f"{container_name}/{segment}" for segment in path_segments]
-        async with self.data_store_provider.transaction() as tx_store:
-            results = await asyncio.gather(
-                *[
-                    tx_store.get_record_by_external_id(
-                        connector_id=self.connector_id, external_id=eid
-                    )
-                    for eid in external_ids
-                ]
-            )
-        existing_external_ids = {
-            eid for eid, rec in zip(external_ids, results) if rec is not None
-        }
         for i, segment in enumerate(path_segments):
             external_id = f"{container_name}/{segment}"
-            if external_id in existing_external_ids:
-                continue
             # Root folder: first segment has no parent. Others: parent is previous segment.
             parent_external_id = (
                 f"{container_name}/{path_segments[i - 1]}" if i > 0 else None
@@ -1100,11 +1085,6 @@ class AzureBlobConnector(BaseConnector):
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
-                if current_revision_id and stored_revision and current_revision_id == stored_revision:
-                    self.logger.debug(
-                        f"Skipping {normalized_name}: externalRecordId and externalRevisionId unchanged"
-                    )
-                    return None, []
 
                 # Content changed or missing revision - sync properly from Azure Blob
                 if current_revision_id and stored_revision and current_revision_id != stored_revision:
