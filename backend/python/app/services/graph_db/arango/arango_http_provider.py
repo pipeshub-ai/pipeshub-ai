@@ -81,8 +81,8 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
+from app.services.graph_db.common.utils import build_connector_stats_response
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.graph_db.utils import build_connector_stats_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants for ArangoDB document ID format

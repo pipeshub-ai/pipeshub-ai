@@ -55,9 +55,9 @@ from app.models.entities import (
 )
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
+from app.services.graph_db.common.utils import build_connector_stats_response
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
-from app.services.graph_db.utils import build_connector_stats_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants
