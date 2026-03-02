@@ -7350,6 +7350,40 @@ paths:
         '404':
           description: User not found
 
+  /users/internal/admin-users:
+    get:
+      tags:
+        - Users
+      summary: Get admin user IDs (internal service-to-service)
+      description: |
+        Internal endpoint that returns admin user IDs for the organization from the scoped token payload.<br><br>
+        <b>Security Model:</b><br>
+        <ul>
+        <li>Requires scoped token with USER_LOOKUP privilege</li>
+        <li>Organization context is read from token payload only</li>
+        <li>Not accessible via regular bearer tokens</li>
+        </ul>
+      operationId: getInternalAdminUsers
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Admin users retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  adminUserIds:
+                    type: array
+                    items:
+                      type: string
+                      pattern: '^[a-fA-F0-9]{24}$'
+        '400':
+          description: Organization ID missing or invalid in token payload
+        '401':
+          description: Unauthorized (invalid or missing scoped token)
+
   /users/{id}/fullname:
     patch:
       tags:
@@ -16943,6 +16977,375 @@ paths:
           description: Unauthorized
         '400':
           description: OAuth error or invalid request
+
+  /toolsets/my-toolsets:
+    get:
+      tags:
+        - Toolset Instances
+      summary: List my toolsets with auth status
+      description: Returns organization toolset instances merged with current user's authentication status.
+      operationId: getMyToolsets
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Toolsets retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Unauthorized
+
+  /toolsets/instances:
+    get:
+      tags:
+        - Toolset Instances
+      summary: List toolset instances
+      description: List all toolset instances configured for the organization.
+      operationId: getToolsetInstances
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Instances retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Unauthorized
+    post:
+      tags:
+        - Toolset Instances
+      summary: Create toolset instance
+      description: Create a new toolset instance (admin only).
+      operationId: createToolsetInstance
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - instanceName
+                - toolsetType
+                - authType
+              properties:
+                instanceName:
+                  type: string
+                toolsetType:
+                  type: string
+                authType:
+                  type: string
+                authConfig:
+                  type: object
+                  additionalProperties: true
+                baseUrl:
+                  type: string
+                oauthConfigId:
+                  type: string
+                oauthInstanceName:
+                  type: string
+      responses:
+        '201':
+          description: Instance created successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+
+  /toolsets/instances/{instanceId}:
+    get:
+      tags:
+        - Toolset Instances
+      summary: Get toolset instance
+      operationId: getToolsetInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Instance retrieved successfully
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
+    put:
+      tags:
+        - Toolset Instances
+      summary: Update toolset instance
+      operationId: updateToolsetInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Instance updated successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Instance not found
+    delete:
+      tags:
+        - Toolset Instances
+      summary: Delete toolset instance
+      operationId: deleteToolsetInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Instance deleted successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Instance not found
+
+  /toolsets/instances/{instanceId}/authenticate:
+    post:
+      tags:
+        - Toolset Instances
+      summary: Authenticate toolset instance
+      operationId: authenticateToolsetInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Instance authenticated successfully
+        '400':
+          description: Invalid auth payload
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
+
+  /toolsets/instances/{instanceId}/credentials:
+    delete:
+      tags:
+        - Toolset Instances
+      summary: Remove toolset credentials
+      operationId: removeToolsetCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Credentials removed successfully
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
+
+  /toolsets/instances/{instanceId}/reauthenticate:
+    post:
+      tags:
+        - Toolset Instances
+      summary: Mark instance for reauthentication
+      operationId: reauthenticateToolsetInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reauthentication required
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
+
+  /toolsets/instances/{instanceId}/oauth/authorize:
+    get:
+      tags:
+        - Toolset OAuth
+      summary: Get OAuth authorization URL for instance
+      operationId: getInstanceOAuthAuthorizationUrl
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Authorization URL generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizationUrl:
+                    type: string
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
+
+  /toolsets/instances/{instanceId}/status:
+    get:
+      tags:
+        - Toolset Instances
+      summary: Get instance authentication status
+      operationId: getToolsetInstanceStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Status retrieved successfully
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
+
+  /toolsets/oauth-configs/{toolsetType}:
+    get:
+      tags:
+        - OAuth Configuration
+      summary: List OAuth configs by toolset type
+      operationId: listToolsetOAuthConfigs
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetType
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OAuth configs retrieved successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+
+  /toolsets/oauth-configs/{toolsetType}/{oauthConfigId}:
+    put:
+      tags:
+        - OAuth Configuration
+      summary: Update OAuth config
+      operationId: updateToolsetOAuthConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetType
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: oauthConfigId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: OAuth config updated successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: OAuth config not found
+    delete:
+      tags:
+        - OAuth Configuration
+      summary: Delete OAuth config
+      operationId: deleteToolsetOAuthConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetType
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: oauthConfigId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OAuth config deleted successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: OAuth config not found
+        '409':
+          description: OAuth config is in use by one or more toolset instances
 
   # -------------------- OAuth Configuration (Admin) --------------------
   /oauth/registry:

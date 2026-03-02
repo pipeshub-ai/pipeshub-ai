@@ -75,10 +75,16 @@ class ToolsetInstanceMigrationService:
             self.logger.warning(f"Could not read scopedJwtSecret: {e}")
         return ""
 
-    def _generate_user_lookup_token(self, secret: str) -> str:
-        """Generate JWT for Node.js internal API access."""
+    def _generate_user_lookup_token(self, secret: str, org_id: str) -> str:
+        """Generate JWT for Node.js internal API access scoped to one org."""
         now = int(time.time())
-        return jose_jwt.encode({"scopes": ["user:lookup"], "iat": now, "exp": now + 3600}, secret, algorithm="HS256")
+        payload = {
+            "scopes": ["user:lookup"],
+            "orgId": org_id,
+            "iat": now,
+            "exp": now + 3600,
+        }
+        return jose_jwt.encode(payload, secret, algorithm="HS256")
 
     async def _get_org_id(self) -> Optional[str]:
         """
@@ -105,7 +111,6 @@ class ToolsetInstanceMigrationService:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
                     f"{nodejs_url}/api/v1/users/internal/admin-users",
-                    params={"orgId": org_id},
                     headers={"Authorization": f"Bearer {token}"}
                 )
                 if resp.status_code == HTTP_OK_STATUS:
@@ -474,7 +479,7 @@ class ToolsetInstanceMigrationService:
 
         admin_users: Set[str] = set()
         if scoped_jwt_secret:
-            token = self._generate_user_lookup_token(scoped_jwt_secret)
+            token = self._generate_user_lookup_token(scoped_jwt_secret, org_id)
             admin_users = await self._get_admin_user_ids(org_id, nodejs_url, token)
         else:
             self.logger.warning("⚠️ No scopedJwtSecret - cannot determine admin users")
