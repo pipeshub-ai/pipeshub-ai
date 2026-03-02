@@ -16864,6 +16864,33 @@ paths:
         '404':
           description: Toolset not found
 
+  /toolsets/{toolsetId}/reauthenticate:
+    post:
+      tags:
+        - Toolset Instances
+      summary: Reauthenticate toolset
+      description: |
+        Clear toolset OAuth credentials and mark as unauthenticated, requiring re-authentication.<br><br>
+        Only applicable to OAuth-configured toolsets.
+      operationId: reauthenticateToolset
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Toolset reauthentication initiated successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Toolset not found
+
   # -------------------- Toolset OAuth --------------------
   /toolsets/{toolsetId}/oauth/authorize:
     get:
