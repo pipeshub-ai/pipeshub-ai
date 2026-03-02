@@ -11561,12 +11561,11 @@ class Neo4jProvider(IGraphDBProvider):
     async def delete_parent_child_edge_to_record(
         self,
         record_id: str,
-        collection: str,
         transaction: Optional[str] = None
     ) -> bool:
         """Delete parent-child edge to a record."""
         try:
-            rel_type = edge_collection_to_relationship(collection)
+            rel_type = edge_collection_to_relationship(CollectionNames.RECORD_RELATIONS.value)
             query = f"""
             MATCH ()-[r:{rel_type} {{relationshipType: "PARENT_CHILD"}}]->(child:Record {{id: $record_id}})
             DELETE r
