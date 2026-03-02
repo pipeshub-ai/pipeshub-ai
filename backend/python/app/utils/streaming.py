@@ -48,6 +48,7 @@ from app.utils.citations import (
 )
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.logger import create_logger
+from app.utils.tool_handlers import ToolHandlerRegistry
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
@@ -97,6 +98,7 @@ def _build_citation_reflection_message(
     )
 
     return "\n".join(parts)
+MAX_TOOL_HOPS = 4
 
 # TypeVar for generic schema types in structured output functions
 SchemaT = TypeVar('SchemaT', bound=BaseModel)
@@ -408,6 +410,50 @@ def get_vectorDb_limit(context_length: int) -> int:
             return limit
     return DEFAULT_VECTOR_DB_LIMIT
 
+async def execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, tool_runtime_kwargs) -> Dict[str, Any]:
+    """Execute a single tool and return result with metadata"""
+    if tool is None:
+        logger.warning("execute_tool_calls: unknown tool requested name=%s", tool_name)
+        return {
+            "ok": False,
+            "error": f"Unknown tool: {tool_name}",
+            "tool_name": tool_name,
+            "call_id": call_id
+        }
+
+    if tool_name not in valid_tool_names:
+        logger.warning("invalid tool requested, name=%s", tool_name)
+        return {
+            "ok": False,
+            "error": f"Invalid tool: {tool_name}",
+            "tool_name": tool_name,
+            "call_id": call_id
+        }
+    try:
+        logger.debug(
+            "Running tool name=%s call_id=%s args=%s",
+            tool.name,
+            call_id,
+            str(args),
+        )
+        tool_result = await tool.arun(args, **tool_runtime_kwargs)
+        tool_result["tool_name"] = tool_name
+        tool_result["call_id"] = call_id
+        return tool_result
+    except Exception as e:
+        logger.exception(
+            "Exception while running tool name=%s call_id=%s args=%s",
+            tool_name,
+            call_id,
+            str(args),
+        )
+        return {
+            "ok": False,
+            "error": str(e),
+            "tool_name": tool_name,
+            "call_id": call_id
+        }
+
 async def execute_tool_calls(
     llm,
     messages: list[dict],
@@ -423,7 +469,7 @@ async def execute_tool_calls(
     context_length:int|None,
     target_words_per_chunk: int = 1,
     is_multimodal_llm: bool | None = False,
-    max_hops: int = 2,
+    max_hops: int = MAX_TOOL_HOPS,
     is_agent: bool = False,  # Use is_agent flag instead of schema
     is_service_account: bool = False,
     filter_groups: dict[str, Any] | None = None,
@@ -453,11 +499,13 @@ async def execute_tool_calls(
             logger.warning("Failed to bind tools for LLM, using raw LLM")
             llm_to_pass = llm
 
+    logger.info(f"Starting tool execution loop (max_hops={max_hops}, tools={len(tools)})")
     hops = 0
     tools_executed = False
     tool_args = []
     tool_results = []
     records = []
+    web_records = []  # Track web records separately for citation handling
     while hops < max_hops:
         current_hop_records = []
         # with error handling for provider-level tool failures
@@ -480,6 +528,7 @@ async def execute_tool_calls(
                 virtual_record_id_to_result=virtual_record_id_to_result,
                 ref_to_url=ref_mapper.ref_to_url if ref_mapper else None,
                 **{"is_agent":is_agent } if mode != "simple" else {}
+                web_records=web_records,
             ):
                 if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
@@ -494,29 +543,19 @@ async def execute_tool_calls(
                 tool_calls = getattr(ai, 'tool_calls', []),
             )
         except Exception as e:
-            logger.debug("Error in llm call with tools: %s", str(e))
+            logger.error(f"LLM invocation failed at hop {hops}: {str(e)}")
             break
 
         # Check if there are tool calls
         if not (isinstance(ai, AIMessage) and getattr(ai, "tool_calls", None)):
-            logger.debug("execute_tool_calls: no tool_calls returned; exiting tool loop")
+            logger.info(f"No tool calls returned at hop {hops}, ending tool loop")
             messages.append(ai)
             break
 
         tools_executed = True
-        logger.debug(
-            "execute_tool_calls: tool_calls_detected count=%d",
-            len(getattr(ai, "tool_calls", []) or []),
-        )
 
         # Yield tool call events
         for call in ai.tool_calls:
-            logger.info(
-                "execute_tool_calls: tool_call | name=%s call_id=%s args_keys=%s",
-                call.get("name"),
-                call.get("id"),
-                list((call.get("args") or {}).keys()),
-            )
             yield {
                 "event": "tool_call",
                 "data": {
@@ -537,6 +576,7 @@ async def execute_tool_calls(
 
         tool_results_inner = []
         valid_tool_names = [t.name for t in tools]
+
         # Execute all tools in parallel using asyncio.gather
         async def execute_single_tool(args, tool, tool_name, call_id) -> dict[str, Any]:
             """Execute a single tool and return result with metadata"""
@@ -586,9 +626,10 @@ async def execute_tool_calls(
         for (args, tool), call in zip(tool_args, ai.tool_calls):
             tool_name = call["name"]
             call_id = call.get("id")
-            tool_tasks.append(execute_single_tool(args, tool, tool_name, call_id))
+            tool_tasks.append(execute_single_tool(args, tool, tool_name, call_id, valid_tool_names, tool_runtime_kwargs))
 
         # Execute all tools in parallel
+        logger.debug(f"Executing {len(tool_tasks)} tool(s) in parallel")
         tool_results_inner = await asyncio.gather(*tool_tasks, return_exceptions=False)
 
         # Process results and yield events
@@ -598,12 +639,13 @@ async def execute_tool_calls(
 
             if tool_result.get("ok", False):
                 tool_results.append(tool_result)
-                logger.debug(
-                    "execute_tool_calls: tool success name=%s call_id=%s has_record=%s",
-                    tool_name,
-                    call_id,
-                    "record" in tool_result,
-                )
+                
+                # Get handler for this result type
+                handler = ToolHandlerRegistry.get_handler(tool_result)
+                
+                call_id_short = call_id[:8] if call_id else "N/A"
+                logger.info(f"Tool succeeded: {tool_name} (id={call_id_short}")
+                
                 yield {
                     "event": "tool_success",
                     "data": {
@@ -613,17 +655,21 @@ async def execute_tool_calls(
                         "record_info": tool_result.get("record_info", {})
                     }
                 }
-                if "records" in tool_result:
-                    hop_records = tool_result.get("records", [])
-                    records.extend(hop_records)
-                    current_hop_records.extend(hop_records)
+               
+                
+                # Use handler to extract records and check token management needs
+                extracted_records = handler.extract_records(tool_result,org_id)
+                if extracted_records:
+                    # Separate web records from document records
+                    for rec in extracted_records:
+                        if rec.get("source_type") == "web":
+                            web_records.append(rec)
+                        else:
+                            records.append(rec)
+                            current_hop_records.append(rec)
             else:
-                logger.warning(
-                    "execute_tool_calls: tool error result name=%s call_id=%s error=%s",
-                    tool_name,
-                    call_id,
-                    tool_result.get("error", "Unknown error"),
-                )
+                error_msg = tool_result.get("error", "Unknown error")
+                logger.warning(f"Tool failed: {tool_name} (id={call_id}) - {error_msg}")
                 yield {
                     "event": "tool_error",
                     "data": {
@@ -637,6 +683,12 @@ async def execute_tool_calls(
         messages.append(ai)
 
         message_contents = []
+        
+        # Process records if any tool returned them and needs token management
+        if records:
+            for record in records:
+                message_content = record_to_message_content(record,final_results,is_multimodal_llm)
+                message_contents.append(message_content)
 
         _refs_before_tools = len(ref_mapper.ref_to_url) if ref_mapper else 0
         logger.debug(
@@ -652,18 +704,15 @@ async def execute_tool_calls(
             len(message_contents), _refs_before_tools, _refs_after_tools, _refs_after_tools - _refs_before_tools,
         )
 
-        current_message_tokens, new_tokens = count_tokens(messages,message_contents)
+            MAX_TOKENS_THRESHOLD = int(context_length * TOOL_EXECUTION_TOKEN_RATIO)
 
-        MAX_TOKENS_THRESHOLD = int(context_length * TOOL_EXECUTION_TOKEN_RATIO)
+            total_tokens = new_tokens + current_message_tokens
+            logger.debug(f"Token usage: {current_message_tokens} msgs + {new_tokens} records = {total_tokens}/{MAX_TOKENS_THRESHOLD}")
 
-        logger.debug(
-            "execute_tool_calls: token_count | current_messages=%d new_records=%d threshold=%d",
-            current_message_tokens,
-            new_tokens,
-            MAX_TOKENS_THRESHOLD,
-        )
+            if total_tokens > MAX_TOKENS_THRESHOLD:
 
-        if new_tokens+current_message_tokens > MAX_TOKENS_THRESHOLD:
+                message_contents = []
+                logger.info(f"Token limit exceeded ({total_tokens}>{MAX_TOKENS_THRESHOLD}), fetching reduced context via retrieval")
 
             message_contents = []
             logger.info(
@@ -704,9 +753,10 @@ async def execute_tool_calls(
                     }
                 )
 
-            if search_results:
-                flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,from_tool=True)
-                final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
+                search_results = result.get("searchResults", [])
+                status_code = result.get("status_code", 500)
+                result_count = len(search_results) if isinstance(search_results, list) else 0
+                logger.info(f"Retrieval service response: status={status_code}, results={result_count}")
 
                 _refs_before_fb = len(ref_mapper.ref_to_url) if ref_mapper else 0
                 logger.debug(
@@ -720,8 +770,20 @@ async def execute_tool_calls(
                     len(message_contents), _refs_after_fb, _refs_after_fb - _refs_before_fb,
                 )
 
-        # Build tool messages with actual content
+                if search_results:
+                    flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,from_tool=True)
+                    final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
+
+                    message_contents = get_message_content_for_tool(final_tool_results, virtual_record_id_to_result,final_results)
+                    logger.debug(f"Prepared {len(message_contents)} message content(s) from flattened results")
+
+        # Build tool messages with actual content using handler registry
         tool_msgs = []
+        handler_context = {
+            "message_contents": message_contents,
+            "include_images": tool_runtime_kwargs.get("include_images", False),
+            "max_images": tool_runtime_kwargs.get("max_images", 3),
+        }
 
         for tool_result in tool_results_inner:
             tool_name = tool_result.get("tool_name")
@@ -752,13 +814,16 @@ async def execute_tool_calls(
                 tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
 
         # Add messages for next iteration
-        logger.debug(
-            "execute_tool_calls: appending %d tool messages; next hop",
-            len(tool_msgs),
-        )
         messages.extend(tool_msgs)
         hops += 1
+        logger.debug(f"Completed hop {hops-1}: Added {len(tool_msgs)} tool message(s), continuing to next hop")
 
+    logger.info(f"Tool execution completed: {len(tool_results)} tool(s) executed across {hops} hop(s), {len(web_records)} web record(s)")
+
+
+    logger.debug(f"[WEB_CITATIONS] execute_tool_calls: About to yield tool_execution_complete with {len(web_records)} web_records")
+    if web_records:
+        logger.debug(f"[WEB_CITATIONS] web_records being yielded: {[(wr.get('citation_id'), wr.get('url_number'), wr.get('block_index')) for wr in web_records]}")
 
     yield {
         "event": "tool_execution_complete",
@@ -766,7 +831,8 @@ async def execute_tool_calls(
             "messages": messages,
             "tools_executed": tools_executed,
             "tool_args": tool_args,
-            "tool_results": tool_results
+            "tool_results": tool_results,
+            "web_records": web_records
         }
     }
 
@@ -1121,6 +1187,7 @@ async def handle_json_mode(
     is_agent: bool = False,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
     ref_to_url: dict[str, str] | None = None,
+    web_records: list[dict[str, Any]] | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """
     Handle JSON mode streaming.
@@ -1162,9 +1229,9 @@ async def handle_json_mode(
             normalized, cites = normalize_citations_and_chunks(
                 final_answer, final_results, records,
                 ref_to_url=ref_to_url,
+                web_records=web_records,
                 virtual_record_id_to_result=virtual_record_id_to_result,
             )
-
             words = re.findall(r'\S+', normalized)
             for i in range(0, len(words), target_words_per_chunk):
                 chunk_words = words[i:i + target_words_per_chunk]
@@ -1211,6 +1278,7 @@ async def handle_json_mode(
             is_agent=is_agent,
             virtual_record_id_to_result=virtual_record_id_to_result,
             ref_to_url=ref_to_url,
+            web_records=web_records,
         ):
             yield token
     except Exception as exc:
@@ -1403,6 +1471,7 @@ async def stream_llm_response_with_tools(
         is_agent,
     )
     records = []
+    web_records = []
 
     if tools and tool_runtime_kwargs and mode != "no_tools":
         # Execute tools and get updated messages
@@ -1438,17 +1507,17 @@ async def stream_llm_response_with_tools(
                     final_messages = tool_event["data"]["messages"]
                     tools_were_called = tool_event["data"]["tools_executed"]
                     tool_results = tool_event["data"]["tool_results"]
+                    web_records = tool_event["data"].get("web_records", [])
                     if tool_results:
-                        # Handle both old and new format
                         records = []
                         for r in tool_results:
-                            # New format with multiple records
                             if "records" in r:
                                 records.extend(r.get("records", []))
                         logger.debug(
-                            "stream_llm_response_with_tools: tool_execution_complete | tool_results=%d records=%d tools_were_called=%s",
+                            "stream_llm_response_with_tools: tool_execution_complete | tool_results=%d records=%d web_records=%d tools_were_called=%s",
                             len(tool_results),
                             len(records),
+                            len(web_records),
                             tools_were_called,
                         )
                 elif tool_event.get("event") in ["tool_call", "tool_success", "tool_error"]:
@@ -1732,7 +1801,8 @@ async def call_aiter_llm_stream(
     citation_reflection_retry_count: int = 0,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
     ref_to_url: dict[str, str] | None = None,
-) -> AsyncGenerator[dict[str, Any], None]:
+    web_records=None,
+) -> AsyncGenerator[Dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event.
 
     Args:
@@ -1774,6 +1844,8 @@ async def call_aiter_llm_stream(
                             safe_answer, final_results, records,
                             ref_to_url=ref_to_url,
                             virtual_record_id_to_result=virtual_record_id_to_result,
+                            ref_to_url=ref_to_url,
+                            web_records=web_records
                         )
 
                 chunk_text = normalized[state.prev_norm_len:]
@@ -1790,7 +1862,7 @@ async def call_aiter_llm_stream(
                     }
 
             continue
-
+        
         state.full_json_buf += token
         # Look for the start of the "answer" field
         if not state.answer_buf:
@@ -1840,11 +1912,11 @@ async def call_aiter_llm_stream(
                             current_raw, final_results, records,
                             ref_to_url=ref_to_url,
                             virtual_record_id_to_result=virtual_record_id_to_result,
+                            web_records=web_records
                         )
 
                         chunk_text = normalized[state.prev_norm_len:]
                         state.prev_norm_len = len(normalized)
-
                         yield {
                             "event": "answer_chunk",
                             "data": {
@@ -1938,6 +2010,7 @@ async def call_aiter_llm_stream(
                     citation_reflection_retry_count=citation_reflection_retry_count,
                     virtual_record_id_to_result=virtual_record_id_to_result,
                     ref_to_url=ref_to_url,
+                    web_records=web_records,
                 ):
                     yield event
                 return

@@ -5,7 +5,7 @@ from http import HTTPStatus
 from typing import Optional
 from urllib.parse import unquote, urlparse
 
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.image_utils import get_extension_from_mimetype
 
 try:
     from cairosvg import svg2png

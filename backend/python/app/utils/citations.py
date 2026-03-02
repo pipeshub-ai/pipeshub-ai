@@ -1,7 +1,8 @@
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import get_enhanced_metadata, is_base64_image, valid_group_labels
@@ -18,6 +19,99 @@ class ChatDocCitation:
     content: str
     metadata: dict[str, Any]
     chunkindex: int
+
+import re
+
+def extract_start_end_text(snippet):
+    if not snippet:
+        return "", ""
+
+    PATTERN = re.compile(r'[a-zA-Z0-9 ]+')
+
+    # --- Find start_text: first matching segment, first 4 words ---
+    first_match = PATTERN.search(snippet)
+    if not first_match:
+        return "", ""
+
+    first_text = first_match.group().strip()
+    if not first_text:
+        return "", ""
+
+    words = first_text.split()
+    start_text = " ".join(words[:8])
+    start_text_end = first_match.start() + len(first_text.split()[0])  # not needed yet
+
+    # Compute exact end position of start_text in snippet
+    # It starts at first_match.start() + leading whitespace offset
+    leading_spaces = len(first_match.group()) - len(first_match.group().lstrip())
+    start_text_begin = first_match.start() + leading_spaces
+    start_text_end = start_text_begin + len(start_text)
+
+    # --- Find end_text: last matching segment after start_text_end, last 4 words ---
+    # Search backwards by scanning from start_text_end onward for the *last* match
+    remaining = snippet[start_text_end:]
+
+    # Find last match in remaining using finditer (but we only keep last)
+    # Alternatively, search from the end using a reverse approach
+    last_text = None
+    for m in PATTERN.finditer(remaining):
+        stripped = m.group().strip()
+        if stripped:
+            last_text = stripped
+
+    if last_text:
+        words = last_text.split()
+        end_text = " ".join(words[-8:])
+    elif len(first_text.split()) > 8:
+        word_count = len(first_text.split())
+        diff = word_count - 8
+        diff = min(8, diff)
+        # Fall back to last 4 words of the first segment
+        end_text = " ".join(first_text.split()[-diff:])
+    else:
+        end_text = ""
+
+    return start_text, end_text
+
+def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
+    """
+    Generate a URL with text fragment for direct navigation to specific text.
+    
+    Format: url#:~:text=start_text,end_text
+    
+    Args:
+        base_url: The base URL of the page
+        text_snippet: The text to highlight/navigate to
+    
+    Returns:
+        URL with text fragment, or base_url if encoding fails
+    """
+    if not base_url or not text_snippet:
+        return base_url
+    
+    try:
+        snippet = text_snippet.strip()
+        if not snippet:
+            return base_url
+        
+        start_text, end_text = extract_start_end_text(snippet)
+
+        if not start_text:
+            return base_url
+       
+        encoded_start = quote(start_text, safe='')
+        
+        if end_text:
+            encoded_end = quote(end_text, safe='')
+        
+        if '#' in base_url:
+            base_url = base_url.split('#')[0]
+        
+        return f"{base_url}#:~:text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
+        
+    except Exception:
+        return base_url
+
 
 def fix_json_string(json_str) -> str:
     """Fix control characters in JSON string values without parsing."""
@@ -62,7 +156,6 @@ def fix_json_string(json_str) -> str:
         else:
             # Not in a string, keep as is
             result += c
-
     return result
 
 

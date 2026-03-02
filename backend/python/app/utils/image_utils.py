@@ -1,3 +1,123 @@
+from typing import Optional, Tuple
+from urllib.parse import urlparse, unquote
+import os
+import asyncio
+import base64
+
+from app.utils.url_fetcher import FetchError, fetch_url
+from app.utils.logger import create_logger
+
+logger = create_logger(__name__)
+
+def get_mime_type_from_base64(b64: str) -> str | None:
+    # Decode only the first few bytes
+    header = base64.b64decode(b64[:20])
+
+    if header[:4] == b'\x89PNG':           return 'image/png'
+    if header[:3] == b'\xff\xd8\xff':      return 'image/jpeg'
+    if header[:6] in (b'GIF87a', b'GIF89a'): return 'image/gif'
+    if header[:4] == b'RIFF' and header[8:12] == b'WEBP': return 'image/webp'
+    if header[:2] == b'BM':               return 'image/bmp'
+    if header[:4] in (b'II*\x00', b'MM\x00*'): return 'image/tiff'
+    if header[:4] == b'\x00\x00\x01\x00': return 'image/x-icon'
+
+    return None
+
+def get_extension_from_mimetype(mime_type) -> str | None:
+    return mime_to_extension.get(mime_type)
+
+def get_image_info_from_url(url: str):
+    """
+    Extract image extension and guessed MIME type from URL only.
+    Does NOT make any network request.
+
+    Returns:
+        {
+            "extension": ".png" | None,
+            "mime": "image/png" | None
+        }
+    """
+    if not url:
+        return None, None
+
+    # remove query params and decode URL
+    path = unquote(urlparse(url).path)
+
+    # extract extension
+    _, ext = os.path.splitext(path)
+    ext = ext.lower()
+
+    if not ext:
+        return None, None
+
+    return ext, EXT_TO_MIME.get(ext)  # None if unknown
+
+
+supported_mime_types = ["image/png", "image/jpeg", "image/webp"]
+
+
+async def _fetch_image_as_base64(img_url: str) -> Optional[Tuple[str, str]]:
+    """
+    Fetch an image from http(s) URL and return (base64_string, mime_type).
+    Returns None on failure.
+    """
+    try:
+
+        _, mime_type = get_image_info_from_url(img_url)
+
+        if mime_type and mime_type not in supported_mime_types:
+            logger.warning("Image mime type not supported, skipping fetch: %s", mime_type)
+            return None
+        
+        result = await asyncio.to_thread(
+            fetch_url,
+            img_url,
+            max_retries=0,
+            strategy="curl_cffi_h2",
+            profile="chrome120",
+        )
+        if result.status_code != 200 or not result.content:
+            logger.warning("Failed to fetch image as base64 from %s: %s", img_url, f"status_code: {result.status_code}, content: {result.content}")
+            return None
+        b64 = base64.b64encode(result.content).decode("utf-8")
+        
+        mime_type = None
+        if b64.startswith("data:image/"):
+            mime_type = b64.split(";")[0].split(":")[1]
+        
+        if not mime_type:
+            mime_type = get_mime_type_from_base64(b64)
+
+
+        if not mime_type or not mime_type.startswith("image/") or mime_type not in supported_mime_types:
+            logger.warning("Failed to fetch image as base64 from %s: %s", img_url, f"mime_type not found/supported, mimeType: {mime_type}")
+            return None
+
+        return (b64, mime_type)
+    except (FetchError, Exception) as e:
+        logger.warning("Failed to fetch image as base64 from %s: %s", img_url, e)
+        return None
+
+
+
+# extension -> MIME mapping
+EXT_TO_MIME = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".avif": "image/avif",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+}
+
+
 mime_to_extension = {
     # PNG
     "image/png": "png",
@@ -130,7 +250,3 @@ mime_to_extension = {
     "text/markdown; charset=us-ascii": "md",
     "text/gmail_content": "html",
 }
-
-
-def get_extension_from_mimetype(mime_type) -> str | None:
-    return mime_to_extension.get(mime_type)

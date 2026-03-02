@@ -37,7 +37,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.logger import create_logger
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.image_utils import get_extension_from_mimetype
 
 valid_group_labels = [
         GroupType.LIST.value,
@@ -1621,9 +1621,28 @@ Record blocks (sorted):\n\n"""
             block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
             ref = ref_mapper.get_or_create_ref(block_web_url)
             data = block.get("data", "")
-
-            if block_type == BlockType.IMAGE.value:
+            if not data:
                 continue
+            if block_type == BlockType.IMAGE.value:
+
+                if isinstance(data, dict) and is_multimodal_llm:
+                    image_uri = data.get("uri")
+                    if image_uri:
+                        content.append({
+                            "type": "text",
+                            "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content:"
+                        })
+                        mime_type = image_uri.split(";")[0].split(":")[1]
+                        image_base64 = image_uri.split(",")[1]
+                        content.append({
+                            "type": "image",
+                            "base64": image_base64,
+                            "mime_type": mime_type,
+                        })
+                    else:
+                        continue
+                else:
+                    continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 content.append({
                     "type": "text",
@@ -1679,7 +1698,7 @@ Record blocks (sorted):\n\n"""
                             rendered_form = template.render(
                                 block_group_index=block_group_index,
                                 block_group_web_url="",
-                                table_summary=table_summary,
+                                table_summary="Not available",
                                 table_rows=child_results,
                             )
                             content.append({
@@ -1967,6 +1986,12 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 continue
         else:
             continue
+    
+    content.append({
+        "type": "text",
+        "text": "</record>"
+    })
+    all_contents.append(content)
 
     if content:
         content.append({
@@ -2005,6 +2030,14 @@ def build_fk_info(result: dict[str, Any]) -> str:
     return fk_info
 
 
+
+def count_tokens_in_content_list(content: list[dict[str, Any]],enc) -> int:
+    total_tokens = 0
+    for item in content:
+        if item.get("type") == "text":
+            total_tokens += count_tokens_text(item.get("text", ""), enc)
+
+    return total_tokens
 
 def count_tokens_in_messages(messages: list[Any],enc) -> int:
     """
@@ -2055,7 +2088,6 @@ def count_tokens_in_messages(messages: list[Any],enc) -> int:
 
     return total_tokens
 
-
 def count_tokens_text(text: str,enc) -> int:
     """Count tokens in text using tiktoken or fallback heuristic"""
     if not text:
@@ -2063,8 +2095,9 @@ def count_tokens_text(text: str,enc) -> int:
     if enc is not None:
         try:
             return len(enc.encode(text))
-        except Exception:
+        except Exception as e:
             logger.warning("tiktoken encoding failed, falling back to heuristic.")
+            logger.error(f"Error in count_tokens_text: {str(e)}")
             pass
     else:
         try:
@@ -2109,8 +2142,7 @@ def count_tokens(messages: list[Any], message_contents: list[list[dict[str, Any]
     return current_message_tokens, new_tokens
 
 
-
-FRAGMENT_WORD_COUNT = 8
+FRAGMENT_WORD_COUNT = 4
 
 
 def extract_start_end_text(snippet: str) -> tuple[str, str]:
