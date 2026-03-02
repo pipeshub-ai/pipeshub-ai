@@ -36,6 +36,7 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
+    IndexingStatus,
     LinkRecord,
     MailRecord,
     Person,
@@ -80,6 +81,7 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
+from app.services.graph_db.common.utils import build_connector_stats_response
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -469,7 +471,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 self.logger.info("Knowledge graph already exists, skipping creation")
 
-            # 3. Seed departments collection with predefined department types
+            # 3. Ensure persistent indexes for frequent query patterns
+            await self._ensure_indexes()
+
+            # 4. Seed departments collection with predefined department types
             await self._ensure_departments_seed()
 
             self.logger.info("✅ ArangoDB schema ensured successfully")
@@ -478,6 +483,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Error ensuring schema: {str(e)}")
             return False
+
+    async def _ensure_indexes(self) -> None:
+        """Create persistent indexes for frequent query patterns.
+
+        Indexes are built here: each call to ensure_persistent_index() creates (or ensures)
+        the index via the ArangoDB HTTP API (see arango_http_client.ensure_persistent_index).
+
+        Currently no custom indexes are required - edge collections have automatic
+        indexes on _from and _to fields which optimize graph traversals.
+        """
+        pass
 
     async def _ensure_departments_seed(self) -> None:
         """Initialize departments collection with predefined department types if missing."""
@@ -14366,134 +14382,65 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns:
             Dict: Statistics data with success status
         """
+        statuses = [s.value for s in IndexingStatus]
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
             query = f"""
-            LET org_id = @org_id
-            LET connector = FIRST(
-                FOR doc IN {CollectionNames.APPS.value}
-                    FILTER doc._key == @connector_id
-                    RETURN doc
+            LET app = DOCUMENT(CONCAT("apps/", @connector_id))
+
+            LET allRecordGroups = (
+                FOR rg IN 1..10 INBOUND app._id {CollectionNames.BELONGS_TO.value}
+                    OPTIONS {{ bfs: true, uniqueVertices: "global" }}
+                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg._id)
+                    RETURN rg._id
             )
 
-            LET records = (
-                FOR doc IN {CollectionNames.RECORDS.value}
-                    FILTER doc.orgId == org_id
-                    FILTER doc.origin == "CONNECTOR"
-                    FILTER doc.connectorId == @connector_id
-                    FILTER doc.recordType != @drive_record_type
-                    FILTER doc.isDeleted != true
+            LET allRecords = (
+                FOR rgId IN allRecordGroups
+                    FOR doc IN 1..1 INBOUND rgId {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", doc._id)
+                        FILTER doc.recordType != @drive_record_type
 
-                    LET targetDoc = FIRST(
-                        FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
-                            LIMIT 1
-                            RETURN v
-                    )
+                        LET targetDoc = FIRST(
+                            FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
+                                LIMIT 1
+                                RETURN v
+                        )
+                        FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
 
-                    FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
-                    RETURN doc
+                        RETURN {{ recordType: doc.recordType, indexingStatus: doc.indexingStatus }}
             )
 
-            LET total_stats = {{
-                total: LENGTH(records),
-                indexingStatus: {{
-                    NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                    IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                    COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                    FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                    FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                    AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                    ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                    EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                    QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                    PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
-                }}
-            }}
-
-            LET by_record_type = (
-                FOR record_type IN UNIQUE(records[*].recordType)
-                    FILTER record_type != null
-                    LET type_records = records[* FILTER CURRENT.recordType == record_type]
-                    RETURN {{
-                        recordType: record_type,
-                        total: LENGTH(type_records),
-                        indexingStatus: {{
-                            NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                            IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                            COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                            FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                            FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                            AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                            ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                            EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                            QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                            PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
-                        }}
-                    }}
-            )
-
-            RETURN {{
-                orgId: org_id,
-                connectorId: @connector_id,
-                origin: "CONNECTOR",
-                stats: total_stats,
-                byRecordType: by_record_type
-            }}
+            FOR r IN allRecords
+                COLLECT recordType = r.recordType, indexingStatus = r.indexingStatus WITH COUNT INTO cnt
+                RETURN {{ recordType, indexingStatus, cnt }}
             """
 
-            from app.config.constants.arangodb import RecordTypes
-
-            results = await self.http_client.execute_aql(
+            rows = await self.http_client.execute_aql(
                 query,
                 bind_vars={
-                    "org_id": org_id,
                     "connector_id": connector_id,
                     "drive_record_type": RecordTypes.DRIVE.value
                 },
                 txn_id=transaction
             )
 
-            if results and results[0]:
-                self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
-                return {
-                    "success": True,
-                    "data": results[0]
-                }
-            else:
-                self.logger.warning(f"⚠️ No data found for connector: {connector_id}")
-                return {
-                    "success": False,
-                    "message": "No data found for the specified connector",
-                    "data": {
-                        "org_id": org_id,
-                        "connector_id": connector_id,
-                        "origin": "CONNECTOR",
-                        "stats": {
-                            "total": 0,
-                            "indexingStatus": {
-                                "NOT_STARTED": 0,
-                                "IN_PROGRESS": 0,
-                                "COMPLETED": 0,
-                                "FAILED": 0,
-                                "FILE_TYPE_NOT_SUPPORTED": 0,
-                                "AUTO_INDEX_OFF": 0,
-                                "ENABLE_MULTIMODAL_MODELS": 0,
-                                "EMPTY": 0,
-                                "QUEUED": 0,
-                                "PAUSED": 0,
-                            }
-                        },
-                        "byRecordType": []
-                    }
-                }
+            rows = rows or []
+            result = build_connector_stats_response(rows, statuses, org_id, connector_id)
+
+            self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
+            return {
+                "success": True,
+                "data": result,
+            }
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get connector stats: {str(e)}")
             return {
                 "success": False,
                 "message": str(e),
-                "data": None
+                "data": None,
             }
 
     def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> Tuple[str, Dict[str, Any]]:

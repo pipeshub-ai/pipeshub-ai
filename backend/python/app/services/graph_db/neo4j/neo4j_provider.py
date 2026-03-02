@@ -55,6 +55,7 @@ from app.models.entities import (
 )
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
+from app.services.graph_db.common.utils import build_connector_stats_response
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -6442,65 +6443,29 @@ class Neo4jProvider(IGraphDBProvider):
         Returns:
             Dict: Statistics data with success status
         """
+        statuses = [s.value for s in IndexingStatus]
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
-            # Get all records for the connector (excluding folders)
             query = """
-            MATCH (r:Record)
-            WHERE r.orgId = $org_id
-            AND r.origin = "CONNECTOR"
-            AND r.connectorId = $connector_id
-            AND r.isDeleted <> true
-            AND NOT EXISTS {
+            MATCH (app:App {id: $connector_id})
+            MATCH (app)<-[:BELONGS_TO*1..10]-(rg:RecordGroup)
+            MATCH (rg)<-[:BELONGS_TO]-(r:Record)
+            WHERE NOT EXISTS {
                 MATCH (r)-[:IS_OF_TYPE]->(f:File)
                 WHERE f.isFile = false
             }
-            RETURN r
+            RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus, count(*) AS cnt
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"org_id": org_id, "connector_id": connector_id},
+                parameters={"connector_id": connector_id},
                 txn_id=transaction
             )
 
-            records = [dict(r["r"]) for r in results] if results else []
-
-            # Calculate stats
-            total = len(records)
-            indexing_status_counts = {}
-            record_type_counts = {}
-
-            statuses = ["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "FAILED", "FILE_TYPE_NOT_SUPPORTED",
-                       "AUTO_INDEX_OFF", "ENABLE_MULTIMODAL_MODELS", "EMPTY", "QUEUED", "PAUSED"]
-
-            for status in statuses:
-                indexing_status_counts[status] = sum(1 for r in records if r.get("indexingStatus") == status)
-
-            # Group by record type
-            record_types = set(r.get("recordType") for r in records if r.get("recordType"))
-            for record_type in record_types:
-                type_records = [r for r in records if r.get("recordType") == record_type]
-                record_type_counts[record_type] = {
-                    "recordType": record_type,
-                    "total": len(type_records),
-                    "indexingStatus": {
-                        status: sum(1 for r in type_records if r.get("indexingStatus") == status)
-                        for status in statuses
-                    }
-                }
-
-            result = {
-                "orgId": org_id,
-                "connectorId": connector_id,
-                "origin": "CONNECTOR",
-                "stats": {
-                    "total": total,
-                    "indexingStatus": indexing_status_counts
-                },
-                "byRecordType": list(record_type_counts.values())
-            }
+            rows = results or []
+            result = build_connector_stats_response(rows, statuses, org_id, connector_id)
 
             self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
             return {
