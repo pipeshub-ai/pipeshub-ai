@@ -197,6 +197,7 @@ class CollectionNames(Enum):
     AGENT_HAS_TOOLSET = "agentHasToolset"
     TOOLSET_HAS_TOOL = "toolsetHasTool"
 
+
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
 

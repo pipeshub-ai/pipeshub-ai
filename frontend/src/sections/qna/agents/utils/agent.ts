@@ -460,6 +460,7 @@ interface ToolsetDataInternal {
   name: string; // Normalized toolset name (e.g., "googledrive")
   displayName: string; // Display name (e.g., "Google Drive")
   type: string; // Toolset type (e.g., "app")
+  instanceId?: string; // NEW: specific instance identifier
   tools: {
     name: string; // Tool name (e.g., "get_files_list")
     fullName: string; // Full name (e.g., "googledrive.get_files_list")
@@ -495,14 +496,17 @@ export const extractAgentConfigFromFlow = (
     toolsetName: string,
     displayName: string,
     toolsetType: string,
-    toolsToAdd: { name: string; fullName: string; description?: string }[]
+    toolsToAdd: { name: string; fullName: string; description?: string }[],
+    instanceId?: string
   ) => {
     if (!toolsetName || toolsToAdd.length === 0) return;
     
     const normalizedName = toolsetName.toLowerCase().replace(/[^a-z0-9]/g, '');
     
-    // Find existing toolset
-    const existingIndex = toolsetsInternal.findIndex((ts) => ts.name === normalizedName);
+    // Find existing toolset (match by instanceId if available, else by normalizedName)
+    const existingIndex = instanceId
+      ? toolsetsInternal.findIndex((ts) => ts.instanceId === instanceId)
+      : toolsetsInternal.findIndex((ts) => ts.name === normalizedName);
     
     if (existingIndex >= 0) {
       // Add tools to existing toolset (avoid duplicates)
@@ -517,6 +521,7 @@ export const extractAgentConfigFromFlow = (
         name: normalizedName,
         displayName: displayName || toolsetName,
         type: toolsetType || 'app',
+        instanceId: instanceId || undefined,
         tools: toolsToAdd,
       });
     }
@@ -601,6 +606,7 @@ export const extractAgentConfigFromFlow = (
     const toolsetName = toolsetConfig?.toolsetName || toolsetConfig?.name || node.data.label || '';
     const displayName = toolsetConfig?.displayName || node.data.label || toolsetName;
     const toolsetType = toolsetConfig?.type || toolsetConfig?.category || 'app';
+    const instanceId = toolsetConfig?.instanceId as string | undefined; // NEW
     const toolsFromConfig: { name: string; fullName: string; description?: string }[] = [];
     
     // Extract tools from the tools array
@@ -641,7 +647,7 @@ export const extractAgentConfigFromFlow = (
     
     // Add toolset with its tools
     if (toolsFromConfig.length > 0) {
-      addToolsetWithTools(toolsetName, displayName, toolsetType, toolsFromConfig);
+      addToolsetWithTools(toolsetName, displayName, toolsetType, toolsFromConfig, instanceId);
     }
   });
 
@@ -838,7 +844,8 @@ export const extractAgentConfigFromFlow = (
   
   // Convert internal toolset data to ToolsetReference format (with id)
   const toolsets: ToolsetReference[] = toolsetsInternal.map((ts) => ({
-    id: ts.name, // Use name as id since it's unique per toolset
+    id: ts.instanceId || ts.name, // Prefer instanceId as the stable identifier
+    instanceId: ts.instanceId,    // NEW: pass through for backend storage
     name: ts.name,
     displayName: ts.displayName,
     type: ts.type,

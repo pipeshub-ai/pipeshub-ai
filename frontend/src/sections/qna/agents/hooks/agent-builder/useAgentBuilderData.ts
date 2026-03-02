@@ -59,16 +59,17 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
           activeAgentConnectorsResponse,
           configuredConnectorsResponse,
           connectorRegistryResponse,
-          registryToolsetsResponse,
-          configuredToolsetsResponse
+          myToolsetsResponse,
         ] = await Promise.all([
           AgentApiService.getAvailableModels(),
           AgentApiService.getKnowledgeBases(),
           ConnectorApiService.getActiveAgentConnectorInstances(1, 100, ''),
           ConnectorApiService.getConfiguredConnectorInstances(undefined, 1, 100, ''),
           ConnectorApiService.getConnectorRegistry(undefined, 1, 100, ''),
-          ToolsetApiService.getRegistryToolsets({ includeTools: true, limit: 100 }),
-          ToolsetApiService.getConfiguredToolsets(),
+          // Use getMyToolsets() which returns org-wide instances with user auth status
+          // Each item has: instanceId, instanceName, toolsetType, authType, displayName,
+          //                description, iconPath, category, tools, isAuthenticated
+          ToolsetApiService.getMyToolsets(),
         ]);
 
         setAvailableTools([]); // Deprecated - tools are now from toolsets
@@ -80,25 +81,34 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
         setConfiguredConnectors(Array.isArray(connectorsArray) ? connectorsArray : []);
         setConnectorRegistry(connectorRegistryResponse?.connectors || []);
         
-        // Merge registry toolsets with configuration status
-        const configuredMap = new Map(
-          (configuredToolsetsResponse?.toolsets || []).map((t: any) => [
-            t.name?.toLowerCase() || '',
-            {
-              isConfigured: true,
-              isAuthenticated: t.isAuthenticated || false,
-            },
-          ])
-        );
-        
-        const toolsetsWithStatus = (registryToolsetsResponse?.toolsets || []).map((toolset: any) => {
-          const status = configuredMap.get(toolset.name.toLowerCase()) as { isConfigured: boolean; isAuthenticated: boolean } | undefined;
-          return {
-            ...toolset,
-            isConfigured: status?.isConfigured ?? false,
-            isAuthenticated: status?.isAuthenticated ?? false,
-          };
-        });
+        // Map MyToolset instances to sidebar-compatible format.
+        // Each entry includes instanceId so the agent builder can store it.
+        const toolsetsWithStatus = (myToolsetsResponse?.toolsets || []).map((inst: any) => ({
+          // Keep all original MyToolset fields
+          ...inst,
+          // Sidebar compatibility fields
+          name: inst.toolsetType || inst.instanceName || '',       // used as toolset type key
+          normalized_name: inst.toolsetType || '',
+          displayName: inst.instanceName || inst.displayName || inst.toolsetType || '',
+          description: inst.description || '',
+          iconPath: inst.iconPath || '/assets/icons/toolsets/default.svg',
+          category: inst.category || 'app',
+          supportedAuthTypes: inst.supportedAuthTypes || [],
+          toolCount: inst.toolCount || (inst.tools || []).length,
+          tools: (inst.tools || []).map((t: any) => ({
+            name: t.name || '',
+            fullName: t.fullName || `${inst.toolsetType}.${t.name}`,
+            description: t.description || '',
+            appName: inst.toolsetType || '',
+          })),
+          // Auth status
+          isConfigured: inst.isConfigured ?? true,   // admin-created = always configured
+          isAuthenticated: inst.isAuthenticated ?? false,
+          // Instance identification (NEW – used by agent builder when saving)
+          instanceId: inst.instanceId,
+          instanceName: inst.instanceName,
+          toolsetType: inst.toolsetType,
+        }));
         
         setToolsets(toolsetsWithStatus);
         hasLoadedRef.current = true;
@@ -136,6 +146,46 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
     }
   }, [editingAgent?._key, loadAgentDetails]);
 
+  // Refresh toolsets function - can be called after OAuth authentication
+  const refreshToolsets = useCallback(async () => {
+    try {
+      const myToolsetsResponse = await ToolsetApiService.getMyToolsets();
+      
+      // Map MyToolset instances to sidebar-compatible format
+      const toolsetsWithStatus = (myToolsetsResponse?.toolsets || []).map((inst: any) => ({
+        // Keep all original MyToolset fields
+        ...inst,
+        // Sidebar compatibility fields
+        name: inst.toolsetType || inst.instanceName || '',
+        normalized_name: inst.toolsetType || '',
+        displayName: inst.instanceName || inst.displayName || inst.toolsetType || '',
+        description: inst.description || '',
+        iconPath: inst.iconPath || '/assets/icons/toolsets/default.svg',
+        category: inst.category || 'app',
+        supportedAuthTypes: inst.supportedAuthTypes || [],
+        toolCount: inst.toolCount || (inst.tools || []).length,
+        tools: (inst.tools || []).map((t: any) => ({
+          name: t.name || '',
+          fullName: t.fullName || `${inst.toolsetType}.${t.name}`,
+          description: t.description || '',
+          appName: inst.toolsetType || '',
+        })),
+        // Auth status
+        isConfigured: inst.isConfigured ?? true,
+        isAuthenticated: inst.isAuthenticated ?? false,
+        // Instance identification
+        instanceId: inst.instanceId,
+        instanceName: inst.instanceName,
+        toolsetType: inst.toolsetType,
+      }));
+      
+      setToolsets(toolsetsWithStatus);
+      console.log('✅ Toolsets refreshed after OAuth authentication');
+    } catch (err) {
+      console.error('Error refreshing toolsets:', err);
+    }
+  }, []);
+
   return {
     availableTools,
     availableModels,
@@ -148,5 +198,6 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
     loadedAgent,
     error,
     setError,
+    refreshToolsets, // NEW: Function to refresh toolsets after OAuth
   };
 };

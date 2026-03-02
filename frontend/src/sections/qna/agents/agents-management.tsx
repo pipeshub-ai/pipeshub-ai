@@ -37,8 +37,8 @@ import { Icon } from '@iconify/react';
 import searchIcon from '@iconify-icons/mdi/magnify';
 import plusIcon from '@iconify-icons/mdi/plus';
 import moreVertIcon from '@iconify-icons/mdi/dots-vertical';
-import editIcon from '@iconify-icons/mdi/pencil';
 import deleteIcon from '@iconify-icons/mdi/delete';
+import eyeIcon from '@iconify-icons/mdi/eye-outline';
 import chatIcon from '@iconify-icons/mdi/chat';
 import templateIcon from '@iconify-icons/mdi/file-document';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
@@ -186,11 +186,18 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
     setSelectedTemplate(null);
   }, []);
 
-  const handleEditAgent = useCallback(
+  const canViewAgent = useCallback((agent: Agent) => agent.can_view !== false, []);
+  const canDeleteAgent = useCallback((agent: Agent) => agent.can_delete !== false, []);
+
+  const handleViewAgent = useCallback(
     (agent: Agent) => {
+      if (!canViewAgent(agent)) {
+        setError('You do not have permission to view this agent');
+        return;
+      }
       navigate(paths.dashboard.agent.edit(agent._key));
     },
-    [navigate]
+    [navigate, canViewAgent]
   );
 
   const handleDeleteAgent = useCallback(async (agent: Agent) => {
@@ -520,8 +527,9 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                   <Button
                     size="small"
                     variant="outlined"
-                    onClick={() => handleEditAgent(agent)}
-                    startIcon={<Icon icon={editIcon} width={12} height={12} />}
+                    onClick={() => handleViewAgent(agent)}
+                    disabled={!canViewAgent(agent)}
+                    startIcon={<Icon icon={eyeIcon} width={12} height={12} />}
                     sx={{
                       flex: 1,
                       height: 28,
@@ -538,7 +546,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                       },
                     }}
                   >
-                    Edit
+                    View
                   </Button>
                   <IconButton
                     size="small"
@@ -568,7 +576,8 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
     [
       handleMenuOpen,
       handleChatWithAgent,
-      handleEditAgent,
+      handleViewAgent,
+      canViewAgent,
       theme,
       isDark,
       textPrimary,
@@ -1030,9 +1039,10 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
       >
         <MenuItem
           onClick={() => {
-            if (activeAgent) handleEditAgent(activeAgent);
+            if (activeAgent) handleViewAgent(activeAgent);
             handleMenuClose();
           }}
+          disabled={!activeAgent || !canViewAgent(activeAgent)}
           sx={{
             py: 1.5,
             px: 2,
@@ -1046,10 +1056,10 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
           }}
         >
           <ListItemIcon sx={{ minWidth: 36 }}>
-            <Icon icon={editIcon} width={18} height={18} />
+            <Icon icon={eyeIcon} width={18} height={18} />
           </ListItemIcon>
           <ListItemText 
-            primary="Edit Agent"
+            primary="View Agent"
             primaryTypographyProps={{
               sx: { fontSize: '0.875rem', fontWeight: 500 }
             }}
@@ -1111,34 +1121,36 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
           />
         </MenuItem>
         <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} /> */}
-        <MenuItem
-          onClick={() => {
-            if (activeAgent) setDeleteDialog({ open: true, agent: activeAgent });
-            handleMenuClose();
-          }}
-          sx={{ 
-            color: 'error.main',
-            py: 1.5,
-            px: 2,
-            mx: 0.5,
-            borderRadius: 1,
-            '&:hover': {
-              bgcolor: alpha(theme.palette.error.main, 0.08),
-              transform: 'translateX(2px)',
-            },
-            transition: 'all 0.15s ease',
-          }}
-        >
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <Icon icon={deleteIcon} width={18} height={18} color={theme.palette.error.main} />
-          </ListItemIcon>
-          <ListItemText 
-            primary="Delete Agent"
-            primaryTypographyProps={{
-              sx: { fontSize: '0.875rem', fontWeight: 500 }
+        {activeAgent && canDeleteAgent(activeAgent) && (
+          <MenuItem
+            onClick={() => {
+              setDeleteDialog({ open: true, agent: activeAgent });
+              handleMenuClose();
             }}
-          />
-        </MenuItem>
+            sx={{ 
+              color: 'error.main',
+              py: 1.5,
+              px: 2,
+              mx: 0.5,
+              borderRadius: 1,
+              '&:hover': {
+                bgcolor: alpha(theme.palette.error.main, 0.08),
+                transform: 'translateX(2px)',
+              },
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: 36 }}>
+              <Icon icon={deleteIcon} width={18} height={18} color={theme.palette.error.main} />
+            </ListItemIcon>
+            <ListItemText 
+              primary="Delete Agent"
+              primaryTypographyProps={{
+                sx: { fontSize: '0.875rem', fontWeight: 500 }
+              }}
+            />
+          </MenuItem>
+        )}
       </Menu>
 
       {/* Delete Agent Confirmation Dialog */}

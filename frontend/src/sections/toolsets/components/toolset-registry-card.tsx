@@ -29,11 +29,12 @@ import ToolsetConfigDialog from './toolset-config-dialog';
 interface ToolsetRegistryCardProps {
   toolset: RegistryToolset;
   isConfigured?: boolean;
+  isAdmin?: boolean;
   onRefresh?: (showLoader?: boolean, forceRefreshBoth?: boolean) => void;
   onShowToast?: (message: string, severity?: 'success' | 'error' | 'info' | 'warning') => void;
 }
 
-const ToolsetRegistryCard = ({ toolset, isConfigured = false, onRefresh, onShowToast }: ToolsetRegistryCardProps) => {
+const ToolsetRegistryCard = ({ toolset, isConfigured = false, isAdmin = false, onRefresh, onShowToast }: ToolsetRegistryCardProps) => {
   const theme = useTheme();
   const [configOpen, setConfigOpen] = useState(false);
   const isDark = theme.palette.mode === 'dark';
@@ -259,6 +260,7 @@ const ToolsetRegistryCard = ({ toolset, isConfigured = false, onRefresh, onShowT
       {configOpen && (
         <ToolsetConfigDialog
           toolset={toolset}
+          isAdmin={isAdmin}
           onClose={() => setConfigOpen(false)}
           onSuccess={() => {
             setConfigOpen(false);
