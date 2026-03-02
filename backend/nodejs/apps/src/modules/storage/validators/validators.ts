@@ -99,6 +99,11 @@ export const GetBufferSchema = z.object({
 export const RollBackToPreviousVersionSchema = GetBufferSchema.extend({
   body: z.object({
     note: z.string(),
+    version: z
+      .union([z.string(), z.number()])
+      .optional()
+      .transform((val) => (val === undefined ? undefined : Number(val)))
+      .pipe(z.number().min(0).optional()),
   }),
 });
 
@@ -109,6 +114,9 @@ export const CreateDocumentSchema = z.object({
     documentPath: z.string(),
     permissions: z.string().optional(),
     metaData: z.any().optional(),
+    customMetadata: z
+      .array(z.object({ key: z.string(), value: z.any() }))
+      .optional(),
     isVersionedFile: z.boolean().optional(),
     extension : z.string(),
   }),
