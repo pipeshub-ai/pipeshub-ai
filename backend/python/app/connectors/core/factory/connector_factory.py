@@ -55,7 +55,7 @@ from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
-
+from app.connectors.sources.gitlab.connector import GitLabConnector
 
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
@@ -88,6 +88,7 @@ class ConnectorFactory:
         "linear": LinearConnector,
         "notion": NotionConnector,
         "zammad": ZammadConnector,
+        "gitlab": GitLabConnector,
     }
 
     # Beta connector definitions - single source of truth

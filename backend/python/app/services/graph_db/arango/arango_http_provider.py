@@ -34,6 +34,7 @@ from app.models.entities import (
     AppRole,
     AppUser,
     AppUserGroup,
+    CodeFileRecord,
     CommentRecord,
     FileRecord,
     LinkRecord,
@@ -2323,6 +2324,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             if result and len(result) > 0:
+                self.logger.info(f"result : {result}")
                 path = result[0]
                 self.logger.debug(f"✅ Found path for {record_id}: {path}")
                 return path
@@ -2442,7 +2444,32 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"❌ Failed to retrieve record for path {path}: {str(e)}"
             )
             return None
-
+    
+    async def get_path_of_file_by_external_id(
+        self,
+        external_id: str,
+        connector_id:str,
+        transaction: Optional[str] = None
+    ) -> Optional[str]:
+        """Get path of file by id"""
+        file_path_list:List[str]=[]
+        try:
+            file_record = await self.get_record_by_external_id(connector_id, external_id, transaction)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get path of file by external id {external_id}: {str(e)}")
+            return None
+        file_path_list.append(file_record.record_name)
+        while(file_record.parent_external_record_id):
+            try:
+                file_record = await self.get_record_by_external_id(connector_id, file_record.parent_external_record_id, transaction)
+            except Exception as e:
+                self.logger.error(f"❌ Failed to get parent file by external id {file_record.parent_external_record_id}: {str(e)}")
+                self.logger.error(f"Error fetching parent mid path returning None")
+                return None
+            file_path_list.append(file_record.record_name)
+        file_path_list.reverse()
+        return file_path_list
+    
     async def get_records_by_status(
         self,
         org_id: str,
