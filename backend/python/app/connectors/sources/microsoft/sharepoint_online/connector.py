@@ -4231,12 +4231,11 @@ class SharePointConnector(BaseConnector):
                 async def generate_page() -> AsyncGenerator[bytes, None]:
                     yield page_content.encode('utf-8')
 
-                return StreamingResponse(
+                return create_stream_record_response(
                     generate_page(),
-                    media_type='text/html',
-                    headers={
-                        "Content-Disposition": f'inline; filename="{record.record_name}.html"'
-                    }
+                    filename=record.record_name,
+                    mime_type='text/html',
+                    fallback_filename=f"record_{record.id}"
                 )
 
             else:
