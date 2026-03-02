@@ -435,6 +435,61 @@ async def _validate_connector_deleted(
     return True, "All connector data (Records, RecordGroups, App node) removed from graph"
 
 
+async def _full_neo4j_cleanup(
+    graph_provider: Neo4jProvider,
+    connector_id: str,
+) -> None:
+    """
+    Best-effort cleanup of all Neo4j data created by this GCS test run.
+
+    This removes:
+      - All Records and RecordGroups for this connector_id
+      - The App node for this connector_id
+      - All SyncPoints for this connector_id
+      - The seeded Org, Users, and Groups for ORG_ID
+    """
+    try:
+        # Connector-scoped nodes (mostly already removed by delete_connector_instance)
+        await graph_provider.remove_nodes_by_field(
+            CollectionNames.RECORDS.value,
+            "connectorId",
+            connector_id,
+        )
+        await graph_provider.remove_nodes_by_field(
+            CollectionNames.RECORD_GROUPS.value,
+            "connectorId",
+            connector_id,
+        )
+        await graph_provider.remove_nodes_by_field(
+            CollectionNames.APPS.value,
+            "id",
+            connector_id,
+        )
+        await graph_provider.remove_nodes_by_field(
+            CollectionNames.SYNC_POINTS.value,
+            "connectorId",
+            connector_id,
+        )
+
+        # Org-scoped nodes seeded specifically for this test run
+        await graph_provider.remove_nodes_by_field(
+            CollectionNames.USERS.value,
+            "orgId",
+            ORG_ID,
+        )
+        await graph_provider.remove_nodes_by_field(
+            CollectionNames.GROUPS.value,
+            "orgId",
+            ORG_ID,
+        )
+        await graph_provider.remove_nodes_by_field(
+            CollectionNames.ORGS.value,
+            "id",
+            ORG_ID,
+        )
+    except Exception as exc:
+        logger.warning(f"Neo4j full cleanup error (non-fatal): {exc}")
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PHASE 0 — Infrastructure Setup
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1210,6 +1265,12 @@ async def run_all() -> None:
             logger.warning(f"GCS cleanup error (non-fatal): {exc}")
 
         if graph_provider is not None:
+            # Remove all graph data created for this org/connector in this test run.
+            try:
+                await _full_neo4j_cleanup(graph_provider, CONNECTOR_ID)
+            except Exception as exc:
+                logger.warning(f"Neo4j full cleanup error (non-fatal): {exc}")
+
             try:
                 await graph_provider.disconnect()
                 logger.info("Neo4j disconnected")
