@@ -6,6 +6,7 @@ Separate from connector token refresh to avoid interference
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Dict, Optional
 
@@ -20,7 +21,12 @@ from app.utils.oauth_config import get_oauth_config
 MIN_PATH_PARTS_COUNT = 4  # Minimum path parts: services, toolsets, instance_id, user_id
 LOCK_TIMEOUT = 30  # Timeout for acquiring toolset lock (seconds)
 TOKEN_REFRESH_MAX_RETRIES = 3  # Max retries for config write verification failures
-INITIAL_RETRY_DELAY = 0.2  # Initial retry delay for verification failures (seconds)
+INITIAL_RETRY_DELAY = 0.3  # Initial retry delay for verification failures (seconds) - increased to allow verification to complete
+REFRESH_COOLDOWN = 10  # Minimum seconds between refreshes of same toolset (prevents rapid duplicates)
+MIN_IMMEDIATE_RECHECK_DELAY = 1  # Seconds; used when an already-expired token needs refresh immediately
+PROACTIVE_REFRESH_WINDOW_SECONDS = 600  # Refresh 10 minutes before expiry for normal tokens
+MIN_SHORT_LIVED_REFRESH_WINDOW_SECONDS = 60  # Minimum proactive window for short-lived tokens
+SHORT_LIVED_TOKEN_BUFFER_RATIO = 0.2  # For short-lived tokens, refresh ~20% before expiry
 
 
 class ToolsetTokenRefreshService:
@@ -28,12 +34,14 @@ class ToolsetTokenRefreshService:
 
     def __init__(self, configuration_service: ConfigurationService) -> None:
         self.configuration_service = configuration_service
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger("connector_service")
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations
         self._processing_toolsets: set = set()  # Track toolsets currently being processed to prevent recursion
         self._toolset_locks: Dict[str, asyncio.Lock] = {}  # Per-toolset locks to prevent concurrent refreshes
+        self._schedule_locks: Dict[str, asyncio.Lock] = {}  # Per-toolset locks for atomic task scheduling
+        self._last_refresh_time: Dict[str, float] = {}  # Track last successful refresh time (prevents duplicates)
 
     def _get_toolset_lock(self, config_path: str) -> asyncio.Lock:
         """
@@ -49,6 +57,15 @@ class ToolsetTokenRefreshService:
         if config_path not in self._toolset_locks:
             self._toolset_locks[config_path] = asyncio.Lock()
         return self._toolset_locks[config_path]
+
+    def _get_schedule_lock(self, config_path: str) -> asyncio.Lock:
+        """
+        Get or create a lock for scheduling refresh tasks for a specific toolset.
+        This makes "check existing task + create task" atomic per config path.
+        """
+        if config_path not in self._schedule_locks:
+            self._schedule_locks[config_path] = asyncio.Lock()
+        return self._schedule_locks[config_path]
 
     async def start(self) -> None:
         """Start the toolset token refresh service"""
@@ -105,6 +122,21 @@ class ToolsetTokenRefreshService:
                         if lock and not lock.locked():
                             del self._toolset_locks[path]
                             self.logger.debug(f"Removed stale lock for {path}")
+
+                # Clean up stale scheduling locks
+                stale_schedule_locks = [path for path in self._schedule_locks.keys() if path not in current_paths]
+                if stale_schedule_locks:
+                    self.logger.info(f"🧹 Cleaning up {len(stale_schedule_locks)} stale schedule locks")
+                    for path in stale_schedule_locks:
+                        lock = self._schedule_locks.get(path)
+                        if lock and not lock.locked():
+                            del self._schedule_locks[path]
+                            self.logger.debug(f"Removed stale schedule lock for {path}")
+
+                # Clean up refresh timestamps for removed paths to avoid unbounded growth.
+                for path in list(self._last_refresh_time.keys()):
+                    if path not in current_paths:
+                        del self._last_refresh_time[path]
 
             except asyncio.CancelledError:
                 break
@@ -183,10 +215,10 @@ class ToolsetTokenRefreshService:
                 self.logger.info(f"🔍 Found {len(all_keys)} toolset keys in etcd (scanning /services/toolsets/)")
 
                 if all_keys:
-                    self.logger.info(f"📋 Sample keys found (first 5): {all_keys[:5]}")
+                    self.logger.debug(f"📋 Sample keys found (first 5): {all_keys[:5]}")
                     for key in all_keys[:5]:
                         path_parts = key.strip("/").split("/")
-                        self.logger.info(f"   - Key: {key} -> Parts: {path_parts} (count: {len(path_parts)})")
+                        self.logger.debug(f"   - Key: {key} -> Parts: {path_parts} (count: {len(path_parts)})")
 
                 # Use dict instead of set for better tracking and deduplication
                 processed_toolsets = {}
@@ -712,6 +744,15 @@ class ToolsetTokenRefreshService:
             last_error = None
 
             for attempt in range(max_retries):
+                # Add pre-write delay on retries to ensure previous write/verification completes
+                if attempt > 0:
+                    pre_write_delay = 0.1  # 100ms delay before retry
+                    self.logger.debug(
+                        f"⏸️ Waiting {pre_write_delay}s before retry attempt {attempt + 1} "
+                        f"for toolset {config_path} (allows previous verification to complete)"
+                    )
+                    await asyncio.sleep(pre_write_delay)
+                
                 try:
                     success = await self.configuration_service.set_config(config_path, config)
 
@@ -723,6 +764,10 @@ class ToolsetTokenRefreshService:
                             )
                         else:
                             self.logger.info(f"💾 Updated stored credentials for toolset {config_path}")
+                        
+                        # Add small delay after successful write to ensure verification completes
+                        # This prevents interference if another operation starts immediately
+                        await asyncio.sleep(0.05)
                         break  # Success!
 
                     # set_config returned False (verification failed)
@@ -731,7 +776,7 @@ class ToolsetTokenRefreshService:
                         self.logger.warning(
                             f"⚠️ Verification failed for toolset {config_path} "
                             f"(attempt {attempt + 1}/{max_retries}). "
-                            f"Retrying in {retry_delay}s..."
+                            f"Will wait {retry_delay}s before next attempt..."
                         )
                         await asyncio.sleep(retry_delay)
                         retry_delay *= 2  # Exponential backoff
@@ -751,6 +796,10 @@ class ToolsetTokenRefreshService:
                     f"Failed to save refreshed credentials for {config_path} "
                     f"after {max_retries} attempts. Last error: {last_error}"
                 )
+
+            # Update last refresh time to prevent duplicate refreshes
+            self._last_refresh_time[config_path] = time.time()
+            self.logger.debug(f"📝 Updated last refresh time for {config_path}")
 
             return new_token
         finally:
@@ -824,18 +873,24 @@ class ToolsetTokenRefreshService:
             f"is_expired={token.is_expired}"
         )
 
-        # If token not expired, just schedule refresh
-        if not token.is_expired:
-            self.logger.info(f"✅ Token not expired for toolset {config_path}, scheduling refresh")
-            await self.schedule_token_refresh(config_path, toolset_type, token)
+        # Proactive refresh: once token enters refresh window (delay <= 0), refresh now.
+        # This ensures refresh happens at/before threshold, not only after actual expiry.
+        delay, refresh_time = self._calculate_refresh_delay(token)
+        if delay <= 0:
+            self.logger.info(
+                f"🔄 Token reached refresh threshold for {config_path}; refreshing now "
+                f"(refresh_time={refresh_time}, now={datetime.now()})"
+            )
+            new_token = await self._perform_token_refresh(config_path, toolset_type, token.refresh_token)
+            await self.schedule_token_refresh(config_path, toolset_type, new_token)
             return
 
-        # Token is expired - refresh it now
-        self.logger.info(f"🔄 Token expired for toolset {config_path}, refreshing now")
-        new_token = await self._perform_token_refresh(config_path, toolset_type, token.refresh_token)
-
-        # Schedule next refresh for the new token
-        await self.schedule_token_refresh(config_path, toolset_type, new_token)
+        # Token is still outside the refresh window, schedule refresh task.
+        self.logger.info(
+            f"✅ Token not in refresh window for toolset {config_path}, scheduling refresh "
+            f"(delay={delay:.1f}s, refresh_time={refresh_time})"
+        )
+        await self.schedule_token_refresh(config_path, toolset_type, token)
 
     async def _refresh_toolset_token(self, config_path: str, toolset_type: str) -> None:
         """
@@ -928,12 +983,30 @@ class ToolsetTokenRefreshService:
 
     def _calculate_refresh_delay(self, token: OAuthToken) -> tuple[float, datetime]:
         """
-        Calculate delay until token refresh (10 minutes before expiry).
+        Calculate delay until proactive token refresh.
+
+        Strategy:
+          - Normal tokens: refresh 10 minutes before expiry.
+          - Short-lived tokens: use a smaller buffer (20% of TTL, minimum 60s).
 
         Returns:
             Tuple of (delay_seconds, refresh_time)
         """
-        refresh_time = token.created_at + timedelta(seconds=max(0, token.expires_in - 600))
+        expires_in = int(token.expires_in or 0)
+        if expires_in <= 0:
+            return 0.0, datetime.now()
+
+        if expires_in > PROACTIVE_REFRESH_WINDOW_SECONDS:
+            refresh_window = PROACTIVE_REFRESH_WINDOW_SECONDS
+        else:
+            refresh_window = max(
+                MIN_SHORT_LIVED_REFRESH_WINDOW_SECONDS,
+                int(expires_in * SHORT_LIVED_TOKEN_BUFFER_RATIO)
+            )
+            # Keep the window strictly less than TTL to avoid immediate refresh loops.
+            refresh_window = min(refresh_window, max(1, expires_in - 1))
+
+        refresh_time = token.created_at + timedelta(seconds=max(0, expires_in - refresh_window))
         delay = (refresh_time - datetime.now()).total_seconds()
         return delay, refresh_time
 
@@ -994,6 +1067,14 @@ class ToolsetTokenRefreshService:
             True if task created successfully, False otherwise
         """
         try:
+            # Defensive guard: avoid overwriting a still-running task due to unexpected caller race.
+            existing_task = self._refresh_tasks.get(config_path)
+            if existing_task and not existing_task.done() and not existing_task.cancelled():
+                self.logger.warning(
+                    f"⚠️ Refusing to create duplicate refresh task for {config_path} - task already running"
+                )
+                return False
+
             task = asyncio.create_task(
                 self._delayed_refresh(config_path, toolset_type, delay)
             )
@@ -1015,7 +1096,11 @@ class ToolsetTokenRefreshService:
     ) -> None:
         """
         Schedule token refresh for a specific toolset.
-        If the token needs immediate refresh (delay <= 0), refreshes it immediately then schedules.
+        Scheduling is atomic per config_path to prevent duplicate tasks.
+
+        Notes:
+            - If token is already at/past refresh threshold, schedule immediate re-check
+              so locked refresh workflow can refresh it safely.
 
         Args:
             config_path: Toolset config path (e.g., /services/toolsets/{instanceId}/{userId})
@@ -1029,47 +1114,59 @@ class ToolsetTokenRefreshService:
             self.logger.warning(f"⚠️ Token for toolset {config_path} has no expiry time, cannot schedule refresh")
             return
 
-        self.logger.info(f"🔄 Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
+        schedule_lock = self._get_schedule_lock(config_path)
+        async with schedule_lock:
+            # Atomic check for existing task
+            existing_task = self._refresh_tasks.get(config_path)
+            if existing_task:
+                current_task = asyncio.current_task()
+                # If this call comes from the currently running delayed task for the same path,
+                # allow self-rescheduling by clearing the old task reference first.
+                if existing_task is current_task:
+                    del self._refresh_tasks[config_path]
+                else:
+                    # If the existing task is still running (not done, not cancelled), keep it
+                    if not existing_task.done() and not existing_task.cancelled():
+                        self.logger.info(
+                            f"⏭️ Skipping duplicate schedule request for {config_path} - "
+                            f"valid refresh task already exists and is running"
+                        )
+                        return
 
-        # Calculate refresh delay
-        delay, refresh_time = self._calculate_refresh_delay(token)
+                    # Existing task is dead; safe to remove
+                    self.logger.debug(
+                        f"📝 Existing task for {config_path} is done/cancelled, will create new task"
+                    )
+                    del self._refresh_tasks[config_path]
 
-        # Handle immediate refresh if needed
-        if delay <= 0:
-            self.logger.warning(
-                f"⚠️ Token for toolset {config_path} needs immediate refresh "
-                f"(expires_in={token.expires_in}s, delay={delay:.1f}s). Refreshing now..."
-            )
+            # Prevent immediate re-refresh if we just completed one
+            current_time = time.time()
+            last_refresh = self._last_refresh_time.get(config_path, 0)
+            time_since_last_refresh = current_time - last_refresh
 
-            new_token, success = await self._refresh_token_immediately(config_path, toolset_type, token)
-
-            if not success:
-                return
-
-            # Recalculate delay with new token
-            delay, refresh_time = self._calculate_refresh_delay(new_token)
-
-            if delay <= 0:
-                self.logger.error(
-                    f"❌ New token for toolset {config_path} is also expired/expiring soon! "
-                    f"(expires_in={new_token.expires_in}s, delay={delay:.1f}s). "
-                    f"Cannot schedule refresh - will be picked up by periodic check."
+            if time_since_last_refresh < REFRESH_COOLDOWN:
+                self.logger.info(
+                    f"⏭️ Skipping schedule request for {config_path} - "
+                    f"refresh completed {time_since_last_refresh:.1f}s ago (cooldown: {REFRESH_COOLDOWN}s)"
                 )
                 return
 
-            token = new_token
-            self.logger.info(f"🔄 Scheduling next refresh for toolset {config_path} with new token")
+            self.logger.info(f"🔄 Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
 
-        # CRITICAL: Cancel any existing task BEFORE creating new one
-        # This prevents race conditions from duplicate scheduling
-        self._cancel_existing_refresh_task(config_path)
+            # Calculate refresh delay
+            delay, refresh_time = self._calculate_refresh_delay(token)
 
-        # Small delay to ensure old task is fully cancelled and lock is released
-        # This prevents the new task from immediately conflicting with the old one
-        await asyncio.sleep(0.1)
+            # If token is at/past threshold, schedule immediate re-check.
+            if delay <= 0:
+                delay = MIN_IMMEDIATE_RECHECK_DELAY
+                refresh_time = datetime.now() + timedelta(seconds=delay)
+                self.logger.info(
+                    f"⏱️ Token for toolset {config_path} reached refresh threshold. "
+                    f"Scheduling immediate re-check in {delay:.0f}s."
+                )
 
-        # Create new refresh task
-        self._create_refresh_task(config_path, toolset_type, delay, refresh_time)
+            # Create new refresh task atomically while schedule lock is held
+            self._create_refresh_task(config_path, toolset_type, delay, refresh_time)
 
     async def _delayed_refresh(self, config_path: str, toolset_type: str, delay: float) -> None:
         """Delayed token refresh for toolset"""
@@ -1084,6 +1181,9 @@ class ToolsetTokenRefreshService:
         except Exception as e:
             self.logger.error(f"❌ Error in delayed token refresh for toolset {config_path}: {e}", exc_info=True)
         finally:
-            # Remove task from tracking only if it's this task
-            if config_path in self._refresh_tasks and self._refresh_tasks[config_path].done():
-                del self._refresh_tasks[config_path]
+            # Remove task from tracking only if this exact task is still the tracked one.
+            schedule_lock = self._get_schedule_lock(config_path)
+            async with schedule_lock:
+                tracked_task = self._refresh_tasks.get(config_path)
+                if tracked_task is asyncio.current_task():
+                    del self._refresh_tasks[config_path]
