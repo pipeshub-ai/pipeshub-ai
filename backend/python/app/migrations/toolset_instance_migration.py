@@ -352,7 +352,7 @@ class ToolsetInstanceMigrationService:
 
         new_config = {
             "_id": oauth_config_id,
-            "oauthInstanceName": f"{toolset_type.title()} (Migrated)",
+            "oauthInstanceName": toolset_type.title(),
             "toolsetType": toolset_type,
             "userId": user_id,
             "orgId": org_id,

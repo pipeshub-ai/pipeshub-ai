@@ -236,6 +236,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
           easing: theme.transitions.easing.easeInOut,
           duration: theme.transitions.duration.standard,
         }),
+        height: '100%',
         '& .MuiDrawer-paper': {
           width: sidebarWidth,
           boxSizing: 'border-box',

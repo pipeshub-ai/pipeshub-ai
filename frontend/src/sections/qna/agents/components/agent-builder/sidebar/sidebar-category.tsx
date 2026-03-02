@@ -169,12 +169,10 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
                 }}
               >
                 <Icon 
-                  icon="mdi:check-circle" 
-                  width={16} 
+                  icon={UI_ICONS.authenticated}
+                  width={16}
                   height={16}
-                  style={{ 
-                    color: theme.palette.success.main,
-                  }}
+                  style={{ color: theme.palette.success.main }}
                 />
               </Box>
             </Tooltip>
@@ -200,25 +198,6 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
                 <Icon icon={UI_ICONS.settings} width={16} height={16} />
               </IconButton>
             </Tooltip>
-          )}
-          {!showConfigureIcon && (
-            <Tooltip title="Toolset is authenticated" placement="right">
-              <IconButton
-                size="small"
-                onClick={(e) => {
-                  e.stopPropagation();
-                }}
-                sx={{
-                  ml: 0.5,
-                  color: theme.palette.success.main,
-                  '&:hover': {
-                    backgroundColor: alpha(theme.palette.success.main, 0.1),
-                  },
-                }}
-              >
-                <Icon icon={UI_ICONS.authenticated} width={16} height={16} />
-              </IconButton>
-              </Tooltip>
           )}
         </Box>
       </ListItem>
