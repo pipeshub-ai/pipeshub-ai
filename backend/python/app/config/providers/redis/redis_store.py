@@ -86,10 +86,9 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self._db = db
         self._connect_timeout = connect_timeout
 
-        # Thread-local storage for Redis clients (one per event loop/thread)
-        # Each entry is (client, event_loop_ref) so we can detect stale clients
-        # bound to a closed event loop (e.g. after asyncio.run() finishes).
-        self._local = threading.local()
+        # Per-thread Redis clients dict: thread_id → (client, event_loop_ref)
+        # The event_loop_ref lets us detect stale clients bound to a closed
+        # event loop (e.g. after asyncio.run() finishes in a thread pool).
         self._clients: Dict[int, tuple[redis.Redis, Optional[asyncio.AbstractEventLoop]]] = {}
         self._clients_lock = threading.Lock()
 
@@ -457,15 +456,18 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self._watch_tasks.clear()
         self._watchers.clear()
 
-        # Close all Redis connections (one per thread/event loop)
+        # Close all Redis connections (one per thread/event loop).
+        # Snapshot and clear under the lock, then await outside the lock so
+        # we never hold a threading.Lock across an await (deadlock risk).
         with self._clients_lock:
-            for thread_id, (client, _loop) in self._clients.items():
-                try:
-                    await client.close()
-                    logger.debug("Closed Redis client for thread %s", thread_id)
-                except Exception as e:
-                    logger.warning("Error closing Redis client for thread %s: %s", thread_id, str(e))
+            clients_to_close = list(self._clients.items())
             self._clients.clear()
+        for thread_id, (client, _loop) in clients_to_close:
+            try:
+                await client.close()
+                logger.debug("Closed Redis client for thread %s", thread_id)
+            except Exception as e:
+                logger.warning("Error closing Redis client for thread %s: %s", thread_id, str(e))
         logger.debug("Redis store closed successfully")
 
     # -------------------------------------------------------------------------
