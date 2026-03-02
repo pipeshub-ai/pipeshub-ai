@@ -607,6 +607,29 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     // This will be handled by the FlowBuilderCanvas component
   }, []);
 
+  const activeToolsetTypes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          nodes
+            .filter((node) => node.data?.type?.startsWith('toolset-'))
+            .map((node) => {
+              const config = (node.data?.config as Record<string, any>) || {};
+              return (
+                config.toolsetType ||
+                config.toolsetName ||
+                (typeof node.data?.type === 'string'
+                  ? node.data.type.replace(/^toolset-/, '')
+                  : '')
+              );
+            })
+            .filter(Boolean)
+            .map((value) => String(value))
+        )
+      ),
+    [nodes]
+  );
+
   // Compute whether the current flow has any toolsets connected to the agent
   const hasToolsets = nodes.some((node) => node.data?.type?.startsWith('toolset-'));
 
@@ -694,6 +717,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         toolsets={toolsets}
         refreshToolsets={refreshToolsets}
         isBusiness={isBusiness}
+        activeToolsetTypes={activeToolsetTypes}
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}

@@ -65,6 +65,7 @@ export interface AgentBuilderCanvasWrapperProps {
   toolsets: any[];
   refreshToolsets: () => Promise<void>;
   isBusiness: boolean;
+  activeToolsetTypes?: string[];
   nodes: any[];
   edges: any[];
   onNodesChange: (changes: any) => void;

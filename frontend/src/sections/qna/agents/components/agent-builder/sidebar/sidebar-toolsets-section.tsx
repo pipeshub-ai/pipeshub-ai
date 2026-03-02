@@ -31,6 +31,7 @@ interface SidebarToolsetsSectionProps {
   refreshToolsets: () => Promise<void>; // Refresh toolsets after OAuth authentication
   loading: boolean; // Loading state from parent
   isBusiness?: boolean;
+  activeToolsetTypes?: string[];
 }
 
 interface ToolsetWithStatus extends RegistryToolset {
@@ -55,6 +56,13 @@ const formatToolsetTypeLabel = (toolsetTypeValue: string): string => {
     .join(' ');
 };
 
+const normalizeToolsetTypeKey = (value: string): string =>
+  (value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[_-]+/g, '');
+
 export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   expandedApps,
   onAppToggle,
@@ -62,6 +70,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   refreshToolsets,
   loading: loadingProp,
   isBusiness,
+  activeToolsetTypes = [],
 }) => {
   const theme = useTheme();
   const [searchQuery, setSearchQuery] = useState('');
@@ -73,6 +82,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   // Use toolsets from props (already loaded with status)
   const toolsets = toolsetsProp as ToolsetWithStatus[];
   const loading = loadingProp;
+  const normalizedActiveToolsetTypes = activeToolsetTypes.map(normalizeToolsetTypeKey);
 
   // Track OAuth window reference
   const oauthWindowRef = useRef<Window | null>(null);
@@ -234,6 +244,10 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
           const toolsetKey = `toolset-${(toolset as any).instanceId || toolset.name.toLowerCase()}`;
           const isExpanded = expandedApps[toolsetKey];
           const needsConfiguration = !toolset.isConfigured || !toolset.isAuthenticated;
+          const normalizedToolsetType = normalizeToolsetTypeKey(
+            (toolset as any).toolsetType || toolset.name || ''
+          );
+          const hasTypeAlreadyInFlow = normalizedActiveToolsetTypes.includes(normalizedToolsetType);
           
           // Create drag data for entire toolset
           const toolsetDragData = {
@@ -272,6 +286,13 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
             });
           };
 
+          const handleDuplicateTypeDragAttempt = () => {
+            setSnackbar({
+              open: true,
+              message: `Only one ${formatToolsetTypeLabel((toolset as any).toolsetType || toolset.name)} instance can be added to the flow at a time.`,
+            });
+          };
+
           // Single instance - render directly
           return (
             <SidebarCategory
@@ -281,13 +302,23 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
               itemCount={toolset.tools.length}
               isExpanded={isExpanded}
               onToggle={() => onAppToggle(toolsetKey)}
-              dragType={needsConfiguration ? undefined : `toolset-${toolset.name.toLowerCase()}`}
-              dragData={needsConfiguration ? undefined : toolsetDragData}
+              dragType={
+                needsConfiguration || hasTypeAlreadyInFlow
+                  ? undefined
+                  : `toolset-${toolset.name.toLowerCase()}`
+              }
+              dragData={needsConfiguration || hasTypeAlreadyInFlow ? undefined : toolsetDragData}
               borderColor={theme.palette.divider}
               showConfigureIcon={needsConfiguration}
               showAuthenticatedIndicator={!needsConfiguration && toolset.isAuthenticated}
               onConfigureClick={needsConfiguration ? () => handleConfigureClick(toolset) : undefined}
-              onDragAttempt={needsConfiguration ? handleUnconfiguredDragAttempt : undefined}
+              onDragAttempt={
+                hasTypeAlreadyInFlow
+                  ? handleDuplicateTypeDragAttempt
+                  : needsConfiguration
+                  ? handleUnconfiguredDragAttempt
+                  : undefined
+              }
             >
               <Box
                 sx={{
@@ -372,6 +403,10 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                   const toolsetKey = `toolset-${instanceId}`;
                   const isExpanded = expandedApps[toolsetKey];
                   const needsConfiguration = !toolset.isConfigured || !toolset.isAuthenticated;
+                  const normalizedToolsetType = normalizeToolsetTypeKey(
+                    (toolset as any).toolsetType || toolset.name || ''
+                  );
+                  const hasTypeAlreadyInFlow = normalizedActiveToolsetTypes.includes(normalizedToolsetType);
 
                   // Create drag data for this instance
                   const toolsetDragData = {
@@ -409,6 +444,13 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                     });
                   };
 
+                  const handleDuplicateTypeDragAttempt = () => {
+                    setSnackbar({
+                      open: true,
+                      message: `Only one ${formatToolsetTypeLabel((toolset as any).toolsetType || toolset.name)} instance can be added to the flow at a time.`,
+                    });
+                  };
+
                   return (
                     <SidebarCategory
                       key={instanceId}
@@ -417,13 +459,23 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                       itemCount={toolset.tools.length}
                       isExpanded={isExpanded}
                       onToggle={() => onAppToggle(toolsetKey)}
-                      dragType={needsConfiguration ? undefined : `toolset-${instanceId}`}
-                      dragData={needsConfiguration ? undefined : toolsetDragData}
+                      dragType={
+                        needsConfiguration || hasTypeAlreadyInFlow
+                          ? undefined
+                          : `toolset-${instanceId}`
+                      }
+                      dragData={needsConfiguration || hasTypeAlreadyInFlow ? undefined : toolsetDragData}
                       borderColor={theme.palette.divider}
                       showConfigureIcon={needsConfiguration}
                       showAuthenticatedIndicator={!needsConfiguration && toolset.isAuthenticated}
                       onConfigureClick={needsConfiguration ? () => handleConfigureClick(toolset) : undefined}
-                      onDragAttempt={needsConfiguration ? handleUnconfiguredDragAttempt : undefined}
+                      onDragAttempt={
+                        hasTypeAlreadyInFlow
+                          ? handleDuplicateTypeDragAttempt
+                          : needsConfiguration
+                          ? handleUnconfiguredDragAttempt
+                          : undefined
+                      }
                     >
                       <Box
                         sx={{

@@ -839,7 +839,7 @@ async def _create_or_update_toolset_oauth_config(
                     await config_service.set_config(path, oauth_configs)
                     return oauth_config_id
             # Not found - fall through to create
-            logger.warning(f"OAuth config {oauth_config_id} not found for {toolset_type}, creating new one")
+            logger.warning(f"OAuth config not found for {toolset_type}, creating new one")
 
         # Create new OAuth config
         enriched = await _prepare_toolset_auth_config(
@@ -1185,7 +1185,7 @@ async def create_toolset_instance(
                         base_url = DEFAULT_BASE_URL
                 else:
                     base_url = DEFAULT_BASE_URL
-                logger.info(f"Resolved base_url for OAuth: {base_url}")
+                logger.debug(f"Resolved base_url for OAuth: {base_url}")
             except Exception as e:
                 logger.warning(f"Failed to resolve frontend endpoint from config: {e}. Using default: {DEFAULT_BASE_URL}")
                 base_url = DEFAULT_BASE_URL
@@ -1200,7 +1200,7 @@ async def create_toolset_instance(
                     detail=f"OAuth configuration '{oauth_config_id_from_body}' not found."
                 )
             oauth_config_id = oauth_config_id_from_body
-            logger.info(f"Using existing OAuth config {oauth_config_id} for instance {instance_name}")
+            logger.debug(f"Using existing OAuth config {oauth_config_id} for instance {instance_name}")
 
         # Case 2: Create new OAuth config (if credentials provided)
         else:
@@ -1228,7 +1228,7 @@ async def create_toolset_instance(
             # Check if actual credentials (not just infrastructure fields) are provided
             if _has_oauth_credentials(auth_config):
                 credential_fields = [k for k in auth_config if k not in OAUTH_INFRASTRUCTURE_FIELDS]
-                logger.info(
+                logger.debug(
                     f"Creating OAuth config '{oauth_app_name}' for instance '{instance_name}' "
                     f"with credential fields: {credential_fields}"
                 )
@@ -1245,7 +1245,7 @@ async def create_toolset_instance(
                 )
 
                 if oauth_config_id:
-                    logger.info(
+                    logger.debug(
                         f"Successfully created OAuth config (ID: {oauth_config_id}) "
                         f"for toolset instance '{instance_name}'"
                     )
@@ -1255,7 +1255,7 @@ async def create_toolset_instance(
                         f"Proceeding without OAuth config."
                     )
             else:
-                logger.info(
+                logger.debug(
                     f"No OAuth credentials provided for instance '{instance_name}'. "
                     f"Admin must configure OAuth credentials before users can authenticate."
                 )
@@ -1437,7 +1437,7 @@ async def _deauth_all_instance_users(
     try:
         user_keys = await config_service.list_keys_in_directory(prefix)
     except Exception as e:
-        logger.error(f"Could not list user auth keys for instance {instance_id}: {e}")
+        logger.error(f"Could not list user auth keys for instance: {e}")
         return 0
 
     if not user_keys:
@@ -1646,7 +1646,8 @@ async def delete_toolset_instance(
     try:
         # set_config will automatically invalidate cache for this path
         await config_service.set_config(instances_path, updated)
-        logger.info(f"Successfully deleted toolset instance {instance_id} ('{instance.get('instanceName', instance_id)}') from org {org_id}")
+        logger.debug(f"Successfully deleted toolset instance {instance_id} ('{instance.get('instanceName', instance_id)}') from org {org_id}")
+        logger.info("Toolset instance deleted successfully.")
     except Exception as e:
         logger.error(f"Failed to delete toolset instance from {instances_path}: {e}", exc_info=True)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.")
@@ -2267,7 +2268,7 @@ async def delete_toolset_oauth_config(
     try:
         await config_service.set_config(path, updated_configs)
     except Exception as e:
-        logger.error(f"Failed to delete OAuth config {oauth_config_id}: {e}")
+        logger.error(f"Failed to delete OAuth config: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete OAuth configuration.")
 
     return {"status": "success", "message": "OAuth configuration deleted successfully."}

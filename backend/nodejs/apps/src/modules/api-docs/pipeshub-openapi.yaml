@@ -14691,36 +14691,78 @@ paths:
                 systemPrompt:
                   type: string
                   description: System instructions for the agent
+                startMessage:
+                  type: string
+                  description: Initial greeting shown when conversation starts
                 instructions:
                   type: string
-                  nullable: true
-                  description: Optional additional instructions for the agent (e.g., always respond in French, use bullet points, focus on concise answers)
-                tools:
+                  description: Additional agent execution instructions
+                models:
                   type: array
+                  description: Agent model configuration entries
                   items:
-                    type: string
-                  description: Tool keys the agent can use
-                knowledgeBases:
+                    oneOf:
+                      - type: string
+                      - type: object
+                        properties:
+                          modelKey:
+                            type: string
+                          modelName:
+                            type: string
+                          provider:
+                            type: string
+                          isReasoning:
+                            type: boolean
+                toolsets:
                   type: array
+                  description: Toolsets attached to the agent (instance-aware)
                   items:
-                    type: string
-                    format: uuid
-                  description: Knowledge base IDs to access
-                modelConfig:
-                  type: object
-                  properties:
-                    modelKey:
-                      type: string
-                    temperature:
-                      type: number
-                      minimum: 0
-                      maximum: 2
-                    maxTokens:
-                      type: integer
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      displayName:
+                        type: string
+                      type:
+                        type: string
+                      instanceId:
+                        type: string
+                        description: Admin-created toolset instance ID
+                      instanceName:
+                        type: string
+                        description: Human-friendly instance name
+                      tools:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            fullName:
+                              type: string
+                            description:
+                              type: string
+                knowledge:
+                  type: array
+                  description: Knowledge sources connected to the agent
+                  items:
+                    type: object
+                    properties:
+                      connectorId:
+                        type: string
+                      filters:
+                        oneOf:
+                          - type: object
+                            additionalProperties: true
+                          - type: string
                 isPublic:
                   type: boolean
                   default: false
                   description: Make agent available to all org users
+                shareWithOrg:
+                  type: boolean
+                  default: false
+                  description: Share agent with the organization
       responses:
         '201':
           description: Agent created
@@ -14828,22 +14870,66 @@ paths:
                   type: string
                 systemPrompt:
                   type: string
+                startMessage:
+                  type: string
                 instructions:
                   type: string
-                  nullable: true
-                  description: Optional additional instructions for the agent (e.g., always respond in French, use bullet points, focus on concise answers)
-                tools:
+                models:
                   type: array
                   items:
-                    type: string
-                knowledgeBases:
+                    oneOf:
+                      - type: string
+                      - type: object
+                        properties:
+                          modelKey:
+                            type: string
+                          modelName:
+                            type: string
+                          provider:
+                            type: string
+                          isReasoning:
+                            type: boolean
+                toolsets:
                   type: array
                   items:
-                    type: string
-                    format: uuid
-                modelConfig:
-                  type: object
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      displayName:
+                        type: string
+                      type:
+                        type: string
+                      instanceId:
+                        type: string
+                      instanceName:
+                        type: string
+                      tools:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            fullName:
+                              type: string
+                            description:
+                              type: string
+                knowledge:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      connectorId:
+                        type: string
+                      filters:
+                        oneOf:
+                          - type: object
+                            additionalProperties: true
+                          - type: string
                 isPublic:
+                  type: boolean
+                shareWithOrg:
                   type: boolean
       responses:
         '200':

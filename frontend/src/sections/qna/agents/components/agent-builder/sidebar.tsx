@@ -45,6 +45,7 @@ interface FlowBuilderSidebarProps {
   toolsets: any[]; // Pre-loaded toolsets with status
   refreshToolsets: () => Promise<void>; // Refresh toolsets after OAuth
   isBusiness: boolean;
+  activeToolsetTypes?: string[];
   userId?: string; // For toolsets section
 }
 
@@ -59,6 +60,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   toolsets,
   refreshToolsets,
   isBusiness,
+  activeToolsetTypes = [],
   userId = '',
 }) => {
   const theme = useTheme();
@@ -382,6 +384,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                         refreshToolsets={refreshToolsets}
                         loading={loading}
                         isBusiness={isBusiness}
+                        activeToolsetTypes={activeToolsetTypes}
                       />
                     ) : config.name === 'LLM Models' ? (
                       <List dense sx={{ py: 0 }}>

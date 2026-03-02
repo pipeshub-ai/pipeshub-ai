@@ -16,6 +16,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   toolsets,
   refreshToolsets,
   isBusiness,
+  activeToolsetTypes = [],
   nodes,
   edges,
   onNodesChange,
@@ -61,6 +62,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
         toolsets={toolsets}
         refreshToolsets={refreshToolsets}
         isBusiness={isBusiness}
+        activeToolsetTypes={activeToolsetTypes}
       />
     </Box>
 

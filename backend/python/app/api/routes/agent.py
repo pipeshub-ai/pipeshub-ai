@@ -2205,7 +2205,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 """
                 instance_id = toolset.get("instanceId")
                 toolset_name = toolset.get("name", "")
-                lookup_key = instance_id if instance_id else toolset_name
+                lookup_key = instance_id
                 try:
                     etcd_path = get_toolset_config_path(lookup_key, executing_user_id)
                     config = await services["config_service"].get_config(etcd_path)
@@ -2224,7 +2224,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             for toolset, config in fetch_results:
                 instance_id = toolset.get("instanceId")
                 toolset_name = toolset.get("name", "")
-                lookup_key = instance_id if instance_id else toolset_name
+                lookup_key = instance_id
                 display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
 
                 if config and config.get("isAuthenticated", False):

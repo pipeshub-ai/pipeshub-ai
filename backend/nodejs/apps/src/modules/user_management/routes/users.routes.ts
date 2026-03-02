@@ -327,11 +327,14 @@ export function createUserRouter(container: Container) {
           type: 'admin',
           isDeleted: false,
         }).select('users');
+        type AdminGroupUsers = {
+          users?: Array<{ toString: () => string }>;
+        };
 
         const adminUserIds = [
           ...new Set(
-            adminGroups.flatMap((group: any) =>
-              (group.users || []).map((id: any) => id.toString()),
+            adminGroups.flatMap((group: AdminGroupUsers) =>
+              (group.users || []).map((id) => id.toString()),
             ),
           ),
         ];
