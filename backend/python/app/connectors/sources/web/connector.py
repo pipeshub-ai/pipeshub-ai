@@ -4,6 +4,7 @@ import hashlib
 import random
 import re
 import uuid
+from dataclasses import dataclass
 from io import BytesIO
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
@@ -59,6 +60,21 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+@dataclass
+class RecordUpdate:
+    """Track updates to a record"""
+    record: Optional[FileRecord]
+    is_new: bool
+    is_updated: bool
+    is_deleted: bool
+    metadata_changed: bool
+    content_changed: bool
+    permissions_changed: bool
+    old_permissions: Optional[List[Permission]] = None
+    new_permissions: Optional[List[Permission]] = None
+    external_record_id: Optional[str] = None
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
@@ -587,16 +603,22 @@ class WebConnector(BaseConnector):
     async def _crawl_single_page(self, url: str) -> None:
         """Crawl a single page and index it."""
         try:
-            file_record, permissions = await self._fetch_and_process_url(url, depth=0)
+            record_update = await self._fetch_and_process_url(url, depth=0)
 
             self.visited_urls.add(self._normalize_url(url))
 
+            if record_update is None:
+                return
+            file_record = record_update.record
             if file_record:
-                webpages_disabled = file_record.mime_type == MimeTypes.HTML.value and not self.indexing_filters.is_enabled(IndexingFilterKey.WEBPAGES, default=True)
-                if webpages_disabled:
+                is_disabled = self._check_index_filter(file_record)
+                if is_disabled:
                     file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-                await self.data_entities_processor.on_new_records([(file_record, permissions)])
+                if record_update.is_updated:
+                    await self._handle_record_updates(record_update)
+                elif record_update.is_new:
+                    await self.data_entities_processor.on_new_records([(record_update.record, record_update.new_permissions)])
                 self.logger.info(f"✅ Indexed single page: {url}")
 
         except Exception as e:
@@ -607,14 +629,19 @@ class WebConnector(BaseConnector):
         try:
             batch_records: List[Tuple[FileRecord, List[Permission]]] = []
 
-            async for file_record, permissions in self._crawl_recursive_generator(start_url, depth):
-                batch_records.append((file_record, permissions))
+            async for record_update in self._crawl_recursive_generator(start_url, depth):
 
-                # Process batch when it reaches the size limit
-                if len(batch_records) >= self.batch_size:
-                    await self.data_entities_processor.on_new_records(batch_records)
-                    self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
-                    batch_records.clear()
+                if record_update.is_updated:
+                    await self._handle_record_updates(record_update)
+                    continue
+                elif record_update.is_new:
+                    batch_records.append((record_update.record, record_update.new_permissions))
+
+                    # Process batch when it reaches the size limit
+                    if len(batch_records) >= self.batch_size:
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
+                        batch_records.clear()
 
             # Process remaining batch
             if batch_records:
@@ -657,26 +684,19 @@ class WebConnector(BaseConnector):
 
             try:
                 # Fetch and process the page with referer
-                file_record_with_permissions = await self._fetch_and_process_url(
+                record_update = await self._fetch_and_process_url(
                     current_url, current_depth, referer=referer
                 )
 
-                if file_record_with_permissions is None:
+                if record_update is None:
                     continue
 
-                file_record, permissions = file_record_with_permissions
+                file_record = record_update.record
 
                 if file_record:
                     self.visited_urls.add(normalized_url)
 
-                    mime_type = file_record.mime_type
-                    is_disabled = False
-                    if mime_type == MimeTypes.HTML.value:
-                        is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.WEBPAGES, default=True)
-                    elif mime_type in DOCUMENT_MIME_TYPES:
-                        is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS, default=True)
-                    elif mime_type in IMAGE_MIME_TYPES:
-                        is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
+                    is_disabled = self._check_index_filter(file_record)
 
                     if is_disabled:
                         file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
@@ -696,7 +716,7 @@ class WebConnector(BaseConnector):
                             ):
                                 queue.append((link, current_depth + 1, current_url))
 
-                    yield (file_record, permissions)
+                    yield record_update
 
             except Exception as e:
                 self.logger.warning(f"⚠️ Failed to process {current_url}: {e}")
@@ -708,8 +728,8 @@ class WebConnector(BaseConnector):
 
     async def _fetch_and_process_url(
         self, url: str, depth: int, referer: Optional[str] = None
-    ) -> Optional[Tuple[FileRecord, List[Permission]]]:
-        """Fetch URL content using multi-strategy fallback and create a FileRecord."""
+    ) -> Optional[RecordUpdate]:
+        """Fetch URL content using multi-strategy fallback and create a RecordUpdate."""
         try:
 
             result = await fetch_url_with_fallback(
@@ -727,6 +747,12 @@ class WebConnector(BaseConnector):
                 # Already logged inside fetch_url_with_fallback
                 return None
 
+            is_new = False
+            is_updated = False
+            is_deleted = False
+            metadata_changed = False
+            content_changed = False
+
             content_type = result.headers.get("Content-Type", "").lower()
             final_url = result.final_url
             content_bytes = result.content_bytes
@@ -741,8 +767,14 @@ class WebConnector(BaseConnector):
             external_id = final_url
 
             # Generate unique ID
-            record_id = str(uuid.uuid4())
+            record_id = None
             external_id = final_url
+
+            existing_record = await self.data_entities_processor.get_record_by_external_id(connector_id=self.connector_id, external_record_id=external_id)
+            if existing_record:
+                record_id = existing_record.id
+            else:
+                record_id = str(uuid.uuid4())
 
             # Get title and clean content for HTML
             title = self._extract_title_from_url(final_url)
@@ -780,9 +812,19 @@ class WebConnector(BaseConnector):
                     parsed = urlparse(final_url)
                     title = parsed.netloc or final_url
 
+            if existing_record:
+                if existing_record.record_name != title:
+                    metadata_changed = True
+                if existing_record.external_revision_id != content_md5_hash:
+                    content_changed = True
+                is_updated = metadata_changed or content_changed
+            else:
+                is_new = True
+
             # Create FileRecord
             file_record = FileRecord(
                 id=record_id,
+                org_id=self.data_entities_processor.org_id,
                 record_name=title,
                 record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.WEB,
@@ -816,12 +858,23 @@ class WebConnector(BaseConnector):
                 )
             ]
 
+            record_update = RecordUpdate(
+                record=file_record,
+                is_new=is_new,
+                is_updated=is_updated,
+                is_deleted=is_deleted,
+                metadata_changed=metadata_changed,
+                content_changed=content_changed,
+                permissions_changed=False,
+                new_permissions=permissions,
+            )
+
             self.logger.debug(
                 "✅ Processed: %s (%s, %s bytes) via %s",
                 title, mime_type.value, size_in_bytes, result.strategy
             )
 
-            return file_record, permissions
+            return record_update
 
         except asyncio.TimeoutError:
             self.logger.warning(f"⚠️ Timeout fetching {url}")
@@ -829,6 +882,15 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error fetching {url}: {e}", exc_info=True)
             return None
+
+    async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
+        """Handle record updates."""
+        if record_update.is_deleted:
+            await self.data_entities_processor.on_record_deleted(record_update.record.id)
+        if record_update.metadata_changed:
+            await self.data_entities_processor.on_record_metadata_update(record_update.record)
+        if record_update.content_changed:
+            await self.data_entities_processor.on_record_content_update(record_update.record)
 
     async def _extract_links_from_content(
         self, base_url: str, file_record: FileRecord, referer: Optional[str] = None
@@ -865,6 +927,20 @@ class WebConnector(BaseConnector):
             self.logger.warning(f"⚠️ Failed to extract links from {base_url}: {e}")
 
         return links
+
+    def _check_index_filter(self, record: Record) -> bool:
+        """Check if the record should be indexed."""
+        mime_type = record.mime_type
+        is_disabled = False
+
+        if mime_type == MimeTypes.HTML.value:
+            is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.WEBPAGES, default=True)
+        elif mime_type in DOCUMENT_MIME_TYPES:
+            is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS, default=True)
+        elif mime_type in IMAGE_MIME_TYPES:
+            is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
+
+        return is_disabled
 
     def _is_valid_url(self, url: str, base_url: str) -> bool:
         """Check if a URL should be crawled."""
