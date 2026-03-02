@@ -15710,10 +15710,11 @@ paths:
   /toolsets/{toolsetId}/reauthenticate:
     post:
       tags:
-        - Toolset Configuration
+        - Toolset Instances
       summary: Reauthenticate toolset
       description: |
-        Reauthenticate a toolset instance, refreshing its credentials or triggering a new auth flow.
+        Clear toolset OAuth credentials and mark as unauthenticated, requiring re-authentication.<br><br>
+        Only applicable to OAuth-configured toolsets.
       operationId: reauthenticateToolset
       security:
         - bearerAuth: []
@@ -18119,7 +18120,7 @@ paths:
         - oauth2: [crawl:read]
       responses:
         '200':
-          description: All job statuses retrieved
+          description: All job statuses retrieved successfully
           content:
             application/json:
               schema:
@@ -18132,7 +18133,7 @@ paths:
                     items:
                       $ref: '#/components/schemas/JobStatus'
         '401':
-          description: Unauthorized
+          description: Unauthorized - Valid JWT token required
 
     delete:
       tags:
@@ -18148,7 +18149,7 @@ paths:
         - oauth2: [crawl:delete]
       responses:
         '200':
-          description: All crawling jobs removed
+          description: All crawling jobs removed successfully
           content:
             application/json:
               schema:

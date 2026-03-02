@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator
 if TYPE_CHECKING:
     pass
 
-
 class Point(BaseModel):
     x: float
     y: float
@@ -51,6 +50,7 @@ class BlockSubType(str, Enum):
     EQUATION = "equation"
     DIVIDER = "divider"
     LINK = "link"
+    COMMIT = "commit"
 
 class DataFormat(str, Enum):
     TXT = "txt"
@@ -63,6 +63,9 @@ class DataFormat(str, Enum):
     YAML = "yaml"
     BASE64 = "base64"
     UTF8 = "utf8"
+    PATCH = "patch"
+    DIFF = "diff"
+    CODE = "code"
 
 class CommentAttachment(BaseModel):
     """Attachment model for comments"""
@@ -220,6 +223,8 @@ class GroupType(str, Enum):
     TEXT_SECTION = "text_section"
     LIST = "list"
     TABLE = "table"
+    COMMITS = "commits"
+    PATCH = "patch"
     SHEET = "sheet"
     FORM_AREA = "form_area"
     INLINE = "inline"
@@ -231,6 +236,7 @@ class GroupType(str, Enum):
     # Do not use these types as currently not supported
     CODE = "code"
     MEDIA = "media"
+    FULL_CODE_PATCH = "full_code_patch"
 
 class GroupSubType(str, Enum):
     MILESTONE = "milestone" # Milestone block group
@@ -247,6 +253,7 @@ class GroupSubType(str, Enum):
     QUOTE = "quote"
     SYNCED_BLOCK = "synced_block"
     NESTED_BLOCK = "nested_block"  # Generic wrapper for blocks with children
+    PR_FILE_CHANGE = "pr_file_change"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
@@ -416,7 +423,7 @@ class BlockGroup(BaseModel):
     index: int = None
     name: Optional[str] = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
-    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, project_content)")
+    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, content)")
     parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
     description: Optional[str] = Field(description="Description of the block group",default=None)
     source_group_id: Optional[str] = Field(description="Source group identifier",default=None)
@@ -471,6 +478,7 @@ class BlockGroup(BaseModel):
     format: Optional[DataFormat] = None
     weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the original source context (e.g., Linear project page). This will be used as primary webUrl in citations for all generated blocks")
     comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
+    source_modified_date: Optional[datetime] = None
 
 class BlockGroups(BaseModel):
     block_groups: List[BlockGroup] = Field(default_factory=list)
