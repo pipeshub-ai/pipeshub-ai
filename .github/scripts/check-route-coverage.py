@@ -70,6 +70,15 @@ EXCLUDE_PATH_PREFIXES = [
     "/query/",
 ]
 
+# Python service prefixes that must NOT appear in the OpenAPI spec.
+# These services have their own specs; adding them here is an error.
+PYTHON_SERVICE_PREFIXES = [
+    "/indexing/",
+    "/docling/",
+    "/connector/",
+    "/query/",
+]
+
 # =====================================================================
 # REGEX PATTERNS
 # =====================================================================
@@ -388,27 +397,42 @@ def main() -> int:
     all_spec_routes = parse_openapi_spec(SPEC_PATH)
     print(f"  Found {len(all_spec_routes)} routes in spec")
 
-    # 2. Parse Express routes (auto-discovered)
+    # 2. Check for Python service routes that don't belong in the spec
+    python_in_spec: Set[Tuple[str, str]] = set()
+    for method, path in all_spec_routes:
+        for prefix in PYTHON_SERVICE_PREFIXES:
+            if path.startswith(prefix):
+                python_in_spec.add((method, path))
+                break
+
+    if python_in_spec:
+        print(f"\n  PYTHON SERVICE ROUTES IN SPEC ({len(python_in_spec)} found):")
+        for method, path in sorted(python_in_spec, key=lambda r: (r[1], r[0])):
+            print(f"    {method:7} {path}")
+        print("  These belong to Python microservices which are internal services and should not be in "
+              "the OpenAPI spec.")
+
+    # 3. Parse Express routes (auto-discovered)
     print("\nParsing Express routes (auto-discovery)...")
     express_routes_raw, express_sources = parse_express_routes()
     express_routes = {r for r in express_routes_raw if not should_exclude(*r)}
     print(f"  Found {len(express_routes)} public routes "
           f"({len(express_routes_raw) - len(express_routes)} excluded)")
 
-    # 3. All code routes (Python services excluded via EXCLUDE_PATH_PREFIXES)
+    # 4. All code routes (Python services excluded via EXCLUDE_PATH_PREFIXES)
     all_code_routes = express_routes
 
-    # 4. Filter spec routes to exclude internal/health/docs/etc.
+    # 5. Filter spec routes to exclude internal/health/docs/etc.
     spec_filtered = {r for r in all_spec_routes if not should_exclude(*r)}
 
-    # 5. Compare
+    # 6. Compare
     missing, phantom, covered = compare_routes(spec_filtered, all_code_routes)
 
-    # 6. Remove known discrepancies from missing count
+    # 7. Remove known discrepancies from missing count
     known_in_missing = missing & KNOWN_MISSING
     actionable_missing = missing - KNOWN_MISSING
 
-    # 7. Report
+    # 8. Report
     print(f"\n{'='*70}")
     print("RESULTS")
     print(f"{'='*70}")
@@ -431,7 +455,12 @@ def main() -> int:
         for method, path in sorted(known_in_missing, key=lambda r: (r[1], r[0])):
             print(f"    {method:7} {path}")
 
-    # 8. Exit code
+    # 9. Exit code
+    if python_in_spec:
+        print(f"\nWARNING: {len(python_in_spec)} Python service route(s) found "
+              "in the OpenAPI spec. These services have their own specs and "
+              "should be removed from the Node.js OpenAPI spec.")
+
     if actionable_missing:
         print(f"\nFAILED: {len(actionable_missing)} route(s) in code are not "
               "documented in the OpenAPI spec.")
