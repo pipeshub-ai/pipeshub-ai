@@ -45,11 +45,6 @@ import {
   updateAgent,
   updateAgentTemplate,
   listAgents,
-  getAvailableTools,
-  shareAgent,
-  unshareAgent,
-  updateAgentPermissions,
-  getAgentPermissions,
   regenerateAgentAnswers,
   streamChatInternal,
   addMessageStreamInternal,
@@ -655,46 +650,6 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
     listAgents(appConfig),
-  );
-
-  router.get(
-    '/tools/list',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    getAvailableTools(appConfig),
-  );
-
-  router.get(
-    '/:agentKey/permissions',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_READ),
-    metricsMiddleware(container),
-    getAgentPermissions(appConfig),
-  );
-
-  router.post(
-    '/:agentKey/share',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    shareAgent(appConfig),
-  );
-
-  router.post(
-    '/:agentKey/unshare',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    unshareAgent(appConfig),
-  );
-
-  router.put(
-    '/:agentKey/permissions',
-    authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.AGENT_WRITE),
-    metricsMiddleware(container),
-    updateAgentPermissions(appConfig),
   );
 
   return router;

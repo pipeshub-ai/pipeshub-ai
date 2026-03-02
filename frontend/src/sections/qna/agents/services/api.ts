@@ -10,7 +10,6 @@ import type {
   AgentStats,
   ConnectorInstance,
 } from 'src/types/agent';
-import { KBPermission } from 'src/sections/knowledgebase/types/kb';
 
 export interface PaginationParams {
   page?: number;
@@ -112,19 +111,6 @@ class AgentApiService {
 
   static async deleteAgent(agentKey: string): Promise<void> {
     await axios.delete(`${this.baseUrl}/${agentKey}`);
-  }
-
-  static async duplicateAgent(agentKey: string, newName: string): Promise<Agent> {
-    const response = await axios.post(`${this.baseUrl}/${agentKey}/duplicate`, { name: newName });
-    return response.data.agent;
-  }
-
-  static async shareAgent(
-    agentKey: string,
-    userIds: string[],
-    permissions: string[]
-  ): Promise<void> {
-    await axios.post(`${this.baseUrl}/${agentKey}/share`, { userIds, permissions });
   }
 
   // Agent Template CRUD Operations
@@ -283,11 +269,6 @@ class AgentApiService {
   static async getAvailableModels(): Promise<string[]> {
     const response = await axios.get(`/api/v1/configurationManager/ai-models/available/llm`);
     return response.data.models;
-  }
-
-  static async getAvailableTools(): Promise<ToolData[]> {
-    const response = await axios.get(`/api/v1/agents/tools/list`);
-    return response.data; // This should be the array from the first document
   }
 
   static async getKnowledgeBases(params?: {
@@ -454,19 +435,6 @@ class AgentApiService {
   }
 
   /**
-   * Get tool details by full name
-   */
-  static async getToolDetails(toolFullName: string): Promise<ToolData | null> {
-    try {
-      const tools = await this.getAvailableTools();
-      return tools.find((tool) => tool.full_name === toolFullName) || null;
-    } catch (error) {
-      console.error('Error getting tool details:', error);
-      return null;
-    }
-  }
-
-  /**
    * Get knowledge base details by ID
    */
   static async getKnowledgeBaseDetails(kbId: string): Promise<KnowledgeBase | null> {
@@ -495,33 +463,6 @@ class AgentApiService {
     }
   }
 
-  /**
-   * Get tools grouped by application
-   */
-  static async getToolsByApplication(): Promise<Record<string, ToolData[]>> {
-    try {
-      const tools = await this.getAvailableTools();
-      return tools.reduce(
-        (acc, tool) => {
-          if (!acc[tool.app_name]) {
-            acc[tool.app_name] = [];
-          }
-          acc[tool.app_name].push(tool);
-          return acc;
-        },
-        {} as Record<string, ToolData[]>
-      );
-    } catch (error) {
-      console.error('Error getting tools by application:', error);
-      return {};
-    }
-  }
-
-  static async listAgentPermissions(agentId: string): Promise<KBPermission[]> {
-    const response = await axios.get(`/api/v1/agents/${agentId}/permissions`);
-    return response.data.permissions;
-  }
-  
 }
 
 export default AgentApiService;
