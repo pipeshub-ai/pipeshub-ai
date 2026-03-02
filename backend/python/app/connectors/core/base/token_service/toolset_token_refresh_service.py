@@ -752,7 +752,7 @@ class ToolsetTokenRefreshService:
                         f"for toolset {config_path} (allows previous verification to complete)"
                     )
                     await asyncio.sleep(pre_write_delay)
-                
+
                 try:
                     success = await self.configuration_service.set_config(config_path, config)
 
@@ -764,7 +764,7 @@ class ToolsetTokenRefreshService:
                             )
                         else:
                             self.logger.info(f"💾 Updated stored credentials for toolset {config_path}")
-                        
+
                         # Add small delay after successful write to ensure verification completes
                         # This prevents interference if another operation starts immediately
                         await asyncio.sleep(0.05)
