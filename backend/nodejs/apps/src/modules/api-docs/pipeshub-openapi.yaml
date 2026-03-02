@@ -6031,6 +6031,13 @@ paths:
                     example: "Password reset successfully"
         '400':
           description: Invalid current password or weak new password
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '401':
           description: Unauthorized
 
@@ -6177,6 +6184,13 @@ paths:
       responses:
         '200':
           description: Auth configuration set up successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -6264,8 +6278,22 @@ paths:
           description: Redirect to application with authentication tokens
         '401':
           description: SAML authentication failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         '400':
           description: Invalid SAML response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
 
   /users:
     get:
@@ -7358,8 +7386,6 @@ paths:
           application/json:
             schema:
               type: object
-              required:
-                - ids
               properties:
                 ids:
                   type: array
@@ -7414,6 +7440,13 @@ paths:
       responses:
         '200':
           description: Full name updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -7451,6 +7484,13 @@ paths:
       responses:
         '200':
           description: First name updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -7488,6 +7528,13 @@ paths:
       responses:
         '200':
           description: Last name updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -7525,6 +7572,13 @@ paths:
       responses:
         '200':
           description: Designation updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -7552,6 +7606,13 @@ paths:
       responses:
         '200':
           description: User is an admin
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -8031,6 +8092,43 @@ paths:
           description: Unauthorized - Valid authentication required
 
   /teams/{teamId}/users:
+    get:
+      tags:
+        - Teams
+      summary: Get users in team
+      deprecated: true
+      description: |
+        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+        Retrieve all users that belong to a specific team.
+      operationId: getTeamUsers
+      security:
+        - bearerAuth: []
+        - oauth2: [team:read]
+      parameters:
+        - name: teamId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Team users retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          description: Unauthorized
+        '404':
+          description: Team not found
+
     post:
       tags:
         - Teams
@@ -8064,6 +8162,13 @@ paths:
       responses:
         '200':
           description: Users added to team successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -8100,6 +8205,13 @@ paths:
       responses:
         '200':
           description: User removed from team successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -8134,6 +8246,13 @@ paths:
       responses:
         '200':
           description: Permissions updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -9250,7 +9369,7 @@ paths:
         '404':
           description: User not found
 
-  /userGroups/{groupId}/users:
+  /user-groups/{groupId}/users:
     get:
       tags:
         - User Groups
@@ -9289,7 +9408,7 @@ paths:
         '404':
           description: Group not found
 
-  /userGroups/stats/list:
+  /user-groups/stats/list:
     get:
       tags:
         - User Groups
@@ -9434,6 +9553,13 @@ paths:
       responses:
         '200':
           description: Document uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '400':
           description: Invalid file or missing required fields
         '401':
@@ -9462,6 +9588,13 @@ paths:
       responses:
         '200':
           description: Placeholder document created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
 
@@ -9517,6 +9650,13 @@ paths:
       responses:
         '200':
           description: Document deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -9554,6 +9694,13 @@ paths:
       responses:
         '200':
           description: New version uploaded successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -9578,9 +9725,25 @@ paths:
           required: true
           schema:
             type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  type: integer
+                  description: Version number to roll back to
       responses:
         '200':
           description: Document rolled back successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -9639,6 +9802,13 @@ paths:
       requestBody:
         required: true
         content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
           application/octet-stream:
             schema:
               type: string
@@ -9646,6 +9816,13 @@ paths:
       responses:
         '200':
           description: Document buffer updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -9671,7 +9848,6 @@ paths:
           schema:
             type: string
       requestBody:
-        required: true
         content:
           multipart/form-data:
             schema:
@@ -9683,6 +9859,13 @@ paths:
       responses:
         '200':
           description: Document uploaded directly
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -11458,6 +11641,7 @@ paths:
           required: true
           schema:
             type: string
+            format: uuid
         - name: recordId
           in: path
           required: true
@@ -11473,6 +11657,13 @@ paths:
       responses:
         '200':
           description: Record moved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -12712,13 +12903,22 @@ paths:
                   type: array
                   items:
                     type: string
+                    format: objectId
                 teamIds:
                   type: array
                   items:
                     type: string
+                    format: objectId
       responses:
         '200':
           description: Conversation unshared successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -12895,6 +13095,7 @@ paths:
           description: Unique search identifier
           schema:
             type: string
+            format: objectId
       responses:
         '200':
           description: Search result details
@@ -12926,6 +13127,7 @@ paths:
           description: Unique search identifier
           schema:
             type: string
+            format: objectId
       responses:
         '200':
           description: Search deleted successfully
@@ -12962,6 +13164,20 @@ paths:
           description: Unique search identifier
           schema:
             type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userIds:
+                  type: array
+                  items:
+                    type: string
+                    format: objectId
       responses:
         '200':
           description: Search shared successfully
@@ -12998,6 +13214,20 @@ paths:
           description: Unique search identifier
           schema:
             type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userIds:
+                  type: array
+                  items:
+                    type: string
+                    format: objectId
       responses:
         '200':
           description: Search unshared successfully
@@ -13034,6 +13264,7 @@ paths:
           description: Unique search identifier
           schema:
             type: string
+            format: objectId
       responses:
         '200':
           description: Search archived successfully
@@ -13070,6 +13301,7 @@ paths:
           description: Unique search identifier
           schema:
             type: string
+            format: objectId
       responses:
         '200':
           description: Search unarchived successfully
@@ -14062,13 +14294,22 @@ paths:
                   type: array
                   items:
                     type: string
+                    format: objectId
                 teamIds:
                   type: array
                   items:
                     type: string
+                    format: objectId
       responses:
         '200':
           description: Agent unshared successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -14217,7 +14458,7 @@ paths:
       parameters:
         - name: scope
           in: query
-          required: true
+          required: false
           description: Filter by scope (team or personal)
           schema:
             $ref: '#/components/schemas/ConnectorScope'
@@ -15485,6 +15726,13 @@ paths:
       responses:
         '200':
           description: Reauthentication initiated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -16922,6 +17170,14 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - clientId
+                  - clientSecret
+                properties:
+                  clientId:
+                    type: string
+                  clientSecret:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -16948,6 +17204,13 @@ paths:
       responses:
         '200':
           description: Atlassian config saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -16972,6 +17235,17 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - clientId
+                  - clientSecret
+                  - tenantId
+                properties:
+                  clientId:
+                    type: string
+                  clientSecret:
+                    type: string
+                  tenantId:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -16998,6 +17272,13 @@ paths:
       responses:
         '200':
           description: OneDrive credentials saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17022,6 +17303,20 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - clientId
+                  - clientSecret
+                  - tenantId
+                  - sharepointDomain
+                properties:
+                  clientId:
+                    type: string
+                  clientSecret:
+                    type: string
+                  tenantId:
+                    type: string
+                  sharepointDomain:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17048,6 +17343,13 @@ paths:
       responses:
         '200':
           description: SharePoint credentials saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17101,6 +17403,13 @@ paths:
       responses:
         '200':
           description: Google Workspace credentials uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17125,6 +17434,14 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - clientId
+                  - clientSecret
+                properties:
+                  clientId:
+                    type: string
+                  clientSecret:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17151,6 +17468,13 @@ paths:
       responses:
         '200':
           description: Google Workspace OAuth config saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17172,9 +17496,14 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: object
+                type: object
+                properties:
+                  status:
+                    type: string
+                  configs:
+                    type: array
+                    items:
+                      type: object
         '401':
           description: Unauthorized
         '403':
@@ -17199,6 +17528,13 @@ paths:
       responses:
         '200':
           description: Slack bot config created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17230,6 +17566,13 @@ paths:
       responses:
         '200':
           description: Slack bot config updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17255,6 +17598,13 @@ paths:
       responses:
         '200':
           description: Slack bot config deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17288,6 +17638,13 @@ paths:
       responses:
         '200':
           description: Push interval updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17319,12 +17676,42 @@ paths:
       responses:
         '200':
           description: Server URL updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
           description: Forbidden - Admin access required
 
   /configurationManager/aiModelsConfig:
+    get:
+      tags:
+        - Configuration Manager
+      summary: Get AI models configuration
+      deprecated: true
+      description: |
+        <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
+        Retrieve the AI models configuration for the organization.
+      operationId: getAIModelsConfig
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: AI models config retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden - Admin access required
+
     post:
       tags:
         - Configuration Manager
@@ -17346,6 +17733,13 @@ paths:
       responses:
         '200':
           description: AI models config created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '403':
@@ -17755,6 +18149,13 @@ paths:
       responses:
         '200':
           description: All crawling jobs removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
 
@@ -17785,6 +18186,13 @@ paths:
       responses:
         '200':
           description: Crawling job paused
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
@@ -17817,6 +18225,13 @@ paths:
       responses:
         '200':
           description: Crawling job resumed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
         '401':
           description: Unauthorized
         '404':
