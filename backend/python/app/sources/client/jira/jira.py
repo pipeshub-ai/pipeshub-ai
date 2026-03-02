@@ -372,8 +372,6 @@ class JiraClient(IClient):
         if not toolset_config:
             raise ValueError("Toolset configuration is required")
 
-        logger.debug(f"Building Jira client from toolset config: {toolset_config}")
-
         credentials_config = toolset_config.get("credentials", {})
         is_authenticated = toolset_config.get("isAuthenticated", False)
 
