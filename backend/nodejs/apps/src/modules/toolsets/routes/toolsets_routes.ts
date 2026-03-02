@@ -85,6 +85,7 @@ const createToolsetSchema = z.object({
       apiToken: z.string().optional(),
       oauthAppId: z.string().optional(),
       scopes: z.array(z.string()).optional(),
+      tenantId: z.string().optional(),
     }),
     baseUrl: z.string().optional(),
   }),
@@ -102,6 +103,7 @@ const saveToolsetConfigSchema = z.object({
       apiToken: z.string().optional(),
       oauthAppId: z.string().optional(),
       scopes: z.array(z.string()).optional(),
+      tenantId: z.string().optional(),
     }),
     baseUrl: z.string().optional()
   }),
