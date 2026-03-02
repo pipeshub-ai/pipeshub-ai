@@ -2116,6 +2116,11 @@ class Slack:
 
                 response = await self.client.users_conversations(**kwargs)
                 slack_response = self._handle_slack_response(response)
+                if slack_response.success and isinstance(slack_response.data, dict):
+                    # Normalize: rename 'channels' → 'conversations' so placeholder
+                    # paths like {{…data.conversations[0].id}} resolve correctly.
+                    convs = slack_response.data.pop("channels", slack_response.data.pop("conversations", []))
+                    slack_response.data["conversations"] = convs
                 return (slack_response.success, slack_response.to_json())
 
             # Otherwise, fetch all conversations with pagination
@@ -2143,8 +2148,9 @@ class Slack:
                     # If subsequent page fails, return what we have
                     break
 
-                conversations = slack_response.data.get('channels', [])
-                all_conversations.extend(conversations)
+                # 'users.conversations' returns channels under the 'channels' key
+                page_convs = slack_response.data.get('channels', [])
+                all_conversations.extend(page_convs)
 
                 # Check for next page
                 response_metadata = slack_response.data.get('response_metadata', {})
@@ -2152,10 +2158,51 @@ class Slack:
                 if not next_cursor:
                     break
                 cursor = next_cursor
-                logger.debug(f"Fetched {len(conversations)} conversations for user, continuing pagination...")
+                logger.debug(f"Fetched {len(page_convs)} conversations for user, continuing pagination...")
 
             logger.info(f"✅ Fetched total {len(all_conversations)} conversations for authenticated user")
-            return (True, SlackResponse(success=True, data={"channels": all_conversations, "count": len(all_conversations)}).to_json())
+
+            # If no conversations found via users.conversations, attempt a fallback
+            # using conversations.list which returns all accessible channels
+            if not all_conversations:
+                logger.warning(
+                    "⚠️ users.conversations returned 0 results for user. "
+                    "Falling back to conversations.list to fetch accessible channels. "
+                    "Ensure the token has im:read, channels:read, groups:read, mpim:read scopes."
+                )
+                try:
+                    fallback_convs: list = []
+                    fallback_cursor = None
+                    while True:
+                        fb_kwargs: dict = {
+                            "types": conversation_types,
+                            "limit": 1000,
+                            "exclude_archived": False,
+                        }
+                        if fallback_cursor:
+                            fb_kwargs["cursor"] = fallback_cursor
+                        fb_response = await self.client.conversations_list(**fb_kwargs)
+                        fb_slack_response = self._handle_slack_response(fb_response)
+                        if not fb_slack_response.success or not fb_slack_response.data:
+                            break
+                        fb_page = fb_slack_response.data.get('channels', [])
+                        fallback_convs.extend(fb_page)
+                        fb_meta = fb_slack_response.data.get('response_metadata', {})
+                        fb_next = fb_meta.get('next_cursor') if isinstance(fb_meta, dict) else None
+                        if not fb_next:
+                            break
+                        fallback_cursor = fb_next
+                    if fallback_convs:
+                        logger.info(f"✅ Fallback conversations.list returned {len(fallback_convs)} channels")
+                        all_conversations = fallback_convs
+                    else:
+                        logger.warning("⚠️ Fallback conversations.list also returned 0 results")
+                except Exception as fb_err:
+                    logger.warning(f"⚠️ Fallback conversations.list failed: {fb_err}")
+
+            # Use 'conversations' as the key so placeholder paths like
+            # {{slack.get_user_conversations.data.conversations[0].id}} resolve correctly.
+            return (True, SlackResponse(success=True, data={"conversations": all_conversations, "count": len(all_conversations)}).to_json())
 
         except Exception as e:
             logger.error(f"Error in get_user_conversations: {e}")
