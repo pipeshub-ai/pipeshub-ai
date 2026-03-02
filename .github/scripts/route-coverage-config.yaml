@@ -7,14 +7,18 @@
 # When the Express mount path (after stripping /api/v1) differs from the
 # OpenAPI spec path prefix. Format: "/mount-segment": "/spec-segment"
 mount_to_spec_overrides:
-  "/userGroups": "/user-groups"
-  "/oauth2": "/oauth"
 
 # Inline middleware routes not using the factory pattern.
 # These are mounted directly in app.ts (e.g., raw proxies).
 # Format: path: [METHODS]
-inline_routes:
-  "/slack/events": ["POST"]
+inline_routes: {}
+
+# Internal service-to-service routes that use scoped token auth and should not
+# appear in the public OpenAPI spec. Format: [METHOD, path]
+internal_routes:
+  - ["POST", "/mail/emails/sendEmail"]
+  - ["POST", "/slack/events"]
+  - ["GET", "/users/email/exists"]
 
 # Known discrepancies between code and spec that are acceptable.
 # These are pre-existing issues that should be cleaned up over time.
