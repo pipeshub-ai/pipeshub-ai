@@ -14696,6 +14696,7 @@ paths:
                   description: Initial greeting shown when conversation starts
                 instructions:
                   type: string
+                  nullable: true
                   description: Additional agent execution instructions
                 models:
                   type: array
@@ -14874,6 +14875,7 @@ paths:
                   type: string
                 instructions:
                   type: string
+                  nullable: true
                 models:
                   type: array
                   items:

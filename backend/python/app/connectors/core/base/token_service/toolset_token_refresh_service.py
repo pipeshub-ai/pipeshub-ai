@@ -112,7 +112,7 @@ class ToolsetTokenRefreshService:
                     continue
 
                 # Find locks for paths that no longer exist
-                stale_locks = [path for path in self._toolset_locks.keys() if path not in current_paths]
+                stale_locks = [path for path in self._toolset_locks if path not in current_paths]
 
                 if stale_locks:
                     self.logger.info(f"🧹 Cleaning up {len(stale_locks)} stale toolset locks")
@@ -124,7 +124,7 @@ class ToolsetTokenRefreshService:
                             self.logger.debug(f"Removed stale lock for {path}")
 
                 # Clean up stale scheduling locks
-                stale_schedule_locks = [path for path in self._schedule_locks.keys() if path not in current_paths]
+                stale_schedule_locks = [path for path in self._schedule_locks if path not in current_paths]
                 if stale_schedule_locks:
                     self.logger.info(f"🧹 Cleaning up {len(stale_schedule_locks)} stale schedule locks")
                     for path in stale_schedule_locks:
