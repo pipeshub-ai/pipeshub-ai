@@ -16642,3 +16642,16 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error("❌ Failed to update agent template: %s", str(e))
             return False
+
+    async def get_app_creator_user(self, connector_id: str, transaction: Optional[str] = None) -> Optional[User]:
+        """
+        Get the creator user for an app by connectorId.
+        """
+        try:
+            app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
+            if app is None:
+                return None
+            return app.get("createdBy")
+        except Exception as e:
+            self.logger.error("❌ Failed to get app creator user: %s", str(e))
+            return None

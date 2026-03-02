@@ -224,10 +224,6 @@ start_nodejs() {
 }
 
 start_slackbot() {
-    if [ -z "$SLACK_SIGNING_SECRET" ] || [ -z "$BOT_TOKEN" ]; then
-        log "Slack bot not configured (SLACK_SIGNING_SECRET or BOT_TOKEN not set), skipping..."
-        return 0
-    fi
     log "Starting Slack Bot service..."
     cd /app/backend
     node dist/integrations/slack-bot/src/index.js &
