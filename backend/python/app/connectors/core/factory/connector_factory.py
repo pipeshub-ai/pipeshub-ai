@@ -18,6 +18,7 @@ from app.connectors.core.registry.connector import (
     SlidesConnector,
     ZendeskConnector,
 )
+from app.connectors.core.registry.connector_builder import SyncStrategy
 from app.connectors.core.sync.task_manager import sync_task_manager
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
@@ -232,7 +233,7 @@ class ConnectorFactory:
 
         if connector:
             try:
-                if sync_strategy and sync_strategy == "MANUAL":
+                if sync_strategy and sync_strategy == SyncStrategy.MANUAL.value:
                     logger.info(f"Skipping sync for {name} {connector_id} connector because selected strategy is MANUAL")
                 else:
                     await sync_task_manager.start_sync(connector_id, connector.run_sync())
