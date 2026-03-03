@@ -25,11 +25,11 @@ info:
     email: support@pipeshub.com
 
 servers:
-  - url: "{server_url}/api/v1"
+  - url: "{instance_url}/api/v1"
     description: Base API URL
     variables:
-      server_url:
-        default: http://localhost:3000
+      instance_url:
+        default: https://app.pipeshub.com
         description: Base server URL (without /api/v1)
 
 tags:
