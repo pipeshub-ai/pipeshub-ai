@@ -227,9 +227,7 @@ class ConnectorFactory:
         sync_strategy = None
         config = await config_service.get_config(f"/services/connectors/{connector_id}/config")
         if config:
-            sync_config = config.get("sync")
-            if sync_config:
-                sync_strategy = sync_config.get("selectedStrategy")
+            sync_strategy = config.get("sync", {}).get("selectedStrategy")
 
 
         if connector:
