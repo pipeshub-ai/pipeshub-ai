@@ -931,34 +931,11 @@ class AzureBlobConnector(BaseConnector):
     ) -> None:
         """Remove old PARENT_CHILD relationships for a record."""
         try:
-            deleted_count = 0
-
-            # Prefer calling the underlying graph provider directly with the correct
-            # edge-collection argument. This avoids relying on any outdated
-            # TransactionStore convenience wrappers that might not match the current
-            # provider signature.
-            graph_provider = getattr(tx_store, "graph_provider", None)
-            txn = getattr(tx_store, "txn", None)
-
-            if graph_provider is not None and txn is not None:
-                deleted = await graph_provider.delete_parent_child_edge_to_record(
-                    record_id,
-                    CollectionNames.RECORD_RELATIONS.value,
-                    transaction=txn,
-                )
-                # Neo4jProvider currently returns a boolean; normalize to count.
-                deleted_count = 1 if deleted else 0
-            elif hasattr(tx_store, "delete_parent_child_edge_to_record"):
-                # Fallback for environments where the TransactionStore wrapper has
-                # already been updated to accept only record_id.
-                deleted_raw = await tx_store.delete_parent_child_edge_to_record(
-                    record_id
-                )
-                try:
-                    deleted_count = int(deleted_raw)
-                except (TypeError, ValueError):
-                    deleted_count = 1 if deleted_raw else 0
-
+            deleted_raw = await tx_store.delete_parent_child_edge_to_record(record_id)
+            try:
+                deleted_count = int(deleted_raw)
+            except (TypeError, ValueError):
+                deleted_count = 1 if deleted_raw else 0
             if deleted_count > 0:
                 self.logger.info(
                     f"Removed {deleted_count} old parent relationship(s) for record {record_id}"
