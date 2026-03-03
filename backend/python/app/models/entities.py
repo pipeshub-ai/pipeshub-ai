@@ -1194,15 +1194,15 @@ class SharePointPageRecord(Record):
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: Optional[str] = None
-    assignee: List[str] = Field(default_factory=list)
-    assignee_email: List[str] = Field(default_factory=list)
+    assignee: Optional[List[str]]= Field(default_factory=list)
+    assignee_email: Optional[List[str]] = Field(default_factory=list)
     creator_email: Optional[str] = None
     creator_name: Optional[str] =None
-    review_email: List[str] = Field(default_factory=list)
-    review_name: List[str] = Field(default_factory=list)
+    review_email:Optional[List[str]] = Field(default_factory=list)
+    review_name: Optional[List[str]] = Field(default_factory=list)
     mergeable:Optional[str]=None
     merged_by:Optional[str]=None
-    labels:List[str] = Field(default_factory=list)
+    labels:Optional[List[str]] = Field(default_factory=list)
 
     def to_kafka_record(self) -> Dict:
         return {
@@ -1215,8 +1215,6 @@ class PullRequestRecord(Record):
             "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
-            "signedUrl": self.signed_url,
-            "signedUrlRoute": self.fetch_signed_url,
             "origin": self.origin.value,
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,

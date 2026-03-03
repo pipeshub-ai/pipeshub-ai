@@ -355,7 +355,7 @@ class GithubConnector(BaseConnector):
                 "No valid app users found, cannot proceed with syncing issues."
             )
             return []
-        user_email = user.email
+        user_email = user.get("email")
         app_user = AppUser(
             app_name=self.connector_name,
             connector_id=self.connector_id,
@@ -409,7 +409,7 @@ class GithubConnector(BaseConnector):
                 "No valid app users found, cannot proceed with syncing issues."
             )
             return
-        user_email = user.email
+        user_email = user.get("email")
         if not user_email:
             self.logger.error(
                 "No valid user found, cannot proceed with syncing issues."
@@ -973,7 +973,7 @@ class GithubConnector(BaseConnector):
             sub_type=GroupSubType.CONTENT.value,
             requires_processing=True,
             table_row_metadata=table_row_metadata,
-            source_modified_date= datetime.fromisoformat(pull_request.updated_at.replace("Z", "+00:00")),
+            source_modified_date= str(self.datetime_to_epoch_ms(pull_request.updated_at)),
         )
         self.logger.info(f"bg for title and desc created for pr{pr_number}")
         block_groups.append(bg_0)

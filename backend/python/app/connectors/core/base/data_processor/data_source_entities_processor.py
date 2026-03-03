@@ -1909,7 +1909,7 @@ class DataSourceEntitiesProcessor:
             else:
                 self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
 
-    async def get_app_creator_user(self, connector_id: str) -> Optional[User]:
+    async def get_app_creator_user(self, connector_id: str) -> Optional[Dict]:
         """
         Fetch the creator user for a connector/app by connectorId.
         """

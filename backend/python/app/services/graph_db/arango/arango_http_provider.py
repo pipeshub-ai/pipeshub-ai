@@ -4124,7 +4124,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         transaction:Optional[str]=None
-    ) -> Optional[User]:
+    ) -> Optional[Dict]:
         try:
             app_doc = await self.get_document(
                 document_key=connector_id,
