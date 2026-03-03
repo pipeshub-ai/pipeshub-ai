@@ -393,7 +393,7 @@ class ToolsetRegistry:
             # 'app.agents.actions.gitlab.gitlab',
             # 'app.agents.actions.linear.linear',
             # 'app.agents.actions.notion.notion',
-            # 'app.agents.actions.microsoft.one_drive.one_drive',
+            'app.agents.actions.microsoft.one_drive.one_drive',
             # 'app.agents.actions.microsoft.sharepoint.sharepoint',
             # 'app.agents.actions.microsoft.teams.teams',
             'app.agents.actions.microsoft.outlook.outlook',

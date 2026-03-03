@@ -52,7 +52,6 @@ class MSGraphClientFactory(ClientFactory):
         return await MSGraphClient.build_from_toolset(
             toolset_config=toolset_config,
             service_name=self.service_name,
-            logger=logger,
-            config_service=config_service,
+            logger=logger
         )
 
