@@ -310,7 +310,7 @@ class ToolResultExtractor:
                                 # Next field is numeric — LLM wrote data[N] instead of data.items[N]
                                 # Search for a list value in the current dict (priority order)
                                 list_data = None
-                                for list_key in ("items", "results", "records", "values", "data"):
+                                for list_key in ("items", "results", "records", "messages", "values", "data", "value"):
                                     candidate = current.get(list_key)
                                     if isinstance(candidate, list):
                                         list_data = candidate
@@ -2048,6 +2048,8 @@ Generate:
 {jira_guidance}
 {confluence_guidance}
 {slack_guidance}
+{onedrive_guidance}
+{outlook_guidance}
 
 ## Planning Best Practices
 
@@ -2375,6 +2377,441 @@ Examples:
 ```
 """
 
+ONEDRIVE_GUIDANCE = r"""
+## OneDrive-Specific Guidance
+
+### ⚠️ CRITICAL: drive_id Resolution — ALWAYS Call `get_drives` First
+
+Almost every OneDrive tool requires a `drive_id` parameter. **NEVER ask the user for a drive_id.** Resolve it automatically:
+
+1. Check conversation history / Reference Data for a previously retrieved `drive_id` → use it directly
+2. If unknown → call `onedrive.get_drives` first, then use the result in subsequent tools
+
+**The `drive_id` is an internal Graph API identifier (e.g., `b!xxxx...`). Users don't know it. Always resolve it via `get_drives`.**
+
+### ⚠️ CRITICAL: item_id Resolution — Use `search_files` or `get_files`
+
+File operations (rename, delete, move, copy, etc.) require an `item_id`. **NEVER ask the user for an item_id.** Resolve it automatically:
+
+1. Check conversation history / Reference Data for a previously retrieved `item_id` → use it directly
+2. If the user mentions a file name → call `onedrive.search_files` to find it
+3. If browsing → call `onedrive.get_files` or `onedrive.get_folder_children`
+
+### Cascading Patterns (CRITICAL)
+
+**Pattern: Rename a file by name**
+User says: "rename X to Y"
+```json
+{{
+  "tools": [
+    {{"name": "onedrive.get_drives", "args": {{}}}},
+    {{"name": "onedrive.search_files", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "query": "X"}}}},
+    {{"name": "onedrive.rename_item", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "item_id": "{{{{onedrive.search_files.data.value[0].id}}}}", "new_name": "Y"}}}}
+  ]
+}}
+```
+
+**Pattern: Delete a file by name**
+```json
+{{
+  "tools": [
+    {{"name": "onedrive.get_drives", "args": {{}}}},
+    {{"name": "onedrive.search_files", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "query": "filename"}}}},
+    {{"name": "onedrive.delete_item", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "item_id": "{{{{onedrive.search_files.data.value[0].id}}}}"}}}}
+  ]
+}}
+```
+
+**Pattern: Search files**
+```json
+{{
+  "tools": [
+    {{"name": "onedrive.get_drives", "args": {{}}}},
+    {{"name": "onedrive.search_files", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "query": "keyword"}}}}
+  ]
+}}
+```
+
+**Pattern: List files (drive_id already known from conversation history)**
+```json
+{{
+  "tools": [
+    {{"name": "onedrive.get_files", "args": {{"drive_id": "b!abc123..."}}}}
+  ]
+}}
+```
+
+### Multiple Drives
+
+If the user has multiple drives and specifies which one (e.g., "my OneDrive (Business)"), match by `name` or `driveType` from `get_drives` results. If ambiguous:
+- Use the first drive by default (`value[0]`)
+- If the user specifies a drive name, select the matching drive from `get_drives` results
+
+### Never Ask for These
+
+- ❌ "What is your drive_id?" → ✅ Call `onedrive.get_drives` to resolve it
+- ❌ "What is the item_id?" → ✅ Call `onedrive.search_files` or `onedrive.get_files` to resolve it
+- ❌ "Provide your drive_id" → ✅ Always auto-resolve via API calls
+"""
+OUTLOOK_GUIDANCE = r"""
+## Outlook-Specific Guidance
+
+### Tool Selection — Use the Right Outlook Tool for Every Task
+
+| User intent | Correct Outlook tool | Key parameters |
+|---|---|---|
+| Send a new email | `outlook.send_email` | `to_recipients`, `subject`, `body` |
+| Reply to an email | `outlook.reply_to_message` | `message_id`, `comment` |
+| Reply-all to an email | `outlook.reply_all_to_message` | `message_id`, `comment` |
+| Forward an email | `outlook.forward_message` | `message_id`, `to_recipients` |
+| Search / list emails | `outlook.search_messages` | `search` or `filter`, `top` |
+| Get a specific email | `outlook.get_message` | `message_id` |
+| List calendar events | `outlook.get_calendar_events` | `start_datetime`, `end_datetime` |
+| Create a calendar event | `outlook.create_calendar_event` | `subject`, `start_datetime`, `end_datetime` |
+| Get a specific event | `outlook.get_calendar_event` | `event_id` |
+| Update a calendar event | `outlook.update_calendar_event` | `event_id`, fields to update |
+| Delete a calendar event | `outlook.delete_calendar_event` | `event_id` |
+| List mail folders | `outlook.get_mail_folders` | (no required args) |
+
+---
+
+**R-OUT-1: NEVER use `retrieval.search_internal_knowledge` for Outlook email or calendar queries.**
+Outlook queries always use Outlook service tools, not retrieval.
+- ❌ "What emails do I have?" → Do NOT use retrieval → ✅ Use `outlook.search_messages`
+- ❌ "Show my calendar" → Do NOT use retrieval → ✅ Use `outlook.get_calendar_events`
+- ❌ "Search emails about X" → Do NOT use retrieval → ✅ Use `outlook.search_messages` with `search` param
+
+---
+
+**R-OUT-2: `message_id` resolution — NEVER ask the user for a message ID.**
+Users don't know message IDs. Always resolve them automatically:
+1. Check conversation history / Reference Data for a previously retrieved `message_id` → use directly
+2. If the user describes an email ("the email from John", "the meeting invite") → call `outlook.search_messages` first, then cascade
+3. NEVER fabricate or guess a message ID
+
+```json
+{
+  "tools": [
+    {"name": "outlook.search_messages", "args": {"search": "from:john@example.com budget report", "top": 5}},
+    {"name": "outlook.reply_to_message", "args": {"message_id": "{{outlook.search_messages.data.results[0].id}}", "comment": "Thanks, I'll review this."}}
+  ]
+}
+```
+
+---
+
+**R-OUT-3: `event_id` resolution — NEVER ask the user for an event ID.**
+Users don't know event IDs. Always resolve them automatically:
+1. Check conversation history / Reference Data for a previously retrieved `event_id` → use directly
+2. If the user describes an event ("tomorrow's standup", "the 2pm meeting") → call `outlook.get_calendar_events` with a narrow time range first, then cascade
+3. NEVER fabricate or guess an event ID
+
+```json
+{
+  "tools": [
+    {"name": "outlook.get_calendar_events", "args": {"start_datetime": "2026-03-03T00:00:00", "end_datetime": "2026-03-03T23:59:59", "top": 10}},
+    {"name": "outlook.update_calendar_event", "args": {"event_id": "{{outlook.get_calendar_events.data.results[0].id}}", "location": "Conference Room B"}}
+  ]
+}
+```
+
+---
+
+**R-OUT-4: Email search — use `search` for keyword queries, `filter` for OData conditions.**
+- `search` (OData `$search`): keyword-based, natural language → e.g., `"budget report"`, `"from:john@example.com"`
+- `filter` (OData `$filter`): structured conditions → e.g., `"isRead eq false"`, `"receivedDateTime ge 2026-03-01T00:00:00Z"`
+- Use `search` for "find emails about X" queries
+- Use `filter` for "unread emails", "emails from today", "emails after date" queries
+- Both can be combined with `top` and `orderby`
+
+```json
+// Keyword search
+{"name": "outlook.search_messages", "args": {"search": "project proposal", "top": 10}}
+
+// Structured filter
+{"name": "outlook.search_messages", "args": {"filter": "isRead eq false", "orderby": "receivedDateTime desc", "top": 20}}
+
+// Emails from a specific date
+{"name": "outlook.search_messages", "args": {"filter": "receivedDateTime ge 2026-03-01T00:00:00Z", "top": 25}}
+```
+
+---
+
+**R-OUT-5: Calendar events — ALWAYS provide both `start_datetime` and `end_datetime`.**
+`get_calendar_events` requires both. Infer sensible defaults from user intent:
+- "today's meetings" → `start_datetime: today 00:00:00`, `end_datetime: today 23:59:59`
+- "this week's events" → `start_datetime: Monday 00:00:00`, `end_datetime: Sunday 23:59:59`
+- "meetings tomorrow" → `start_datetime: tomorrow 00:00:00`, `end_datetime: tomorrow 23:59:59`
+- "next 7 days" → `start_datetime: today 00:00:00`, `end_datetime: 7 days from now 23:59:59`
+- Use ISO 8601 format: `2026-03-03T09:00:00`
+- Always include `timezone` matching the user's context (default `"UTC"` if unknown)
+
+---
+
+**R-OUT-6: Recurring events — pass a `recurrence` dict with `pattern` + `range`. NEVER a plain string.**
+
+The `recurrence` field is a plain Python dict (not a nested model). All keys are **camelCase** matching the MS Graph API directly.
+
+---
+
+**`pattern` keys — how often it repeats:**
+
+| `type` value | Extra required keys | Use case |
+|---|---|---|
+| `"daily"` | *(none)* | Every N days |
+| `"weekly"` | `daysOfWeek` (list of strings) | Specific weekdays each week |
+| `"absoluteMonthly"` | `dayOfMonth` (int) | Same date each month (e.g. 15th) |
+| `"relativeMonthly"` | `daysOfWeek`, `index` | Relative day each month (e.g. first Monday) |
+| `"absoluteYearly"` | `dayOfMonth`, `month` | Same date each year (e.g. March 15) |
+| `"relativeYearly"` | `daysOfWeek`, `index`, `month` | Relative day each year (e.g. last Friday of March) |
+
+- `interval` (int, default `1`): repeat every N units
+- `daysOfWeek` values: `"Sunday"` `"Monday"` `"Tuesday"` `"Wednesday"` `"Thursday"` `"Friday"` `"Saturday"`
+- `index` values: `"first"` `"second"` `"third"` `"fourth"` `"last"`
+- `dayOfMonth`: int 1–31
+- `month`: int 1–12
+
+**`range` keys — when the series ends:**
+
+| `type` value | Extra required keys |
+|---|---|
+| `"endDate"` | `startDate`, `endDate` (YYYY-MM-DD) |
+| `"noEnd"` | `startDate` (YYYY-MM-DD) |
+| `"numbered"` | `startDate`, `numberOfOccurrences` (int) |
+
+**⚠️ `startDate` MUST match the date portion of `start_datetime`.**
+
+---
+
+**All 6 pattern type examples:**
+
+```json
+// 1. Daily — every day, 30 occurrences
+"recurrence": {
+  "pattern": {"type": "daily", "interval": 1},
+  "range":   {"type": "numbered", "startDate": "2026-03-01", "numberOfOccurrences": 30}
+}
+
+// 2. Weekly — Mon, Wed, Fri until Dec 31
+"recurrence": {
+  "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["Monday", "Wednesday", "Friday"]},
+  "range":   {"type": "endDate", "startDate": "2026-03-02", "endDate": "2026-12-31"}
+}
+
+// 3. absoluteMonthly — 15th of every month, forever
+"recurrence": {
+  "pattern": {"type": "absoluteMonthly", "interval": 1, "dayOfMonth": 15},
+  "range":   {"type": "noEnd", "startDate": "2026-03-15"}
+}
+
+// 4. relativeMonthly — last Friday of every month, 6 times
+"recurrence": {
+  "pattern": {"type": "relativeMonthly", "interval": 1, "daysOfWeek": ["Friday"], "index": "last"},
+  "range":   {"type": "numbered", "startDate": "2026-03-28", "numberOfOccurrences": 6}
+}
+
+// 5. absoluteYearly — every March 15, forever
+"recurrence": {
+  "pattern": {"type": "absoluteYearly", "interval": 1, "dayOfMonth": 15, "month": 3},
+  "range":   {"type": "noEnd", "startDate": "2026-03-15"}
+}
+
+// 6. relativeYearly — first Monday of March every year, 3 times
+"recurrence": {
+  "pattern": {"type": "relativeYearly", "interval": 1, "daysOfWeek": ["Monday"], "index": "first", "month": 3},
+  "range":   {"type": "numbered", "startDate": "2026-03-02", "numberOfOccurrences": 3}
+}
+```
+
+**Common mistakes to avoid:**
+- ❌ `"recurrence": "weekly"` — plain string, NOT valid
+- ❌ snake_case keys like `days_of_week`, `day_of_month`, `start_date`, `end_date`, `number_of_occurrences` — NOT valid
+- ✅ camelCase keys: `daysOfWeek`, `dayOfMonth`, `startDate`, `endDate`, `numberOfOccurrences`
+- ❌ `startDate` set to a datetime string — must be `YYYY-MM-DD` date only
+- ❌ `startDate` not matching `start_datetime` date portion — they MUST align
+
+---
+
+**R-OUT-7: Cross-service cascade — fetch from Outlook, act in another service (or vice versa).**
+When the user asks to fetch email/calendar data AND post/use it elsewhere, plan BOTH tools in sequence.
+
+Pattern: "[fetch email/event] and [post/create/update in Service B]"
+
+Step 1 → fetch with Outlook tool
+Step 2 → act in Service B with clean, formatted content
+
+Key rules:
+- Always fetch FIRST, act SECOND
+- NEVER pass raw Outlook API response as content to another service
+- Write clean, human-readable content for the downstream tool
+
+Example — "Get the meeting invite from John and create a Jira ticket":
+```json
+{
+  "tools": [
+    {"name": "outlook.search_messages", "args": {"search": "from:john meeting invite", "top": 3}},
+    {"name": "jira.create_issue", "args": {
+      "project_key": "PA",
+      "summary": "Meeting: {{outlook.search_messages.data.results[0].subject}}",
+      "issue_type": "Task",
+      "description": "Follow-up from meeting invite received via email."
+    }}
+  ]
+}
+```
+
+---
+
+**R-OUT-8: Datetime format — always use ISO 8601 without `Z` suffix for Outlook.**
+- ✅ CORRECT: `"2026-03-03T09:00:00"`
+- ❌ WRONG: `"2026-03-03T09:00:00Z"` (trailing Z may cause timezone conflicts with explicit `timezone` param)
+- Always pair `start_datetime`/`end_datetime` with an explicit `timezone` field
+- Use `"UTC"` as default if user timezone is unknown; use IANA or Windows timezone names for known zones
+  - IANA: `"America/New_York"`, `"Asia/Kolkata"`
+  - Windows: `"Eastern Standard Time"`, `"India Standard Time"`
+
+---
+
+**R-OUT-9: Reply vs Reply-All vs Forward — use the exact right tool.**
+- User says "reply", "respond to" → `outlook.reply_to_message` (replies only to sender)
+- User says "reply all", "respond to everyone" → `outlook.reply_all_to_message`
+- User says "forward", "send to someone else" → `outlook.forward_message`
+- NEVER use `send_email` for replies or forwards — it creates a new unthreaded message
+
+---
+
+**R-OUT-10: `send_email` is for NEW emails only — not replies or forwards.**
+- ❌ "Reply to John's email" → Do NOT use `send_email` → ✅ Use `reply_to_message`
+- ❌ "Forward this to Sarah" → Do NOT use `send_email` → ✅ Use `forward_message`
+- ✅ "Send an email to X about Y" (new message, no thread) → Use `send_email`
+
+---
+
+**R-OUT-11: Pagination for email search.**
+`outlook.search_messages` defaults to `top: 10`. If user asks for "all", "complete", or a large number:
+- Set `top` to the number requested (max 50 per call)
+- If more needed, note that results are limited and present what was fetched
+
+---
+
+**Common Planning Patterns:**
+
+**Pattern: Read and reply to an email**
+```json
+{
+  "tools": [
+    {"name": "outlook.search_messages", "args": {"search": "from:boss@company.com Q4 report", "top": 3}},
+    {"name": "outlook.reply_to_message", "args": {
+      "message_id": "{{outlook.search_messages.data.results[0].id}}",
+      "comment": "Thanks for sending this over. I'll review and follow up by EOD."
+    }}
+  ]
+}
+```
+
+**Pattern: Create a one-time meeting**
+```json
+{
+  "tools": [
+    {"name": "outlook.create_calendar_event", "args": {
+      "subject": "Team Sync",
+      "start_datetime": "2026-03-05T14:00:00",
+      "end_datetime": "2026-03-05T15:00:00",
+      "timezone": "India Standard Time",
+      "attendees": ["alice@example.com", "bob@example.com"],
+      "is_online_meeting": true
+    }}
+  ]
+}
+```
+
+**Pattern: Create a recurring weekly meeting**
+```json
+{
+  "tools": [
+    {"name": "outlook.create_calendar_event", "args": {
+      "subject": "Weekly Standup",
+      "start_datetime": "2026-03-02T09:00:00",
+      "end_datetime": "2026-03-02T09:30:00",
+      "timezone": "India Standard Time",
+      "recurrence": {
+        "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["Monday"]},
+        "range": {"type": "endDate", "startDate": "2026-03-02", "endDate": "2026-12-28"}
+      }
+    }}
+  ]
+}
+```
+
+**Pattern: Create a recurring daily event (30 times)**
+```json
+{
+  "tools": [
+    {"name": "outlook.create_calendar_event", "args": {
+      "subject": "Daily Standup",
+      "start_datetime": "2026-03-01T09:00:00",
+      "end_datetime": "2026-03-01T09:15:00",
+      "timezone": "India Standard Time",
+      "recurrence": {
+        "pattern": {"type": "daily", "interval": 1},
+        "range": {"type": "numbered", "startDate": "2026-03-01", "numberOfOccurrences": 30}
+      }
+    }}
+  ]
+}
+```
+
+**Pattern: Create a recurring monthly event (first Monday, forever)**
+```json
+{
+  "tools": [
+    {"name": "outlook.create_calendar_event", "args": {
+      "subject": "Monthly Planning",
+      "start_datetime": "2026-03-02T10:00:00",
+      "end_datetime": "2026-03-02T11:00:00",
+      "timezone": "India Standard Time",
+      "recurrence": {
+        "pattern": {"type": "relativeMonthly", "interval": 1, "daysOfWeek": ["Monday"], "index": "first"},
+        "range": {"type": "noEnd", "startDate": "2026-03-02"}
+      }
+    }}
+  ]
+}
+```
+
+**Pattern: Reschedule a meeting by name**
+```json
+{
+  "tools": [
+    {"name": "outlook.get_calendar_events", "args": {
+      "start_datetime": "2026-03-01T00:00:00",
+      "end_datetime": "2026-03-07T23:59:59"
+    }},
+    {"name": "outlook.update_calendar_event", "args": {
+      "event_id": "{{outlook.get_calendar_events.data.results[0].id}}",
+      "start_datetime": "2026-03-04T15:00:00",
+      "end_datetime": "2026-03-04T16:00:00",
+      "timezone": "India Standard Time"
+    }}
+  ]
+}
+```
+
+**Pattern: Delete a meeting by searching first**
+```json
+{
+  "tools": [
+    {"name": "outlook.get_calendar_events", "args": {
+      "start_datetime": "2026-03-03T00:00:00",
+      "end_datetime": "2026-03-03T23:59:59"
+    }},
+    {"name": "outlook.delete_calendar_event", "args": {
+      "event_id": "{{outlook.get_calendar_events.data.results[0].id}}"
+    }}
+  ]
+}
+```
+"""
 PLANNER_USER_TEMPLATE = """Query: {query}
 
 Plan the tools. Return only valid JSON."""
@@ -2531,12 +2968,16 @@ async def planner_node(
     jira_guidance = JIRA_GUIDANCE if _has_jira_tools(state) else ""
     confluence_guidance = CONFLUENCE_GUIDANCE if _has_confluence_tools(state) else ""
     slack_guidance = SLACK_GUIDANCE if _has_slack_tools(state) else ""
+    onedrive_guidance = ONEDRIVE_GUIDANCE if _has_onedrive_tools(state) else ""
+    outlook_guidance = OUTLOOK_GUIDANCE if _has_outlook_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
         jira_guidance=jira_guidance,
         confluence_guidance=confluence_guidance,
-        slack_guidance=slack_guidance
+        slack_guidance=slack_guidance,
+        onedrive_guidance=onedrive_guidance,
+        outlook_guidance=outlook_guidance
     )
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
@@ -3628,6 +4069,19 @@ def _has_slack_tools(state: ChatState) -> bool:
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "slack" in ts.get("name", "").lower() for ts in agent_toolsets)
 
+
+def _has_onedrive_tools(state: ChatState) -> bool:
+    """Check if OneDrive tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "onedrive" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
+def _has_outlook_tools(state: ChatState) -> bool:
+    """Check if Outlook tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "outlook" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     """
     Build knowledge context for the planner prompt.
@@ -4240,7 +4694,7 @@ async def reflect_node(
     for r in successful:
         log.info(f"  ✅ {r.get('tool_name')}")
     for r in failed:
-        log.info(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))[:100]}")
+        log.info(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))}")
 
     # ========================================================================
     # DECISION 1: Partial Success (some succeeded, some failed)
@@ -6003,6 +6457,12 @@ When you have internal knowledge from retrieval tools:
 
     if _has_confluence_tools(state):
         base_prompt += "\n" + CONFLUENCE_GUIDANCE
+
+    if _has_onedrive_tools(state):
+        base_prompt += "\n" + ONEDRIVE_GUIDANCE
+
+    if _has_outlook_tools(state):
+        base_prompt += "\n" + OUTLOOK_GUIDANCE
 
     # Add timezone / current time context if provided
     timezone = state.get("timezone")

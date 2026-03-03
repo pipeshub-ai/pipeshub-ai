@@ -138,6 +138,9 @@ class ClientFactoryRegistry:
             elif app_name == "outlook":
                 cls.register(app_name, MSGraphClientFactory(app_name))
 
+            elif app_name == "onedrive":
+                cls.register(app_name, MSGraphClientFactory(app_name))
+
             elif app_name == "linear":
                 cls.register(app_name, LinearClientFactory())
 
