@@ -304,9 +304,8 @@ class ServiceNowConnector(BaseConnector):
             oauth_config_data = oauth_config.get("config", {})
             self.client_id = oauth_config_data.get("clientId") or oauth_config_data.get("client_id")
             self.client_secret = oauth_config_data.get("clientSecret") or oauth_config_data.get("client_secret")
-            # instanceUrl, redirectUri should still come from auth config as they're connector-specific
             self.instance_url = oauth_config_data.get("instanceUrl")
-            self.redirect_uri = oauth_config_data.get("redirectUri")
+            self.redirect_uri = oauth_config.get("redirectUri")
             self.logger.info("Using shared OAuth config for ServiceNow connector")
 
             # OAuth tokens (stored after authorization flow completes)
@@ -1597,8 +1596,12 @@ class ServiceNowConnector(BaseConnector):
         """
         Sync knowledge bases from ServiceNow kb_knowledge_base table.
 
+        Uses data_entities_processor.on_new_record_groups() so that BELONGS_TO edges
+        (RecordGroup → Org, RecordGroup → App) are created; Knowledge Hub tree relies on these.
+
         Creates:
         - RecordGroup nodes (type=SERVICENOW) in recordGroups collection
+        - BELONGS_TO edges: RecordGroup → Org, RecordGroup → App
         - OWNER edges: owner → KB RecordGroup
         - WRITER edges: kb_managers → KB RecordGroup
         - READ edges: admin users → KB RecordGroup
@@ -1666,20 +1669,13 @@ class ServiceNowConnector(BaseConnector):
                     if kb_record_group:
                         kb_record_groups.append((kb_record_group, kb_data))
 
-                # Save KBs and create permission edges in transaction
+                # Build (RecordGroup, permissions) list and route through on_new_record_groups so that
+                # BELONGS_TO edges (RecordGroup → Org, RecordGroup → App) are created by the processor.
                 if kb_record_groups:
+                    kb_list_with_permissions = []
                     async with self.data_store_provider.transaction() as tx_store:
                         for kb_record_group, kb_data in kb_record_groups:
-                            kb_sys_id = kb_data['sys_id']
-
-                            existing_kb = await tx_store.get_record_group_by_external_id(
-                                connector_id=self.connector_id,
-                                external_id=kb_sys_id
-                            )
-
-                            # Save KB RecordGroup
-                            if not existing_kb:
-                                await tx_store.batch_upsert_record_groups([kb_record_group])
+                            kb_sys_id = kb_data["sys_id"]
 
                             # Fetch criteria IDs for this KB
                             criteria_map = await self._fetch_kb_permissions_from_criteria(kb_sys_id)
@@ -1688,14 +1684,14 @@ class ServiceNowConnector(BaseConnector):
                             read_permissions = await self._process_criteria_permissions(
                                 criteria_map["read"],
                                 PermissionType.READ,
-                                tx_store
+                                tx_store,
                             )
 
                             # Process WRITE permissions using shared method
                             write_permissions = await self._process_criteria_permissions(
                                 criteria_map["write"],
                                 PermissionType.WRITE,
-                                tx_store
+                                tx_store,
                             )
 
                             # Combine all permissions
@@ -1712,12 +1708,14 @@ class ServiceNowConnector(BaseConnector):
 
                                 if owner_sys_id:
                                     owner_perms = await self._convert_permissions_to_objects(
-                                        [{
-                                            "entity_type": EntityType.USER.value,
-                                            "source_sys_id": owner_sys_id,
-                                            "role": PermissionType.OWNER.value,
-                                        }],
-                                        tx_store
+                                        [
+                                            {
+                                                "entity_type": EntityType.USER.value,
+                                                "source_sys_id": owner_sys_id,
+                                                "role": PermissionType.OWNER.value,
+                                            }
+                                        ],
+                                        tx_store,
                                     )
                                     permission_objects.extend(owner_perms)
 
@@ -1730,16 +1728,11 @@ class ServiceNowConnector(BaseConnector):
                                 )
                                 permission_objects.append(admin_permission)
 
-                            if permission_objects:
-                                await tx_store.batch_upsert_record_group_permissions(
-                                    kb_record_group.id,
-                                    permission_objects,
-                                    self.connector_id
-                                )
+                            kb_list_with_permissions.append((kb_record_group, permission_objects))
+                            self.logger.debug(f"Prepared KB {kb_sys_id} with {len(permission_objects)} permissions")
 
-                                self.logger.debug(f"Created KB {kb_sys_id} with {len(permission_objects)} permissions")
-
-                    total_synced += len(kb_record_groups)
+                    await self.data_entities_processor.on_new_record_groups(kb_list_with_permissions)
+                    total_synced += len(kb_list_with_permissions)
 
                 # Move to next page
                 offset += batch_size

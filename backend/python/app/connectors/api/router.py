@@ -2147,6 +2147,7 @@ async def _prepare_connector_config(
     # ============================================================
     # 2. Fetch and Reference OAuth Config if Provided
     # ============================================================
+    shared_oauth_config = None
     if oauth_config_id:
         oauth_config_path = _get_oauth_config_path(connector_type)
         oauth_configs = await config_service.get_config(oauth_config_path, default=[])
@@ -2154,14 +2155,12 @@ async def _prepare_connector_config(
         if not isinstance(oauth_configs, list):
             oauth_configs = []
 
-        # Find OAuth config with access control
-        oauth_config = None
         for oauth_cfg in oauth_configs:
             if oauth_cfg.get("_id") == oauth_config_id:
-                oauth_config = oauth_cfg
+                shared_oauth_config = oauth_cfg
                 break
 
-        if not oauth_config:
+        if not shared_oauth_config:
             logger.error(f"OAuth config {oauth_config_id} not found or access denied")
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
@@ -2182,14 +2181,20 @@ async def _prepare_connector_config(
     auth_type = selected_auth_type.upper() if selected_auth_type else AuthType.NONE
     auth_metadata = metadata.get(OAuthConfigKeys.CONFIG, {}).get(OAuthConfigKeys.AUTH, {})
     auth_schemas = auth_metadata.get("schemas", {})
-    selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_type != AuthType.NONE else {}
+    selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_type != "NONE" else {}
+    registry_oauth_config = (auth_metadata.get("oauthConfigs") or {}).get(auth_type, {})
 
     # Add OAuth infrastructure fields for OAUTH type
-    if auth_type == AuthType.OAUTH:
-        oauth_configs = auth_metadata.get("oauthConfigs", {})
-        oauth_config = oauth_configs.get(auth_type, {}) if oauth_configs else {}
+    # Only authorizeUrl and tokenUrl: use etcd when present, else registry
+    if auth_type == "OAUTH":
+        if shared_oauth_config:
+            authorize_url = shared_oauth_config.get("authorizeUrl", "")
+            token_url = shared_oauth_config.get("tokenUrl", "")
+        else:
+            authorize_url = registry_oauth_config.get("authorizeUrl", "")
+            token_url = registry_oauth_config.get("tokenUrl", "")
 
-        # Get and prepare redirect URI
+        scopes = registry_oauth_config.get("scopes", [])
         redirect_uri = selected_auth_schema.get("redirectUri", "")
         if redirect_uri:
             if base_url:
@@ -2199,10 +2204,10 @@ async def _prepare_connector_config(
                 fallback_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
                 redirect_uri = f"{fallback_url.rstrip('/')}/{redirect_uri}"
 
-        prepared_config[OAuthConfigKeys.AUTH].update({
-            "authorizeUrl": oauth_config.get("authorizeUrl", ""),
-            "tokenUrl": oauth_config.get("tokenUrl", ""),
-            "scopes": oauth_config.get("scopes", []),
+        prepared_config["auth"].update({
+            "authorizeUrl": authorize_url,
+            "tokenUrl": token_url,
+            "scopes": scopes,
             "redirectUri": redirect_uri
         })
 
@@ -2552,6 +2557,30 @@ async def get_connector_instance(
 
         connector_type = connector.get("type", "")
         await check_beta_connector_access(connector_type, request)
+
+        # Merge stored config auth: only authorizeUrl and tokenUrl (preserve scopes/redirectUri from registry)
+        config_service = container.config_service()
+        config_path = _get_config_path_for_instance(connector_id)
+        try:
+            stored_config = await config_service.get_config(config_path)
+            if stored_config and stored_config.get("auth"):
+                auth = stored_config["auth"]
+                if "config" not in connector:
+                    connector["config"] = {}
+                if "auth" not in connector["config"]:
+                    connector["config"]["auth"] = {}
+                connector["config"]["auth"]["authorizeUrl"] = auth.get("authorizeUrl", "")
+                connector["config"]["auth"]["tokenUrl"] = auth.get("tokenUrl", "")
+
+                auth_type = connector.get("authType", "OAUTH")
+                oauth_configs = connector["config"]["auth"].get("oauthConfigs") or {}
+                if auth_type not in oauth_configs:
+                    oauth_configs[auth_type] = {}
+                oauth_configs[auth_type]["authorizeUrl"] = auth.get("authorizeUrl", "")
+                oauth_configs[auth_type]["tokenUrl"] = auth.get("tokenUrl", "")
+                connector["config"]["auth"]["oauthConfigs"] = oauth_configs
+        except Exception:
+            pass
 
         return {
             "success": True,
@@ -3274,6 +3303,7 @@ async def update_connector_instance_config(
             auth_type = instance.get("authType", "").upper()
             if auth_type in [AuthType.OAUTH, AuthType.OAUTH_ADMIN_CONSENT]:
                 # If oauth_config_id is provided, fetch and merge OAuth config from etcd
+                shared_oauth_config = None
                 if oauth_config_id:
                     try:
                         oauth_config_path = _get_oauth_config_path(connector_type)
@@ -3283,16 +3313,15 @@ async def update_connector_instance_config(
                             oauth_configs = []
 
                         # Find the OAuth config (all users in org can use published OAuth configs)
-                        oauth_config = None
                         for oauth_cfg in oauth_configs:
                             if oauth_cfg.get("_id") == oauth_config_id:
                                 oauth_org_id = oauth_cfg.get("orgId")
                                 # All users in the same org can use published OAuth configs
                                 if oauth_org_id == org_id:
-                                    oauth_config = oauth_cfg
+                                    shared_oauth_config = oauth_cfg
                                     break
 
-                        if not oauth_config:
+                        if not shared_oauth_config:
                             logger.error(f"OAuth config {oauth_config_id} not found or access denied")
                             raise HTTPException(
                                 status_code=HttpStatusCode.NOT_FOUND.value,
@@ -3300,12 +3329,10 @@ async def update_connector_instance_config(
                             )
 
                         # Store only the reference to OAuth config, not the sensitive fields
-                        # The actual client_id/client_secret will be fetched during OAuth flow
                         if "auth" not in new_config:
                             new_config["auth"] = {}
-                        # Store only the reference and metadata, not sensitive credentials
                         new_config["auth"]["oauthConfigId"] = oauth_config_id
-                        new_config["auth"][OAUTH_INSTANCE_NAME] = oauth_config.get(OAUTH_INSTANCE_NAME)
+                        new_config["auth"]["oauthInstanceName"] = shared_oauth_config.get("oauthInstanceName")
                         logger.info(f"Referenced OAuth config {oauth_config_id} for connector auth config")
 
                     except HTTPException:
@@ -3319,19 +3346,24 @@ async def update_connector_instance_config(
 
                 metadata = await connector_registry.get_connector_metadata(connector_type)
                 auth_metadata = metadata.get("config", {}).get("auth", {})
+                registry_oauth_config = (auth_metadata.get("oauthConfigs") or {}).get(auth_type, {})
 
                 if "auth" not in new_config:
                     new_config["auth"] = {}
 
-                # Get auth schema and OAuth config for the existing auth type
+                # Only authorizeUrl and tokenUrl: use etcd when present, else registry
+                if shared_oauth_config:
+                    authorize_url = shared_oauth_config.get("authorizeUrl", "")
+                    token_url = shared_oauth_config.get("tokenUrl", "")
+                else:
+                    authorize_url = registry_oauth_config.get("authorizeUrl", "")
+                    token_url = registry_oauth_config.get("tokenUrl", "")
+
+                scopes = registry_oauth_config.get("scopes", [])
+
                 auth_schemas = auth_metadata.get("schemas", {})
                 selected_auth_schema = auth_schemas.get(auth_type, {}) if auth_schemas else {}
-                oauth_configs = auth_metadata.get("oauthConfigs", {})
-                oauth_config = oauth_configs.get(auth_type, {}) if oauth_configs else {}
-
-                # Get redirect URI from the auth type's schema
                 redirect_uri = selected_auth_schema.get("redirectUri", "")
-
                 if redirect_uri:
                     if base_url:
                         redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
@@ -3343,13 +3375,12 @@ async def update_connector_instance_config(
                         base_url = endpoints.get("frontend",{}).get("publicEndpoint", "http://localhost:3001")
                         redirect_uri = f"{base_url.rstrip('/')}/{redirect_uri}"
 
-
                 new_config["auth"].update({
-                    "authorizeUrl": oauth_config.get("authorizeUrl", ""),
-                    "tokenUrl": oauth_config.get("tokenUrl", ""),
-                    "scopes": oauth_config.get("scopes", []),
+                    "authorizeUrl": authorize_url,
+                    "tokenUrl": token_url,
+                    "scopes": scopes,
                     "redirectUri": redirect_uri,
-                    "authType": auth_type,  # Keep existing auth type (cannot be changed)
+                    "authType": auth_type,
                 })
 
         # Save configuration
@@ -3759,12 +3790,13 @@ async def _update_oauth_infrastructure_fields(
     if not oauth_registry_config:
         return
 
-    # Update OAuth infrastructure fields if missing
+    # Update OAuth infrastructure fields if missing.
+    # Prefer user-provided URLs from config (e.g. ServiceNow instance URLs) over registry placeholders.
+    config_data = oauth_config.get("config") or {}
     if "authorizeUrl" not in oauth_config:
-        oauth_config["authorizeUrl"] = oauth_registry_config.authorize_url
-
+        oauth_config["authorizeUrl"] = (config_data.get("authorizeUrl") or oauth_registry_config.authorize_url)
     if "tokenUrl" not in oauth_config:
-        oauth_config["tokenUrl"] = oauth_registry_config.token_url
+        oauth_config["tokenUrl"] = (config_data.get("tokenUrl") or oauth_registry_config.token_url)
 
     if "redirectUri" not in oauth_config:
         redirect_uri_path = oauth_registry_config.redirect_uri
@@ -6121,9 +6153,6 @@ async def _create_or_update_oauth_config(
                         if "config" not in oauth_cfg:
                             oauth_cfg["config"] = {}
 
-                        # Ensure OAuth infrastructure fields are present (if missing, add from registry)
-                        await _update_oauth_infrastructure_fields(oauth_cfg, connector_type, config_service, base_url)
-
                         # Update all OAuth credential fields dynamically from auth_config
                         # This allows overriding existing OAuth config credentials
                         for field_name in oauth_field_names:
@@ -6135,6 +6164,9 @@ async def _create_or_update_oauth_config(
                             if value is not None:
                                 oauth_cfg["config"][field_name] = value
                             # If value is None and field exists, keep existing value
+
+                        # Ensure OAuth infrastructure fields (prefer config URLs, then registry)
+                        await _update_oauth_infrastructure_fields(oauth_cfg, connector_type, config_service, base_url)
 
                         oauth_cfg["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
                         oauth_configs[idx] = oauth_cfg
@@ -6161,10 +6193,7 @@ async def _create_or_update_oauth_config(
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
 
-            # Store OAuth infrastructure fields from registry (needed for OAuth flow)
-            await _update_oauth_infrastructure_fields(new_oauth_config, connector_type, config_service, base_url)
-
-            # Populate all OAuth credential fields dynamically from auth_config
+            # Populate all OAuth credential fields dynamically from auth_config first
             for field_name in oauth_field_names:
                 # Try both camelCase and snake_case variants
                 value = auth_config.get(field_name) or auth_config.get(
@@ -6172,6 +6201,9 @@ async def _create_or_update_oauth_config(
                 )
                 if value is not None:
                     new_oauth_config["config"][field_name] = value
+
+            # Then set infrastructure fields (prefer config URLs, then registry)
+            await _update_oauth_infrastructure_fields(new_oauth_config, connector_type, config_service, base_url)
 
             oauth_configs.append(new_oauth_config)
             oauth_app_id = new_oauth_config["_id"]
