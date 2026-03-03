@@ -300,9 +300,11 @@ class TokenRefreshService:
         Returns:
             OAuth flow config dict with all necessary fields
         """
+        # Prefer user-provided URLs from config (e.g. ServiceNow instance URLs); fall back to top-level
+        config_data = shared_oauth_config.get("config") or {}
         oauth_flow_config = {
-            "authorizeUrl": shared_oauth_config.get("authorizeUrl", ""),
-            "tokenUrl": shared_oauth_config.get("tokenUrl", ""),
+            "authorizeUrl": config_data.get("authorizeUrl") or shared_oauth_config.get("authorizeUrl", ""),
+            "tokenUrl": config_data.get("tokenUrl") or shared_oauth_config.get("tokenUrl", ""),
             "redirectUri": shared_oauth_config.get("redirectUri", ""),
         }
 
