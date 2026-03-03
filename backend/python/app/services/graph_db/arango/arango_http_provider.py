@@ -4124,7 +4124,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         transaction:Optional[str]=None
-    ) -> Optional[User]:
+    ) -> Optional[Dict]:
         try:
             app_doc = await self.get_document(
                 document_key=connector_id,
@@ -4141,8 +4141,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if not user_doc:
                 return None
-            user_ = User.from_arango_user(user_doc)
-            return user_
+            return user_doc
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch user for {connector_id}: {str(e)}")
             return None

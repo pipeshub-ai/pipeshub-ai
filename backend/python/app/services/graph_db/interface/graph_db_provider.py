@@ -1759,7 +1759,7 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         transaction:Optional[str]=None
-    )->Optional['User']:
+    )->Optional['Dict']:
         """
         Resolve the creator of an App/Connector by connectorId, using the
         `createdBy` field on the app document to fetch the user from `users`.
