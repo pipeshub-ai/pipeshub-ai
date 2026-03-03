@@ -39,7 +39,7 @@ export interface OAuth2AppWithSecret extends OAuth2App {
 export interface CreateOAuth2AppRequest {
   name: string;
   description?: string;
-  redirectUris: string[];
+  redirectUris?: string[];
   allowedGrantTypes?: string[];
   allowedScopes: string[];
   homepageUrl?: string;
