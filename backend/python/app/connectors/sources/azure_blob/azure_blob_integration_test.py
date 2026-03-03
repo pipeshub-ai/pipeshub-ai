@@ -1287,6 +1287,13 @@ async def run_all() -> None:
             except Exception as exc:
                 logger.warning(f"Neo4j disconnect error (non-fatal): {exc}")
 
+        # Ensure the AsyncBlobServiceClient is properly closed to avoid
+        # unclosed aiohttp client session warnings when the event loop exits.
+        try:
+            await blob_client.close()
+        except Exception as exc:
+            logger.warning(f"Azure Blob client close error (non-fatal): {exc}")
+
     # Summary
     passed = sum(1 for r in _results if r["status"] == PASS)
     skipped = sum(1 for r in _results if r["status"] == SKIP)
