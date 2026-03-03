@@ -276,12 +276,13 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
+    async def delete_parent_child_edge_to_record(self, record_id: str, collection: str) -> int:
         """
         Delete PARENT_CHILD edges pointing to a specific target record.
 
         Args:
             record_id: The record_id for which the parent_child edge has to be deleted
+            collection: Edge collection name
 
         Returns:
             int: Number of edges deleted

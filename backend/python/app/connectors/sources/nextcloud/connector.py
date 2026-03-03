@@ -884,7 +884,7 @@ class NextcloudConnector(BaseConnector):
             return
         async with self.data_store_provider.transaction() as tx_store:
             for record, _ in records_with_permissions:
-                deleted = await tx_store.delete_parent_child_edge_to_record(record.id)
+                deleted = await tx_store.delete_parent_child_edge_to_record(record.id, CollectionNames.RECORDS.value)
                 if deleted:
                     self.logger.debug(
                         "Removed %d existing PARENT_CHILD edge(s) to %s (Nextcloud single-parent)",
@@ -1639,7 +1639,7 @@ class NextcloudConnector(BaseConnector):
                 )
 
             # Create async generator for streaming
-            async def generate() -> AsyncGenerator[bytes]:
+            async def generate() -> AsyncGenerator[bytes, None]:
                 yield file_content
 
             return create_stream_record_response(
