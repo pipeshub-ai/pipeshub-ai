@@ -1175,7 +1175,10 @@ components:
     # ==================== OAUTH APP MANAGEMENT SCHEMAS ====================
     CreateOAuthAppRequest:
       type: object
-      description: Request to create a new OAuth app
+      description: |
+        Request to create a new OAuth app.
+        Redirect URIs are required only when `authorization_code` is included in `allowedGrantTypes`.
+        If `authorization_code` is not enabled, redirect URIs are optional and will be ignored.
       properties:
         name:
           type: string
@@ -1193,8 +1196,9 @@ components:
           items:
             type: string
             format: uri
-          description: Allowed redirect URIs (1-10 URIs)
-          minItems: 1
+          description: |
+            Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
+            Not needed for apps using only `client_credentials` grant type.
           maxItems: 10
           example: ["https://myapp.com/callback", "http://localhost:3000/callback"]
         allowedGrantTypes:
@@ -1203,7 +1207,7 @@ components:
             type: string
             enum: [authorization_code, client_credentials, refresh_token]
           description: |
-            Allowed grant types. Defaults to all if not specified.
+            Allowed grant types. Defaults to `["authorization_code", "refresh_token"]` if not specified.
           example: ["authorization_code", "refresh_token"]
         allowedScopes:
           type: array
@@ -1247,12 +1251,14 @@ components:
           example: 604800
       required:
         - name
-        - redirectUris
         - allowedScopes
 
     UpdateOAuthAppRequest:
       type: object
-      description: Request to update an OAuth app
+      description: |
+        Request to update an OAuth app.
+        Redirect URIs are required when `authorization_code` grant type is enabled (either already set or being added).
+        Existing redirect URIs are preserved in the database even if `authorization_code` is removed from grant types.
       properties:
         name:
           type: string
@@ -1268,8 +1274,9 @@ components:
           items:
             type: string
             format: uri
-          description: Allowed redirect URIs
-          minItems: 1
+          description: |
+            Allowed redirect URIs (up to 10). Required when `authorization_code` grant type is enabled.
+            Preserved in the database even if `authorization_code` is removed from grant types.
           maxItems: 10
         allowedGrantTypes:
           type: array

@@ -56,13 +56,21 @@ const optionalUrlSchema = z.union([z.literal(''), z.string().url('Must be a vali
 
 const updateAppSchema = z.object({
   name: z.string().min(1, 'Application name is required.'),
-  redirectUris: z
-    .array(z.string().url('Invalid redirect URI'))
-    .min(1, 'At least one redirect URI is required.'),
+  redirectUris: z.array(z.string().url('Invalid redirect URI')).optional(),
+  allowedGrantTypes: z.array(z.string()).optional(),
   allowedScopes: z.array(z.string()).min(1, 'At least one scope is required.'),
   homepageUrl: optionalUrlSchema,
   privacyPolicyUrl: optionalUrlSchema,
   termsOfServiceUrl: optionalUrlSchema,
+}).refine((data) => {
+  const grantTypes = data.allowedGrantTypes || ['authorization_code', 'refresh_token'];
+  if (grantTypes.includes('authorization_code')) {
+    return data.redirectUris && data.redirectUris.length >= 1;
+  }
+  return true;
+}, {
+  message: 'At least one redirect URI is required when Authorization Code grant type is enabled.',
+  path: ['redirectUris'],
 });
 
 export function OAuth2AppDetailView() {
@@ -109,7 +117,7 @@ export function OAuth2AppDetailView() {
         setApp(data);
         setName(data.name || '');
         setDescription(data.description || '');
-        setRedirectUris(data.redirectUris?.length ? data.redirectUris : ['']);
+        setRedirectUris(data.redirectUris?.length ? data.redirectUris : []);
         setAllowedGrantTypes(
           data.allowedGrantTypes?.length
             ? data.allowedGrantTypes
@@ -153,7 +161,8 @@ export function OAuth2AppDetailView() {
 
     const validation = updateAppSchema.safeParse({
       name: name.trim(),
-      redirectUris: uris,
+      redirectUris: uris.length > 0 ? uris : undefined,
+      allowedGrantTypes: allowedGrantTypes.length > 0 ? allowedGrantTypes : undefined,
       allowedScopes,
       homepageUrl: homepageUrl.trim(),
       privacyPolicyUrl: privacyPolicyUrl.trim(),
@@ -174,7 +183,7 @@ export function OAuth2AppDetailView() {
       const body: UpdateOAuth2AppRequest = {
         name: name.trim(),
         description: description.trim() || undefined,
-        redirectUris: uris,
+        redirectUris: uris.length > 0 ? uris : [],
         allowedGrantTypes: allowedGrantTypes.length > 0 ? allowedGrantTypes : undefined,
         allowedScopes,
         homepageUrl: homepageUrl.trim() || null,
@@ -648,40 +657,48 @@ export function OAuth2AppDetailView() {
                       />
                     </FormGroup>
                   </Box>
-                  <Box>
-                    <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, mb: 1 }}>
-                      Redirect URIs *
-                    </Typography>
-                    {redirectUris.map((uri, index) => (
-                      <Stack direction="row" spacing={1.5} key={index} sx={{ mb: 1.5 }}>
-                        <TextField
-                          fullWidth
+                  {allowedGrantTypes.includes('authorization_code') && (
+                    <Box>
+                      <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, mb: 1 }}>
+                        Redirect URIs *
+                      </Typography>
+                      {(redirectUris.length > 0 ? redirectUris : ['']).map((uri, index) => (
+                        <Stack direction="row" spacing={1.5} key={index} sx={{ mb: 1.5 }}>
+                          <TextField
+                            fullWidth
+                            size="small"
+                            value={uri}
+                            onChange={(e) => {
+                              if (redirectUris.length === 0) {
+                                setRedirectUris([e.target.value]);
+                              } else {
+                                setRedirectUriAt(index, e.target.value);
+                              }
+                            }}
+                            placeholder="https://yourapp.com/callback"
+                            sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
+                          />
+                          <IconButton
+                            onClick={() => removeRedirectUri(index)}
+                            disabled={(redirectUris.length > 0 ? redirectUris : ['']).length <= 1}
+                            size="small"
+                          >
+                            <Iconify icon="mdi:minus-circle-outline" width={20} height={20} />
+                          </IconButton>
+                        </Stack>
+                      ))}
+                      {redirectUris.length < 10 && (
+                        <Button
                           size="small"
-                          value={uri}
-                          onChange={(e) => setRedirectUriAt(index, e.target.value)}
-                          placeholder="https://yourapp.com/callback"
-                          sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
-                        />
-                        <IconButton
-                          onClick={() => removeRedirectUri(index)}
-                          disabled={redirectUris.length <= 1}
-                          size="small"
+                          startIcon={<Iconify icon="mdi:plus" width={16} />}
+                          onClick={addRedirectUri}
+                          sx={{ textTransform: 'none' }}
                         >
-                          <Iconify icon="mdi:minus-circle-outline" width={20} height={20} />
-                        </IconButton>
-                      </Stack>
-                    ))}
-                    {redirectUris.length < 10 && (
-                      <Button
-                        size="small"
-                        startIcon={<Iconify icon="mdi:plus" width={16} />}
-                        onClick={addRedirectUri}
-                        sx={{ textTransform: 'none' }}
-                      >
-                        Add redirect URI
-                      </Button>
-                    )}
-                  </Box>
+                          Add redirect URI
+                        </Button>
+                      )}
+                    </Box>
+                  )}
                   <TextField
                     label="Privacy policy URL"
                     fullWidth

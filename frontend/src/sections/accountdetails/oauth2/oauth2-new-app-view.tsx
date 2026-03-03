@@ -45,13 +45,21 @@ const optionalUrlSchema = z.union([z.literal(''), z.string().url('Must be a vali
 
 const createAppSchema = z.object({
   name: z.string().min(1, 'Application name is required.'),
-  redirectUris: z
-    .array(z.string().url('Invalid redirect URI'))
-    .min(1, 'At least one redirect URI is required.'),
+  redirectUris: z.array(z.string().url('Invalid redirect URI')).optional(),
+  allowedGrantTypes: z.array(z.string()).optional(),
   allowedScopes: z.array(z.string()).min(1, 'At least one scope must be selected.'),
   homepageUrl: optionalUrlSchema,
   privacyPolicyUrl: optionalUrlSchema,
   termsOfServiceUrl: optionalUrlSchema,
+}).refine((data) => {
+  const grantTypes = data.allowedGrantTypes || ['authorization_code', 'refresh_token'];
+  if (grantTypes.includes('authorization_code')) {
+    return data.redirectUris && data.redirectUris.length >= 1;
+  }
+  return true;
+}, {
+  message: 'At least one redirect URI is required when Authorization Code grant type is enabled.',
+  path: ['redirectUris'],
 });
 
 export function OAuth2NewAppView() {
@@ -111,7 +119,8 @@ export function OAuth2NewAppView() {
 
     const validation = createAppSchema.safeParse({
       name: name.trim(),
-      redirectUris: uris,
+      redirectUris: uris.length > 0 ? uris : undefined,
+      allowedGrantTypes: allowedGrantTypes.length > 0 ? allowedGrantTypes : undefined,
       allowedScopes,
       homepageUrl: homepageUrl.trim(),
       privacyPolicyUrl: privacyPolicyUrl.trim(),
@@ -128,7 +137,7 @@ export function OAuth2NewAppView() {
       const body: CreateOAuth2AppRequest = {
         name: name.trim(),
         description: description.trim() || undefined,
-        redirectUris: uris,
+        redirectUris: uris.length > 0 ? uris : undefined,
         allowedGrantTypes: allowedGrantTypes.length > 0 ? allowedGrantTypes : undefined,
         allowedScopes,
         homepageUrl: homepageUrl.trim() || undefined,
@@ -391,54 +400,6 @@ export function OAuth2NewAppView() {
           />
 
           <Box>
-            <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, mb: 1 }}>
-              Redirect URIs{' '}
-              <Typography component="span" color="error">
-                *
-              </Typography>
-            </Typography>
-            <Typography
-              sx={{
-                fontSize: '0.75rem',
-                color: theme.palette.text.secondary,
-                display: 'block',
-                mb: 1.5,
-              }}
-            >
-              At least one callback URL is required. HTTPS is required in production environments.
-            </Typography>
-            {redirectUris.map((uri, index) => (
-              <Stack direction="row" spacing={1.5} key={index} sx={{ mb: 1.5 }}>
-                <TextField
-                  fullWidth
-                  size="small"
-                  placeholder="https://yourapp.com/callback"
-                  value={uri}
-                  onChange={(e) => setRedirectUriAt(index, e.target.value)}
-                  sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
-                />
-                <IconButton
-                  onClick={() => removeRedirectUri(index)}
-                  disabled={redirectUris.length <= 1}
-                  size="small"
-                >
-                  <Iconify icon="mdi:minus-circle-outline" width={20} height={20} />
-                </IconButton>
-              </Stack>
-            ))}
-            {redirectUris.length < 10 && (
-              <Button
-                size="small"
-                startIcon={<Iconify icon="mdi:plus" width={16} height={16} />}
-                onClick={addRedirectUri}
-                sx={{ textTransform: 'none' }}
-              >
-                Add redirect URI
-              </Button>
-            )}
-          </Box>
-
-          <Box>
             <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, mb: 1.5 }}>
               Grant types
             </Typography>
@@ -461,6 +422,56 @@ export function OAuth2NewAppView() {
               ))}
             </FormGroup>
           </Box>
+
+          {allowedGrantTypes.includes('authorization_code') && (
+            <Box>
+              <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, mb: 1 }}>
+                Redirect URIs{' '}
+                <Typography component="span" color="error">
+                  *
+                </Typography>
+              </Typography>
+              <Typography
+                sx={{
+                  fontSize: '0.75rem',
+                  color: theme.palette.text.secondary,
+                  display: 'block',
+                  mb: 1.5,
+                }}
+              >
+                At least one callback URL is required. HTTPS is required in production environments.
+              </Typography>
+              {redirectUris.map((uri, index) => (
+                <Stack direction="row" spacing={1.5} key={index} sx={{ mb: 1.5 }}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    placeholder="https://yourapp.com/callback"
+                    value={uri}
+                    onChange={(e) => setRedirectUriAt(index, e.target.value)}
+                    sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
+                  />
+                  <IconButton
+                    onClick={() => removeRedirectUri(index)}
+                    disabled={redirectUris.length <= 1}
+                    size="small"
+                  >
+                    <Iconify icon="mdi:minus-circle-outline" width={20} height={20} />
+                  </IconButton>
+                </Stack>
+              ))}
+              {redirectUris.length < 10 && (
+                <Button
+                  size="small"
+                  startIcon={<Iconify icon="mdi:plus" width={16} height={16} />}
+                  onClick={addRedirectUri}
+                  sx={{ textTransform: 'none' }}
+                >
+                  Add redirect URI
+                </Button>
+              )}
+            </Box>
+          )}
 
           <Box>
             <Typography sx={{ fontSize: '0.875rem', fontWeight: 600, mb: 1 }}>
