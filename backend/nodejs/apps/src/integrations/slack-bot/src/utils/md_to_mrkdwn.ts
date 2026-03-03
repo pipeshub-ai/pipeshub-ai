@@ -20,6 +20,26 @@
  * Code spans and code blocks are protected from transformation.
  */
 
+/**
+ * Decode HTML numeric and named entities to their character equivalents.
+ * Handles &#xNN; (hex), &#NN; (decimal), and common named entities.
+ */
+export function decodeHtmlEntities(text: string): string {
+  if (!text) return text;
+  return text.replace(/&(#?)(x?)([0-9a-zA-Z]+);/g, (_m, hash, hex, code) => {
+    if (!hash) {
+      const named: Record<string, string> = {
+        amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+        nbsp: " ", copy: "\u00A9", reg: "\u00AE", euro: "\u20AC",
+      };
+      return named[code.toLowerCase()] ?? `&${code};`;
+    }
+    const num = hex ? parseInt(code, 16) : parseInt(code, 10);
+    if (Number.isFinite(num)) return String.fromCharCode(num);
+    return "";
+  });
+}
+
 interface ConvertOptions {
     /** Preserve original link markdown instead of converting to Slack format */
     preserveLinks?: boolean;
@@ -315,6 +335,9 @@ interface ConvertOptions {
   
     text = text.replace(/\x00PLACEHOLDER_(\d+)\x00/g, (_m, idx) => placeholders[+idx] ?? "");
   
+    // ── Step 4b: Decode any HTML entities ──────────────────────────────────────────
+    text = decodeHtmlEntities(text);
+  
     // ── Step 5: Clean up excess blank lines ────────────────────────────
   
     text = text.replace(/\n{3,}/g, "\n\n");
@@ -388,20 +411,7 @@ export function markdownToText(md: string): string {
   s = s.replace(/<\/?[^>]+(>|$)/g, "");
 
   // 16) Decode HTML entities (common ones + numeric)
-  s = s.replace(/&(#?)(x?)([0-9a-zA-Z]+);/g, (_m, hash, hex, code) => {
-    if (!hash) {
-      // named entities
-      const named: Record<string, string> = {
-        amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
-        nbsp: " ", copy: "©", reg: "®", euro: "€",
-      };
-      return named[code.toLowerCase()] ?? `&${code};`;
-    }
-    // numeric entities
-    const num = hex ? parseInt(code, 16) : parseInt(code, 10);
-    if (Number.isFinite(num)) return String.fromCharCode(num);
-    return "";
-  });
+  s = decodeHtmlEntities(s);
 
   // 17) Remove leftover backticks, tildes, and excessive punctuation leftover
   s = s.replace(/[`~]{1,}/g, "");
