@@ -2608,8 +2608,8 @@ async def get_connector_instance(
                 oauth_configs[auth_type]["authorizeUrl"] = auth.get("authorizeUrl", "")
                 oauth_configs[auth_type]["tokenUrl"] = auth.get("tokenUrl", "")
                 connector["config"]["auth"]["oauthConfigs"] = oauth_configs
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error merging stored config auth: {e}", exc_info=True)
 
         return {
             "success": True,
