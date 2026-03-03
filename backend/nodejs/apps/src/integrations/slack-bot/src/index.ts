@@ -2,16 +2,19 @@ import { config } from "dotenv";
 config(); // Load environment variables first
 
 import { json, urlencoded, Request, Response } from "express";
-import { connect } from "./utils/db";
+import { connect, dropLegacyThreadBotIndex } from "./utils/db";
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
-
 import axios from "axios";
 import { markdownToBlocks } from "@tryfabric/mack";
+import { marked } from "marked";
+// Disable marked's email mangling to prevent HTML entity encoding of email addresses.
+// @tryfabric/mack uses the same marked instance internally.
+marked.setOptions({ mangle: false } as any);
 import app from "./slackApp";
 import receiver from "./receiver";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
-import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
+import { markdownToSlackMrkdwn, markdownToText, decodeHtmlEntities } from "./utils/md_to_mrkdwn";
 
 import {
   type SlackBotConfig,
@@ -72,9 +75,36 @@ const STREAM_FAILURE_MESSAGE =
 const TABLE_STREAMING_PAUSED_HINT =
   "\n\n:hourglass_flowing_sand:";
 
+// User info cache to avoid redundant API calls
+interface CachedUserInfo {
+  userRecord: SlackUserRecord | undefined;
+  timestamp: number;
+}
 
+const userInfoCache = new Map<string, CachedUserInfo>();
+const USER_INFO_CACHE_TTL_MS = 60 * 60 * 1000; // 60 minutes
 
+function getCachedUserInfo(userId: string): SlackUserRecord | undefined | null {
+  const cached = userInfoCache.get(userId);
+  if (!cached) {
+    return null; // Not in cache
+  }
 
+  const now = Date.now();
+  if (now - cached.timestamp > USER_INFO_CACHE_TTL_MS) {
+    userInfoCache.delete(userId); // Expired
+    return null;
+  }
+
+  return cached.userRecord;
+}
+
+function setCachedUserInfo(userId: string, userRecord: SlackUserRecord | undefined): void {
+  userInfoCache.set(userId, {
+    userRecord,
+    timestamp: Date.now(),
+  });
+}
 
 interface StreamStartResult {
   ts?: string;
@@ -1058,7 +1088,7 @@ async function buildFinalSlackChunks(
         if (segment.content.trim().length === 0) {
           continue;
         }
-        const markdownBlocks = await markdownToBlocks(segment.content);
+        const markdownBlocks = await markdownToBlocks(decodeHtmlEntities(segment.content));
         const normalizedMarkdownBlocks = normalizeSlackBlocksForLimits(markdownBlocks);
         combinedBlocks.push(...normalizedMarkdownBlocks);
         continue;
@@ -1103,6 +1133,31 @@ function sanitizeSlackLabelValue(value?: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function formatMentionedUser(
+  userRecord: SlackUserRecord | undefined,
+  userId: string,
+): string {
+  const email = sanitizeSlackLabelValue(userRecord?.profile?.email);
+
+  // Skip mentions without email - replace with empty string
+  if (!email) {
+    return "";
+  }
+
+  const displayNameCandidates = [
+    userRecord?.profile?.display_name,
+    userRecord?.real_name,
+    userRecord?.profile?.real_name,
+    userRecord?.name,
+  ];
+  const displayName =
+    displayNameCandidates
+      .map((nameCandidate) => sanitizeSlackLabelValue(nameCandidate))
+      .find((nameCandidate) => Boolean(nameCandidate)) || "User";
+
+  return `${displayName} (Email: ${email}, Slack user id: ${userId})`;
+}
+
 function formatSlackUserLabel(userRecord: SlackUserRecord | undefined, userId: string): string {
   const email = sanitizeSlackLabelValue(userRecord?.profile?.email);
   const displayNameCandidates = [
@@ -1126,6 +1181,69 @@ function formatSlackUserLabel(userRecord: SlackUserRecord | undefined, userId: s
     return email;
   }
   return `User (${userId})`;
+}
+
+async function resolveMentionsInText(
+  text: string | undefined,
+  typedClient: TypedSlackClient,
+): Promise<string> {
+  if (!text) {
+    return "";
+  }
+
+  // Extract all user IDs from mentions
+  const mentionRegex = /<@([A-Z0-9]+)>/g;
+  const userIds = new Set<string>();
+  let match: RegExpExecArray | null;
+
+  while ((match = mentionRegex.exec(text)) !== null) {
+    const userId = match[1];
+    if (userId) {
+      userIds.add(userId);
+    }
+  }
+
+  if (userIds.size === 0) {
+    return text.replace(/\s+/g, " ").trim();
+  }
+
+  // Build replacement map for all mentions
+  const replacements = new Map<string, string>();
+
+  for (const userId of userIds) {
+    const mention = `<@${userId}>`;
+
+    // Check cache first
+    const cachedUserRecord = getCachedUserInfo(userId);
+
+    if (cachedUserRecord !== null) {
+      // Cache hit (includes cached failures as undefined)
+      const formattedUser = formatMentionedUser(cachedUserRecord, userId);
+      replacements.set(mention, formattedUser);
+      continue;
+    }
+
+    // Cache miss - fetch from API
+    try {
+      const userInfoResult = await typedClient.users.info({ user: userId });
+      const userRecord = userInfoResult.user;
+      setCachedUserInfo(userId, userRecord);
+      const formattedUser = formatMentionedUser(userRecord, userId);
+      replacements.set(mention, formattedUser);
+    } catch (error) {
+      console.error(`Failed to resolve Slack user mention for ${userId}:`, error);
+      setCachedUserInfo(userId, undefined);
+      replacements.set(mention, "");
+    }
+  }
+
+  // Replace all mentions in text
+  let result = text;
+  for (const [mention, replacement] of replacements) {
+    result = result.replace(new RegExp(mention.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), replacement);
+  }
+
+  return result.replace(/\s+/g, " ").trim();
 }
 
 function inferThreadMessageSpeaker(
@@ -1220,27 +1338,28 @@ async function fetchPriorThreadMessages(
   });
 }
 
-function buildThreadContextualQuery(
+async function buildThreadContextualQuery(
   query: string,
   priorMessages: SlackMessagePayload[],
   userLabelsById: Map<string, string>,
-): string {
-  const contextLines = priorMessages
-    .map((message) => {
-      const normalizedText = sanitizeSlackThreadMessageText(message.text);
+  typedClient: TypedSlackClient,
+): Promise<string> {
+  const contextLines = await Promise.all(
+    priorMessages.map(async (message) => {
+      const normalizedText = await resolveMentionsInText(message.text, typedClient);
       if (!normalizedText) {
         return null;
       }
       const speaker = inferThreadMessageSpeaker(message, userLabelsById);
       return `${speaker}: ${normalizedText}`;
     })
-    .filter((line): line is string => Boolean(line));
+  ).then(lines => lines.filter((line): line is string => Boolean(line)));
 
   if (contextLines.length === 0) {
     return query;
   }
 
-  return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message: ${query}`;
+  return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message/query: ${query}`;
 }
 
 async function buildQueryWithThreadContext(
@@ -1255,7 +1374,7 @@ async function buildQueryWithThreadContext(
   try {
     const priorMessages = await fetchPriorThreadMessages(typedClient, typedMessage);
     const userLabelsById = await resolveThreadUserLabels(typedClient, priorMessages);
-    return buildThreadContextualQuery(query, priorMessages, userLabelsById);
+    return await buildThreadContextualQuery(query, priorMessages, userLabelsById, typedClient);
   } catch (error) {
     console.error("Failed to fetch Slack thread context:", error);
     return query;
@@ -1335,7 +1454,6 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
 }
 
 
-
 function buildChatStreamUrl(
   conversationId: string | null,
   agentId: string | null,
@@ -1363,7 +1481,6 @@ async function resolveSlackBotForEvent(
   if (matchedFromRequestContext) {
     return matchedFromRequestContext;
   }
-
   return null;
 }
 
@@ -1431,6 +1548,7 @@ async function processSlackMessage(
   const conversation = await getFromDatabase(
     threadId,
     currentBotId,
+    email,
   );
   let streamTs: string | null = null;
   let streamStopped = false;
@@ -1844,7 +1962,8 @@ async function processSlackMessage(
       await saveToDatabase({
         threadId: threadId,
         conversationId,
-        botId: currentBotId
+        botId: currentBotId,
+        email: email,
       });
     }
 
@@ -1873,7 +1992,6 @@ async function processSlackMessage(
     const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
     const answerBody = botResponse.content || "" ;
     const finalChunks = await buildFinalSlackChunks(answerBody);
-    
     
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
     
@@ -1994,7 +2112,7 @@ app.message(async ({ message, client, context }) => {
     return;
   }
 
-  const query = typedMessage.text?.replace(SLACK_MENTION_REGEX, "").trim();
+  const query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
     return;
   }
@@ -2022,8 +2140,7 @@ app.event("app_mention", async ({ event, client, context }) => {
   if (isIgnoredSlackMessage(typedMessage, typedContext)) {
     return;
   }
-
-  const query = typedMessage.text?.replace(SLACK_MENTION_REGEX, "").trim();
+  const query = await resolveMentionsInText(typedMessage.text, typedClient);
   if (!query) {
     return;
   }
@@ -2048,14 +2165,17 @@ app.event("app_mention", async ({ event, client, context }) => {
   }
 });
 
-
-
 (async () => {
   await connect();
+
+  // Drop legacy threadId + botId index if it exists
+  await dropLegacyThreadBotIndex();
+
   try {
     await refreshSlackBotRegistry({ force: true });
   } catch (error) {
     console.error("Initial Slack bot registry refresh failed:", error);
+    throw error;
   }
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");
