@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import traceback
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -315,6 +315,7 @@ class Jira:
         """
         self.client = JiraDataSource(client)
         self._site_url = None  # Cache for site URL
+        self._field_schema_cache: Optional[Dict[str, Dict[str, str]]] = None  # Cache for field schema mapping
 
     def _handle_response(
         self,
@@ -615,6 +616,215 @@ class Jira:
 
         return None
 
+    def _normalize_field_name(self, field_name: str) -> str:
+        """Normalize field name to a semantic identifier.
+
+        Converts field names like "Story Points" to "story_points" for deterministic access.
+
+        Args:
+            field_name: Original field name (e.g., "Story Points", "Issue Type")
+
+        Returns:
+            Normalized field name (e.g., "story_points", "issue_type")
+        """
+        if not field_name:
+            return field_name
+
+        # Convert to lowercase and replace spaces/special chars with underscores
+        normalized = re.sub(r'[^\w\s-]', '', field_name)  # Remove special chars except word chars, spaces, hyphens
+        normalized = re.sub(r'[\s-]+', '_', normalized)  # Replace spaces and hyphens with underscores
+        normalized = normalized.lower().strip('_')  # Lowercase and trim underscores
+
+        return normalized
+
+    async def _fetch_and_cache_field_schema(self) -> Dict[str, Dict[str, str]]:
+        """Fetch and cache JIRA field schema mapping.
+
+        Returns a mapping of:
+        - field_id -> field_name (e.g., "customfield_10063" -> "Story Points")
+        - field_id -> normalized_name (e.g., "customfield_10063" -> "story_points")
+
+        Returns:
+            Dictionary mapping field_id to {"name": field_name, "normalized": normalized_name}
+        """
+        if self._field_schema_cache is not None:
+            return self._field_schema_cache
+
+        try:
+            response = await self.client.get_fields()
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                fields_data = response.json()
+                if not isinstance(fields_data, list):
+                    logger.warning(f"Expected list of fields, got {type(fields_data)}")
+                    self._field_schema_cache = {}
+                    return self._field_schema_cache
+
+                # Build mapping: field_id -> {name, normalized}
+                field_map: Dict[str, Dict[str, str]] = {}
+                for field in fields_data:
+                    field_id = field.get("id")
+                    field_name = field.get("name", "")
+                    if field_id and field_name:
+                        normalized_name = self._normalize_field_name(field_name)
+                        field_map[field_id] = {
+                            "name": field_name,
+                            "normalized": normalized_name
+                        }
+
+                self._field_schema_cache = field_map
+                logger.info(f"Cached {len(field_map)} JIRA field mappings")
+                return self._field_schema_cache
+            else:
+                logger.warning(f"Failed to fetch field schema: HTTP {response.status}")
+                self._field_schema_cache = {}
+                return self._field_schema_cache
+
+        except Exception as e:
+            logger.error(f"Error fetching field schema: {e}")
+            self._field_schema_cache = {}
+            return self._field_schema_cache
+
+    def _normalize_issue_fields(
+        self,
+        issue_data: Dict[str, Any],
+        field_schema: Dict[str, Dict[str, str]]
+    ) -> Dict[str, Any]:
+        """Normalize custom fields in issue data to semantic names.
+
+        This method:
+        1. Preserves original customfield_xxx fields for backward compatibility
+        2. Adds normalized semantic names (e.g., "story_points") alongside customfield_xxx
+        3. Maps both field_id and field_name to normalized names
+        4. Ensures all custom fields are preserved and accessible
+
+        Args:
+            issue_data: Issue data dictionary (may contain "fields" key)
+            field_schema: Field schema mapping from _fetch_and_cache_field_schema()
+
+        Returns:
+            Issue data with normalized fields added
+        """
+        if not isinstance(issue_data, dict):
+            return issue_data
+
+        # Handle top-level issue with "fields" key
+        if "fields" in issue_data and isinstance(issue_data["fields"], dict):
+            fields = issue_data["fields"]
+            normalized_fields = dict(fields)  # Start with copy of original fields
+
+            # Map custom fields to normalized names
+            # This ensures both customfield_xxx and normalized names are available
+            for field_id, field_info in field_schema.items():
+                if field_id in fields:
+                    normalized_name = field_info["normalized"]
+                    field_value = fields[field_id]
+                    
+                    # Add normalized name alongside original customfield_xxx
+                    # This allows both "customfield_10063" and "story_points" to work
+                    normalized_fields[normalized_name] = field_value
+                    
+                    # Also add the original field name as a key for better discoverability
+                    # e.g., "Story Points" -> "story_points" but also keep original name
+                    original_field_name = field_info["name"]
+                    if original_field_name and original_field_name != normalized_name:
+                        # Add a human-readable key (e.g., "Story Points" -> "story_points")
+                        # But prioritize normalized_name to avoid duplicates
+                        if original_field_name not in normalized_fields:
+                            normalized_fields[original_field_name] = field_value
+
+            issue_data["fields"] = normalized_fields
+
+        # Handle direct fields dictionary (for nested structures)
+        elif not "fields" in issue_data:
+            # Check if this is a fields dict itself
+            normalized_fields = dict(issue_data)
+            for field_id, field_info in field_schema.items():
+                if field_id in issue_data:
+                    normalized_name = field_info["normalized"]
+                    field_value = issue_data[field_id]
+                    normalized_fields[normalized_name] = field_value
+                    # Also add original field name
+                    original_field_name = field_info["name"]
+                    if original_field_name and original_field_name not in normalized_fields:
+                        normalized_fields[original_field_name] = field_value
+            return normalized_fields
+
+        return issue_data
+
+    def _clean_issue_fields(self, issue: Dict[str, Any]) -> None:
+        """Clean issue fields by removing None customfield_* and empty objects.
+        
+        This is a simple post-processing step that modifies the issue in-place.
+        
+        Args:
+            issue: Issue dictionary to clean (modified in-place)
+        """
+        if not isinstance(issue, dict) or "fields" not in issue:
+            return
+        
+        fields = issue["fields"]
+        if not isinstance(fields, dict):
+            return
+        
+        # Remove None customfield_* fields (biggest bloat source)
+        fields_to_remove = []
+        for field_key, field_value in fields.items():
+            if field_key.startswith("customfield_") and field_value is None:
+                fields_to_remove.append(field_key)
+            # Remove empty comment/worklog objects
+            elif field_key in ["comment", "worklog"]:
+                if isinstance(field_value, dict):
+                    if field_key == "comment" and field_value.get("comments") == []:
+                        fields_to_remove.append(field_key)
+                    elif field_key == "worklog" and field_value.get("worklogs") == []:
+                        fields_to_remove.append(field_key)
+        
+        for field_key in fields_to_remove:
+            del fields[field_key]
+    
+    async def _normalize_issues_in_response(
+        self,
+        response_data: Dict[str, Any],
+        field_schema: Dict[str, Dict[str, str]]
+    ) -> Dict[str, Any]:
+        """Normalize custom fields in a response containing issues.
+
+        Only normalizes fields that have values (not None) to avoid adding back removed fields.
+
+        Args:
+            response_data: Response data (may contain "issues" list or single issue)
+            field_schema: Field schema mapping
+
+        Returns:
+            Response data with normalized fields
+        """
+        if not isinstance(response_data, dict):
+            return response_data
+
+        normalized = dict(response_data)
+
+        # Handle list of issues (from search_issues, get_issues)
+        if "issues" in normalized and isinstance(normalized["issues"], list):
+            for issue in normalized["issues"]:
+                if "fields" in issue and isinstance(issue["fields"], dict):
+                    fields = issue["fields"]
+                    # Only normalize customfield_* fields that exist and are not None
+                    for field_id, field_info in field_schema.items():
+                        if field_id in fields and fields[field_id] is not None:
+                            normalized_name = field_info["normalized"]
+                            fields[normalized_name] = fields[field_id]
+
+        # Handle single issue (from get_issue)
+        elif "fields" in normalized and isinstance(normalized["fields"], dict):
+            fields = normalized["fields"]
+            for field_id, field_info in field_schema.items():
+                if field_id in fields and fields[field_id] is not None:
+                    normalized_name = field_info["normalized"]
+                    fields[normalized_name] = fields[field_id]
+
+        return normalized
+
 
     def _validate_and_fix_jql(self, jql: str) -> Tuple[str, Optional[str]]:
         """Validate and fix common JQL syntax errors.
@@ -729,7 +939,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("accountId", "displayName", "emailAddress")
                     .clean()
                 )
 
@@ -794,7 +1003,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("accountId", "displayName", "emailAddress")
                     .clean()
                 )
 
@@ -960,8 +1168,7 @@ class Jira:
                             "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
                             "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
-                          "issuetype", "created", "updated", "description", "fields", "url")
+
                     .clean()
                 )
 
@@ -1122,8 +1329,6 @@ class Jira:
                             "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
                             "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
-                          "issuetype", "created", "updated", "description", "fields")
                     .clean()
                 )
 
@@ -1186,7 +1391,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("key", "id", "name", "projectTypeKey", "lead", "displayName", "emailAddress", "accountId")
                     .clean()
                 )
 
@@ -1254,7 +1458,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("key", "id", "name", "projectTypeKey", "lead", "displayName", "emailAddress", "accountId")
                     .clean()
                 )
 
@@ -1320,24 +1523,42 @@ class Jira:
             response = await self.client.search_and_reconsile_issues_using_jql_post(
                 jql=jql,
                 maxResults=max_results or 50,
-                # Explicitly request key field to ensure issue keys are returned
-                fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
+                fields=["*all"],  # "*all" requests all fields from the API
             )
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
-                # Clean response: remove redundant fields, keep essential ones
+                # Clean response: remove redundant fields
                 cleaned_data = (
                     ResponseTransformer(data)
                     .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
-                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                            "*.subtask", "*.avatarId", "*.hierarchyLevel",
                             "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
-                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
-                    .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
-                          "priority", "issuetype", "created", "updated", "description", "fields",
-                          "total", "startAt", "maxResults", "nextPageToken", "isLast", "url")
+                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog",
+                            "*.progress", "*.aggregateprogress", "*.aggregatetimeestimate",
+                            "*.aggregatetimespent", "*.workratio", "*.lastViewed", "*.security",
+                            "*.watchCount", "*.isWatching", "*.hasVoted", "*.startAt", "*.maxResults", "*.total")
                     .clean()
                 )
+
+                # Simple post-processing: Remove None customfield_* and empty objects
+                if isinstance(cleaned_data, dict) and "issues" in cleaned_data:
+                    for issue in cleaned_data["issues"]:
+                        self._clean_issue_fields(issue)
+
+                # Normalize custom fields using field schema (only for fields with values)
+                field_schema = await self._fetch_and_cache_field_schema()
+                cleaned_data = await self._normalize_issues_in_response(cleaned_data, field_schema)
+
+                # Ensure pagination fields are preserved at top level
+                if isinstance(cleaned_data, dict):
+                    for field in ["nextPageToken", "isLast", "total", "startAt", "maxResults"]:
+                        if field in data and field not in cleaned_data:
+                            cleaned_data[field] = data[field]
+
+                    # Add next_cursor as alias for nextPageToken
+                    if "nextPageToken" in cleaned_data and cleaned_data["nextPageToken"]:
+                        cleaned_data["next_cursor"] = cleaned_data["nextPageToken"]
 
                 # Add web URLs to issues if available
                 site_url = await self._get_site_url()
@@ -1397,14 +1618,26 @@ class Jira:
                 cleaned_data = (
                     ResponseTransformer(data)
                     .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
-                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                            "*.subtask", "*.avatarId", "*.hierarchyLevel",
                             "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
-                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
-                    .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
-                          "issuetype", "created", "updated", "description", "fields", "labels",
-                          "components", "url")
+                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog",
+                            "*.progress", "*.aggregateprogress", "*.aggregatetimeestimate",
+                            "*.aggregatetimespent", "*.workratio", "*.lastViewed", "*.security",
+                            "*.watchCount", "*.isWatching", "*.hasVoted", "*.startAt", "*.maxResults", "*.total")
                     .clean()
                 )
+
+                # Simple post-processing: Remove None customfield_* and empty objects
+                self._clean_issue_fields(cleaned_data)
+
+                # Normalize custom fields using field schema (only for fields with values)
+                field_schema = await self._fetch_and_cache_field_schema()
+                if "fields" in cleaned_data and isinstance(cleaned_data["fields"], dict):
+                    fields = cleaned_data["fields"]
+                    for field_id, field_info in field_schema.items():
+                        if field_id in fields and fields[field_id] is not None:
+                            normalized_name = field_info["normalized"]
+                            fields[normalized_name] = fields[field_id]
 
                 # Add web URL if available
                 issue_key = cleaned_data.get("key")
@@ -1485,12 +1718,12 @@ class Jira:
 
             # Use the enhanced search endpoint (POST /rest/api/3/search/jql)
             # The standard search endpoint (/rest/api/3/search) has been removed (410 Gone)
+            # Pass ["*all"] to get all fields; passing [] returns only IDs
             logger.info(f"Calling Jira search API with JQL: {fixed_jql}")
             response = await self.client.search_and_reconsile_issues_using_jql_post(
                 jql=fixed_jql,
                 maxResults=maxResults or 50,
-                # Explicitly request key field to ensure issue keys are returned
-                fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
+                fields=["*all"],  # "*all" requests all fields from the API
             )
 
             logger.info(f"Jira search API response status: {response.status}")
@@ -1511,18 +1744,37 @@ class Jira:
                     })
 
                 try:
-                    # Clean response: remove redundant fields, keep essential ones
+                    # Clean response: remove redundant fields
                     cleaned_data = (
                         ResponseTransformer(data)
                         .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
-                                "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                                "*.subtask", "*.avatarId", "*.hierarchyLevel",
                                 "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
-                                "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
-                        .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
-                              "priority", "issuetype", "created", "updated", "description", "fields",
-                              "total", "startAt", "maxResults", "nextPageToken", "isLast", "url")
+                                "*.properties", "*._links", "*.watches", "*.votes", "*.worklog",
+                                "*.progress", "*.aggregateprogress", "*.aggregatetimeestimate",
+                                "*.aggregatetimespent", "*.workratio", "*.lastViewed", "*.security",
+                                "*.watchCount", "*.isWatching", "*.hasVoted", "*.startAt", "*.maxResults", "*.total")
                         .clean()
                     )
+
+                    # Simple post-processing: Remove None customfield_* and empty objects
+                    if isinstance(cleaned_data, dict) and "issues" in cleaned_data:
+                        for issue in cleaned_data["issues"]:
+                            self._clean_issue_fields(issue)
+
+                    # Normalize custom fields using field schema (only for fields with values)
+                    field_schema = await self._fetch_and_cache_field_schema()
+                    cleaned_data = await self._normalize_issues_in_response(cleaned_data, field_schema)
+
+                    # Ensure pagination fields are preserved at top level
+                    if isinstance(cleaned_data, dict):
+                        for field in ["nextPageToken", "isLast", "total", "startAt", "maxResults"]:
+                            if field in data and field not in cleaned_data:
+                                cleaned_data[field] = data[field]
+
+                        # Add next_cursor as alias for nextPageToken
+                        if "nextPageToken" in cleaned_data and cleaned_data["nextPageToken"]:
+                            cleaned_data["next_cursor"] = cleaned_data["nextPageToken"]
 
                     # Add web URLs to issues if available
                     site_url = await self._get_site_url()
@@ -1658,8 +1910,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("id", "body", "author", "created", "updated",
-                          "accountId", "displayName", "emailAddress")
                     .clean()
                 )
                 return True, json.dumps({
@@ -1713,8 +1963,6 @@ class Jira:
                     .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
-                    .keep("comments", "id", "body", "author", "created", "updated",
-                          "accountId", "displayName", "emailAddress")
                     .clean()
                 )
                 return True, json.dumps({
@@ -1869,8 +2117,6 @@ class Jira:
                 .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                         "*.active", "*.timeZone", "*.locale", "*.accountType",
                         "*.properties", "*._links", "*.subtask", "*.avatarId", "*.hierarchyLevel")
-                .keep("key", "id", "name", "projectTypeKey", "lead", "issueTypes", "components",
-                      "displayName", "emailAddress", "accountId", "description")
                 .clean()
             )
 
