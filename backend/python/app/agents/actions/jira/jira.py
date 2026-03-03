@@ -633,9 +633,8 @@ class Jira:
         # Convert to lowercase and replace spaces/special chars with underscores
         normalized = re.sub(r'[^\w\s-]', '', field_name)  # Remove special chars except word chars, spaces, hyphens
         normalized = re.sub(r'[\s-]+', '_', normalized)  # Replace spaces and hyphens with underscores
-        normalized = normalized.lower().strip('_')  # Lowercase and trim underscores
 
-        return normalized
+        return normalized.lower().strip('_')
 
     async def _fetch_and_cache_field_schema(self) -> Dict[str, Dict[str, str]]:
         """Fetch and cache JIRA field schema mapping.
@@ -685,104 +684,46 @@ class Jira:
             self._field_schema_cache = {}
             return self._field_schema_cache
 
-    def _normalize_issue_fields(
-        self,
-        issue_data: Dict[str, Any],
-        field_schema: Dict[str, Dict[str, str]]
-    ) -> Dict[str, Any]:
-        """Normalize custom fields in issue data to semantic names.
+    def _clean_issue_fields(self, issue: Dict[str, Any]) -> Dict[str, Any]:
+        """Clean issue fields by removing None customfield_* and empty objects.
 
-        This method:
-        1. Preserves original customfield_xxx fields for backward compatibility
-        2. Adds normalized semantic names (e.g., "story_points") alongside customfield_xxx
-        3. Maps both field_id and field_name to normalized names
-        4. Ensures all custom fields are preserved and accessible
+        This is a simple post-processing step that returns a new cleaned dictionary.
 
         Args:
-            issue_data: Issue data dictionary (may contain "fields" key)
-            field_schema: Field schema mapping from _fetch_and_cache_field_schema()
+            issue: Issue dictionary to clean
 
         Returns:
-            Issue data with normalized fields added
-        """
-        if not isinstance(issue_data, dict):
-            return issue_data
-
-        # Handle top-level issue with "fields" key
-        if "fields" in issue_data and isinstance(issue_data["fields"], dict):
-            fields = issue_data["fields"]
-            normalized_fields = dict(fields)  # Start with copy of original fields
-
-            # Map custom fields to normalized names
-            # This ensures both customfield_xxx and normalized names are available
-            for field_id, field_info in field_schema.items():
-                if field_id in fields:
-                    normalized_name = field_info["normalized"]
-                    field_value = fields[field_id]
-                    
-                    # Add normalized name alongside original customfield_xxx
-                    # This allows both "customfield_10063" and "story_points" to work
-                    normalized_fields[normalized_name] = field_value
-                    
-                    # Also add the original field name as a key for better discoverability
-                    # e.g., "Story Points" -> "story_points" but also keep original name
-                    original_field_name = field_info["name"]
-                    if original_field_name and original_field_name != normalized_name:
-                        # Add a human-readable key (e.g., "Story Points" -> "story_points")
-                        # But prioritize normalized_name to avoid duplicates
-                        if original_field_name not in normalized_fields:
-                            normalized_fields[original_field_name] = field_value
-
-            issue_data["fields"] = normalized_fields
-
-        # Handle direct fields dictionary (for nested structures)
-        elif not "fields" in issue_data:
-            # Check if this is a fields dict itself
-            normalized_fields = dict(issue_data)
-            for field_id, field_info in field_schema.items():
-                if field_id in issue_data:
-                    normalized_name = field_info["normalized"]
-                    field_value = issue_data[field_id]
-                    normalized_fields[normalized_name] = field_value
-                    # Also add original field name
-                    original_field_name = field_info["name"]
-                    if original_field_name and original_field_name not in normalized_fields:
-                        normalized_fields[original_field_name] = field_value
-            return normalized_fields
-
-        return issue_data
-
-    def _clean_issue_fields(self, issue: Dict[str, Any]) -> None:
-        """Clean issue fields by removing None customfield_* and empty objects.
-        
-        This is a simple post-processing step that modifies the issue in-place.
-        
-        Args:
-            issue: Issue dictionary to clean (modified in-place)
+            New issue dictionary with cleaned fields
         """
         if not isinstance(issue, dict) or "fields" not in issue:
-            return
-        
+            return issue
+
         fields = issue["fields"]
         if not isinstance(fields, dict):
-            return
-        
+            return issue
+
+        # Create a copy to avoid modifying the original
+        cleaned_issue = dict(issue)
+        cleaned_fields = dict(fields)
+
         # Remove None customfield_* fields (biggest bloat source)
         fields_to_remove = []
-        for field_key, field_value in fields.items():
+        for field_key, field_value in cleaned_fields.items():
             if field_key.startswith("customfield_") and field_value is None:
                 fields_to_remove.append(field_key)
             # Remove empty comment/worklog objects
-            elif field_key in ["comment", "worklog"]:
-                if isinstance(field_value, dict):
-                    if field_key == "comment" and field_value.get("comments") == []:
-                        fields_to_remove.append(field_key)
-                    elif field_key == "worklog" and field_value.get("worklogs") == []:
-                        fields_to_remove.append(field_key)
-        
+            elif field_key in ["comment", "worklog"] and isinstance(field_value, dict):
+                if field_key == "comment" and field_value.get("comments") == []:
+                    fields_to_remove.append(field_key)
+                elif field_key == "worklog" and field_value.get("worklogs") == []:
+                    fields_to_remove.append(field_key)
+
         for field_key in fields_to_remove:
-            del fields[field_key]
-    
+            del cleaned_fields[field_key]
+
+        cleaned_issue["fields"] = cleaned_fields
+        return cleaned_issue
+
     async def _normalize_issues_in_response(
         self,
         response_data: Dict[str, Any],
@@ -1543,8 +1484,9 @@ class Jira:
 
                 # Simple post-processing: Remove None customfield_* and empty objects
                 if isinstance(cleaned_data, dict) and "issues" in cleaned_data:
-                    for issue in cleaned_data["issues"]:
-                        self._clean_issue_fields(issue)
+                    cleaned_data["issues"] = [
+                        self._clean_issue_fields(issue) for issue in cleaned_data["issues"]
+                    ]
 
                 # Normalize custom fields using field schema (only for fields with values)
                 field_schema = await self._fetch_and_cache_field_schema()
@@ -1557,7 +1499,7 @@ class Jira:
                             cleaned_data[field] = data[field]
 
                     # Add next_cursor as alias for nextPageToken
-                    if "nextPageToken" in cleaned_data and cleaned_data["nextPageToken"]:
+                    if cleaned_data.get("nextPageToken"):
                         cleaned_data["next_cursor"] = cleaned_data["nextPageToken"]
 
                 # Add web URLs to issues if available
@@ -1628,16 +1570,11 @@ class Jira:
                 )
 
                 # Simple post-processing: Remove None customfield_* and empty objects
-                self._clean_issue_fields(cleaned_data)
+                cleaned_data = self._clean_issue_fields(cleaned_data)
 
                 # Normalize custom fields using field schema (only for fields with values)
                 field_schema = await self._fetch_and_cache_field_schema()
-                if "fields" in cleaned_data and isinstance(cleaned_data["fields"], dict):
-                    fields = cleaned_data["fields"]
-                    for field_id, field_info in field_schema.items():
-                        if field_id in fields and fields[field_id] is not None:
-                            normalized_name = field_info["normalized"]
-                            fields[normalized_name] = fields[field_id]
+                cleaned_data = await self._normalize_issues_in_response(cleaned_data, field_schema)
 
                 # Add web URL if available
                 issue_key = cleaned_data.get("key")
@@ -1759,8 +1696,9 @@ class Jira:
 
                     # Simple post-processing: Remove None customfield_* and empty objects
                     if isinstance(cleaned_data, dict) and "issues" in cleaned_data:
-                        for issue in cleaned_data["issues"]:
-                            self._clean_issue_fields(issue)
+                        cleaned_data["issues"] = [
+                            self._clean_issue_fields(issue) for issue in cleaned_data["issues"]
+                        ]
 
                     # Normalize custom fields using field schema (only for fields with values)
                     field_schema = await self._fetch_and_cache_field_schema()
@@ -1773,7 +1711,7 @@ class Jira:
                                 cleaned_data[field] = data[field]
 
                         # Add next_cursor as alias for nextPageToken
-                        if "nextPageToken" in cleaned_data and cleaned_data["nextPageToken"]:
+                        if cleaned_data.get("nextPageToken"):
                             cleaned_data["next_cursor"] = cleaned_data["nextPageToken"]
 
                     # Add web URLs to issues if available
