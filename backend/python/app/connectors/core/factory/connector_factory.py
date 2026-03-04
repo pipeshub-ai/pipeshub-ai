@@ -225,15 +225,11 @@ class ConnectorFactory:
             **kwargs
         )
 
-        sync_strategy = None
         config = await config_service.get_config(f"/services/connectors/{connector_id}/config")
-        if config:
-            sync_strategy = config.get("sync", {}).get("selectedStrategy")
-
-
+        sync_strategy = (config or {}).get("sync", {}).get("selectedStrategy")
         if connector:
             try:
-                if sync_strategy and sync_strategy == SyncStrategy.MANUAL.value:
+                if sync_strategy == SyncStrategy.MANUAL.value:
                     logger.info(f"Skipping sync for {name} {connector_id} connector because selected strategy is MANUAL")
                 else:
                     await sync_task_manager.start_sync(connector_id, connector.run_sync())
