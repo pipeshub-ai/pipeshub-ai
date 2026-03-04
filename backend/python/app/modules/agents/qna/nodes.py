@@ -6176,7 +6176,7 @@ async def react_agent_node(
     """
     ReAct agent node with cascading tool execution support.
 
-    This node uses LangGraph's create_react_agent which naturally handles
+    This node uses LangChain's create_agent which naturally handles
     cascading tool calls - one tool's output can be used as input to the next.
 
     The ReAct agent automatically:
@@ -6191,8 +6191,7 @@ async def react_agent_node(
     query = state.get("query", "")
 
     try:
-        from langchain.agents import create_agent
-        from langchain_core.messages import HumanMessage, ToolMessage
+        from langchain_core.messages import ToolMessage
 
         from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
 
@@ -6208,18 +6207,19 @@ async def react_agent_node(
         # Build system prompt
         system_prompt = _build_react_system_prompt(state, log)
 
-        # Create ReAct agent - automatically handles cascading tool calls
+        # ReAct agent via langchain.agents (create_react_agent moved here from langgraph.prebuilt)
+        from langchain.agents import create_agent
+
         agent = create_agent(
-            model=llm,
-            tools=tools,
+            llm,
+            tools,
+            system_prompt=system_prompt,
         )
 
-        # Build messages with system prompt
-        from langchain_core.messages import SystemMessage
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=query)
-        ]
+        # Build message history with conversation context (same as planner path).
+        # This is critical for follow-ups like "yes execute" where parameters were
+        # provided in previous turns.
+        messages = _build_planner_messages(state, query, log)
 
         # Execute agent - handles cascading automatically
         final_messages = []
@@ -6269,155 +6269,54 @@ async def react_agent_node(
 
         # Get retrieval results (internal knowledge) - may have been populated by retrieval tool
         final_results = state.get("final_results", [])
-        virtual_record_map = state.get("virtual_record_id_to_result", {})
-        tool_records = state.get("tool_records", [])
         has_retrieval = bool(final_results)
 
         # Separate retrieval tools from API tools
         # retrieval_tools = [r for r in tool_results if "retrieval" in r.get("tool_name", "").lower()]
-        api_tools = [r for r in tool_results if "retrieval" not in r.get("tool_name", "").lower()]
-
         # Extract final response from messages
         response = _extract_final_response(final_messages, log)
 
-        # If we have retrieval results, we need to use stream_llm_response for proper citation handling
-        # This matches how the old system (respond_node) handles responses with citations
-        # The ReAct agent may have generated a response, but we need to ensure citations are properly formatted
-        if final_results or tool_results:
-            # Build messages for response generation (similar to respond_node)
-            # This ensures proper citation formatting like the old system
-            messages = create_response_messages(state)
-
-            # Add tool results context (same as old system)
-            if tool_results or final_results:
-                context = _build_tool_results_context(tool_results, final_results)
-                if context.strip():
-                    if messages and isinstance(messages[-1], HumanMessage):
-                        messages[-1].content += context
-                    else:
-                        messages.append(HumanMessage(content=context))
-
-            # Use stream_llm_response for proper citation handling (same as old system)
-            # This ensures citations are properly extracted and formatted
-            try:
-                answer_text = ""
-                citations = []
-                reason = None
-                confidence = None
-                reference_data = []
-                block_numbers = []
-
-                async for stream_event in stream_llm_response(
-                    llm=llm,
-                    messages=messages,
-                    final_results=final_results,
-                    logger=log,
-                    target_words_per_chunk=1,
-                    mode="json",
-                    virtual_record_id_to_result=virtual_record_map,
-                    records=tool_records,
-                ):
-                    event_type = stream_event.get("event")
-                    event_data = stream_event.get("data", {})
-
-                    # Stream events to writer
-                    safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
-
-                    if event_type == "complete":
-                        answer_text = event_data.get("answer", "")
-                        citations = event_data.get("citations", [])
-                        reason = event_data.get("reason")
-                        confidence = event_data.get("confidence")
-                        reference_data = event_data.get("referenceData", [])
-                        block_numbers = event_data.get("blockNumbers", [])
-
-                # Use the response from stream_llm_response (has proper citations)
-                # Fallback to ReAct agent response if stream_llm_response didn't provide one
-                if answer_text:
-                    response = answer_text
-                elif not response:
-                    # If ReAct agent didn't generate a response either, use fallback
-                    response = "I completed the task, but couldn't generate a response."
-
-                # Determine answerMatchType
-                if has_retrieval and api_tools:
-                    answer_match_type = "Derived From Blocks"  # Mixed: retrieval + API
-                elif has_retrieval:
-                    answer_match_type = "Derived From Blocks"  # Only retrieval
-                elif api_tools:
-                    answer_match_type = "Derived From Tool Execution"  # Only API tools
-                else:
-                    answer_match_type = "Direct Answer"  # No tools used
-
-                # Build completion data with proper response type (same format as old system)
-                completion_data = {
-                    "answer": response,
-                    "citations": citations,
-                    "confidence": confidence or "High",
-                    "answerMatchType": answer_match_type
-                }
-
-                if block_numbers:
-                    completion_data["blockNumbers"] = block_numbers
-                if reference_data:
-                    completion_data["referenceData"] = reference_data
-                if reason:
-                    completion_data["reason"] = reason
-
-                state["completion_data"] = completion_data
-
-            except Exception as e:
-                log.error(f"Response generation with citations failed: {e}", exc_info=True)
-                # Fallback: extract citations from ReAct agent response
-                citations, block_numbers, reference_data, answer_match_type = _extract_citations_and_metadata(
-                    tool_results, final_results, has_retrieval, api_tools, response, log, virtual_record_map
-                )
-                state["completion_data"] = {
-                    "answer": response,
-                    "citations": citations,
-                    "blockNumbers": block_numbers,
-                    "referenceData": reference_data,
-                    "confidence": "High",
-                    "answerMatchType": answer_match_type
-                }
-        else:
-            # No tool results or retrieval - use extracted response directly
-            citations, block_numbers, reference_data, answer_match_type = _extract_citations_and_metadata(
-                tool_results, final_results, has_retrieval, api_tools, response, log, virtual_record_map
-            )
-            state["completion_data"] = {
-                "answer": response,
-                "citations": citations,
-                "blockNumbers": block_numbers,
-                "referenceData": reference_data,
-                "confidence": "High",
-                "answerMatchType": answer_match_type
-            }
-
-        # Update state
+        # Hand off final formatting to respond_node so output matches chatbot format.
+        # react_agent_node only performs tool orchestration and state preparation.
         state["response"] = response
         state["tool_results"] = tool_results
         state["all_tool_results"] = tool_results
+        state["reflection_decision"] = "respond_success"
+        state["reflection"] = {
+            "decision": "respond_success",
+            "confidence": "High",
+            "reasoning": "ReAct tool orchestration completed; final formatting delegated to respond_node.",
+        }
+
+        execution_plan = state.get("execution_plan") or {}
+        # Temporary guard: do not let respond_node take direct-answer shortcut
+        # after ReAct handoff; this avoids fallback-style responses when ReAct
+        # decides not to call tools in the first pass.
+        execution_plan["can_answer_directly"] = False
+        state["execution_plan"] = execution_plan
 
         duration_ms = (time.perf_counter() - start_time) * 1000
         log.info(f"⚡ ReAct Agent: {duration_ms:.0f}ms, {len(tool_results)} tool calls")
+        log.info(
+            "ReAct handoff -> respond_node | can_answer_directly=%s | has_retrieval=%s | response_len=%d",
+            execution_plan["can_answer_directly"],
+            has_retrieval,
+            len(response or ""),
+        )
 
     except ImportError as e:
         log.error(f"ReAct agent dependencies not available: {e}")
-        # Fallback to direct response
-        state["response"] = "ReAct agent is not available. Please use the standard agent."
-        state["completion_data"] = {
-            "answer": state["response"],
-            "confidence": "Low",
-            "answerMatchType": "Error"
+        state["error"] = {
+            "status": "error",
+            "message": "ReAct agent is not available. Please use the standard agent.",
+            "status_code": 500,
         }
     except Exception as e:
         log.error(f"ReAct agent error: {e}", exc_info=True)
-        state["response"] = f"I encountered an error: {str(e)}"
-        state["completion_data"] = {
-            "answer": state["response"],
-            "confidence": "Low",
-            "answerMatchType": "Error"
+        state["error"] = {
+            "status": "error",
+            "message": f"I encountered an error: {str(e)}",
+            "status_code": 500,
         }
 
     return state
@@ -6454,6 +6353,38 @@ def _build_react_system_prompt(state: ChatState, log: logging.Logger) -> str:
    - For API tool results: Transform data into professional markdown
    - For retrieval/internal knowledge: Include inline citations like [R1-1] after facts
    - Store technical IDs in referenceData for follow-up queries
+
+## Execution Policy (MANDATORY)
+
+1. **Execute, don't ask for permission**:
+   - If the user intent is an action (create/update/delete/extend/schedule/send), call tools directly.
+   - Do NOT ask "should I proceed?" or ask for reconfirmation if parameters are already present in the conversation.
+
+2. **Use conversation context**:
+   - Resolve parameters from previous turns and reference data before asking questions.
+   - For follow-ups like "yes execute", continue with previously confirmed parameters.
+
+3. **Never claim tools are unavailable when they are provided**:
+   - If tools are present in this run, do NOT say integrations are not connected.
+   - Only report unavailable tools when tool execution actually fails with an explicit error.
+
+4. **Ask clarifying questions only when strictly required**:
+   - Ask only if a required parameter cannot be inferred from current + previous messages.
+   - If dates are natural language (e.g., "this week", "end of March"), infer concrete dates using user's timezone and proceed.
+
+5. **Date normalization is mandatory before tool calls**:
+   - Convert all relative date phrases to absolute ISO dates (`YYYY-MM-DD`) before calling tools.
+   - Use user's timezone and current time from context to resolve ranges.
+   - Do NOT ask user to provide dates when relative dates are resolvable.
+   - Common mappings:
+     - "this month" => start/end of current month in user timezone
+     - "next month" => start/end of next month in user timezone
+     - "end of this month" => last day of current month
+     - "end of next month" => last day of next month
+     - "this week" => current week boundaries in user timezone
+   - For operations like:
+     - "get events ending this month and extend till end of next month"
+       resolve internally and execute tools directly without asking for date confirmation.
 """
 
     # Check for retrieval results and API tools

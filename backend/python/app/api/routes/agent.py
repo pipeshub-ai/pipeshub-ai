@@ -20,7 +20,12 @@ from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
-from app.modules.agents.qna.graph import agent_graph
+from app.modules.agents.qna.graph import agent_graph, modern_agent_graph
+
+# ReAct agent (LangGraph prebuilt): single-node graph with tool selection + cascading tool calls.
+# Set USE_LEGACY_AGENT_GRAPH=1 to use the multi-node planner/execute/reflect graph instead.
+USE_REACT_AGENT = not (__import__("os").environ.get("USE_LEGACY_AGENT_GRAPH", "").strip().lower() in ("1", "true", "yes"))
+active_agent_graph = modern_agent_graph if USE_REACT_AGENT else agent_graph
 from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
     check_memory_health,
@@ -160,6 +165,96 @@ def _get_user_context(request: Request) -> Dict[str, Any]:
         "orgId": org_id,
         "sendUserInfo": request.query_params.get("sendUserInfo", True),
     }
+
+
+def _extract_tool_names_for_routing(query_info: Dict[str, Any]) -> List[str]:
+    """Extract flattened tool names from query payload (tools or toolsets)."""
+    names: List[str] = []
+
+    def _normalize_tool_name(tool_obj: Any) -> Optional[str]:
+        """Return canonical tool name in `app.tool` format when possible."""
+        if isinstance(tool_obj, str):
+            return tool_obj
+        if not isinstance(tool_obj, dict):
+            return None
+
+        # Prefer fully-qualified keys first
+        for k in ("fullName", "full_name", "toolFullName"):
+            v = tool_obj.get(k)
+            if isinstance(v, str) and v:
+                return v
+
+        # Fallback to plain name
+        name = tool_obj.get("name")
+        if not isinstance(name, str) or not name:
+            return None
+        if "." in name:
+            return name
+
+        # Rebuild app.tool from additional fields if available
+        app_name = tool_obj.get("app") or tool_obj.get("appName") or tool_obj.get("toolsetName")
+        if isinstance(app_name, str) and app_name:
+            return f"{app_name}.{name}"
+        return name
+
+    # Direct tools list (legacy / explicit payloads)
+    for t in query_info.get("tools", []) or []:
+        normalized = _normalize_tool_name(t)
+        if normalized:
+            names.append(normalized)
+
+    # Toolsets list (graph-based payloads)
+    for toolset in query_info.get("toolsets", []) or []:
+        if not isinstance(toolset, dict):
+            continue
+        toolset_name = toolset.get("name")
+        for t in toolset.get("tools", []) or []:
+            normalized = _normalize_tool_name(t)
+            if not normalized and isinstance(t, dict):
+                # Last-resort fallback using toolset name as app prefix
+                tn = t.get("name")
+                if isinstance(toolset_name, str) and isinstance(tn, str) and tn:
+                    normalized = f"{toolset_name}.{tn}"
+            if normalized:
+                names.append(normalized)
+
+    # De-duplicate while preserving order
+    seen = set()
+    deduped: List[str] = []
+    for n in names:
+        if n and n not in seen:
+            deduped.append(n)
+            seen.add(n)
+    return deduped
+
+
+def _select_agent_graph_for_query(query_info: Dict[str, Any], logger: Logger):
+    """
+    Hybrid graph selection:
+    - If global ReAct is disabled via env -> always legacy graph.
+    - If enabled: use ReAct only for Outlook-only or Outlook+Confluence tools.
+      Otherwise use legacy graph.
+    """
+    if not USE_REACT_AGENT:
+        logger.info("Agent graph route: legacy (USE_LEGACY_AGENT_GRAPH enabled)")
+        return agent_graph
+
+    tool_names = _extract_tool_names_for_routing(query_info)
+    apps = {name.split(".", 1)[0] for name in tool_names if isinstance(name, str) and "." in name}
+
+    # ReAct only for:
+    # - only outlook
+    # - outlook + confluence
+    use_react = bool(apps) and ("outlook" in apps) and apps.issubset({"outlook", "confluence"})
+
+    selected = modern_agent_graph if use_react else agent_graph
+    logger.info(
+        "Agent graph route: %s | apps=%s | tools=%d",
+        "react" if use_react else "legacy",
+        sorted(apps),
+        len(tool_names),
+    )
+    return selected
 
 
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> Dict[str, Any]:
@@ -690,8 +785,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
             org_info,
         )
 
+        graph_to_use = _select_agent_graph_for_query(query_info.model_dump(), logger)
         config = {"recursion_limit": 30}
-        final_state = await agent_graph.ainvoke(initial_state, config=config)
+        final_state = await graph_to_use.ainvoke(initial_state, config=config)
         final_state = auto_optimize_state(final_state, logger)
 
         # Check memory health
@@ -752,6 +848,7 @@ async def stream_response(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: Dict[str, Any] = None,
+    selected_graph=None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
     initial_state = build_initial_state(
@@ -769,7 +866,8 @@ async def stream_response(
     config = {"recursion_limit": 30}
     chunk_count = 0
 
-    async for chunk in agent_graph.astream(initial_state, config=config, stream_mode="custom"):
+    graph_to_use = selected_graph or active_agent_graph
+    async for chunk in graph_to_use.astream(initial_state, config=config, stream_mode="custom"):
         chunk_count += 1
         if isinstance(chunk, dict) and "event" in chunk:
             event_type = chunk.get('event', 'unknown')
@@ -800,7 +898,16 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
 
         return StreamingResponse(
             stream_response(
-                query_info.model_dump(), enriched_user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info
+                query_info.model_dump(),
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                selected_graph=_select_agent_graph_for_query(query_info.model_dump(), logger),
             ),
             media_type="text/event-stream",
         )
@@ -2072,8 +2179,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             org_info,
         )
 
+        graph_to_use = _select_agent_graph_for_query(query_info, logger)
         config = {"recursion_limit": 50}
-        final_state = await agent_graph.ainvoke(initial_state, config=config)
+        final_state = await graph_to_use.ainvoke(initial_state, config=config)
 
         # Handle errors
         if final_state.get("error"):
@@ -2369,7 +2477,16 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         return StreamingResponse(
             stream_response(
-                query_info, enriched_user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info
+                query_info,
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                selected_graph=_select_agent_graph_for_query(query_info, logger),
             ),
             media_type="text/event-stream",
         )
