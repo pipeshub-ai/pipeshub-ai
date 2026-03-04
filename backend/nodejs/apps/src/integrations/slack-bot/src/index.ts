@@ -1129,17 +1129,22 @@ function splitSlackBlocksByLimit(
   const result: any[][] = [];
   let currentChunk: any[] = [];
   let currentSize = 0;
+  let currentChunkHasTable = false;
   for (const block of blocks) {
     const blockSize = getBlockPayloadTextSize(block);
+    const isTable = block.type === "table";
     const wouldExceedCount = currentChunk.length >= maxBlocksPerMessage;
     const wouldExceedSize = currentSize + blockSize > maxTotalTextPerMessage;
-    if (currentChunk.length > 0 && (wouldExceedCount || wouldExceedSize)) {
+    const wouldExceedTableLimit = isTable && currentChunkHasTable;
+    if (currentChunk.length > 0 && (wouldExceedCount || wouldExceedSize || wouldExceedTableLimit)) {
       result.push(currentChunk);
       currentChunk = [];
       currentSize = 0;
+      currentChunkHasTable = false;
     }
     currentChunk.push(block);
     currentSize += blockSize;
+    if (isTable) currentChunkHasTable = true;
   }
   if (currentChunk.length > 0) {
     result.push(currentChunk);
