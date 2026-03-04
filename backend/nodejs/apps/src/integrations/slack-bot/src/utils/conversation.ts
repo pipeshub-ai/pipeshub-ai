@@ -4,16 +4,18 @@ interface SaveToDatabaseParams {
   threadId: string;
   conversationId: string;
   botId: string;
+  email: string;
 }
 
 export const saveToDatabase = async ({
   threadId,
   conversationId,
   botId,
+  email,
 }: SaveToDatabaseParams): Promise<void> => {
   try {
     await Conversation.updateOne(
-      { threadId, botId },
+      { threadId, botId, email },
       { $set: { conversationId } },
       { upsert: true },
     );
@@ -26,9 +28,10 @@ export const saveToDatabase = async ({
 export const getFromDatabase = async (
   threadId: string,
   botId: string,
+  email: string,
 ): Promise<string | null> => {
   try {
-    const record = await Conversation.findOne({ threadId, botId });
+    const record = await Conversation.findOne({ threadId, botId, email });
     if (record) {
       return record.conversationId;
     } else {

@@ -1637,7 +1637,8 @@ def count_tokens(messages: List[Any], message_contents: List[list[dict[str, Any]
     return current_message_tokens, new_tokens
 
 
-FRAGMENT_WORD_COUNT = 4
+
+FRAGMENT_WORD_COUNT = 8
 
 
 def extract_start_end_text(snippet: str) -> Tuple[str, str]:
@@ -1665,7 +1666,7 @@ def extract_start_end_text(snippet: str) -> Tuple[str, str]:
     start_text_begin = first_match.start() + leading_spaces
     start_text_end = start_text_begin + len(start_text)
 
-    # --- Find end_text: last matching segment after start_text_end, last 4 words ---
+    # --- Find end_text: last matching segment after start_text_end, last words ---
     # Search backwards by scanning from start_text_end onward for the *last* match
     remaining = snippet[start_text_end:]
 

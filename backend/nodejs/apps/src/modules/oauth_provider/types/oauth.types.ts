@@ -106,7 +106,7 @@ export interface UserInfoResponse {
 export interface CreateOAuthAppRequest {
   name: string
   description?: string
-  redirectUris: string[]
+  redirectUris?: string[]
   allowedGrantTypes?: string[]
   allowedScopes: string[]
   homepageUrl?: string

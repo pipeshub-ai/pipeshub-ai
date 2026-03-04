@@ -83,6 +83,7 @@
     "jwks-rsa": "^3.1.0",
     "kafkajs": "^2.2.4",
     "mongodb": "^6.14.2",
+    "marked": "^16.4.2",
     "mongoose": "^8.9.2",
     "morgan": "^1.10.1",
     "msal-node": "^0.0.1-security",

@@ -26,7 +26,6 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App
-from app.connectors.core.registry.auth_builder import AuthBuilder, AuthField, AuthType
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
     ConnectorBuilder,
@@ -151,18 +150,6 @@ class WebApp(App):
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
-    .with_auth([
-        AuthBuilder.type(AuthType.CUSTOM).fields([
-            AuthField(
-                name="url",
-                display_name="Website URL",
-                field_type="URL",
-                required=True,
-                max_length=2000,
-                description="The URL of the website to crawl (e.g., https://example.com)"
-            )
-        ])
-    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/web.svg")
         .with_realtime_support(False)
@@ -172,13 +159,13 @@ class WebApp(App):
             "setup"
         ))
         .with_scheduled_config(True, 1440)  # Daily sync
-        # .add_sync_custom_field(CustomField(
-        #     name="url",
-        #     display_name="Website URL",
-        #     field_type="TEXT",
-        #     required=True,
-        #     description="The URL of the website to crawl (e.g., https://example.com)"
-        # ))
+        .add_sync_custom_field(CustomField(
+            name="url",
+            display_name="Website URL",
+            field_type="TEXT",
+            required=True,
+            description="The URL of the website to crawl (e.g., https://example.com)"
+        ))
         .add_sync_custom_field(CustomField(
             name="type",
             display_name="Crawl Type",
@@ -391,16 +378,12 @@ class WebConnector(BaseConnector):
                 raise ValueError("Web connector configuration not found")
 
             sync_config = config.get("sync", {})
-            auth_config = config.get("auth", {})
-            if not auth_config:
-                self.logger.error("❌ WebPage auth config not found")
-                raise ValueError("WebPage auth config not found")
 
             if not sync_config:
                 self.logger.error("❌ WebPage sync config not found")
                 raise ValueError("WebPage sync config not found")
 
-            url = auth_config.get("url")
+            url = sync_config.get("url")
             if not url:
                 self.logger.error("❌ WebPage url not found")
                 raise ValueError("WebPage url not found")
