@@ -2075,7 +2075,6 @@ async function processSlackMessage(
     const citationBlocks = buildCitationSources(botResponse.citations);
     const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
     const answerBody = botResponse.content || "" ;
-    console.log('answerBodyyyyyyyyyyyyyyyyyy', answerBody);
     const finalChunks = await buildFinalSlackChunks(answerBody);
     
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
