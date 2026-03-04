@@ -5506,21 +5506,25 @@ def _build_tool_results_context(
         parts.append("\n## 🔧 API Tool Results\n\n")
         parts.append("Transform data into professional markdown.\n")
         parts.append("Store IDs/keys in referenceData.\n")
-        parts.append(
-            "**CRITICAL for Jira/Issue Data**: When creating tables or lists of issues:\n"
-            "- ✅ INCLUDE: Fields that are user-actionable, business-relevant, or provide meaningful content. "
-            "Include ALL custom fields that have values (story points, epic link, sprint, etc.). "
-            "ALWAYS include email addresses for assignee, reporter, creator when available in the data. "
-            "Use the principle: 'Would a stakeholder find this useful?'\n"
-            "- ❌ EXCLUDE: System metadata (rank, workRatio, security), technical objects (watches/votes/worklog), "
-            "aggregate calculations, internal IDs, and empty/null fields (unless commonly expected like Due Date)\n"
-            "- For single issue: Show all relevant fields as detailed field-value pairs. "
-            "Format people as 'Name (email@example.com)' when email is available.\n"
-            "- For multiple issues: Create clean, scannable tables prioritizing most important fields, "
-            "then supporting fields, then custom fields with values. Include email addresses in people columns.\n"
-            "- Custom fields: Include them by their readable name (normalized or original field name)\n"
-            "- People fields: Always show email addresses when present - they're important for contact\n\n"
-        )
+
+        # Check if any Jira tools exist and add prompt once
+        has_jira_tool = any("jira" in r.get('tool_name', '').lower() for r in non_retrieval)
+        if has_jira_tool:
+            parts.append(
+                "**CRITICAL for Jira/Issue Data**: When creating tables or lists of issues:\n"
+                "- ✅ INCLUDE: Fields that are user-actionable, business-relevant, or provide meaningful content. "
+                "Include ALL custom fields that have values (story points, epic link, sprint, etc.). "
+                "ALWAYS include email addresses for assignee, reporter, creator when available in the data. "
+                "Use the principle: 'Would a stakeholder find this useful?'\n"
+                "- ❌ EXCLUDE: System metadata (rank, workRatio, security), technical objects (watches/votes/worklog), "
+                "aggregate calculations, internal IDs, and empty/null fields (unless commonly expected like Due Date)\n"
+                "- For single issue: Show all relevant fields as detailed field-value pairs. "
+                "Format people as 'Name (email@example.com)' when email is available.\n"
+                "- For multiple issues: Create clean, scannable tables prioritizing most important fields, "
+                "then supporting fields, then custom fields with values. Include email addresses in people columns.\n"
+                "- Custom fields: Include them by their readable name (normalized or original field name)\n"
+                "- People fields: Always show email addresses when present - they're important for contact\n\n"
+            )
 
         for r in non_retrieval:
             tool_name = r.get('tool_name', 'unknown')
@@ -5533,6 +5537,8 @@ def _build_tool_results_context(
 
             parts.append(f"### {tool_name}\n")
             parts.append(f"```json\n{content_str}\n```\n\n")
+    
+
 
     parts.append("\n---\n## 📝 RESPONSE INSTRUCTIONS\n\n")
 

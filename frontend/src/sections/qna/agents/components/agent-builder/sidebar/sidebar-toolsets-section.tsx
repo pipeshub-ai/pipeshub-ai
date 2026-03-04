@@ -84,41 +84,38 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   const loading = loadingProp;
   const normalizedActiveToolsetTypes = activeToolsetTypes.map(normalizeToolsetTypeKey);
 
-  // Track OAuth window reference
+  // Track OAuth window and polling interval
   const oauthWindowRef = useRef<Window | null>(null);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Listen for OAuth completion and refresh toolsets
+  // Listen for OAuth completion via postMessage and refresh toolsets
   useEffect(() => {
     const handleOAuthMessage = async (event: MessageEvent) => {
-      // Check if the message is from OAuth completion
-      if (event.data?.type === 'oauth-success' || event.data?.status === 'success') {
-        console.log('✅ OAuth authentication completed, refreshing toolsets...');
-        
-        // Refresh toolsets to get updated authentication status
-        await refreshToolsets();
-        
-        // Show success message
-        setSnackbar({
-          open: true,
-          message: 'Authentication successful! Toolset is now ready to use.',
-        });
-        
-        // Clean up polling if exists
+      // Only act on explicit oauth-success messages to avoid false positives
+      if (event.data?.type === 'oauth-success') {
+        console.log('✅ OAuth authentication completed via postMessage, refreshing toolsets...');
+
+        // Clean up any existing poll since the popup already reported success
         if (pollIntervalRef.current) {
           clearInterval(pollIntervalRef.current);
           pollIntervalRef.current = null;
         }
         oauthWindowRef.current = null;
+
+        await refreshToolsets();
+
+        setSnackbar({
+          open: true,
+          message: 'Authentication successful! Toolset is now ready to use.',
+        });
       }
     };
 
-    // Listen for messages from OAuth popup
     window.addEventListener('message', handleOAuthMessage);
 
     return () => {
       window.removeEventListener('message', handleOAuthMessage);
-      
+
       // Clean up polling interval on unmount
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);
@@ -172,47 +169,68 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   const handleConfigureClick = async (toolset: ToolsetWithStatus) => {
     const authType = (toolset as any).authType || '';
     const instanceId = (toolset as any).instanceId || '';
-    
+
     if (authType === 'OAUTH') {
-      // For OAuth: Call authorize API
       try {
         const result = await ToolsetApiService.getInstanceOAuthAuthorizationUrl(instanceId);
-        if (result.success && result.authorizationUrl) {
-          // Open OAuth window
-          const width = 600;
-          const height = 700;
-          const left = window.screen.width / 2 - width / 2;
-          const top = window.screen.height / 2 - height / 2;
-          const popup = window.open(
-            result.authorizationUrl,
-            'oauth',
-            `width=${width},height=${height},left=${left},top=${top}`
-          );
-          
-          // Store reference to popup window
-          oauthWindowRef.current = popup;
-          
-          // Fallback: Poll for window closure (in case postMessage doesn't work)
-          pollIntervalRef.current = setInterval(async () => {
-            if (!popup || popup.closed) {
-              // Clean up interval
-              if (pollIntervalRef.current) {
-                clearInterval(pollIntervalRef.current);
-                pollIntervalRef.current = null;
-              }
-              oauthWindowRef.current = null;
-              
-              // Refresh toolsets when window closes (user may have completed auth)
-              console.log('OAuth window closed, refreshing toolsets...');
-              await refreshToolsets();
-            }
-          }, 1000); // Check every second
-        } else {
+
+        if (!result.success || !result.authorizationUrl) {
           setSnackbar({
             open: true,
             message: 'Failed to start OAuth authentication. Please try again.',
           });
+          return;
         }
+
+        // Open the OAuth popup
+        const width = 600;
+        const height = 700;
+        const left = window.screen.width / 2 - width / 2;
+        const top = window.screen.height / 2 - height / 2;
+        const popup = window.open(
+          result.authorizationUrl,
+          'oauth_popup',
+          `width=${width},height=${height},left=${left},top=${top},scrollbars=yes,resizable=yes`
+        );
+
+        if (!popup) {
+          setSnackbar({
+            open: true,
+            message: 'Popup blocked. Please allow popups for this site and try again.',
+          });
+          return;
+        }
+
+        popup.focus();
+        oauthWindowRef.current = popup;
+
+        // ── Poll exclusively for popup closure ──
+        // Do NOT call refreshToolsets until popup.closed is confirmed true.
+        // This prevents stale-status refreshes while OAuth is still in progress.
+        let statusChecked = false;
+
+        // Clean up any pre-existing interval before starting a new one
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+        }
+
+        pollIntervalRef.current = setInterval(async () => {
+          // Only act once the popup has genuinely closed
+          if (!popup.closed || statusChecked) return;
+
+          // Popup is confirmed closed — mark immediately so subsequent ticks are no-ops
+          statusChecked = true;
+          clearInterval(pollIntervalRef.current!);
+          pollIntervalRef.current = null;
+          oauthWindowRef.current = null;
+
+          // Give the backend a moment to finish processing the OAuth callback
+          // before refreshing, so the auth status is up-to-date.
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+
+          console.log('OAuth window closed, refreshing toolsets...');
+          await refreshToolsets();
+        }, 500); // Poll at 500 ms for a snappier response after popup closes
       } catch (error) {
         console.error('Error starting OAuth:', error);
         setSnackbar({

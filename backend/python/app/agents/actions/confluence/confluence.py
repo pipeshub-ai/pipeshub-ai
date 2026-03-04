@@ -873,9 +873,19 @@ class Confluence:
             results = data.get("results", [])
             total = data.get("totalSize", len(results))
 
+            # Extract base URL from API response _links.base (e.g., "https://pipeshub.atlassian.net/wiki")
+            # This is the most reliable way to get the correct base URL
+            response_links = data.get("_links", {})
+            base_url = response_links.get("base", "")
+            
+            # Fallback to site_url if base_url is not available
+            if not base_url:
+                base_url = await self._get_site_url()
+                if base_url:
+                    base_url = f"{base_url}/wiki"
+
             # Normalise results into a clean, LLM-friendly structure
-            # and inject web URLs using the site base URL
-            site_url = await self._get_site_url()
+            # and inject web URLs using the base URL from API response
             cleaned: list = []
             for item in results:
                 content = item.get("content") or {}
@@ -887,16 +897,23 @@ class Confluence:
                 space_key    = space_info.get("key", "")
                 space_name   = space_info.get("name", "")
 
-                # Prefer the webui link from the API response; fall back to constructing it
+                # Construct web URL using the webui link from API response
+                # The webui link is relative (e.g., "/spaces/SD/pages/257130498/Holidays+2026")
+                # Combine it with the base URL from _links.base
                 webui = ""
-                links = content.get("_links") or {}
-                if links.get("webui"):
-                    if site_url:
-                        webui = site_url + links["webui"]
-                    else:
-                        webui = links["webui"]
-                elif site_url and content_id and space_key:
-                    webui = f"{site_url}/wiki/spaces/{space_key}/pages/{content_id}"
+                content_links = content.get("_links") or {}
+                webui_path = content_links.get("webui", "")
+                
+                if webui_path and base_url:
+                    # Combine base URL with the relative webui path
+                    # webui_path already starts with "/spaces/", so just combine
+                    webui = base_url.rstrip("/") + webui_path
+                elif base_url and content_id and space_key:
+                    # Fallback: construct URL manually if webui path is not available
+                    webui = f"{base_url.rstrip('/')}/spaces/{space_key}/pages/{content_id}"
+                elif webui_path:
+                    # Last resort: use webui path as-is if no base URL available
+                    webui = webui_path
 
                 entry: Dict[str, Any] = {
                     "id": content_id,
