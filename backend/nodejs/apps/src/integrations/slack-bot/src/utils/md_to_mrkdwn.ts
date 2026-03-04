@@ -322,10 +322,13 @@ interface ConvertOptions {
     text = text.replace(/<\/?(br|p|div|span|em|strong|b|i|u|s|del|hr)\s*\/?>/gi, "");
   
     // ── Step 4: Restore placeholders ───────────────────────────────────
-  
+
     // Loop to resolve nested placeholders (e.g. bold wrapping inline code)
-    while (/\x00PLACEHOLDER_(\d+)\x00/.test(text)) {
+    // Max iterations prevent infinite loop if placeholder content contains placeholder pattern
+    let placeholderIterations = 0;
+    while (/\x00PLACEHOLDER_(\d+)\x00/.test(text) && placeholderIterations < 50) {
       text = text.replace(/\x00PLACEHOLDER_(\d+)\x00/g, (_m, idx) => placeholders[+idx] ?? "");
+      placeholderIterations++;
     }
   
     // ── Step 5: Clean up excess blank lines ────────────────────────────
@@ -409,8 +412,6 @@ export function markdownToText(md: string): string {
 
   s = s.replace(/[ \t]{2,}/g, " ");
 
-  // Escape &, <, > for Slack AFTER all markdown stripping,
-  // so characters inside code blocks/spans aren't double-escaped.
   s = s.replace(/&amp;/g, '&amp;amp;');
   s = s.replace(/&lt;/g, '&amp;lt;');
   s = s.replace(/&gt;/g, '&amp;gt;');
