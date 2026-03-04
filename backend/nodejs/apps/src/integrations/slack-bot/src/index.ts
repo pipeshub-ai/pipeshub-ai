@@ -5,7 +5,6 @@ import { json, urlencoded, Request, Response } from "express";
 import { connect, dropLegacyThreadBotIndex } from "./utils/db";
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
 import axios from "axios";
-import { markdownToBlocks } from "@tryfabric/mack";
 import { marked } from "marked";
 // Disable marked's email mangling to prevent HTML entity encoding of email addresses.
 // @tryfabric/mack uses the same marked instance internally.
@@ -14,7 +13,7 @@ import app from "./slackApp";
 import receiver from "./receiver";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
-import { markdownToSlackMrkdwn, markdownToText, decodeHtmlEntities } from "./utils/md_to_mrkdwn";
+import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
 
 import {
   type SlackBotConfig,
@@ -1088,7 +1087,14 @@ async function buildFinalSlackChunks(
         if (segment.content.trim().length === 0) {
           continue;
         }
-        const markdownBlocks = await markdownToBlocks(decodeHtmlEntities(segment.content));
+        let slackMrkdwn = markdownToSlackMrkdwn(segment.content);
+        const markdownBlocks = [{
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": slackMrkdwn
+          }
+        }];
         const normalizedMarkdownBlocks = normalizeSlackBlocksForLimits(markdownBlocks);
         combinedBlocks.push(...normalizedMarkdownBlocks);
         continue;
@@ -1991,6 +1997,7 @@ async function processSlackMessage(
     const citationBlocks = buildCitationSources(botResponse.citations);
     const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
     const answerBody = botResponse.content || "" ;
+    console.log('answerBodyyyyyyyyyyyyyyyyyy', answerBody);
     const finalChunks = await buildFinalSlackChunks(answerBody);
     
     const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
@@ -1998,13 +2005,13 @@ async function processSlackMessage(
     if (streamTs) {
       await stopSlackStream();
       if (firstFinalChunk) {
-        try {
-          await typedClient.chat.update({
-            channel: typedMessage.channel!,
-            ts: streamTs,
-            text: "",
-            blocks: firstFinalChunk,
-          });
+          try {
+            await typedClient.chat.update({
+              channel: typedMessage.channel!,
+              ts: streamTs,
+              text: "",
+              blocks: firstFinalChunk,
+            });
           for (const remainingChunk of remainingFinalChunks) {
             await postThreadChunkMessage(remainingChunk);
           }
@@ -2038,7 +2045,6 @@ async function processSlackMessage(
               await postThreadChunkMessage(citationChunk);
             }
             replacedMessageSuccessfully = true;
-
           } catch (replacementError) {
             console.error(
               "Error replacing failed streamed Slack message, sending fallback error message:",
