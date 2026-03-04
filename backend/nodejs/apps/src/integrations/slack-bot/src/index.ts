@@ -5,7 +5,6 @@ import { json, urlencoded, Request, Response } from "express";
 import { connect, dropLegacyThreadBotIndex } from "./utils/db";
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
 import axios from "axios";
-import { markdownToBlocks } from "@tryfabric/mack";
 import { marked } from "marked";
 // Disable marked's email mangling to prevent HTML entity encoding of email addresses.
 // @tryfabric/mack uses the same marked instance internally.
@@ -14,7 +13,7 @@ import app from "./slackApp";
 import receiver from "./receiver";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
-import { markdownToSlackMrkdwn, markdownToText, decodeHtmlEntities } from "./utils/md_to_mrkdwn";
+import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
 
 import {
   type SlackBotConfig,
@@ -64,6 +63,8 @@ const SLACK_MAX_TEXT_LENGTH = 39000;
 const SLACK_STREAM_MARKDOWN_LIMIT = 12000;
 const MAX_SLACK_ERROR_BODY_LENGTH = 64000;
 const SLACK_BLOCKS_PER_MESSAGE_LIMIT = 50;
+/** Slack cumulative limit for block text in one message (~12k); use 10k to stay safe. */
+const SLACK_BLOCKS_TOTAL_TEXT_LIMIT = 10000;
 const SLACK_SECTION_TEXT_LIMIT = 3000;
 const SLACK_SECTION_FIELD_TEXT_LIMIT = 2000;
 const SLACK_SECTION_FIELDS_PER_BLOCK_LIMIT = 10;
@@ -1061,16 +1062,92 @@ function buildSlackTableBlockFromMarkdownSegment(
 }
 
 
+/**
+ * Returns the approximate character count of a block that counts toward Slack's
+ * cumulative blocks payload limit (used for chunking).
+ */
+function getBlockPayloadTextSize(block: any): number {
+  if (!block || typeof block !== "object" || Array.isArray(block)) {
+    return 0;
+  }
+  const type = block.type;
+  if (type === "section") {
+    let size = 0;
+    if (block.text && typeof block.text.text === "string") {
+      size += block.text.text.length;
+    }
+    const fields = block.fields;
+    if (Array.isArray(fields)) {
+      for (const f of fields) {
+        if (f && typeof f.text === "string") size += f.text.length;
+      }
+    }
+    return size;
+  }
+  if (type === "rich_text" && Array.isArray(block.elements)) {
+    let size = 0;
+    for (const el of block.elements) {
+      if (el && Array.isArray(el.elements)) {
+        for (const sub of el.elements) {
+          if (sub && typeof sub.text === "string") size += sub.text.length;
+          if (sub && typeof sub.url === "string") size += sub.url.length;
+        }
+      }
+    }
+    return size;
+  }
+  if (type === "table" && Array.isArray(block.rows)) {
+    let size = 0;
+    for (const row of block.rows) {
+      if (!Array.isArray(row)) continue;
+      for (const cell of row) {
+        if (cell && Array.isArray(cell.elements)) {
+          for (const el of cell.elements) {
+            if (el && Array.isArray(el.elements)) {
+              for (const sub of el.elements) {
+                if (sub && typeof sub.text === "string") size += sub.text.length;
+                if (sub && typeof sub.url === "string") size += sub.url.length;
+              }
+            }
+          }
+        }
+      }
+    }
+    return size;
+  }
+  return JSON.stringify(block).length;
+}
+
 function splitSlackBlocksByLimit(
   blocks: any[],
-  maxBlocksPerMessage: number = SLACK_BLOCKS_PER_MESSAGE_LIMIT
+  maxBlocksPerMessage: number = SLACK_BLOCKS_PER_MESSAGE_LIMIT,
+  maxTotalTextPerMessage: number = SLACK_BLOCKS_TOTAL_TEXT_LIMIT,
 ): any[][] {
   if (blocks.length === 0) {
     return [];
   }
-  const result = [];
-  for (let i = 0; i < blocks.length; i += maxBlocksPerMessage) {
-    result.push(blocks.slice(i, i + maxBlocksPerMessage));
+  const result: any[][] = [];
+  let currentChunk: any[] = [];
+  let currentSize = 0;
+  let currentChunkHasTable = false;
+  for (const block of blocks) {
+    const blockSize = getBlockPayloadTextSize(block);
+    const isTable = block.type === "table";
+    const wouldExceedCount = currentChunk.length >= maxBlocksPerMessage;
+    const wouldExceedSize = currentSize + blockSize > maxTotalTextPerMessage;
+    const wouldExceedTableLimit = isTable && currentChunkHasTable;
+    if (currentChunk.length > 0 && (wouldExceedCount || wouldExceedSize || wouldExceedTableLimit)) {
+      result.push(currentChunk);
+      currentChunk = [];
+      currentSize = 0;
+      currentChunkHasTable = false;
+    }
+    currentChunk.push(block);
+    currentSize += blockSize;
+    if (isTable) currentChunkHasTable = true;
+  }
+  if (currentChunk.length > 0) {
+    result.push(currentChunk);
   }
   return result;
 }
@@ -1088,7 +1165,14 @@ async function buildFinalSlackChunks(
         if (segment.content.trim().length === 0) {
           continue;
         }
-        const markdownBlocks = await markdownToBlocks(decodeHtmlEntities(segment.content));
+        let slackMrkdwn = markdownToSlackMrkdwn(segment.content);
+        const markdownBlocks = [{
+          "type": "section",
+          "text": {
+            "type": "mrkdwn",
+            "text": slackMrkdwn
+          }
+        }];
         const normalizedMarkdownBlocks = normalizeSlackBlocksForLimits(markdownBlocks);
         combinedBlocks.push(...normalizedMarkdownBlocks);
         continue;
@@ -1998,13 +2082,13 @@ async function processSlackMessage(
     if (streamTs) {
       await stopSlackStream();
       if (firstFinalChunk) {
-        try {
-          await typedClient.chat.update({
-            channel: typedMessage.channel!,
-            ts: streamTs,
-            text: "",
-            blocks: firstFinalChunk,
-          });
+          try {
+            await typedClient.chat.update({
+              channel: typedMessage.channel!,
+              ts: streamTs,
+              text: "",
+              blocks: firstFinalChunk,
+            });
           for (const remainingChunk of remainingFinalChunks) {
             await postThreadChunkMessage(remainingChunk);
           }
@@ -2038,7 +2122,6 @@ async function processSlackMessage(
               await postThreadChunkMessage(citationChunk);
             }
             replacedMessageSuccessfully = true;
-
           } catch (replacementError) {
             console.error(
               "Error replacing failed streamed Slack message, sending fallback error message:",
