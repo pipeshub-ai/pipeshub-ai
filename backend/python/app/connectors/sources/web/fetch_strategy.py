@@ -12,6 +12,7 @@ TLS fingerprints / impersonation profiles.
 """
 
 import asyncio
+import contextlib
 import logging
 import random
 from dataclasses import dataclass
@@ -182,11 +183,8 @@ def _sync_curl_cffi_fetch(
         try:
             with Session(impersonate=profile, timeout=timeout) as sess:
                 if not use_http2:
-                    try:
+                    with contextlib.suppress(Exception):
                         sess.curl.setopt(CurlOpt.HTTP_VERSION, 2)  # CURL_HTTP_VERSION_1_1
-                    except Exception:
-                        pass
-
                 resp = sess.get(url, headers=headers, allow_redirects=True)
                 return FetchResponse(
                     status_code=resp.status_code,
