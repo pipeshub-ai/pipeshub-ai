@@ -1,0 +1,21 @@
+[project]
+name = "pipeshub-integration-tests"
+version = "0.2.0"
+description = "Full lifecycle integration test suite for Pipeshub connectors against test.pipeshub.com and remote Neo4j."
+requires-python = ">=3.10"
+dependencies = [
+  "pytest>=7.0",
+  "pytest-asyncio>=0.21.0",
+  "pytest-order>=1.1.0",
+  "python-dotenv>=1.0",
+  "requests>=2.31.0",
+  "neo4j>=5.0.0",
+  "boto3>=1.28.0",
+  "google-cloud-storage>=2.10.0",
+  "azure-storage-blob>=12.17.0",
+  "azure-storage-file-share>=12.13.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
