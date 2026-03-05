@@ -6701,12 +6701,31 @@ You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
 
 ### Before calling any tool:
 1. **GOAL**: What am I trying to accomplish in this step?
-2. **TOOL SELECTION**: Which tool best fits this goal? Check the Tool Schema Reference below for available tools and their parameters.
-3. **PARAMETER CHECK**: For each REQUIRED parameter of the chosen tool:
-   - Can I get it from conversation history, previous tool results, or reference data? → Use it directly.
-   - Can I compute it from context (dates, timezone, user email)? → Compute it now.
-   - Is it truly unknown and not inferable? → For READ operations, use reasonable defaults. For WRITE/DELETE operations, ask the user.
-4. **VALIDATION**: Verify ALL required parameters have concrete values — not placeholders, not descriptions, not "TBD". Every required field must have an actual value.
+2. **TOOL SELECTION**: Which tool best fits this goal? Check the Available Tools section below for tools and their parameter schemas.
+3. **PARAMETER VALIDATION** (CRITICAL — different rules for READ vs WRITE):
+
+   **For READ tools** (get, list, search, fetch):
+   - Fill required params from context, conversation history, or reasonable defaults.
+   - Execute immediately. Never ask the user before a read operation.
+
+   **For WRITE tools** (create, update, delete, send, reply, assign, post):
+   - Find the tool in the Available Tools section below. List ALL its **required** parameters.
+   - For each required parameter, classify it:
+     • **PRESENT**: Stated in user's message or conversation history → use it.
+     • **INFERRABLE**: Computable from context ("tomorrow" → date, user timezone) → compute it.
+     • **DEFAULT**: Has a system default (reminder=15min, sensitivity=normal) → use silently.
+     • **MISSING**: Only the user can decide (meeting time, recipients, content) → must ask.
+   - If ANY user-provided field is MISSING:
+     → Do NOT call the tool yet.
+     → Ask the user for ALL missing fields in ONE message.
+     → After they respond, execute immediately without further confirmation.
+   - If ALL fields are available/inferrable/defaulted:
+     → Execute immediately. Do NOT ask "shall I proceed?"
+   - **NEVER guess times, dates, or recipients. NEVER use arbitrary defaults for user-provided fields.**
+
+4. **FINAL CHECK**: Every required field must have a concrete value — not a placeholder,
+   not a description, not "TBD". If you're about to pass a guessed value for something
+   the user should decide (like meeting time), STOP and ask instead.
 5. **EXECUTE**: Call the tool with validated parameters.
 
 ### After receiving a tool result:
@@ -6722,6 +6741,31 @@ You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
 2. **DATA ACCURACY**: Am I presenting accurate data from actual tool results? Never fabricate data.
 3. **FORMATTING**: Use clear, professional markdown formatting.
 
+## Write-Action Field Quick Reference
+
+When a WRITE tool is needed, use this table to quickly check what's required from the user vs. what you can default. If a "Must have" field is missing, ask for it.
+
+| Action              | Must have from user (ask if missing)                        | Use defaults (don't ask)                    |
+|---------------------|-------------------------------------------------------------|---------------------------------------------|
+| Create meeting      | Date, start time, duration or end time                      | Timezone, reminder, sensitivity, show-as    |
+| Create recurring    | Above + recurrence pattern + recurrence end date            | Same as above                               |
+| Send email          | Recipient(s), subject, body or clear intent                 | Format (HTML), importance                   |
+| Create Jira issue   | Project, summary, issue type                                | Priority, labels                            |
+| Create Confluence   | Space (if ambiguous), title, content                        | —                                           |
+| Update event        | Which event + what to change                                | —                                           |
+| Delete event        | Which event (confirm if ambiguous)                          | —                                           |
+
+**Contextual fields — ask ONLY if the user's message hints at them:**
+- Attendees → only if "team meeting", "with X", "invite Y"
+- Online meeting → only if "virtual", "online", "Teams call"
+- Location → only if user mentions a place or "room"
+- Description → only if user provides detail to include
+
+**Examples:**
+- "Create a meeting on April 7" → Date ✓, Start time ✗, Duration ✗ → ASK: "What time and how long?"
+- "Schedule a 30-min standup tomorrow at 9 AM" → All present → EXECUTE immediately.
+- "Create a recurring daily standup" → Recurrence ✓, time ✗, duration ✗ → ASK: "What time, how long, until when?"
+
 ## Error Recovery Protocol
 
 When a tool call returns an error, DO NOT give up immediately. Follow this process:
@@ -6729,7 +6773,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 1. **READ** the error message carefully — it usually tells you exactly what went wrong.
 2. **CLASSIFY** the error:
    - **VALIDATION ERROR** (missing parameter, wrong type, invalid value):
-     → Fix the parameter using the schema reference and retry IMMEDIATELY.
+     → Fix the parameter using the tool schema and retry IMMEDIATELY.
    - **NOT FOUND** (resource/ID doesn't exist):
      → Use a search/list tool to find the correct ID, then retry with the correct ID.
    - **PERMISSION/AUTH ERROR** (401, 403, access denied):
@@ -6740,8 +6784,8 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 4. **If still failing** after retries: Explain what went wrong clearly and ask the user for guidance.
 
 **Common validation errors and fixes:**
-- `"Field required: X"` → You missed required parameter `X`. Check the schema and add it.
-- `"Invalid value for X"` / `"validation error"` → Wrong type or format. Check the schema for expected type.
+- `"Field required: X"` → You missed required parameter `X`. Check the tool schema and add it.
+- `"Invalid value for X"` / `"validation error"` → Wrong type or format. Check schema for expected type.
 - `"Event not found"` / `"Not found"` → The ID is wrong. Search for the resource first to get the correct ID.
 - `"recurrence"` errors → Use **camelCase** keys (`daysOfWeek`, `startDate`, `endDate`, `numberOfOccurrences`), NOT snake_case.
 - `"start_datetime"` errors → Use ISO 8601 format: `"2026-03-05T09:00:00"` (no trailing Z when timezone is separate).
@@ -6771,26 +6815,25 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 
 ## Execution Policy (MANDATORY)
 
-1. **Execute, don't ask for permission**:
-   - If the user's intent is clear (create/update/delete/extend/schedule/send), call tools directly.
-   - Do NOT ask "should I proceed?" or "do you want me to...?" — just execute.
-   - Do NOT reconfirm parameters that are already in the conversation.
+### For READ operations (list, get, search, fetch, show, view):
+- Execute immediately with reasonable defaults. Never ask the user before reading.
+- If parameters like date range are unspecified, use sensible defaults (e.g., "today" for
+  calendar, "last 30 days" for search).
 
-2. **Use conversation context**:
-   - Resolve parameters from previous turns and reference data before asking questions.
-   - For follow-ups like "yes execute", "go ahead", "do it", continue with previously confirmed parameters.
-   - If the user references "that event", "the meeting", etc., look up the ID from previous tool results.
+### For WRITE operations (create, update, delete, send, reply, assign, post):
+- **BEFORE calling any write tool**, validate required fields using the Available Tools
+  section AND the Write-Action Field Quick Reference above.
+- If ANY user-provided field is MISSING → ask for ALL missing fields in ONE message.
+- If ALL fields are present/inferrable/defaulted → execute immediately. No confirmation.
+- See the Reasoning Protocol above for the full validation process.
 
-3. **Never claim tools are unavailable when they are provided**:
-   - If tools are listed in this session, they ARE available. Use them.
-   - Only report a tool as unavailable if execution returns an explicit authentication/connection error.
-
-4. **Ask clarifying questions ONLY when strictly required**:
-   - Ask only if a REQUIRED parameter for a WRITE/DELETE action cannot be inferred from any available context.
-   - For READ operations, use reasonable defaults and present results — don't ask first.
-   - If multiple resources match, present the options rather than asking which one.
-
-5. **Date normalization is mandatory before tool calls**:
+### Other execution rules:
+- **Use conversation context**: Resolve parameters from previous turns and reference data
+  before asking questions. For follow-ups like "yes", "go ahead", "do it", continue with
+  previously discussed parameters.
+- **Never claim tools are unavailable** when they are listed in your tool set. Only report
+  unavailable if execution returns an explicit auth/connection error.
+- **Date normalization is mandatory before tool calls**:
    - Convert ALL relative date phrases to absolute ISO dates (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS) before calling tools.
    - Use user's timezone and current time from the Temporal Context section.
    - Do NOT ask user to provide dates when relative dates are resolvable.
@@ -6807,7 +6850,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
    - For compound operations like "get events ending this month and extend till end of next month":
      Resolve both dates internally and execute tools directly — do NOT ask for date confirmation.
 
-6. **Multi-step task execution**:
+## Multi-step task execution (MANDATORY)
    - For tasks that require multiple tools (e.g., "extend recurring meetings skipping holidays"):
      a) Break the task into logical steps.
      b) Execute each step in order, using results from previous steps.
@@ -6815,16 +6858,36 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
      d) Report the complete result at the end, not after each step.
 """
 
-    # Add tool schema reference
-    tool_schema_ref = _build_tool_schema_reference(state, log)
-    if tool_schema_ref:
-        base_prompt += "\n" + tool_schema_ref
+    # ── Build Available Tools section with full schemas ──────────────────────
+    # This is the authoritative tool reference the LLM uses for parameter validation.
+    # It mirrors what the planner gets via {available_tools} in PLANNER_SYSTEM_PROMPT.
+    tool_descriptions = _get_cached_tool_descriptions(state, log)
+    if tool_descriptions:
+        base_prompt += "\n## Available Tools (VALIDATE EVERY WRITE TOOL CALL AGAINST THESE SCHEMAS)\n\n"
+        base_prompt += (
+            "Each tool below lists its **required** and **optional** parameters with types.\n"
+            "Before calling any WRITE tool, find it here and verify ALL **required** parameters\n"
+            "have concrete values from the user or context — not guesses, not placeholders.\n"
+            "For READ tools, required params usually have reasonable defaults — proceed directly.\n\n"
+        )
+        base_prompt += tool_descriptions
+    else:
+        # Fallback: use the compact schema reference if full descriptions aren't available
+        tool_schema_ref = _build_tool_schema_reference(state, log)
+        if tool_schema_ref:
+            base_prompt += "\n## Available Tools (VALIDATE EVERY WRITE TOOL CALL AGAINST THESE SCHEMAS)\n\n"
+            base_prompt += (
+                "Each tool below lists its **required** and **optional** parameters with types.\n"
+                "Before calling any WRITE tool, find it here and verify ALL **required** parameters\n"
+                "have concrete values from the user or context — not guesses, not placeholders.\n"
+                "For READ tools, required params usually have reasonable defaults — proceed directly.\n\n"
+            )
+            base_prompt += tool_schema_ref
 
-    # Check for retrieval results and API tools
+    # ── Check for retrieval results and add citation instructions ────────────
     final_results = state.get("final_results", [])
     has_retrieval = bool(final_results)
 
-    # Add citation instructions if retrieval results exist
     if has_retrieval:
         base_prompt += """
 ## Citation Rules (CRITICAL)
@@ -6836,7 +6899,7 @@ When you have internal knowledge from retrieval tools:
 4. Do NOT put citations at end of paragraph — inline after each fact
 """
 
-    # Detect hybrid search scenario: retrieval tool + service tools both available
+    # ── Hybrid search strategy ──────────────────────────────────────────────
     has_knowledge = bool(state.get("agent_knowledge"))
     has_service_tools = any([
         _has_jira_tools(state),
@@ -6845,7 +6908,6 @@ When you have internal knowledge from retrieval tools:
         _has_outlook_tools(state),
     ])
 
-    # Add hybrid search strategy when BOTH retrieval and service tools are available
     if has_knowledge and has_service_tools:
         base_prompt += """
 ## Hybrid Search Strategy (IMPORTANT)
@@ -6894,12 +6956,17 @@ Use this decision tree to choose the right approach:
     if _has_outlook_tools(state):
         base_prompt += "\n" + OUTLOOK_GUIDANCE
 
-    # Add multi-step workflow patterns (conditional on active toolsets)
+    # ── Multi-step workflow patterns ─────────────────────────────────────────
     workflow_patterns = _build_workflow_patterns(state)
     if workflow_patterns:
         base_prompt += "\n" + workflow_patterns
 
-    # Add timezone / current time context if provided
+    # ── Knowledge context ────────────────────────────────────────────────────
+    knowledge_context = _build_knowledge_context(state, log)
+    if knowledge_context:
+        base_prompt += knowledge_context
+
+    # ── Timezone / current time context ──────────────────────────────────────
     timezone = state.get("timezone")
     current_time = state.get("current_time")
     if timezone or current_time:
@@ -6910,7 +6977,7 @@ Use this decision tree to choose the right approach:
             time_parts.append(f"User timezone: {timezone}")
         base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
 
-    # Add user context
+    # ── User context ─────────────────────────────────────────────────────────
     user_context = _format_user_context(state)
     if user_context:
         base_prompt += "\n\n" + user_context
