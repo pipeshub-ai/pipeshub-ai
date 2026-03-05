@@ -3234,8 +3234,8 @@ async def planner_node(
         confluence_guidance=confluence_guidance,
         slack_guidance=slack_guidance,
         onedrive_guidance=onedrive_guidance,
-        outlook_guidance=outlook_guidance
-        teams_guidance=teams_guidance
+        outlook_guidance=outlook_guidance,
+        teams_guidance=teams_guidance,
     )
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
@@ -6830,6 +6830,8 @@ def _build_workflow_patterns(state: ChatState) -> str:
 
     has_outlook = _has_outlook_tools(state)
     has_confluence = _has_confluence_tools(state)
+    has_slack = _has_slack_tools(state)
+    has_teams = _has_teams_tools(state)
 
     if has_outlook and has_confluence:
         patterns.append("""### Cross-Service Pattern: Recurring Meetings + Holiday Exclusions
@@ -6871,6 +6873,46 @@ Batch ALL exclusion dates into ONE call per event.
 - Always use the user's timezone for the `timezone` parameter.
 - Do NOT ask the user for event IDs — resolve them from search results.
 """)
+
+    if has_teams and has_slack:
+        patterns.append("""### Cross-Service Pattern: Meeting Transcript → Summary → Slack
+
+When user asks to summarize meeting(s) and send to Slack:
+
+**Step 1 — Collect requirements (BEFORE any tool calls):**
+Ensure you have:
+- Which meeting(s): date range, name/keyword, or "all from [date]"
+- Slack target: channel name or user (ALWAYS ask if not specified)
+- Summary focus (optional): "action items", "decisions", "full summary"
+If anything is missing, ask for ALL missing items in one message.
+
+**Step 2 — Fetch meetings:**
+Use `teams.get_meetings` (by date) or `teams.search_calendar_events_in_range` (by keyword).
+Extract `id` and `joinUrl` from each result.
+
+**Step 3 — Fetch transcripts:**
+For each meeting, call `teams.get_meeting_transcript(event_id=..., joinUrl=...)`.
+If a meeting has no transcript, note it — do NOT skip silently.
+
+**Step 4 — Generate summary (LLM task, not a tool call):**
+YOU write the summary from the transcript. Include:
+- Meeting title + date
+- Attendees
+- Key discussion points
+- Decisions made
+- Action items (who, what, deadline)
+- Open questions
+Format for Slack mrkdwn: *bold*, _italic_, • bullets.
+
+**Step 5 — Send to Slack:**
+Call `slack.send_message(channel="...", message="<your summary>")`.
+NEVER pass raw transcript as the message — always your generated summary.
+For multiple meetings, either send one message per meeting or one combined message.
+
+**Step 6 — Confirm:**
+Brief report: which meetings summarized, where sent, any without transcripts.
+""")
+
 
     if has_outlook:
         patterns.append("""### Pattern: Extend a Recurring Event
@@ -7110,6 +7152,8 @@ When you have internal knowledge from retrieval tools:
         _has_confluence_tools(state),
         _has_onedrive_tools(state),
         _has_outlook_tools(state),
+        _has_slack_tools(state),
+        _has_teams_tools(state),
     ])
 
     if has_knowledge and has_service_tools:

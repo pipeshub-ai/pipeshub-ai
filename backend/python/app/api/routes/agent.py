@@ -22,10 +22,7 @@ from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import agent_graph, modern_agent_graph
 
-# ReAct agent (LangGraph prebuilt): single-node graph with tool selection + cascading tool calls.
-# Set USE_LEGACY_AGENT_GRAPH=1 to use the multi-node planner/execute/reflect graph instead.
-USE_REACT_AGENT = not (__import__("os").environ.get("USE_LEGACY_AGENT_GRAPH", "").strip().lower() in ("1", "true", "yes"))
-active_agent_graph = modern_agent_graph if USE_REACT_AGENT else agent_graph
+
 from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
     check_memory_health,
@@ -235,9 +232,6 @@ def _select_agent_graph_for_query(query_info: Dict[str, Any], logger: Logger):
     - If enabled: use ReAct only for Outlook-only or Outlook+Confluence tools.
       Otherwise use legacy graph.
     """
-    if not USE_REACT_AGENT:
-        logger.info("Agent graph route: legacy (USE_LEGACY_AGENT_GRAPH enabled)")
-        return agent_graph
 
     tool_names = _extract_tool_names_for_routing(query_info)
     apps = {name.split(".", 1)[0] for name in tool_names if isinstance(name, str) and "." in name}
@@ -246,7 +240,8 @@ def _select_agent_graph_for_query(query_info: Dict[str, Any], logger: Logger):
     # - only outlook
     # - outlook + confluence
     use_react = bool(apps) and ("outlook" in apps) and apps.issubset({"outlook", "confluence"})
-
+    use_react = use_react or bool(apps) and ("teams" in apps) and apps.issubset({"teams", "slack"})
+    
     selected = modern_agent_graph if use_react else agent_graph
     logger.info(
         "Agent graph route: %s | apps=%s | tools=%d",
@@ -866,7 +861,7 @@ async def stream_response(
     config = {"recursion_limit": 30}
     chunk_count = 0
 
-    graph_to_use = selected_graph or active_agent_graph
+    graph_to_use = selected_graph
     async for chunk in graph_to_use.astream(initial_state, config=config, stream_mode="custom"):
         chunk_count += 1
         if isinstance(chunk, dict) and "event" in chunk:
