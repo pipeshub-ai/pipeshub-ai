@@ -6419,58 +6419,60 @@ async def react_agent_node(
         # provided in previous turns.
         messages = _build_planner_messages(state, query, log)
 
-        # Execute agent - handles cascading automatically
-        final_messages = []
+        # Execute agent with callback-based streaming.
+        # We use ainvoke() + AsyncCallbackHandler instead of astream() because
+        # astream() creates a nested LangGraph execution context that conflicts
+        # with the outer graph's StreamWriter, preventing tool status events from
+        # reaching the frontend SSE stream. Callbacks are invoked during tool
+        # execution and are orthogonal to the graph streaming mechanism.
         tool_results = []
 
-        # Allow enough iterations for complex multi-step workflows
-        # (e.g., search events + search confluence + parse holidays + update + delete)
-        agent_config = {**config, "recursion_limit": 50}
+        # Create streaming callback that writes tool events to the outer stream
+        streaming_cb = _ToolStreamingCallback(writer, config, log)
 
-        async for chunk in agent.astream(
+        # Use a clean config for the inner agent to avoid context conflicts
+        # with the outer graph. Only pass recursion_limit and callbacks.
+        agent_config = {
+            "recursion_limit": 50,
+            "callbacks": [streaming_cb],
+        }
+
+        result = await agent.ainvoke(
             {"messages": messages},
-            config=agent_config
-        ):
-            # Process chunk for streaming
-            chunk_messages = chunk.get("messages", [])
-            final_messages = chunk_messages
+            config=agent_config,
+        )
 
-            # Stream tool calls and responses
-            _process_react_chunk(chunk, writer, config, state, log)
+        # Extract messages from the agent result
+        final_messages = result.get("messages", [])
+        log.debug(f"ReAct agent returned {len(final_messages)} messages")
 
-            # Extract tool results as we go
-            for msg in chunk_messages:
-                if isinstance(msg, ToolMessage):
-                    tool_name = msg.name if hasattr(msg, 'name') else "unknown"
-                    result_content = msg.content
+        # Process tool results from final messages
+        for msg in final_messages:
+            if isinstance(msg, ToolMessage):
+                tool_name = msg.name if hasattr(msg, 'name') else "unknown"
+                result_content = msg.content
 
-                    # Process retrieval tool results to extract final_results
-                    # Retrieval tool returns JSON string with RetrievalToolOutput structure
-                    if "retrieval" in tool_name.lower():
-                        try:
-                            # Parse JSON string to dict
-                            if isinstance(result_content, str):
-                                parsed = json.loads(result_content)
-                                _process_retrieval_output(parsed, state, log)
-                            elif isinstance(result_content, dict):
-                                _process_retrieval_output(result_content, state, log)
-                            else:
-                                # Try to convert to string and parse
-                                _process_retrieval_output(str(result_content), state, log)
-                        except Exception as e:
-                            log.warning(f"Failed to process retrieval output: {e}")
-                            # Try direct processing as fallback
+                # Process retrieval tool results to extract final_results
+                if "retrieval" in tool_name.lower():
+                    try:
+                        if isinstance(result_content, str):
+                            parsed = json.loads(result_content)
+                            _process_retrieval_output(parsed, state, log)
+                        elif isinstance(result_content, dict):
                             _process_retrieval_output(result_content, state, log)
+                    except Exception as e:
+                        log.warning(f"Failed to process retrieval output: {e}")
+                        _process_retrieval_output(result_content, state, log)
 
-                    # Detect actual tool success/failure from result content
-                    tool_status = _detect_tool_result_status(result_content)
+                # Detect actual tool success/failure from result content
+                tool_status = _detect_tool_result_status(result_content)
 
-                    tool_results.append({
-                        "tool_name": tool_name,
-                        "status": tool_status,
-                        "result": result_content,
-                        "tool_call_id": msg.tool_call_id if hasattr(msg, 'tool_call_id') else None
-                    })
+                tool_results.append({
+                    "tool_name": tool_name,
+                    "status": tool_status,
+                    "result": result_content,
+                    "tool_call_id": getattr(msg, 'tool_call_id', None),
+                })
 
         # Stream analyzing status before response generation
         if tool_results:
