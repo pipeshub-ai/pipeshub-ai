@@ -73,11 +73,6 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
 
         logger.debug("✅ InMemoryKeyValueStore initialized")
 
-    @property
-    def client(self) -> None:
-        """In-memory store has no underlying network client."""
-        return None
-
     def _load_from_json(self, json_file_path: str) -> Dict[str, KeyData[T]]:
         """Load data from a JSON file."""
         with open(json_file_path, 'r') as file:
