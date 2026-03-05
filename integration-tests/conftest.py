@@ -1,12 +1,15 @@
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from pipeshub_client import PipeshubClient
-
-
 _THIS_DIR = Path(__file__).resolve().parent
+_HELPER_DIR = _THIS_DIR / "helper"
+if str(_HELPER_DIR) not in sys.path:
+    sys.path.insert(0, str(_HELPER_DIR))
+
+from pipeshub_client import PipeshubClient
 
 
 def _load_env() -> None:

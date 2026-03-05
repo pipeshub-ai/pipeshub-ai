@@ -20,11 +20,15 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+_SAMPLE_DATA_DIR = _ROOT / "sample-data"
+if str(_SAMPLE_DATA_DIR) not in sys.path:
+    sys.path.insert(0, str(_SAMPLE_DATA_DIR))
+
 from pipeshub_client import (  # type: ignore[import-not-found]  # noqa: E402
     ConnectorInstance,
     PipeshubClient,
 )
-from sample_data_repo import ensure_sample_data_files_root  # type: ignore[import-not-found]  # noqa: E402
+from sample_data import ensure_sample_data_files_root  # type: ignore[import-not-found]  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
