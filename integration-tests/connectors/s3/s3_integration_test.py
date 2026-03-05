@@ -39,15 +39,12 @@ from graph_assertions import (  # type: ignore[import-not-found]
     assert_no_orphan_records,
     assert_record_groups_and_edges,
     assert_record_paths_or_names_contain,
-    assert_record_not_exists,
     count_records,
     count_record_groups,
     graph_summary,
 )
 from pipeshub_client import (  # type: ignore[import-not-found]
-    ConnectorInstance,
     PipeshubClient,
-    PipeshubClientError,
 )
 from storage_helpers import S3StorageHelper  # type: ignore[import-not-found]
 

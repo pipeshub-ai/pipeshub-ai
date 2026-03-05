@@ -44,9 +44,7 @@ from graph_assertions import (  # type: ignore[import-not-found]
     graph_summary,
 )
 from pipeshub_client import (  # type: ignore[import-not-found]
-    ConnectorInstance,
     PipeshubClient,
-    PipeshubClientError,
 )
 from storage_helpers import AzureFilesStorageHelper  # type: ignore[import-not-found]
 

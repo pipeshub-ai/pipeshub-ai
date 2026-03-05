@@ -10,7 +10,6 @@ Provides session-scoped fixtures for:
 
 import os
 import sys
-import uuid
 from pathlib import Path
 from typing import Generator, Optional
 
@@ -24,7 +23,6 @@ if str(_ROOT) not in sys.path:
 from pipeshub_client import (  # type: ignore[import-not-found]
     ConnectorInstance,
     PipeshubClient,
-    PipeshubClientError,
 )
 from sample_data_repo import ensure_sample_data_files_root  # type: ignore[import-not-found]
 
