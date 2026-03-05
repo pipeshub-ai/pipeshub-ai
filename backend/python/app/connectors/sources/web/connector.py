@@ -74,6 +74,7 @@ class RecordUpdate:
     old_permissions: Optional[List[Permission]] = None
     new_permissions: Optional[List[Permission]] = None
     external_record_id: Optional[str] = None
+    html_bytes: Optional[bytes] = None
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
@@ -393,6 +394,20 @@ class WebConnector(BaseConnector):
             max_pages = int(sync_config.get("max_pages") or 1000)
             follow_external = sync_config.get("follow_external", False)
 
+            # Validate max_pages and max_depth
+            if max_pages > 1000:
+                self.logger.warning("⚠️ WebPage max_pages is greater than 1000, setting to 1000")
+                max_pages = 1000
+            if max_pages < 1:
+                self.logger.warning("⚠️ WebPage max_pages is less than 1, setting to 1")
+                max_pages = 1
+            if max_depth > 10:
+                self.logger.warning("⚠️ WebPage max_depth is greater than 10, setting to 10")
+                max_depth = 10
+            if max_depth < 1:
+                self.logger.warning("⚠️ WebPage max_depth is less than 1, setting to 1")
+                max_depth = 1
+
             # Parse base domain
             parsed_url = urlparse(url)
             base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
@@ -687,7 +702,7 @@ class WebConnector(BaseConnector):
                     # Extract links if we haven't reached max depth
                     if current_depth < self.max_depth and file_record.mime_type == MimeTypes.HTML.value:
                         links = await self._extract_links_from_content(
-                            current_url, file_record, referer=referer
+                            current_url, record_update.html_bytes, file_record, referer=referer
                         )
 
                         # Add new links to queue with current URL as referer
@@ -744,6 +759,7 @@ class WebConnector(BaseConnector):
             mime_type, extension = self._determine_mime_type(url, content_type)
             if not self._pass_extension_filter(extension):
                 return None
+            html_bytes = content_bytes if mime_type == MimeTypes.HTML else None
 
             # Generate unique ID
             record_id = str(uuid.uuid4())
@@ -850,6 +866,7 @@ class WebConnector(BaseConnector):
                 content_changed=content_changed,
                 permissions_changed=False,
                 new_permissions=permissions,
+                html_bytes=html_bytes,
             )
 
             self.logger.debug(
@@ -876,35 +893,40 @@ class WebConnector(BaseConnector):
             await self.data_entities_processor.on_record_content_update(record_update.record)
 
     async def _extract_links_from_content(
-        self, base_url: str, file_record: FileRecord, referer: Optional[str] = None
+        self, base_url: str, html_bytes: Optional[bytes], file_record: FileRecord, referer: Optional[str] = None
     ) -> List[str]:
         """Extract valid links from HTML content."""
         links = []
 
         try:
-            # Add referer header if provided
-            headers = {}
-            if referer:
-                headers["Referer"] = referer
 
-            # Re-fetch and parse the page to extract links
-            async with self.session.get(file_record.weburl, headers=headers) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    return links
+            if html_bytes:
+                html_content = html_bytes.decode("utf-8", errors="replace")
+            else:
+                self.logger.debug(f"no HTML content, fetching from {file_record.weburl}")
+                # Add referer header if provided
+                headers = {}
+                if referer:
+                    headers["Referer"] = referer
 
-                html_content = await response.text()
-                soup = BeautifulSoup(html_content, 'html.parser')
+                # Re-fetch and parse the page to extract links
+                async with self.session.get(file_record.weburl, headers=headers) as response:
+                    if response.status >= HttpStatusCode.BAD_REQUEST.value:
+                        return links
 
-                # Find all anchor tags
-                for anchor in soup.find_all('a', href=True):
-                    href = anchor['href']
+                    html_content = await response.text()
 
-                    # Convert relative URLs to absolute
-                    absolute_url = urljoin(base_url, href)
+            soup = BeautifulSoup(html_content, 'html.parser')
+            # Find all anchor tags
+            for anchor in soup.find_all('a', href=True):
+                href = anchor['href']
 
-                    # Validate and filter URLs
-                    if self._is_valid_url(absolute_url, base_url):
-                        links.append(absolute_url)
+                # Convert relative URLs to absolute
+                absolute_url = urljoin(base_url, href)
+
+                # Validate and filter URLs
+                if self._is_valid_url(absolute_url, base_url):
+                    links.append(absolute_url)
 
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to extract links from {base_url}: {e}")
@@ -1762,10 +1784,23 @@ class WebConnector(BaseConnector):
             )
 
         try:
+            referer = self.url if self.url else None
+
+            result = await fetch_url_with_fallback(
+                url=record.weburl,
+                session=self.session,
+                logger=self.logger,
+                referer=referer,
+            )
+
+            if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                raise HTTPException(
+                    status_code=result.status_code if result else HttpStatusCode.BAD_GATEWAY.value,
+                    detail=f"Failed to fetch {record.weburl}",
+                )
+
+            content_bytes = result.content_bytes
             headers = {"Referer": self.url} if self.url else {}
-
-            content_bytes = await self._fetch_with_retry(record.weburl, headers)
-
             mime_type = record.mime_type or "text/html"
 
             # Process HTML content
