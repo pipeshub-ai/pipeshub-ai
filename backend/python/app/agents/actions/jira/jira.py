@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import traceback
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -901,7 +901,7 @@ class Jira:
             return
         
         # Helper to add URL to an issue reference object
-        def add_url_to_issue_ref(issue_ref: Any) -> None:
+        def add_url_to_issue_ref(issue_ref: object) -> None:
             """Add URL to an issue reference if it has a key."""
             if isinstance(issue_ref, dict) and issue_ref.get("key"):
                 issue_key = issue_ref["key"]

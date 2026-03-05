@@ -15489,8 +15489,30 @@ class Neo4jProvider(IGraphDBProvider):
                 agent_data = dict(individual_result[0]["agent"])
                 user_role = individual_result[0]["role"]
                 access_type = "INDIVIDUAL"
-            elif user_team_ids:
-                # Check team permissions
+            
+            # Check org permissions (only if no individual access)
+            if not agent_data and org_key:
+                org_query = f"""
+                MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+                WHERE p.type = 'ORG'
+                AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+                RETURN agent, p.role AS role, 'ORG' AS access_type
+                LIMIT 1
+                """
+
+                org_result = await self.client.execute_query(
+                    org_query,
+                    parameters={"org_key": org_key, "agent_id": agent_id},
+                    txn_id=transaction
+                )
+
+                if org_result:
+                    agent_data = dict(org_result[0]["agent"])
+                    user_role = org_result[0]["role"]
+                    access_type = "ORG"
+            
+            # Check team permissions (only if no individual or org access)
+            if not agent_data and user_team_ids:
                 team_query = f"""
                 MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
                 WHERE t.id IN $team_ids
@@ -15510,26 +15532,6 @@ class Neo4jProvider(IGraphDBProvider):
                     agent_data = dict(team_result[0]["agent"])
                     user_role = team_result[0]["role"]
                     access_type = "TEAM"
-            elif org_key:
-                # Check org permissions (only if no individual or team access)
-                org_query = f"""
-                MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
-                WHERE p.type = 'ORG'
-                AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
-                RETURN agent, p.role AS role, 'ORG' AS access_type
-                LIMIT 1
-                """
-
-                org_result = await self.client.execute_query(
-                    org_query,
-                    parameters={"org_key": org_key, "agent_id": agent_id},
-                    txn_id=transaction
-                )
-
-                if org_result:
-                    agent_data = dict(org_result[0]["agent"])
-                    user_role = org_result[0]["role"]
-                    access_type = "ORG"
 
             if not agent_data:
                 self.logger.warning(f"No permissions found for user {user_key} on agent {agent_id}")
