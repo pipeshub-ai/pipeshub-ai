@@ -363,7 +363,7 @@ async def fetch_url_with_fallback(
                             f"{max_size_bytes:.0f}MB"
                         )
                         return None
-        except Exception as e:
+        except Exception:
             # HEAD not supported (405), connection error, timeout — proceed with GET
             pass
 
