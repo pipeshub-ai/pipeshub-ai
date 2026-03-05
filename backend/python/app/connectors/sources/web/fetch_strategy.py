@@ -16,7 +16,7 @@ import contextlib
 import logging
 import random
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine, List, Optional, Tuple
+from typing import Any, Callable, Coroutine, List, Optional, Tuple, cast
 from urllib.parse import urlparse
 
 import aiohttp
@@ -90,7 +90,7 @@ def _get_supported_profiles() -> list[str]:
     supported = []
     for p in candidates:
         try:
-            s = Session(impersonate=p)
+            s = Session(impersonate=cast(Any, p))
             s.close()
             supported.append(p)
         except Exception:
@@ -160,7 +160,7 @@ def _sync_curl_cffi_fetch(
     timeout: int,
     use_http2: bool,
     profiles: Optional[list] = None,
-    logger: logging.Logger = None,
+    logger: Optional[logging.Logger] = None,
 ) -> Optional[FetchResponse]:
     """
     Synchronous curl_cffi fetch with profile rotation.
@@ -184,7 +184,7 @@ def _sync_curl_cffi_fetch(
             with Session(impersonate=profile, timeout=timeout) as sess:
                 if not use_http2:
                     with contextlib.suppress(Exception):
-                        sess.curl.setopt(CurlOpt.HTTP_VERSION, 2)  # CURL_HTTP_VERSION_1_1
+                        _ = sess.curl.setopt(CurlOpt.HTTP_VERSION, 2)  # CURL_HTTP_VERSION_1_1
                 resp = sess.get(url, headers=headers, allow_redirects=True)
                 return FetchResponse(
                     status_code=resp.status_code,
@@ -357,8 +357,8 @@ async def fetch_url_with_fallback(
                     if size > max_size_bytes:
                         logger.warning(
                             f"⚠️ Skipping {url}: Content-Length "
-                            f"{size / (1024 * 1024):.1f}MB exceeds limit of "
-                            f"{max_size_bytes:.0f}MB"
+                            + f"{size / (1024 * 1024):.1f}MB exceeds limit of "
+                            + f"{max_size_bytes:.0f}MB"
                         )
                         return None
         except Exception:
@@ -384,7 +384,7 @@ async def fetch_url_with_fallback(
         if not strategies:
             logger.warning(
                 f"⚠️ preferred_strategy='{preferred_strategy}' did not match any strategy name; "
-                f"falling back to full chain"
+                + "falling back to full chain"
             )
             strategies = all_strategies
         else:
@@ -401,7 +401,7 @@ async def fetch_url_with_fallback(
                 retry_delay = attempt + random.uniform(0, 0.5)
                 logger.debug(
                     f"🔄 [{strategy_name}] Retry {attempt + 1}/{max_retries_per_strategy} "
-                    f"for {url} after {retry_delay:.1f}s"
+                    + f"for {url} after {retry_delay:.1f}s"
                 )
                 await asyncio.sleep(retry_delay)
 
@@ -427,7 +427,7 @@ async def fetch_url_with_fallback(
                 if status in _BOT_DETECTION_CODES or status > HttpStatusCode.CLOUDFLARE_NETWORK_ERROR.value:
                     logger.warning(
                         f"⚠️ [{strategy_name}] Bot blocked (HTTP {status}) for {url} "
-                        f"(attempt {attempt + 1}/{max_retries_per_strategy})"
+                        + f"(attempt {attempt + 1}/{max_retries_per_strategy})"
                     )
                     break  # break 429 loop, go to next attempt
 
@@ -436,7 +436,7 @@ async def fetch_url_with_fallback(
                     if retry_429 >= max_429_retries:
                         logger.warning(
                             f"⚠️ [{strategy_name}] 429 persists after {max_429_retries} "
-                            f"retries for {url}, trying next strategy"
+                            + f"retries for {url}, trying next strategy"
                         )
                         break
 
@@ -452,7 +452,7 @@ async def fetch_url_with_fallback(
 
                     logger.warning(
                         f"⚠️ [{strategy_name}] 429 Rate Limited for {url}, "
-                        f"retrying in {delay}s ({retry_429 + 1}/{max_429_retries})"
+                        + f"retrying in {delay}s ({retry_429 + 1}/{max_429_retries})"
                     )
                     await asyncio.sleep(delay)
                     continue

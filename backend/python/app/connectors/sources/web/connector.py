@@ -10,8 +10,8 @@ from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
-import pillow_avif  # noqa: F401
-from bs4 import BeautifulSoup
+import pillow_avif  # noqa: F401  # pyright: ignore[reportUnusedImport]
+from bs4 import BeautifulSoup, Tag
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from PIL import Image
@@ -113,16 +113,6 @@ FILE_MIME_TYPES = {
     '.mdx': MimeTypes.MDX,
 }
 
-RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
-
-RETRYABLE_EXCEPTIONS = (
-    aiohttp.ClientConnectorError,
-    aiohttp.ServerDisconnectedError,
-    aiohttp.ServerTimeoutError,
-    asyncio.TimeoutError,
-)
-
-
 DOCUMENT_MIME_TYPES = {
     MimeTypes.PDF.value,
     MimeTypes.DOC.value,
@@ -149,7 +139,7 @@ class WebApp(App):
     .with_supported_auth_types("NONE")\
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.PERSONAL, ConnectorScope.TEAM])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/web.svg")
         .with_realtime_support(False)
@@ -350,8 +340,8 @@ class WebConnector(BaseConnector):
             )
 
             self.logger.info(
-                f"✅ Web connector initialized: url={self.url}, type={self.crawl_type}, "
-                f"depth={self.max_depth}, max_pages={self.max_pages}"
+                f"✅ Web connector initialized: url={self.url}, type={self.crawl_type},"
+                + f" depth={self.max_depth}, max_pages={self.max_pages}"
             )
             return True
 
@@ -384,7 +374,7 @@ class WebConnector(BaseConnector):
                 use_cache=use_cache
             )
 
-            if not config:
+            if not config or not isinstance(config, dict):
                 self.logger.error("❌ WebPage config not found")
                 raise ValueError("Web connector configuration not found")
 
@@ -462,7 +452,7 @@ class WebConnector(BaseConnector):
             if result.status_code < HttpStatusCode.BAD_REQUEST.value:
                 self.logger.info(
                     f"✅ Website accessible: {self.url} "
-                    f"(status: {result.status_code}, via {result.strategy})"
+                    + f"(status: {result.status_code}, via {result.strategy})"
                 )
                 return True
             else:
@@ -607,6 +597,7 @@ class WebConnector(BaseConnector):
             self.visited_urls.clear()
 
             # Start crawling
+            assert self.url is not None, "URL not set — init() must be called first"
             if self.crawl_type == "recursive":
                 await self._crawl_recursive(self.url, depth=0)
             else:
@@ -647,7 +638,7 @@ class WebConnector(BaseConnector):
     async def _crawl_recursive(self, start_url: str, depth: int) -> None:
         """Recursively crawl pages starting from start_url."""
         try:
-            batch_records: List[Tuple[FileRecord, List[Permission]]] = []
+            batch_records: List[Tuple[Record, List[Permission]]] = []
 
             async for record_update in self._crawl_recursive_generator(start_url, depth):
 
@@ -674,7 +665,7 @@ class WebConnector(BaseConnector):
 
     async def _crawl_recursive_generator(
         self, start_url: str, depth: int
-    ) -> AsyncGenerator[Tuple[FileRecord, List[Permission]], None]:
+    ) -> AsyncGenerator[RecordUpdate, None]:
         """
         BFS crawl generator; yields (FileRecord, permissions) for each successfully
         fetched page. Allows non-blocking processing of large site crawls.
@@ -699,7 +690,7 @@ class WebConnector(BaseConnector):
 
             self.logger.info(
                 f"📄 Crawling [{len(self.visited_urls) + 1}/{self.max_pages}] "
-                f"(depth {current_depth}): {current_url}"
+                + f"(depth {current_depth}): {current_url}"
             )
 
             try:
@@ -751,6 +742,9 @@ class WebConnector(BaseConnector):
     ) -> Optional[RecordUpdate]:
         """Fetch URL content using multi-strategy fallback and create a RecordUpdate."""
         try:
+            if self.session is None:
+                self.logger.error("❌ Session not initialized")
+                return None
 
             result = await fetch_url_with_fallback(
                 url=url,
@@ -782,7 +776,7 @@ class WebConnector(BaseConnector):
                 size_mb = len(content_bytes) / (1024 * 1024)
                 self.logger.warning(
                     f"⚠️ Skipping {url}: downloaded size {size_mb:.1f}MB "
-                    f"exceeds limit of {self.max_size_mb:.0f}MB"
+                    + f"exceeds limit of {self.max_size_mb:.0f}MB"
                 )
                 return None
 
@@ -859,7 +853,7 @@ class WebConnector(BaseConnector):
                 external_revision_id=content_md5_hash,
                 external_record_group_id=self.url,
                 version=0,
-                origin=OriginTypes.CONNECTOR.value,
+                origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 created_at=timestamp,
@@ -913,6 +907,8 @@ class WebConnector(BaseConnector):
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """Handle record updates."""
+        if not record_update.record:
+            return
         if record_update.is_deleted:
             await self.data_entities_processor.on_record_deleted(record_update.record.id)
         if record_update.metadata_changed:
@@ -930,6 +926,8 @@ class WebConnector(BaseConnector):
 
             if not html_bytes:
                 self.logger.debug(f"no HTML content, fetching from {file_record.weburl}")
+                if not self.session or not file_record.weburl:
+                    return links
                 # Add referer header if provided
                 headers = {}
                 if referer:
@@ -1086,7 +1084,7 @@ class WebConnector(BaseConnector):
         # Default to HTML
         return MimeTypes.HTML, 'html'
 
-    def _pass_extension_filter(self, extension: str) -> bool:
+    def _pass_extension_filter(self, extension: Optional[str]) -> bool:
         """
         Checks if the file extension passes the configured file extensions filter.
 
@@ -1155,10 +1153,12 @@ class WebConnector(BaseConnector):
 
         # Try og:title meta tag
         og_title = soup.find('meta', property='og:title')
-        if og_title and og_title.get('content'):
-            title = og_title['content'].strip()
-            if title:
-                return title
+        if og_title and isinstance(og_title, Tag):
+            content = og_title.get('content')
+            if isinstance(content, str):
+                title = content.strip()
+                if title:
+                    return title
 
         # Fallback to URL
         return self._extract_title_from_url(url)
@@ -1283,7 +1283,7 @@ class WebConnector(BaseConnector):
 
         # Validate by attempting to decode
         try:
-            base64.b64decode(cleaned, validate=True)
+            _ = base64.b64decode(cleaned, validate=True)
         except Exception as e:
             self.logger.warning(f"⚠️ Invalid base64 string (decode failed): {str(e)[:100]}")
             return ""
@@ -1334,7 +1334,7 @@ class WebConnector(BaseConnector):
 
                 # Validate by attempting to decode
                 try:
-                    base64.b64decode(cleaned_b64, validate=True)
+                    _ = base64.b64decode(cleaned_b64, validate=True)
                     is_valid = True
                 except Exception as e:
                     self.logger.warning(f"⚠️ Invalid base64 in data URI (decode failed): {str(e)[:50]}")
@@ -1418,7 +1418,7 @@ class WebConnector(BaseConnector):
     def _process_svg_tags(self, soup: BeautifulSoup) -> None:
         """Convert all SVG tags to PNG img tags."""
         for svg in soup.find_all('svg'):
-            self._convert_svg_tag_to_png(soup, svg)
+            _ = self._convert_svg_tag_to_png(soup, svg)
 
     # Image formats supported by OpenAI vision API
     OPENAI_SUPPORTED_IMAGE_TYPES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
@@ -1515,6 +1515,10 @@ class WebConnector(BaseConnector):
         try:
             absolute_url = src if src.startswith(('http:', 'https:')) else urljoin(base_url, src)
 
+            if self.session is None:
+                self.logger.warning("⚠️ Session not initialized, skipping image download")
+                return
+
             img_result = await fetch_url_with_fallback(
                 url=absolute_url,
                 session=self.session,
@@ -1528,7 +1532,7 @@ class WebConnector(BaseConnector):
             if img_result is None or img_result.status_code >= HttpStatusCode.BAD_REQUEST.value:
                 self.logger.warning(
                     f"⚠️ Failed to download image: {absolute_url} "
-                    f"(status: {img_result.status_code if img_result else 'N/A'})"
+                    + f"(status: {img_result.status_code if img_result else 'N/A'})"
                 )
                 return
 
@@ -1556,13 +1560,13 @@ class WebConnector(BaseConnector):
                 # Server returned an unsupported format — log full metadata then skip.
                 raw_ct = img_result.headers.get('Content-Type') or img_result.headers.get('content-type', '<none>')
                 self.logger.debug(
-                    f"⚠️ Unsupported downloaded image — "
-                    f"resolved_content_type='{content_type}' | "
-                    f"raw_Content-Type='{raw_ct}' | "
-                    f"url='{absolute_url}' | "
-                    f"response_status={img_result.status_code} | "
-                    f"content_length={len(img_bytes)} bytes | "
-                    f"response_headers={dict(img_result.headers)} — skipping"
+                    "⚠️ Unsupported downloaded image — "
+                    + f"resolved_content_type='{content_type}' | "
+                    + f"raw_Content-Type='{raw_ct}' | "
+                    + f"url='{absolute_url}' | "
+                    + f"response_status={img_result.status_code} | "
+                    + f"content_length={len(img_bytes)} bytes | "
+                    + f"response_headers={dict(img_result.headers)} — skipping"
                 )
                 img.decompose()
                 return
@@ -1690,7 +1694,7 @@ class WebConnector(BaseConnector):
                 self._process_svg_tags(soup)
 
                 # Process all images: download and convert to base64
-                await self._process_all_images(soup, record.weburl, headers, preferred_strategy)
+                await self._process_all_images(soup, record.weburl or "", headers, preferred_strategy)
             else:
                 self.logger.debug("Removing all image tags: image indexing is disabled")
                 # Remove all image and SVG tags when image indexing is disabled
@@ -1707,7 +1711,7 @@ class WebConnector(BaseConnector):
 
     # ==================== Main Stream Record Method ====================
 
-    async def stream_record(self, record: Record) -> Optional[StreamingResponse]:
+    async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> Optional[StreamingResponse]:
         """
         Stream the web page content with proper content extraction.
         """
@@ -1720,6 +1724,12 @@ class WebConnector(BaseConnector):
         try:
             referer = self.url if self.url else None
 
+            if self.session is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Session not initialized",
+                )
+
             result = await fetch_url_with_fallback(
                 url=record.weburl,
                 session=self.session,
@@ -1729,7 +1739,7 @@ class WebConnector(BaseConnector):
 
             if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
                 raise HTTPException(
-                    status_code=result.status_code if result else HttpStatusCode.BAD_GATEWAY.value,
+                    status_code=result.status_code if result else 502,
                     detail=f"Failed to fetch {record.weburl}",
                 )
 
