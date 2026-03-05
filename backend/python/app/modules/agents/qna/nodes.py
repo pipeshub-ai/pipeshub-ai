@@ -19,9 +19,11 @@ import re
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
+from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
 from app.modules.agents.qna.chat_state import ChatState
@@ -6283,16 +6285,17 @@ def _detect_tool_result_status(result_content: Any) -> str:
 # ReAct Agent Streaming Callback
 # =============================================================================
 
-class _ToolStreamingCallback:
+class _ToolStreamingCallback(AsyncCallbackHandler):
     """
     Callback handler that streams tool execution events to the frontend
     via the outer graph's StreamWriter.
 
-    Uses explicit context restoration before each write to ensure events
-    reach the SSE stream even when called from inside nested agent execution.
+    Used with agent.ainvoke() to stream real-time tool status without
+    the context conflicts that occur with nested agent.astream() calls.
     """
 
     def __init__(self, writer: StreamWriter, config: RunnableConfig, log: logging.Logger):
+        super().__init__()
         self.writer = writer
         self.config = config
         self.log = log
@@ -6300,8 +6303,6 @@ class _ToolStreamingCallback:
 
     def _write_event(self, event_data: Dict[str, Any]) -> bool:
         """Write event to the outer graph's stream with context restoration."""
-        from langchain_core.runnables.config import var_child_runnable_config
-
         token = var_child_runnable_config.set(self.config)
         try:
             self.writer(event_data)
