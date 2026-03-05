@@ -862,6 +862,48 @@ class ToolExecutor:
                 # that end up as None will be rejected by Pydantic validation.
                 resolved_args, stripped_placeholders = PlaceholderResolver.strip_unresolved(resolved_args)
                 log.debug(f"  Stripped {len(stripped_placeholders)} placeholder(s): {stripped_placeholders}")
+                # # Check if any stripped placeholder corresponds to a required
+                # # field in the tool's Pydantic schema.  If so, skip the tool
+                # # call entirely instead of letting Pydantic reject it later.
+                # tool_obj = tools_by_name.get(actual_tool_name)
+                # args_schema = getattr(tool_obj, 'args_schema', None) if tool_obj else None
+                # if args_schema and stripped_placeholders:
+                #     required_fields = {
+                #         name
+                #         for name, field_info in args_schema.model_fields.items()
+                #         if field_info.is_required()
+                #     }
+                #     null_required = {
+                #         k for k, v in resolved_args.items()
+                #         if v is None and k in required_fields
+                #     }
+                #     if null_required:
+                #         dep_hints = []
+                #         for placeholder in stripped_placeholders:
+                #             for tn in results_by_tool:
+                #                 if tn in placeholder:
+                #                     tool_data = results_by_tool[tn]
+                #                     if isinstance(tool_data, dict) and "data" in tool_data:
+                #                         data = tool_data["data"]
+                #                         if isinstance(data, dict):
+                #                             for key in ("value", "results"):
+                #                                 if key in data and isinstance(data[key], list) and len(data[key]) == 0:
+                #                                     dep_hints.append(f"'{tn}' returned empty results")
+                #                                     break
+                #         hint = (" because " + "; ".join(dep_hints)) if dep_hints else ""
+                #         error_msg = (
+                #             f"Error: Cannot execute {actual_tool_name} — required parameter(s) "
+                #             f"{null_required} could not be resolved from previous tool results{hint}. "
+                #             f"The dependent search/lookup may have returned no matches."
+                #         )
+                #         log.warning(f"⏭️ Skipping {actual_tool_name}: {error_msg}")
+                #         tool_results.append({
+                #             "tool_name": actual_tool_name,
+                #             "result": error_msg,
+                #             "status": "error",
+                #             "tool_id": f"call_{i}_{actual_tool_name}"
+                #         })
+                #         continue
 
                 # If placeholders still remain after stripping (shouldn't happen),
                 # something is structurally wrong – fail the tool call.
@@ -1717,6 +1759,161 @@ After getting history, the respond node will:
 4. NEVER tell the user to run more tools
 """
 
+TEAMS_GUIDANCE = r"""
+## Microsoft Teams-Specific Guidance
+
+### Tool Selection — Use the Right Teams Tool for Every Task
+
+| User intent | Correct Teams tool | Key parameters |
+|---|---|---|
+| List my teams | `teams.get_teams` | `top` (optional) |
+| Get one team details | `teams.get_team` | `team_id` |
+| List channels in a team | `teams.get_channels` | `team_id`, `top` (optional) |
+| Create a team | `teams.create_team` | `display_name`, `description` (optional) |
+| Delete a team | `teams.delete_team` | `team_id` |
+| Create channel in a team | `teams.create_channel` | `team_id`, `display_name`, `description`, `channel_type` |
+| Update channel info | `teams.update_channel` | `team_id`, `channel_id`, `display_name`/`description` |
+| Delete channel | `teams.delete_channel` | `team_id`, `channel_id` |
+| Send message to channel | `teams.send_message` | `team_id`, `channel_id`, `message` |
+| Read channel messages | `teams.get_channel_messages` | `team_id`, `channel_id`, `top` (optional) |
+| Create 1:1/group chat | `teams.create_chat` | `chat_type`, `member_user_ids`, `topic` (group only) |
+| Get chat details | `teams.get_chat` | `chat_id` |
+| Add team member | `teams.add_member` | `team_id`, `user_id`, `role` |
+| Remove team member | `teams.remove_member` | `team_id`, `membership_id` |
+
+**R-TEAMS-1: NEVER use retrieval for live Teams data/actions.**
+- ❌ "Show my Teams channels" → Do NOT use retrieval → ✅ Use `teams.get_channels`
+- ❌ "Post message in Teams" → Do NOT use retrieval → ✅ Use `teams.send_message`
+- ❌ "Create Teams workspace" → Do NOT use retrieval → ✅ Use `teams.create_team`
+
+**R-TEAMS-2: Resolve IDs before action tools.**
+Action tools need exact IDs (`team_id`, `channel_id`, `chat_id`, `membership_id`).
+- If the user gives names only, first fetch IDs with lookup tools (`teams.get_teams`, `teams.get_channels`)
+- Use placeholders only in multi-tool cascades, e.g. `{{teams.get_teams.data.results[0].id}}`
+
+**R-TEAMS-3: Send channel messages with IDs, not names.**
+`teams.send_message` requires both `team_id` and `channel_id`.
+- If channel/team IDs are not already known, lookup first:
+```json
+{
+  "tools": [
+    {"name": "teams.get_teams", "args": {}},
+    {"name": "teams.get_channels", "args": {"team_id": "{{teams.get_teams.data.results[0].id}}"}},
+    {"name": "teams.send_message", "args": {"team_id": "{{teams.get_teams.data.results[0].id}}", "channel_id": "{{teams.get_channels.data.results[0].id}}", "message": "Update posted"}}
+  ]
+}
+```
+
+**R-TEAMS-4: Member removal uses `membership_id`, not `user_id`.**
+For `teams.remove_member`, pass a conversation membership identifier. Do not pass a raw user ID.
+
+**R-TEAMS-5: `create_chat.chat_type` must be `oneOnOne` or `group`.**
+- Use `oneOnOne` for direct messages
+- Use `group` when multiple members or a topic is required
+
+**Common Planning Patterns:**
+
+**Pattern: Search and reply to a Teams message thread**
+```json
+{
+  "tools": [
+    {"name": "teams.search_messages", "args": {"query": "Q4 report", "top_per_channel": 20}},
+    {"name": "teams.reply_to_message", "args": {
+      "team_id": "{{teams.search_messages.data.results[0].team_id}}",
+      "channel_id": "{{teams.search_messages.data.results[0].channel_id}}",
+      "parent_message_id": "{{teams.search_messages.data.results[0].id}}",
+      "message": "Thanks for sharing this. I will review and follow up by EOD."
+    }}
+  ]
+}
+```
+
+**Pattern: Create a one-time meeting**
+```json
+{
+  "tools": [
+    {"name": "teams.create_event", "args": {
+      "subject": "Team Sync",
+      "start_datetime": "2026-03-05T14:00:00",
+      "end_datetime": "2026-03-05T15:00:00",
+      "timezone": "India Standard Time",
+      "description": "Weekly sync for project updates.",
+      "is_online_meeting": true
+    }}
+  ]
+}
+```
+
+**Pattern: Get recurring meetings**
+```json
+{
+  "tools": [
+    {"name": "teams.get_my_recurring_meetings", "args": {"top": 25}}
+  ]
+}
+```
+
+**Pattern: Get meetings for a given period**
+```json
+{
+  "tools": [
+    {"name": "teams.get_my_meetings_for_given_period", "args": {
+      "start_datetime": "2026-03-01T00:00:00",
+      "end_datetime": "2026-03-07T23:59:59",
+      "top": 100
+    }}
+  ]
+}
+```
+
+**Pattern: Reschedule a meeting by searching first**
+```json
+{
+  "tools": [
+    {"name": "teams.get_my_meetings_for_given_period", "args": {
+      "start_datetime": "2026-03-01T00:00:00",
+      "end_datetime": "2026-03-07T23:59:59"
+    }},
+    {"name": "teams.edit_event", "args": {
+      "event_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}",
+      "start_datetime": "2026-03-04T15:00:00",
+      "end_datetime": "2026-03-04T16:00:00",
+      "timezone": "India Standard Time"
+    }}
+  ]
+}
+```
+
+**Pattern: Get transcript for a selected meeting**
+```json
+{
+  "tools": [
+    {"name": "teams.get_my_meetings_for_given_period", "args": {
+      "start_datetime": "2026-03-01T00:00:00",
+      "end_datetime": "2026-03-07T23:59:59"
+    }},
+    {"name": "teams.get_my_meetings_transcript", "args": {
+      "meeting_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}"
+    }}
+  ]
+}
+```
+
+**Pattern: Compare invited vs attended people**
+```json
+{
+  "tools": [
+    {"name": "teams.get_my_meetings_for_given_period", "args": {
+      "start_datetime": "2026-03-03T00:00:00",
+      "end_datetime": "2026-03-03T23:59:59"
+    }},
+    {"name": "teams.get_people_invited", "args": {"meeting_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}"}},
+    {"name": "teams.get_people_attended", "args": {"meeting_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}"}}
+  ]
+}
+```
+"""
+
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
 
 ## Core Planning Logic - Understanding User Intent
@@ -2052,6 +2249,7 @@ Generate:
 {slack_guidance}
 {onedrive_guidance}
 {outlook_guidance}
+{teams_guidance}
 
 ## Planning Best Practices
 
@@ -3028,6 +3226,7 @@ async def planner_node(
     slack_guidance = SLACK_GUIDANCE if _has_slack_tools(state) else ""
     onedrive_guidance = ONEDRIVE_GUIDANCE if _has_onedrive_tools(state) else ""
     outlook_guidance = OUTLOOK_GUIDANCE if _has_outlook_tools(state) else ""
+    teams_guidance = TEAMS_GUIDANCE if _has_teams_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
@@ -3036,6 +3235,7 @@ async def planner_node(
         slack_guidance=slack_guidance,
         onedrive_guidance=onedrive_guidance,
         outlook_guidance=outlook_guidance
+        teams_guidance=teams_guidance
     )
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
@@ -4139,6 +4339,10 @@ def _has_outlook_tools(state: ChatState) -> bool:
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "outlook" in ts.get("name", "").lower() for ts in agent_toolsets)
 
+def _has_teams_tools(state: ChatState) -> bool:
+    """Check if Microsoft Teams tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "teams" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     """
@@ -6967,6 +7171,10 @@ Use this decision tree to choose the right approach:
         base_prompt += knowledge_context
 
     # ── Timezone / current time context ──────────────────────────────────────
+    if _has_teams_tools(state):
+        base_prompt += "\n" + TEAMS_GUIDANCE
+
+    # Add timezone / current time context if provided
     timezone = state.get("timezone")
     current_time = state.get("current_time")
     if timezone or current_time:
