@@ -9,6 +9,7 @@
  *
  * This exposes:
  *   GET /.well-known/openid-configuration
+ *   GET /.well-known/oauth-protected-resource
  *   GET /.well-known/jwks.json
  */
 
@@ -42,6 +43,24 @@ export function createOIDCDiscoveryRouter(container: Container): Router {
     '/openid-configuration',
     (req: Request, res: Response, next: NextFunction) =>
       controller.openidConfiguration(req, res, next),
+  )
+
+  /**
+   * GET /.well-known/oauth-protected-resource
+   * OAuth Protected Resource Metadata endpoint
+   *
+   * Returns metadata about the protected resource including:
+   * - resource identifier
+   * - authorization servers
+   * - scopes_supported
+   * - bearer_methods_supported
+   *
+   * @see RFC 9728 - OAuth 2.0 Protected Resource Metadata
+   */
+  router.get(
+    '/oauth-protected-resource',
+    (req: Request, res: Response, next: NextFunction) =>
+      controller.oauthProtectedResource(req, res, next),
   )
 
   /**

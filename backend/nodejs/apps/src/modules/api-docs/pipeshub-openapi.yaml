@@ -83,6 +83,7 @@ tags:
 
       **Discovery:**
       - `/.well-known/openid-configuration` - Authorization server metadata
+      - `/.well-known/oauth-protected-resource` - Protected resource metadata (RFC 9728)
       - `/.well-known/jwks.json` - Public keys for token verification
 
       **UserInfo:**
@@ -1129,6 +1130,42 @@ components:
             type: string
           description: Supported PKCE code challenge methods
           example: ["S256", "plain"]
+
+    OAuthProtectedResourceMetadata:
+      type: object
+      description: |
+        OAuth Protected Resource Metadata (RFC 9728).
+        Describes the protected resource, its authorization servers, supported scopes, and bearer token methods.
+      required:
+        - resource
+        - authorization_servers
+      properties:
+        resource:
+          type: string
+          format: uri
+          description: Protected resource identifier
+        authorization_servers:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: Authorization servers that can issue tokens for this resource
+        scopes_supported:
+          type: array
+          items:
+            type: string
+          description: OAuth scopes supported by this resource
+          example: ["read:records", "write:records", "admin:connectors"]
+        bearer_methods_supported:
+          type: array
+          items:
+            type: string
+          description: Methods supported for sending bearer tokens
+          example: ["header"]
+        resource_documentation:
+          type: string
+          format: uri
+          description: URL to human-readable documentation for the resource
 
     JWKS:
       type: object
@@ -5441,6 +5478,42 @@ paths:
                     kid: "key-1"
                     n: "0vx7agoebG..."
                     e: "AQAB"
+
+  /.well-known/oauth-protected-resource:
+    get:
+      tags:
+        - OpenID Connect
+      summary: OAuth Protected Resource Metadata
+      description: |
+        OAuth Protected Resource Metadata Endpoint (RFC 9728).
+        <br><br>
+        Returns metadata about the protected resource including the resource
+        identifier, authorization servers, supported scopes, and bearer token methods.
+        <br><br>
+        <b>Use Cases:</b><br>
+        - Discovering which authorization server to use for this resource<br>
+        - Determining supported scopes and bearer token methods<br>
+        - MCP client auto-configuration
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication.
+      operationId: oauthProtectedResource
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '200':
+          description: Protected resource metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthProtectedResourceMetadata'
+              example:
+                resource: "https://api.pipeshub.com/mcp"
+                authorization_servers: ["https://api.pipeshub.com"]
+                scopes_supported: ["read:records", "write:records", "admin:connectors"]
+                bearer_methods_supported: ["header"]
+                resource_documentation: "https://api.pipeshub.com/api/v1/docs"
 
   # ==================== OAUTH APP MANAGEMENT ENDPOINTS ====================
   /oauth-clients:
