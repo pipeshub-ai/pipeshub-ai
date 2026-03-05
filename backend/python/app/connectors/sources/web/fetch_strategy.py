@@ -170,7 +170,8 @@ def _sync_curl_cffi_fetch(
         from curl_cffi import CurlOpt
         from curl_cffi.requests import Session
     except ImportError:
-        logger.error("❌ [curl_cffi] Not installed")
+        if logger:
+            logger.error("❌ [curl_cffi] Not installed")
         return None
 
     pool = profiles or _CURL_PROFILES

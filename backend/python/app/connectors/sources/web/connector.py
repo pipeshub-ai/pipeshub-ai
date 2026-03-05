@@ -60,6 +60,11 @@ from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
+async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
+    """Wrap raw bytes as an async generator for StreamingResponse."""
+    yield data
+
+
 @dataclass
 class RecordUpdate:
     """Track updates to a record"""
@@ -432,7 +437,7 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch and parse config: {e}")
             raise
 
-    async def test_connection_and_access(self) -> bool:
+    async def test_connection_and_access(self) -> bool:  # type: ignore[override]
         """Test if the website is accessible using the multi-strategy fallback."""
         if not self.url or not self.session:
             return False
@@ -572,7 +577,7 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to reload config: {e}", exc_info=True)
             raise
 
-    async def run_sync(self) -> None:
+    async def run_sync(self) -> None:  # type: ignore[override]
         """Main sync method to crawl and index web pages."""
         try:
             await self.reload_config()
@@ -628,8 +633,9 @@ class WebConnector(BaseConnector):
 
                 if record_update.is_updated:
                     await self._handle_record_updates(record_update)
-                elif record_update.is_new:
-                    await self.data_entities_processor.on_new_records([(record_update.record, record_update.new_permissions)])
+                elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
+                    pair: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
+                    await self.data_entities_processor.on_new_records([pair])
                 self.logger.info(f"✅ Indexed single page: {url}")
 
         except Exception as e:
@@ -645,8 +651,9 @@ class WebConnector(BaseConnector):
                 if record_update.is_updated:
                     await self._handle_record_updates(record_update)
                     continue
-                elif record_update.is_new:
-                    batch_records.append((record_update.record, record_update.new_permissions))
+                elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
+                    entry: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
+                    batch_records.append(entry)
 
                     # Process batch when it reaches the size limit
                     if len(batch_records) >= self.batch_size:
@@ -1234,11 +1241,11 @@ class WebConnector(BaseConnector):
         """Web connector does not support dynamic filter options."""
         raise NotImplementedError("Web connector does not support dynamic filter options")
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: Dict) -> None:  # type: ignore[override]
         """Web connector doesn't support webhooks."""
         pass
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> Optional[str]:  # type: ignore[override]
         """Return the web URL as the signed URL."""
         return record.weburl if record.weburl else None
 
@@ -1711,7 +1718,7 @@ class WebConnector(BaseConnector):
 
     # ==================== Main Stream Record Method ====================
 
-    async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> Optional[StreamingResponse]:
+    async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> Optional[StreamingResponse]:  # type: ignore[override]
         """
         Stream the web page content with proper content extraction.
         """
@@ -1762,7 +1769,7 @@ class WebConnector(BaseConnector):
             )
 
             return create_stream_record_response(
-                BytesIO(response_content),
+                _bytes_async_gen(response_content),
                 filename=record.record_name,
                 mime_type=mime_type,
                 fallback_filename=f"record_{record.id}",
@@ -1776,6 +1783,6 @@ class WebConnector(BaseConnector):
             )
             raise
 
-    async def run_incremental_sync(self) -> None:
+    async def run_incremental_sync(self) -> None:  # type: ignore[override]
         """Run incremental sync (same as full sync for web pages)."""
         await self.run_sync()
