@@ -278,12 +278,14 @@ class MSGraphClient(IClient):
         toolset_config: Dict[str, Any],
         service_name: str,
         logger: logging.Logger,
+        config_service: Optional[ConfigurationService] = None,
     ) -> 'MSGraphClient':
         """
         Build MSGraphClient from toolset configuration stored in etcd.
 
-        This is the new architecture for creating clients - toolset configs are
-        stored per-user at /services/toolsets/{user_id}/{toolset_type}.
+        ARCHITECTURE NOTE: OAuth credentials (clientId/clientSecret/tenantId) are fetched from
+        the OAuth config using the oauthConfigId stored in toolset_config. This keeps
+        credentials centralized and secure while allowing per-user authentication.
 
         The toolset uses OAuth (delegated) flow: the user authenticates via the
         OAuth consent screen and we receive an access_token + refresh_token.
@@ -292,11 +294,12 @@ class MSGraphClient(IClient):
 
         Args:
             toolset_config: Toolset configuration from etcd containing:
-                - auth: { clientId, clientSecret, tenantId, type }
-                - credentials: { access_token, refresh_token, expires_in, token_type, scope }
+                - credentials: { access_token, refresh_token, expires_in }
                 - isAuthenticated: bool
+                - oauthConfigId: ID of the OAuth config (for fetching clientId/clientSecret/tenantId)
             service_name: Name of Microsoft service (outlook, one_drive, etc.)
             logger: Logger instance
+            config_service: ConfigurationService for fetching OAuth config (required for OAuth)
 
         Returns:
             MSGraphClient instance
@@ -332,11 +335,6 @@ class MSGraphClient(IClient):
         access_token = credentials_config.get("access_token")
         refresh_token = credentials_config.get("refresh_token")
 
-        # Extract OAuth client credentials from auth config
-        client_id = auth_config.get("clientId") or auth_config.get("client_id")
-        client_secret = auth_config.get("clientSecret") or auth_config.get("client_secret")
-        tenant_id = auth_config.get("tenantId") or auth_config.get("tenant_id", "common")
-
         if not access_token:
             raise ValueError(
                 f"Access token not found in Microsoft {service_name} toolset credentials. "
@@ -365,11 +363,56 @@ class MSGraphClient(IClient):
                 f"This may cause authentication failures."
             )
 
-        if not client_id or not client_secret:
-            raise ValueError(
-                f"OAuth client credentials (clientId/clientSecret) not found for Microsoft {service_name}. "
-                f"Available auth keys: {list(auth_config.keys())}"
+        # -----------------------------------------------------------------
+        # Fetch OAuth credentials from centralized OAuth config
+        # -----------------------------------------------------------------
+        try:
+            from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+
+            if not config_service:
+                raise ValueError(
+                    "ConfigurationService is required to fetch OAuth configuration. "
+                    "Please pass config_service parameter to build_from_toolset."
+                )
+
+            # Get complete OAuth config (all fields including clientId, clientSecret, tenantId)
+            oauth_config = await get_oauth_credentials_for_toolset(
+                toolset_config=toolset_config,
+                config_service=config_service,
+                logger=logger
             )
+
+            # Extract required fields (support both camelCase and snake_case)
+            client_id = oauth_config.get("clientId") or oauth_config.get("client_id")
+            client_secret = oauth_config.get("clientSecret") or oauth_config.get("client_secret")
+            tenant_id = oauth_config.get("tenantId") or oauth_config.get("tenant_id", "common")
+
+            if not client_id or not client_secret:
+                raise ValueError(
+                    f"OAuth configuration is missing clientId or clientSecret. "
+                    f"Available fields: {list(oauth_config.keys())}"
+                )
+
+            logger.debug(
+                f"✅ Fetched OAuth credentials for Microsoft {service_name} from centralized config. "
+                f"Fields: {list(oauth_config.keys())}"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to fetch OAuth configuration for Microsoft {service_name}: {e}")
+            raise ValueError(
+                f"Failed to retrieve OAuth configuration: {str(e)}. "
+                f"Please ensure the toolset instance has a valid OAuth configuration."
+            ) from e
+
+        if not refresh_token:
+            logger.warning(
+                f"⚠️ Refresh token missing for Microsoft {service_name} toolset. "
+                "Token refresh will fail when access token expires."
+            )
+
+        # Determine tenant endpoint — fall back to "common" for multi-tenant/personal accounts.
+        effective_tenant = (tenant_id or "").strip() or "common"
 
         if not refresh_token:
             logger.warning(
