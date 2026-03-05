@@ -95,7 +95,7 @@
     "axios": "^1.13.5",
     "dayjs": "^1.11.18",
     "docx-preview": "^0.3.5",
-    "dompurify": "^3.2.5",
+    "dompurify": "^3.3.2",
     "embla-carousel": "^8.2.0",
     "embla-carousel-auto-height": "^8.2.0",
     "embla-carousel-auto-scroll": "^8.2.0",
