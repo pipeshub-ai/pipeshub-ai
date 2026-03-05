@@ -459,6 +459,7 @@ export class Application {
 
     // OIDC Discovery routes - mounted at root level per RFC 8414
     // Exposes: GET /.well-known/openid-configuration
+    //          GET /.well-known/oauth-protected-resource
     //          GET /.well-known/jwks.json
     this.app.use(
       '/.well-known',
