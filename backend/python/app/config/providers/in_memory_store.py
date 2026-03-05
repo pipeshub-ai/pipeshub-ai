@@ -73,6 +73,11 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
 
         logger.debug("✅ InMemoryKeyValueStore initialized")
 
+    @property
+    def client(self) -> None:
+        """In-memory store has no underlying network client."""
+        return None
+
     def _load_from_json(self, json_file_path: str) -> Dict[str, KeyData[T]]:
         """Load data from a JSON file."""
         with open(json_file_path, 'r') as file:
@@ -107,7 +112,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
                     logger.error("❌ Error in watcher callback: %s", str(e))
                     logger.exception("Detailed error:")
 
-    async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> None:
+    async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> bool:
         """
         Create a new key-value pair in the store.
 
@@ -133,6 +138,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.debug("🔄 Notifying watchers")
             self._notify_watchers(key, value)
             logger.debug("✅ Key created successfully")
+            return True
 
     async def update_value(self, key: str, value: T, ttl: Optional[int] = None) -> None:
         """
@@ -259,7 +265,7 @@ class InMemoryKeyValueStore(KeyValueStore[T], Generic[T]):
             )
         return watch_id
 
-    def cancel_watch(self, key: str, watch_id: str) -> None:
+    async def cancel_watch(self, key: str, watch_id: str) -> None:
         """
         Cancel a watch operation.
 
