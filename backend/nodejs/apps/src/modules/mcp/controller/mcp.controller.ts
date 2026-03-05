@@ -8,8 +8,7 @@
 import { Response, NextFunction } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
-import { Logger } from '../../../libs/services/logger.service';
-import { InternalServerError } from '../../../libs/errors/http.errors';
+import { Logger, getLogLevel } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 
 const logger = Logger.getInstance({
@@ -33,6 +32,7 @@ export const handleMCPRequest =
     next: NextFunction,
   ): Promise<void> => {
     try {
+      // Extract the raw Bearer token from the Authorization header for the MCP SDK
       const token = req.headers.authorization?.replace('Bearer ', '') || '';
       const serverURL = `${appConfig.oauthBackendUrl}/api/v1`;
 
@@ -45,7 +45,7 @@ export const handleMCPRequest =
 
       const { server: mcpServer } = createMCPServer({
         logger: {
-          level: 'info',
+          level: getLogLevel(),
           info: logger.info.bind(logger),
           debug: logger.debug.bind(logger),
           warning: logger.warn.bind(logger),
@@ -68,6 +68,6 @@ export const handleMCPRequest =
         method: req.method,
         userId: req.user?.userId,
       });
-      next(new InternalServerError('MCP request failed'));
+      next(error);
     }
   };
