@@ -63,7 +63,12 @@ class TeamsResponse:
         self.message = message
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return {
+            "success": self.success,
+            "data": self.data,
+            "error": self.error,
+            "message": self.message,
+        }
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
@@ -408,6 +413,11 @@ class TeamsDataSource:
     def _handle_teams_response(self, response: object) -> TeamsResponse:
         """Handle Teams API response with comprehensive error handling."""
         try:
+            logger.info(
+                "Teams API response received type=%s preview=%s",
+                type(response).__name__ if response is not None else "None",
+                self._safe_response_preview(response),
+            )
             if response is None:
                 return TeamsResponse(success=False, error="Empty response from Teams API")
 
@@ -14988,7 +14998,7 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
 
-    async def C(self, team_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
+    async def me_joined_teams_get_members(self, team_id: str, conversationMember_id: str, select: Optional[List[str]] = None, expand: Optional[List[str]] = None, filter: Optional[str] = None, orderby: Optional[List[str]] = None, search: Optional[str] = None, top: Optional[int] = None, skip: Optional[int] = None) -> TeamsResponse:
 
         """
         Get members from me
@@ -17996,10 +18006,67 @@ class TeamsDataSource:
             TeamsResponse: Teams API response with success status and data
         """
         try:
-            response = await self.client.teams.post(body=body)
+            payload: Any = body
+            requested_display_name: Optional[str] = None
+            logger.debug(
+                "teams_team_create_team called with body_type=%s is_dict=%s has_serialize=%s",
+                type(body).__name__ if body is not None else "None",
+                isinstance(body, dict),
+                hasattr(body, "serialize") if body is not None else False,
+            )
+            if isinstance(body, dict):
+                requested_display_name = body.get("displayName")
+                logger.debug(
+                    "teams_team_create_team body keys=%s",
+                    list(body.keys())[:25],
+                )
+                logger.debug(
+                    "teams_team_create_team body preview=%s",
+                    {k: body.get(k) for k in list(body.keys())[:5]},
+                )
+                raw_body = dict(body)
+                team_payload = Team()
+
+                if "displayName" in raw_body:
+                    team_payload.display_name = raw_body.pop("displayName")
+                if "description" in raw_body:
+                    team_payload.description = raw_body.pop("description")
+                if "visibility" in raw_body:
+                    team_payload.visibility = raw_body.pop("visibility")
+
+                # Preserve Graph-specific fields such as "template@odata.bind"
+                # and any future properties not explicitly mapped above.
+                team_payload.additional_data = raw_body
+                payload = team_payload
+
+                logger.debug(
+                    "teams_team_create_team converted payload_type=%s has_serialize=%s",
+                    type(payload).__name__,
+                    hasattr(payload, "serialize"),
+                )
+
+            response = await self.client.teams.post(body=payload)
+            logger.debug(f"TEAMS create log: {response}")            
+            if response is None:
+                # Graph create-team is an async operation that can return 202
+                # with an empty body. Treat this as accepted instead of failure.
+                return TeamsResponse(
+                    success=True,
+                    data={
+                        "status": "accepted",
+                        "message": "Team creation request accepted by Microsoft Graph.",
+                        "display_name": requested_display_name,
+                    },
+                    message="Team creation request accepted",
+                )
             return self._handle_teams_response(response)
         except Exception as e:
-            logger.error(f"Error in teams_team_create_team: {e}")
+            logger.exception(
+                "Error in teams_team_create_team: %s (body_type=%s has_serialize=%s)",
+                str(e),
+                type(body).__name__ if body is not None else "None",
+                hasattr(body, "serialize") if body is not None else False,
+            )
             return TeamsResponse(success=False, error=str(e))
 
 
