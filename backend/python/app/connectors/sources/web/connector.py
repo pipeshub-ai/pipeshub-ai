@@ -197,6 +197,16 @@ class WebApp(App):
             description="Maximum number of pages to crawl (1-1000)"
         ))
         .add_sync_custom_field(CustomField(
+            name="max_size_mb",
+            display_name="Maximum Size in MB (default 10MB)",
+            field_type="NUMBER",
+            required=False,
+            default_value="10",
+            min_length=1,
+            max_length=100,
+            description="Maximum size in MB of the response (1-100)"
+        ))
+        .add_sync_custom_field(CustomField(
             name="follow_external",
             display_name="Follow External Links",
             field_type="BOOLEAN",
@@ -305,6 +315,7 @@ class WebConnector(BaseConnector):
             self.crawl_type = config_values["crawl_type"]
             self.max_depth = config_values["max_depth"]
             self.max_pages = config_values["max_pages"]
+            self.max_size_mb = config_values["max_size_mb"]
             self.follow_external = config_values["follow_external"]
             self.base_domain = config_values["base_domain"]
 
@@ -392,6 +403,7 @@ class WebConnector(BaseConnector):
             crawl_type = sync_config.get("type", "single")
             max_depth = int(sync_config.get("depth") or 3)
             max_pages = int(sync_config.get("max_pages") or 1000)
+            max_size_mb = int(sync_config.get("max_size_mb") or 10)
             follow_external = sync_config.get("follow_external", False)
 
             # Validate max_pages and max_depth
@@ -407,6 +419,12 @@ class WebConnector(BaseConnector):
             if max_depth < 1:
                 self.logger.warning("⚠️ WebPage max_depth is less than 1, setting to 1")
                 max_depth = 1
+            if max_size_mb > 100:
+                self.logger.warning("⚠️ WebPage max_size_mb is greater than 100, setting to 100")
+                max_size_mb = 100
+            if max_size_mb < 1:
+                self.logger.warning("⚠️ WebPage max_size_mb is less than 1, setting to 1")
+                max_size_mb = 1
 
             # Parse base domain
             parsed_url = urlparse(url)
@@ -417,6 +435,7 @@ class WebConnector(BaseConnector):
                 "crawl_type": crawl_type,
                 "max_depth": max_depth,
                 "max_pages": max_pages,
+                "max_size_mb": max_size_mb,
                 "follow_external": follow_external,
                 "base_domain": base_domain,
             }
@@ -535,6 +554,7 @@ class WebConnector(BaseConnector):
             new_crawl_type = config_values["crawl_type"]
             new_max_depth = config_values["max_depth"]
             new_max_pages = config_values["max_pages"]
+            new_max_size_mb = config_values["max_size_mb"]
             new_follow_external = config_values["follow_external"]
             new_base_domain = config_values["base_domain"]
 
@@ -551,6 +571,9 @@ class WebConnector(BaseConnector):
             if new_max_pages != self.max_pages:
                 self.logger.info(f"🔄 Max pages changed from {self.max_pages} to {new_max_pages}")
                 self.max_pages = new_max_pages
+            if new_max_size_mb != self.max_size_mb:
+                self.logger.info(f"🔄 Max size bytes changed from {self.max_size_mb} to {new_max_size_mb}")
+                self.max_size_mb = new_max_size_mb
             if new_follow_external != self.follow_external:
                 self.logger.info(f"🔄 Follow external changed from {self.follow_external} to {new_follow_external}")
                 self.follow_external = new_follow_external
@@ -736,6 +759,7 @@ class WebConnector(BaseConnector):
                 logger=self.logger,
                 referer=referer,
                 timeout=15,
+                max_size_mb=self.max_size_mb,
             )
 
             if result is None:
@@ -754,6 +778,14 @@ class WebConnector(BaseConnector):
             content_type = result.headers.get("Content-Type", "").lower()
             final_url = result.final_url
             content_bytes = result.content_bytes
+
+            if len(content_bytes) > self.max_size_mb * 1024 * 1024:
+                size_mb = len(content_bytes) / (1024 * 1024)
+                self.logger.warning(
+                    f"⚠️ Skipping {url}: downloaded size {size_mb:.1f}MB "
+                    f"exceeds limit of {self.max_size_mb:.0f}MB"
+                )
+                return None
 
             # Determine MIME type and file extension
             mime_type, extension = self._determine_mime_type(url, content_type)
@@ -795,7 +827,7 @@ class WebConnector(BaseConnector):
 
                     # Store cleaned HTML for indexing
                     content_bytes = text_content.encode("utf-8")
-                    size_in_bytes = len(content_bytes)
+                    # size_in_bytes = len(content_bytes)
 
                 except Exception as e:
                     self.logger.warning(f"⚠️ Failed to parse HTML for {url}: {e}")
@@ -900,9 +932,7 @@ class WebConnector(BaseConnector):
 
         try:
 
-            if html_bytes:
-                html_content = html_bytes.decode("utf-8", errors="replace")
-            else:
+            if not html_bytes:
                 self.logger.debug(f"no HTML content, fetching from {file_record.weburl}")
                 # Add referer header if provided
                 headers = {}
@@ -915,6 +945,8 @@ class WebConnector(BaseConnector):
                         return links
 
                     html_content = await response.text()
+            else:
+                html_content = html_bytes
 
             soup = BeautifulSoup(html_content, 'html.parser')
             # Find all anchor tags
@@ -1403,7 +1435,8 @@ class WebConnector(BaseConnector):
         img,
         soup: BeautifulSoup,
         base_url: str,
-        headers: dict
+        headers: dict,
+        preferred_strategy: Optional[str] = None
     ) -> None:
         """
         Process a single image tag: download if needed and convert to base64.
@@ -1487,65 +1520,77 @@ class WebConnector(BaseConnector):
         try:
             absolute_url = src if src.startswith(('http:', 'https:')) else urljoin(base_url, src)
 
-            # Override Accept header so servers don't return unsupported image types
-            img_headers = {**headers, "Accept": self._IMAGE_ACCEPT_HEADER}
+            img_result = await fetch_url_with_fallback(
+                url=absolute_url,
+                session=self.session,
+                logger=self.logger,
+                referer=base_url,
+                # Override Accept so servers don't return unsupported image types
+                extra_headers={"Accept": self._IMAGE_ACCEPT_HEADER},
+                preferred_strategy=preferred_strategy,
+            )
 
-            async with self.session.get(absolute_url, headers=img_headers) as img_response:
-                if img_response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    self.logger.warning(f"⚠️ Failed to download image: {absolute_url} (status: {img_response.status})")
-                    return
+            if img_result is None or img_result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                self.logger.warning(
+                    f"⚠️ Failed to download image: {absolute_url} "
+                    f"(status: {img_result.status_code if img_result else 'N/A'})"
+                )
+                return
 
-                img_bytes = await img_response.read()
-                if not img_bytes:
-                    return
+            img_bytes = img_result.content_bytes     # was: await img_response.read()
+            if not img_bytes:
+                return
 
-                content_type = self._determine_image_content_type(img_response, absolute_url)
+            content_type = self._determine_image_content_type(img_result, absolute_url)
 
-                # Convert to base64 (handle SVG and AVIF specially)
-                if content_type == 'image/svg+xml':
-                    b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
-                    if not b64_str:
-                        img.decompose()
-                        return
-                    content_type = 'image/png'
-                elif content_type == 'image/avif':
-                    self.logger.debug("Converting external AVIF to PNG base64")
-                    b64_str = self._convert_avif_bytes_to_png_base64(img_bytes, absolute_url)
-                    if not b64_str:
-                        img.decompose()
-                        return
-                    content_type = 'image/png'
-                elif content_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
-                    # Server returned an unsupported format — log full metadata then skip.
-                    raw_ct = img_response.headers.get('Content-Type', '<none>')
-                    self.logger.debug(
-                        f"⚠️ Unsupported downloaded image — "
-                        f"resolved_content_type='{content_type}' | "
-                        f"raw_Content-Type='{raw_ct}' | "
-                        f"url='{absolute_url}' | "
-                        f"response_status={img_response.status} | "
-                        f"content_length={len(img_bytes)} bytes | "
-                        f"response_headers={dict(img_response.headers)} — skipping"
-                    )
+            # Convert to base64 (handle SVG and AVIF specially)
+            if content_type == 'image/svg+xml':
+                b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
+                if not b64_str:
                     img.decompose()
                     return
-                else:
-                    b64_str = base64.b64encode(img_bytes).decode('utf-8')
-                    b64_str = self._clean_base64_string(b64_str)
-                    if not b64_str:
-                        self.logger.warning(f"⚠️ Failed to clean/validate base64 for image: {absolute_url}. Removing.")
-                        img.decompose()
-                        return
-                    self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
+                content_type = 'image/png'
+            elif content_type == 'image/avif':
+                self.logger.debug("Converting external AVIF to PNG base64")
+                b64_str = self._convert_avif_bytes_to_png_base64(img_bytes, absolute_url)
+                if not b64_str:
+                    img.decompose()
+                    return
+                content_type = 'image/png'
+            elif content_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
+                # Server returned an unsupported format — log full metadata then skip.
+                raw_ct = img_result.headers.get('Content-Type') or img_result.headers.get('content-type', '<none>')
+                self.logger.debug(
+                    f"⚠️ Unsupported downloaded image — "
+                    f"resolved_content_type='{content_type}' | "
+                    f"raw_Content-Type='{raw_ct}' | "
+                    f"url='{absolute_url}' | "
+                    f"response_status={img_result.status_code} | "
+                    f"content_length={len(img_bytes)} bytes | "
+                    f"response_headers={dict(img_result.headers)} — skipping"
+                )
+                img.decompose()
+                return
+            else:
+                b64_str = base64.b64encode(img_bytes).decode('utf-8')
+                b64_str = self._clean_base64_string(b64_str)
+                if not b64_str:
+                    self.logger.warning(f"⚠️ Failed to clean/validate base64 for image: {absolute_url}. Removing.")
+                    img.decompose()
+                    return
+                self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
 
-                img['src'] = f"data:{content_type};base64,{b64_str}"
+            img['src'] = f"data:{content_type};base64,{b64_str}"
 
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to process image {src}: {e}")
 
     def _determine_image_content_type(self, response, url: str) -> str:
         """Determine the content type of an image from response headers or URL."""
-        content_type = response.headers.get('Content-Type', 'image/jpeg')
+        # FetchResponse.headers is a plain dict; header casing varies by strategy
+        # (aiohttp → title-case, curl_cffi/cloudscraper → may be lowercase).
+        h = response.headers
+        content_type = h.get('Content-Type') or h.get('content-type', 'image/jpeg')
 
         if not content_type or content_type == 'application/octet-stream':
             parsed_url = urlparse(url)
@@ -1612,17 +1657,19 @@ class WebConnector(BaseConnector):
         self,
         soup: BeautifulSoup,
         base_url: str,
-        headers: dict
+        headers: dict,
+        preferred_strategy: Optional[str] = None
     ) -> None:
         """Process all image tags in the soup."""
         for img in soup.find_all('img'):
-            await self._process_single_image(img, soup, base_url, headers)
+            await self._process_single_image(img, soup, base_url, headers, preferred_strategy)
 
     async def _process_html_content(
         self,
         content_bytes: bytes,
         record: Record,
-        headers: dict
+        headers: dict,
+        preferred_strategy: Optional[str] = None
     ) -> Optional[str]:
         """
         Process HTML content: parse, clean, and convert images to base64.
@@ -1636,21 +1683,19 @@ class WebConnector(BaseConnector):
             Cleaned HTML string with embedded base64 images, or None on failure
         """
         try:
-            html_content = content_bytes.decode('utf-8')
-            soup = BeautifulSoup(html_content, 'html.parser')
+            soup = BeautifulSoup(content_bytes, 'html.parser')
 
             # Remove unwanted tags
             self._remove_unwanted_tags(soup)
 
             # Check if image indexing is enabled
-            images_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
-
+            images_enabled = self.indexing_filters.get_value(IndexingFilterKey.IMAGES, default=True)
             if images_enabled:
                 # Convert SVG tags to PNG img tags
                 self._process_svg_tags(soup)
 
                 # Process all images: download and convert to base64
-                await self._process_all_images(soup, record.weburl, headers)
+                await self._process_all_images(soup, record.weburl, headers, preferred_strategy)
             else:
                 self.logger.debug("Removing all image tags: image indexing is disabled")
                 # Remove all image and SVG tags when image indexing is disabled
@@ -1665,111 +1710,6 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"⚠️ Failed to parse/clean HTML: {e}")
             raise
-
-    # ==================== Retryable Fetch Method ====================
-
-    async def _fetch_with_retry(
-        self,
-        url: str,
-        headers: dict,
-        max_retries: int = 3,
-        base_delay: float = 1.0,
-        max_delay: float = 10.0,
-    ) -> bytes:
-        """
-        Fetch a URL with exponential backoff retry for transient errors.
-
-        Args:
-            url: The URL to fetch
-            headers: Request headers
-            max_retries: Maximum number of retry attempts
-            base_delay: Initial delay in seconds before first retry
-            max_delay: Maximum delay cap in seconds
-
-        Returns:
-            The response content as bytes
-
-        Raises:
-            HTTPException: On non-retryable HTTP errors or after exhausting retries
-        """
-
-        for attempt in range(max_retries + 1):
-            try:
-                async with self.session.get(url, headers=headers) as response:
-                    # Non-retryable client errors — fail immediately
-                    if (
-                        response.status >= HttpStatusCode.BAD_REQUEST.value
-                        and response.status not in RETRYABLE_STATUS_CODES
-                    ):
-                        raise HTTPException(
-                            status_code=response.status,
-                            detail=f"HTTP {response.status} for {url}",
-                        )
-
-                    # Retryable status codes
-                    if response.status in RETRYABLE_STATUS_CODES:
-                        if attempt == max_retries:
-                            raise HTTPException(
-                                status_code=response.status,
-                                detail=f"HTTP {response.status} for {url} after {max_retries} retries",
-                            )
-
-                        delay = self._calculate_retry_delay(
-                            attempt, base_delay, max_delay,
-                            retry_after=response.headers.get("Retry-After"),
-                        )
-                        self.logger.warning(
-                            f"\n\n\n⚠️ Retryable HTTP {response.status} for {url}. "
-                            f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-
-                    # Success
-                    return await response.read()
-
-            except RETRYABLE_EXCEPTIONS as e:
-                if attempt == max_retries:
-                    self.logger.error(
-                        f"❌ Failed to fetch {url} after {max_retries} retries: {e}"
-                    )
-                    raise HTTPException(
-                        status_code=HttpStatusCode.BAD_GATEWAY.value,
-                        detail=f"Failed to fetch {url} after {max_retries} retries: {e}",
-                    )
-
-                delay = self._calculate_retry_delay(attempt, base_delay, max_delay)
-                self.logger.warning(
-                    f"⚠️ Connection error for {url}: {e}. "
-                    f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
-                )
-                await asyncio.sleep(delay)
-
-        # Should not be reached, but just in case
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value,
-            detail=f"Failed to fetch {url} after {max_retries} retries",
-        )
-
-    @staticmethod
-    def _calculate_retry_delay(
-        attempt: int,
-        base_delay: float,
-        max_delay: float,
-        retry_after: Optional[str] = None,
-    ) -> float:
-        """
-        Calculate delay using exponential backoff with jitter,
-        respecting Retry-After header if present.
-        """
-        if retry_after:
-            try:
-                return min(float(retry_after), max_delay)
-            except (ValueError, TypeError):
-                pass
-
-        delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-        return min(delay, max_delay)
 
     # ==================== Main Stream Record Method ====================
 
@@ -1807,7 +1747,7 @@ class WebConnector(BaseConnector):
             cleaned_html_content = None
             if "html" in mime_type.lower():
                 cleaned_html_content = await self._process_html_content(
-                    content_bytes, record, headers
+                    content_bytes, record, headers, result.strategy
                 )
 
             # Prepare response content

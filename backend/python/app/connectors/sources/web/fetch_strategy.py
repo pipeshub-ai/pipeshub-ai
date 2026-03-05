@@ -298,6 +298,8 @@ async def fetch_url_with_fallback(
     timeout: int = REQUEST_TIMEOUT,
     max_429_retries: int = MAX_429_RETRIES,
     max_retries_per_strategy: int = 2,
+    max_size_mb: Optional[int] = None,
+    preferred_strategy: Optional[str] = None,
 ) -> Optional[FetchResponse]:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -327,19 +329,70 @@ async def fetch_url_with_fallback(
         timeout:                   Per-request timeout in seconds.
         max_429_retries:           Max retries on 429 per attempt.
         max_retries_per_strategy:  Max attempts per strategy before moving to next (default 2).
-
+        max_size_mb:               Max size in mb of the response.
+        preferred_strategy:        When set, only this strategy is tried (no fallback). Use the
+                                   ``strategy`` field from a prior FetchResponse to pin image/asset
+                                   fetches to the same strategy that worked for the parent page.
+                                   If the name doesn't match any known strategy the full chain is
+                                   used as a safety net.
     Returns:
         FetchResponse on success or non-retryable error, None if all strategies fail.
     """
     headers = build_stealth_headers(url, referer=referer, extra=extra_headers)
 
+    if max_size_mb is not None:
+        max_size_bytes = max_size_mb * 1024 * 1024
+
+        try:
+            async with session.head(
+                url,
+                headers=headers,
+                allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as head_resp:
+                cl = (
+                    head_resp.headers.get("Content-Length")
+                    or head_resp.headers.get("content-length")
+                )
+                if cl:
+                    size = int(cl)
+                    if size > max_size_bytes:
+                        logger.warning(
+                            f"⚠️ Skipping {url}: Content-Length "
+                            f"{size / (1024 * 1024):.1f}MB exceeds limit of "
+                            f"{max_size_bytes:.0f}MB"
+                        )
+                        return None
+        except Exception as e:
+            # HEAD not supported (405), connection error, timeout — proceed with GET
+            pass
+
     # Define the strategy chain: (name, async callable returning Optional[FetchResponse])
-    strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
+    all_strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
         ("aiohttp", lambda: _try_aiohttp(session, url, headers, timeout, logger)),
         ("curl_cffi(H2)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=True, logger=logger)),
         # ("curl_cffi(H1)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=False, logger=logger)),
         ("cloudscraper", lambda: _try_cloudscraper(url, headers, timeout, logger=logger)),
     ]
+
+    # When a preferred strategy is given (e.g. from a cached page-level fetch),
+    # use ONLY that strategy — no fallback — to avoid wasted attempts.
+    if preferred_strategy:
+        preferred_lower = preferred_strategy.lower()
+        strategies = [
+            (name, fn) for name, fn in all_strategies
+            if name.lower().split('(')[0].strip() in preferred_lower
+        ]
+        if not strategies:
+            logger.warning(
+                f"⚠️ preferred_strategy='{preferred_strategy}' did not match any strategy name; "
+                f"falling back to full chain"
+            )
+            strategies = all_strategies
+        else:
+            logger.debug(f"🔒 Using pinned strategy '{strategies[0][0]}' for {url}")
+    else:
+        strategies = all_strategies
 
     for strategy_name, strategy_fn in strategies:
         logger.debug(f"🔄 [{strategy_name}] Attempting {url}")
