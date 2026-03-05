@@ -31,6 +31,12 @@ servers:
       instance_url:
         default: https://app.pipeshub.com
         description: Base server URL (without /api/v1)
+  - url: "{instance_url}"
+    description: Root URL (used for MCP endpoints mounted at /mcp)
+    variables:
+      instance_url:
+        default: https://app.pipeshub.com
+        description: Base server URL
 
 tags:
   # Authentication
@@ -190,6 +196,24 @@ tags:
       - All metrics are anonymized before collection
       - No personally identifiable information (PII) is collected
       - Organization can disable collection at any time
+  # MCP (Model Context Protocol)
+  - name: MCP
+    description: |
+      Model Context Protocol (MCP) endpoints for AI tool integration.
+
+      PipesHub exposes a Streamable HTTP MCP server that allows MCP-compatible clients
+      (such as Claude Desktop, Cursor, or custom agents) to interact with PipesHub tools
+      including search, conversations, knowledge base management, and connector operations.
+
+      **Transport:** Streamable HTTP (JSON-RPC over HTTP)
+      **Base Path:** `/mcp` (not under `/api/v1`)
+
+      **Authentication:**
+      All MCP requests require a valid Bearer token or OAuth 2.0 access token.
+
+      **Stateless Mode:**
+      The server operates in stateless mode — each request creates an independent MCP session.
+
   - name: Crawling Jobs
     description: |
       Endpoints for scheduling, managing, and monitoring data crawling jobs for enterprise connectors.
@@ -18772,3 +18796,81 @@ paths:
                 type: object
         '401':
           description: Unauthorized
+
+  # ── MCP (Model Context Protocol) ──────────────────────────────────
+  # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).
+  # Use the root server URL: {instance_url}/mcp
+
+  /mcp:
+    post:
+      tags:
+        - MCP
+      summary: Handle MCP JSON-RPC request
+      description: |
+        Main MCP endpoint that handles all JSON-RPC requests including:
+        - `initialize` — Negotiate capabilities and protocol version
+        - `tools/list` — List available tools
+        - `tools/call` — Execute a tool (search, conversations, KB management, etc.)
+
+        The server operates in stateless mode with Streamable HTTP transport.
+        Each request creates an independent MCP server session.
+      operationId: handleMCPRequest
+      servers:
+        - url: "{instance_url}"
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
+      security:
+        - bearerAuth: []
+        - oauth2: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: JSON-RPC 2.0 request object
+              properties:
+                jsonrpc:
+                  type: string
+                  enum: ["2.0"]
+                id:
+                  oneOf:
+                    - type: string
+                    - type: integer
+                method:
+                  type: string
+                  description: "MCP method (e.g. initialize, tools/list, tools/call)"
+                params:
+                  type: object
+              required:
+                - jsonrpc
+                - method
+      responses:
+        '200':
+          description: JSON-RPC 2.0 response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc:
+                    type: string
+                    enum: ["2.0"]
+                  id:
+                    oneOf:
+                      - type: string
+                      - type: integer
+                  result:
+                    type: object
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                      message:
+                        type: string
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
