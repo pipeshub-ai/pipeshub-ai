@@ -24,6 +24,7 @@ import {
   ListAppsQuery,
   PaginatedResponse,
 } from '../types/oauth.types'
+import { ALLOWED_CUSTOM_REDIRECT_URIS } from '../constants/constants'
 
 const CLIENT_SECRET_LENGTH = 32
 
@@ -423,9 +424,11 @@ export class OAuthAppService {
 
   private validateRedirectUris(uris: string[]): void {
     for (const uri of uris) {
+      if (ALLOWED_CUSTOM_REDIRECT_URIS.includes(uri)) {
+        continue;
+      }
       try {
         const parsed = new URL(uri)
-        // Allow localhost for development
         if (
           parsed.protocol !== 'https:' &&
           parsed.hostname !== 'localhost' &&
