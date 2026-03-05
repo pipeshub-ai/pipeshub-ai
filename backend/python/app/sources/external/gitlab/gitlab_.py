@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple, Union, cast
 from datetime import datetime
 from app.sources.client.gitlab.gitlab import GitLabResponse
 
-
+import httpx
 class GitLabDataSource:
     """
     Strict, typed wrapper over python-gitlab for common GitLab business operations.
@@ -857,4 +857,138 @@ class GitLabDataSource:
             return GitLabResponse(success=True, data=items)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
-            
+        
+    #-----------------------GraphQL API--------------------------------#
+    async def get_repo_tree_g(self,token:str,project_id:Union[int,str],ref:Optional[str] = None,after_cursor:str = "")->GitLabResponse:
+        """Get repository tree using GraphQL API."""
+            # take cursors as input and return the tree with pagination
+        try:
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
+            url = f"https://gitlab.com/api/graphql"
+            query = """
+            query($fullPath:ID!,$branch:String!,$afterCursor:String!)
+            {
+            # queryComplexity {
+            #     score
+            #     limit
+            # }
+            # project(fullPath: "personal-ayush-group/password-vault")
+                project (fullPath: $fullPath)
+            {
+                name
+                repository {
+                rootRef
+                paginatedTree(recursive: true, ref: $branch) {
+                    nodes {
+                    trees(first: 5, after:$afterCursor) {
+                        nodes {
+                        name
+                        path
+                        sha
+                        type
+                        webPath
+                        webUrl
+                        }
+                        pageInfo{
+                        endCursor
+                        hasNextPage
+                        }
+                    }
+                    }
+                }
+                }
+            }
+            }
+            """
+            variables = {
+                "fullPath": project_id,
+                "branch": ref,
+                "afterCursor": after_cursor,
+            }
+            payload = {
+                "query" : query,
+                "variables" : variables,
+            }
+            try:
+                async with httpx.AsyncClient(follow_redirects=True) as client:
+                    resp = await client.post(url, headers=headers,json=payload)
+                    resp.raise_for_status()
+                    tree_data = resp.content
+                    print(f"Fetched file tree of {project_id} of content length : {len(tree_data)}")
+                    return GitLabResponse(success=True, data=(tree_data))
+                    # return 
+            except Exception as e:
+                print(f"Error fetching file tree of {project_id}: {e}")
+                return GitLabResponse(success=False, error=str(e))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+        
+    async def get_file_tree_g(self,token:str,project_id:Union[int,str],ref:Optional[str] = None,after_cursor:str = "")->GitLabResponse:
+        """Get file tree using GraphQL API."""
+        try:
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
+            url = f"https://gitlab.com/api/graphql"
+            query = """
+            query($fullPath:ID!,$branch:String!,$afterCursor:String!)
+            {
+            # queryComplexity {
+            #     score
+            #     limit
+            # }
+            # project(fullPath: "personal-ayush-group/password-vault")
+                project (fullPath: $fullPath)
+            {
+                name
+                repository {
+                rootRef
+                paginatedTree(recursive: true, ref: $branch) {
+                    nodes {
+                    blobs(first: 5, after:$afterCursor) {
+                        nodes {
+                        name
+                        path
+                        sha
+                        type
+                        webPath
+                        webUrl
+                        }
+                        pageInfo{
+                        endCursor
+                        hasNextPage
+                        }
+                    }
+                    }
+                }
+                }
+            }
+            }
+            """
+            variables = {
+                "fullPath": project_id,
+                "branch": ref,
+                "afterCursor": after_cursor,
+            }
+            payload = {
+                "query" : query,
+                "variables" : variables,
+            }
+            try:
+                async with httpx.AsyncClient(follow_redirects=True) as client:
+                    resp = await client.post(url, headers=headers,json=payload)
+                    resp.raise_for_status()
+                    tree_data = resp.content
+                    print(f"Fetched files metadata of {project_id} of content length : {len(tree_data)}")
+                    return GitLabResponse(success=True, data=(tree_data))
+                    # return 
+            except Exception as e:
+                print(f"Error fetching files metadata of {project_id}: {e}")
+                return GitLabResponse(success=False, error=str(e))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+                    

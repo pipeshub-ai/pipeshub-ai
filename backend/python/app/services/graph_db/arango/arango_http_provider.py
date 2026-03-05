@@ -2512,9 +2512,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_record_by_path(
         self,
         connector_id: str,
-        path: str,
-        transaction: str | None = None
-    ) -> dict | None:
+        path: List[str],
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
         """
         Get a record from the FILES collection using its path.
 
@@ -2526,39 +2526,93 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns:
             Optional[Dict]: The file record if found, otherwise None.
         """
+        # try:
+        #     self.logger.info(
+        #         f"🚀 Retrieving record by path for connector {connector_id} and path {path}"
+        #     )
+
+        #     query = f"""
+        #     FOR fileRecord IN {CollectionNames.FILES.value}
+        #         FILTER fileRecord.path == @path
+        #         RETURN fileRecord
+        #     """
+
+        #     results = await self.http_client.execute_aql(
+        #         query,
+        #         bind_vars={"path": path},
+        #         txn_id=transaction
+        #     )
+
+        #     if results:
+        #         self.logger.info(
+        #             f"✅ Successfully retrieved file record for path: {path}"
+        #         )
+        #         return results[0]
+        #     else:
+        #         self.logger.warning(
+        #             f"⚠️ No record found for path: {path}"
+        #         )
+        #         return None
+
+        # except Exception as e:
+        #     self.logger.error(
+        #         f"❌ Failed to retrieve record for path {path}: {str(e)}"
+        #     )
+        #     return None
         try:
-            self.logger.info(
-                f"🚀 Retrieving record by path for connector {connector_id} and path {path}"
+            self.logger.info("in returning record by traversing the graph path")
+            # based on external id 
+            # assumed full path from record group next level is as list in param
+            query = """
+            LET path = @path
+            LET connectorId = @connectorId
+            LET nodes = (
+                FOR i IN 0..LENGTH(path)-1
+                    LET parent =
+                        i == 0
+                            ? null
+                            : FIRST(
+                                FOR r IN records
+                                    FILTER r.recordName == path[i-1]
+                                    FILTER r.mimeType == "text/directory"
+                                    FILTER r.connectorId == connectorId
+                                    LIMIT 1
+                                    RETURN r.externalRecordId
+                            )
+                    FILTER i == 0 OR parent != null
+                    
+                    FOR r IN records
+                        FILTER r.recordName == path[i]
+                        FILTER r.externalParentId == parent
+                        FILTER r.mimeType == "text/directory"
+                        FILTER r.connectorId == connectorId
+                        LIMIT 1
+                        RETURN r
             )
 
-            query = f"""
-            FOR fileRecord IN {CollectionNames.FILES.value}
-                FILTER fileRecord.path == @path
-                RETURN fileRecord
-            """
+            LET isValidPath = LENGTH(nodes) == LENGTH(path)
 
-            results = await self.http_client.execute_aql(
+            RETURN {
+            isValidPath: isValidPath,
+            lastRecord: isValidPath ? LAST(nodes) : null
+            }
+            """
+            result = await self.http_client.execute_aql(
                 query,
-                bind_vars={"path": path},
+                bind_vars={
+                    "path":path,
+                    "connectorId":connector_id
+                },
                 txn_id=transaction
             )
-
-            if results:
-                self.logger.info(
-                    f"✅ Successfully retrieved file record for path: {path}"
-                )
-                return results[0]
-            else:
-                self.logger.warning(
-                    f"⚠️ No record found for path: {path}"
-                )
-                return None
-
+            if result:
+                self.logger.info(f"result  :{result}")
+                return result[0]["lastRecord"]
         except Exception as e:
             self.logger.error(
                 f"❌ Failed to retrieve record for path {path}: {str(e)}"
             )
-            return None
+            return None            
     
     async def get_path_of_file_by_external_id(
         self,

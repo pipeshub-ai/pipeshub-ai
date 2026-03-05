@@ -1,8 +1,8 @@
 import base64
 import os
 import re
-import urllib
 import uuid
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
@@ -10,7 +10,6 @@ from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, unquote, quote
 
-from dependency_injector.wiring import F
 import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -306,16 +305,17 @@ class GitLabConnector(BaseConnector):
             #     )
             # self.logger.info(f"new_record form stream : {new_record}")
             # existing_record = None
-            async with self.data_store_provider.transaction() as tx_store:
-                file_path_ol = await tx_store.get_record_path(                    record.id                )
-            self.logger.info(f"new_record form stream : {file_path_ol}")
+            # async with self.data_store_provider.transaction() as tx_store:
+            #     file_path_ol = await tx_store.get_record_path(record.id)
+            # self.logger.info(f"new_record form stream : {file_path_ol}")
             # async with self.data_store_provider.transaction() as tx_store:
             #     file_path = await tx_store.get_path_of_file_by_external_id(
             #     connector_id=self.connector_id, external_id=record.external_record_id
             #     )
             # self.logger.info(f"new_record form stream : {file_path}")
             return create_stream_record_response(
-                    self._fetch_code_file_content(record, file_path_ol),
+                    # self._fetch_code_file_content(record, file_path_ol),
+                    self._fetch_code_file_content(record,filename),
                     filename=filename,
                     mime_type=record.mime_type,
                     fallback_filename=f"record_{record.id}"
@@ -455,21 +455,46 @@ class GitLabConnector(BaseConnector):
                 gitlab_record_group_sync_key, {"timestamp": current_timestamp}
             )
         
-    async def _sync_repo_main(self,project_id:int) -> None:
-        """Syncs default branch files code.        """
-        tree_res = self.data_source.list_repo_tree(project_id,recursive=True)
-        if not tree_res.success :
-            self.logger.error(f"Error in fetching tree {project_id}")
-            return
-        if not tree_res.data:
-            self.logger.info(f"No tree found for project {project_id}")
-            return
-        tree = tree_res.data
+    async def _sync_repo_main(self,project_id:int,project_path:str) -> None:
+        """Syncs default branch files code.        
+        PROCESS: 1. Sync all folders level wise via paginated graphql api.
+                 2. Sync all code repo. files via paginated graphql api.
+        REASON:  both can  be in same api call but pagination to be seprate.
+                 level wise files ordering not needed
+        """
+        # tree_res = self.data_source.list_repo_tree(project_id,recursive=True)
+        # fetching fle tree 
+        TOKEN = await self._get_api_token_()
+        tree_list = []
+        after_cursor = ""
+        while True:
+            try:
+                tree_res = await self.data_source.get_repo_tree_g(token=TOKEN,project_id=project_path,ref="master",after_cursor=after_cursor)
+            except Exception as e:
+                self.logger.error(f"Error in fetching tree skipping repo code files sync for {project_id}: {e}")
+                return
+            if not tree_res.data:
+                self.logger.info(f"No tree found for project {project_id}")
+                return
+            data:Dict[str,Any] = json.loads(tree_res.data)
+            project_nodes = data.get("data",{}).get("project",{}).get("repository",{}).get("paginatedTree",{}).get("nodes",[])
+            if not project_nodes:
+                self.logger.info(f"No project nodes found for project {project_id}")
+                return
+            t_nodes:Dict[str,Any] = project_nodes[0]
+            file_path_nodes:List[Dict[str,Any]] = t_nodes.get("trees",{}).get("nodes",[])
+            tree_list.extend(file_path_nodes)
+            if not t_nodes.get("trees",{}).get("pageInfo",{}).get("hasNextPage"):
+                break
+            after_cursor = t_nodes.get("trees",{}).get("pageInfo",{}).get("endCursor","")
+            # self.logger.info(f"tree_res : {tree_res}")
+        
+        
         # self.logger.info(f"at tree level  : {tree}")
         list_records_new:List[RecordUpdate] = []
         path_to_parent_external_id_dict:Dict[str,str]={}
         level_wise_files:Dict[int,List[Dict[str,Any]]] = {}
-        for item in tree:
+        for item in tree_list:
             file_path = item.get("path")
             parent_file_path  =  self.get_parent_path_from_path(file_path)
             level_file = len(parent_file_path)
@@ -481,11 +506,13 @@ class GitLabConnector(BaseConnector):
             for file in files:
                 file_path = file.get("path")
                 file_name = file.get("name")
-                file_hash = file.get("id")
+                file_hash = file.get("sha")
+                external_record_id = file.get("webPath")
+                weburl = file.get("webUrl")
                 if file.get("type") == "tree":
                     parent_path = self.get_parent_path_from_path(file_path)
                     parent_path = "/".join(parent_path)
-                    parent_path = f"/{parent_path}" if parent_path else "/"
+                    parent_path = f"{parent_path}" if parent_path else "/"
                     self.logger.info(f"parent_path : {parent_path} for file path {file_path}")
                     parent_external_record_id = None
                     if parent_path == "/" or not parent_path:
@@ -494,14 +521,15 @@ class GitLabConnector(BaseConnector):
                         parent_external_record_id = path_to_parent_external_id_dict[parent_path]
                     else:
                         try:
+                            tmp_parent_path = parent_path.split("/")
                             async with self.data_store_provider.transaction() as tx_store:
                                 parent_record = await tx_store.get_record_by_path(
                                     connector_id=self.connector_id,
-                                    path=parent_path
+                                    path=tmp_parent_path
                                 )
                             if parent_record:
                                 self.logger.info(f"parent_record : {parent_record} for file path {file_path}")
-                                parent_external_record_id = parent_record.external_record_id
+                                parent_external_record_id = parent_record.get("externalRecordId")
                                 path_to_parent_external_id_dict[parent_path] = parent_external_record_id
                             else:
                                 self.logger.debug(f"Parent path {parent_path} not found in DB or Cache for {file_name}")
@@ -510,10 +538,11 @@ class GitLabConnector(BaseConnector):
                     existing_record = None
                     async with self.data_store_provider.transaction() as tx_store:
                         existing_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id, external_id=f"{file_hash}"
+                            connector_id=self.connector_id, external_id=f"{external_record_id}"
                         )
                     is_new = existing_record is None
                     record_id = str(uuid.uuid4())
+
                     tree_record = FileRecord(
                         id = existing_record.id if existing_record else record_id,
                         org_id = self.data_entities_processor.org_id,
@@ -521,7 +550,7 @@ class GitLabConnector(BaseConnector):
                         record_type = RecordType.FILE.value,
                         connector_name = self.connector_name,
                         connector_id = self.connector_id,
-                        external_record_id = str(file_hash),
+                        external_record_id = external_record_id,
                         version = 0,
                         origin = OriginTypes.CONNECTOR.value,
                         record_group_type = RecordGroupType.PROJECT.value,
@@ -532,6 +561,7 @@ class GitLabConnector(BaseConnector):
                         parent_external_record_id=parent_external_record_id,
                         is_file=False,
                         inherit_permissions=True,
+                        weburl = weburl,
                     )
                     record_update = RecordUpdate(
                         record=tree_record,
@@ -541,165 +571,175 @@ class GitLabConnector(BaseConnector):
                         metadata_changed=False,
                         content_changed=False,
                         permissions_changed=False,
-                        external_record_id=str(file_hash),
+                        external_record_id=str(external_record_id),
                     )
                     list_records_new.append(record_update)
-                else:
-                    file_extension = file_name.split(".")[-1]
-                    file_extension_type = getattr(ExtensionTypes, file_extension.upper(),None)
-                    file_mime = getattr(MimeTypes,file_extension.upper(),MimeTypes.TEXT).value
-                    parent_path = self.get_parent_path_from_path(file_path)
-                    parent_path = "/".join(parent_path)
-                    parent_external_record_id = None
-                    if parent_path == "" or not parent_path:
-                        parent_external_record_id = None
-                    elif parent_path in path_to_parent_external_id_dict:
-                        parent_external_record_id = path_to_parent_external_id_dict[parent_path]
-                    else:
-                        try:
-                            async with self.data_store_provider.transaction() as tx_store:
-                                parent_record = await tx_store.get_record_by_path(
-                                    connector_id=self.connector_id,
-                                    path=parent_path
-                                )
-                            if parent_record:
-                                parent_external_record_id = parent_record.external_record_id
-                                path_to_parent_external_id_dict[parent_path] = parent_external_record_id
-                            else:
-                                self.logger.debug(f"Parent path {parent_path} not found in DB or Cache for {file_name}")
-                        except Exception as e:
-                            self.logger.error(f"Error in fetching parent record {parent_path}: {e}")
-                    existing_record = None
-                    async with self.data_store_provider.transaction() as tx_store:
-                        existing_record = await tx_store.get_record_by_external_id(
-                            connector_id=self.connector_id, external_id=f"{file_hash}"
-                        )
-                    is_new = existing_record is None
-                    record_id = str(uuid.uuid4())
-                    code_file_record = CodeFileRecord(
-                        id = existing_record.id if existing_record else record_id,
-                        org_id = self.data_entities_processor.org_id,
-                        record_name = str(file_name),
-                        record_type = RecordType.CODE_FILE.value,
-                        connector_name = self.connector_name,
-                        connector_id = self.connector_id,
-                        external_record_id = str(file_hash),
-                        version = 0,
-                        origin = OriginTypes.CONNECTOR.value,
-                        record_group_type = RecordGroupType.PROJECT.value,
-                        external_record_group_id = str(project_id),
-                        mime_type=file_mime,
-                        # weburl =
-                        external_revision_id=str(file_hash),
-                        preview_renderable=False,
-                        file_path=file_path,
-                        # file_name=file_name,
-                        file_hash=file_hash,
-                        inherit_permissions=True,
-                        parent_external_record_id=parent_external_record_id,
-                        weburl = "https://gitlab.com/personal-ayush-group/ayush_ign/-/blob/master/pptx_discrepancy_checker.py?ref_type=heads",
-                        # signed_url = 
-                    )
-                    record_update = RecordUpdate(
-                        record=code_file_record,
-                        is_new=True,
-                        is_updated=False,
-                        is_deleted=False,
-                        metadata_changed=False,
-                        content_changed=False,
-                        permissions_changed=False,
-                        external_record_id=str(file_hash),
-                    )
-                    list_records_new.append(record_update)
+                # else:
+                #     file_extension = file_name.split(".")[-1]
+                #     file_extension_type = getattr(ExtensionTypes, file_extension.upper(),None)
+                #     file_mime = getattr(MimeTypes,file_extension.upper(),MimeTypes.TEXT).value
+                #     parent_path = self.get_parent_path_from_path(file_path)
+                #     parent_path = "/".join(parent_path)
+                #     parent_path = f"{parent_path}" if parent_path else "/"
+                #     parent_external_record_id = None
+                #     if parent_path == "/" or not parent_path:
+                #         parent_external_record_id = None
+                #     elif parent_path in path_to_parent_external_id_dict:
+                #         parent_external_record_id = path_to_parent_external_id_dict[parent_path]
+                #     else:
+                #         try:
+                #             tmp_parent_path = parent_path.split("/")
+                #             async with self.data_store_provider.transaction() as tx_store:
+                #                 parent_record = await tx_store.get_record_by_path(
+                #                     connector_id=self.connector_id,
+                #                     path=tmp_parent_path
+                #                 )
+                #             if parent_record:
+                #                 self.logger.info(f"parent_record : {parent_record} for file path {file_path}")
+                #                 parent_external_record_id = parent_record.get("externalRecordId")
+                #                 path_to_parent_external_id_dict[parent_path] = parent_external_record_id
+                #             else:
+                #                 self.logger.debug(f"Parent path {parent_path} not found in DB or Cache for {file_name}")
+                #         except Exception as e:
+                #             self.logger.error(f"Error in fetching parent record {parent_path}: {e}")
+                #     existing_record = None
+                #     async with self.data_store_provider.transaction() as tx_store:
+                #         existing_record = await tx_store.get_record_by_external_id(
+                #             connector_id=self.connector_id, external_id=f"{file_hash}"
+                #         )
+                #     is_new = existing_record is None
+                #     record_id = str(uuid.uuid4())
+                #     external_record_id = file.get("webPath")
+                #     weburl = file.get("webUrl")
+                #     code_file_record = CodeFileRecord(
+                #         id = existing_record.id if existing_record else record_id,
+                #         org_id = self.data_entities_processor.org_id,
+                #         record_name = str(file_name),
+                #         record_type = RecordType.CODE_FILE.value,
+                #         connector_name = self.connector_name,
+                #         connector_id = self.connector_id,
+                #         external_record_id = external_record_id,
+                #         version = 0,
+                #         origin = OriginTypes.CONNECTOR.value,
+                #         record_group_type = RecordGroupType.PROJECT.value,
+                #         external_record_group_id = str(project_id),
+                #         mime_type=file_mime,
+                #         external_revision_id=str(file_hash),
+                #         preview_renderable=False,
+                #         file_path=file_path,
+                #         file_hash=file_hash,
+                #         inherit_permissions=True,
+                #         parent_external_record_id=parent_external_record_id,
+                #         weburl = weburl,
+                #     )
+                #     record_update = RecordUpdate(
+                #         record=code_file_record,
+                #         is_new=True,
+                #         is_updated=False,
+                #         is_deleted=False,
+                #         metadata_changed=False,
+                #         content_changed=False,
+                #         permissions_changed=False,
+                #         external_record_id=str(file_hash),
+                #     )
+                #     list_records_new.append(record_update)
+            
             if list_records_new:
                 await self._process_new_records(list_records_new)
+                self.logger.info(f"after processing new records {len(list_records_new)} records")
                 list_records_new=[]
-
-        # for item in tree:
-            
-        #     if item.get("type") != "blob":
-        #         continue
-        #     file_path = item.get("path")
-        #     file_name = item.get("name")
-        #     file_extension = file_name.split(".")[-1]
-        #     file_extension_type = getattr(ExtensionTypes, file_extension.upper(),None)
-        #     file_mime = getattr(MimeTypes,file_extension.upper(),MimeTypes.TEXT).value
-            
-           
-        #     # extract file extension type
-        #     # According to fileTypeClassify it as file record or code file recordTask to get a list ofCoding extensionsMaybe also include a chequeSupported file types
-        #     # Make every folder by fetching Parent id As a file record with Isfile As false
-        #     file_hash = item.get("id")  # think on this too big some api get to get more metadata of files
-        #     try:
-        #         existing_record = None
-        #         async with self.data_store_provider.transaction() as tx_store:
-        #             existing_record = await tx_store.get_record_by_external_id(
-        #                 connector_id=self.connector_id, external_id=f"{file_hash}"
-        #             )
-        #         is_new = existing_record is None
-        #         # Parent resolution
-        #         parent_external_record_id = None
-        #         parent_path = self.get_parent_path_from_path(file_path)
-        #         if parent_path == "" or not parent_path:
-        #             parent_external_record_id = None
-        #         elif parent_path in path_to_parent_external_id_dict:
-        #             parent_external_record_id = path_to_parent_external_id_dict[parent_path]
-        #         else:
-        #             try:
-        #                 async with self.data_store_provider.transaction() as tx_store:
-        #                     parent_record = await tx_store.get_record_by_path(
-        #                         connector_id=self.connector_id,
-        #                         path=parent_path
-        #                     )
-        #                 if parent_record:
-        #                     parent_external_record_id = parent_record.external_record_id
-        #                     path_to_parent_external_id_dict[parent_path] = parent_external_record_id
-        #                 else:
-        #                     self.logger.debug(f"Parent path {parent_path} not found in DB or Cache for {file_name}")
-        #             except Exception as e:
-        #                 self.logger.error(f"Error in fetching parent record {parent_path}: {e}")
-                        
-        #         record_id = str(uuid.uuid4())
-        #         code_file_record = CodeFileRecord(
-        #             id = existing_record.id if existing_record else record_id,
-        #             org_id = self.data_entities_processor.org_id,
-        #             record_name = str(file_name),
-        #             record_type = RecordType.CODE_FILE.value,
-        #             connector_name = self.connector_name,
-        #             connector_id = self.connector_id,
-        #             external_record_id = str(file_hash),
-        #             version = 0,
-        #             origin = OriginTypes.CONNECTOR.value,
-        #             record_group_type = RecordGroupType.PROJECT.value,
-        #             external_record_group_id = str(project_id),
-        #             mime_type=file_mime,
-        #             # weburl =
-        #             external_revision_id=str(file_hash),
-        #             preview_renderable=False,
-        #             file_path=file_path,
-        #             # file_name=file_name,
-        #             file_hash=file_hash,
-        #             inherit_permissions=True,
-        #             parent_external_record_id=parent_external_record_id,
-        #             weburl = "https://gitlab.com/personal-ayush-group/ayush_ign/-/blob/master/pptx_discrepancy_checker.py?ref_type=heads",
-        #             # signed_url = 
-        #         )
-        #         record_update = RecordUpdate(
-        #             record=code_file_record,
-        #             is_new=True,
-        #             is_updated=False,
-        #             is_deleted=False,
-        #             metadata_changed=False,
-        #             content_changed=False,
-        #             permissions_changed=False,
-        #         )
-        #         list_records_new.append(record_update)
-        #     except Exception as e:
-        #         self.logger.error(f"Error syncing code file {file_name}: {e}")
-        #         continue
         
+        # fetching code files 
+        after_cursor = ""
+        code_file_list = []
+        while True:
+            try:
+                tree_res = await self.data_source.get_file_tree_g(token=TOKEN,project_id=project_path,ref="master",after_cursor=after_cursor)
+            except Exception as e:
+                self.logger.error(f"Error in fetching file tree skipping repo code files sync for {project_id}: {e}")
+                return
+            if not tree_res.data:
+                self.logger.info(f"No tree found for project {project_id}")
+                return
+            data:Dict[str,Any] = json.loads(tree_res.data)
+            project_nodes = data.get("data",{}).get("project",{}).get("repository",{}).get("paginatedTree",{}).get("nodes",[])
+            if not project_nodes:
+                self.logger.info(f"No project nodes found for project {project_id}")
+                return
+            t_nodes:Dict[str,Any] = project_nodes[0]
+            file_path_nodes:List[Dict[str,Any]] = t_nodes.get("blobs",{}).get("nodes",[])
+            tree_list.extend(file_path_nodes)
+            if not t_nodes.get("blobs",{}).get("pageInfo",{}).get("hasNextPage"):
+                break
+            after_cursor = t_nodes.get("blobs",{}).get("pageInfo",{}).get("endCursor","")
+            await self.build_code_file_records(file_path_nodes,project_id)
+
+        
+        
+    async def build_code_file_records(self,code_file_list:List[Dict[str,Any]],project_id:int)->None:
+        """Process code file records and push to processing"""
+        
+        list_records_new:List[RecordUpdate] = []
+        for file in code_file_list:
+            file_path = file.get("path")
+            file_name = file.get("name")
+            file_hash = file.get("sha")
+            external_record_id = file.get("webPath")
+            weburl = file.get("webUrl")
             
-    # async def _process_code_file_to_record(self,file_data): 
+            # getiing parent id code
+            file_extension = file_name.split(".")[-1]
+            file_extension_type = getattr(ExtensionTypes, file_extension.upper(),None)
+            file_mime = getattr(MimeTypes,file_extension.upper(),MimeTypes.TEXT).value
+            parent_path = self.get_parent_path_from_path(file_path)
+            parent_path = "/".join(parent_path)
+            parent_path = f"{parent_path}" if parent_path else "/"
+            parent_external_record_id = None
+             
+            existing_record = None
+            async with self.data_store_provider.transaction() as tx_store:
+                existing_record = await tx_store.get_record_by_external_id(
+                connector_id=self.connector_id, external_id=f"{external_record_id}"
+                )
+            is_new = existing_record is None
+            record_id = str(uuid.uuid4())
+            code_file_record = CodeFileRecord(
+                id = existing_record.id if existing_record else record_id,
+                org_id = self.data_entities_processor.org_id,
+                record_name = str(file_name),
+                record_type = RecordType.CODE_FILE.value,
+                connector_name = self.connector_name,
+                connector_id = self.connector_id,
+                external_record_id = external_record_id,
+                version = 0,
+                origin = OriginTypes.CONNECTOR.value,
+                record_group_type = RecordGroupType.PROJECT.value,
+                external_record_group_id = str(project_id),
+                mime_type=file_mime,
+                external_revision_id=str(file_hash),
+                preview_renderable=False,
+                file_path=file_path,
+                file_hash=file_hash,
+                inherit_permissions=True,
+                # parent_external_record_id=parent_external_record_id,
+                weburl = weburl,
+            )
+            record_update = RecordUpdate(
+                record=code_file_record,
+                is_new=True,
+                is_updated=False,
+                is_deleted=False,
+                metadata_changed=False,
+                content_changed=False,
+                permissions_changed=False,
+                external_record_id=external_record_id,
+            )
+            list_records_new.append(record_update)
+        if list_records_new:
+            await self._process_new_records(list_records_new)
+            self.logger.info(f"after processing new records {len(list_records_new)} records")
+        return
+               
     async def _fetch_code_file_content(self,record:CodeFileRecord,file_path:str)->AsyncGenerator[bytes,None]:
         """stream content of code file"""
         try:
@@ -742,9 +782,10 @@ class GitLabConnector(BaseConnector):
             # sync non email members as pseudo user groups
             await self._sync_project_members_as_pseudo(project)
             project_id = project.id
+            project_path = project.path_with_namespace
             if project_id == int(TEST_GITLAB_PROJECT_ID):
                 await self._fetch_issues_batched(project_id,last_sync_time)
-                await self._sync_repo_main(project_id)
+                await self._sync_repo_main(project_id,project_path)
             else:
                 self.logger.info(f"Project {project.name} has no ID, skipping")
                 
@@ -1529,7 +1570,7 @@ class GitLabConnector(BaseConnector):
             raise ValueError("Github credentials not found")
 
         GITLAB_TOKEN = access_token
-        self.logger.debug(f"Successfully retrieved GitLab API token from configuration.{GITLAB_TOKEN}")
+        # self.logger.debug(f"Successfully retrieved GitLab API token from configuration.{GITLAB_TOKEN}")
         return GITLAB_TOKEN
 
     async def get_img_bytes(self, image_url: str) -> Optional[bytes]:
