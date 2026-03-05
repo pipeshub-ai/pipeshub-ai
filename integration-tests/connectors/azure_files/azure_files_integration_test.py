@@ -32,7 +32,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from graph_assertions import (  # type: ignore[import-not-found]
+from graph_assertions import (  # type: ignore[import-not-found]  # noqa: E402
     assert_all_records_cleaned,
     assert_app_record_group_edges,
     assert_min_records,
@@ -43,10 +43,10 @@ from graph_assertions import (  # type: ignore[import-not-found]
     count_record_groups,
     graph_summary,
 )
-from pipeshub_client import (  # type: ignore[import-not-found]
+from pipeshub_client import (  # type: ignore[import-not-found]  # noqa: E402
     PipeshubClient,
 )
-from storage_helpers import AzureFilesStorageHelper  # type: ignore[import-not-found]
+from storage_helpers import AzureFilesStorageHelper  # type: ignore[import-not-found]  # noqa: E402
 
 logger = logging.getLogger("azure-files-lifecycle-test")
 
