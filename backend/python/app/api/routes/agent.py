@@ -22,10 +22,7 @@ from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import agent_graph, modern_agent_graph
 
-# ReAct agent (LangGraph prebuilt): single-node graph with tool selection + cascading tool calls.
-# Set USE_LEGACY_AGENT_GRAPH=1 to use the multi-node planner/execute/reflect graph instead.
-USE_REACT_AGENT = not (__import__("os").environ.get("USE_LEGACY_AGENT_GRAPH", "").strip().lower() in ("1", "true", "yes"))
-active_agent_graph = modern_agent_graph if USE_REACT_AGENT else agent_graph
+
 from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
     check_memory_health,
@@ -235,9 +232,6 @@ def _select_agent_graph_for_query(query_info: Dict[str, Any], logger: Logger):
     - If enabled: use ReAct only for Outlook-only or Outlook+Confluence tools.
       Otherwise use legacy graph.
     """
-    if not USE_REACT_AGENT:
-        logger.info("Agent graph route: legacy (USE_LEGACY_AGENT_GRAPH enabled)")
-        return agent_graph
 
     tool_names = _extract_tool_names_for_routing(query_info)
     apps = {name.split(".", 1)[0] for name in tool_names if isinstance(name, str) and "." in name}
@@ -773,6 +767,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Build and execute graph
+        selected_graph = _select_agent_graph_for_query(query_info.model_dump(), logger)
+        graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+
         initial_state = build_initial_state(
             query_info.model_dump(),
             enriched_user_info,
@@ -783,9 +780,10 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
             reranker_service,
             config_service,
             org_info,
+            graph_type
         )
 
-        graph_to_use = _select_agent_graph_for_query(query_info.model_dump(), logger)
+        graph_to_use = selected_graph
         config = {"recursion_limit": 30}
         final_state = await graph_to_use.ainvoke(initial_state, config=config)
         final_state = auto_optimize_state(final_state, logger)
@@ -848,9 +846,12 @@ async def stream_response(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: Dict[str, Any] = None,
-    selected_graph=None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
+
+    selected_graph = _select_agent_graph_for_query(query_info, logger)
+    graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+
     initial_state = build_initial_state(
         query_info,
         user_info,
@@ -861,12 +862,13 @@ async def stream_response(
         reranker_service,
         config_service,
         org_info,
+        graph_type
     )
 
     config = {"recursion_limit": 30}
     chunk_count = 0
 
-    graph_to_use = selected_graph or active_agent_graph
+    graph_to_use = selected_graph
     async for chunk in graph_to_use.astream(initial_state, config=config, stream_mode="custom"):
         chunk_count += 1
         if isinstance(chunk, dict) and "event" in chunk:
@@ -907,7 +909,6 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
                 reranker_service,
                 config_service,
                 org_info,
-                selected_graph=_select_agent_graph_for_query(query_info.model_dump(), logger),
             ),
             media_type="text/event-stream",
         )
@@ -2165,7 +2166,8 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
         }
-
+        selected_graph = _select_agent_graph_for_query(query_info, logger)
+        graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
         # Execute graph
         initial_state = build_initial_state(
             query_info,
@@ -2177,9 +2179,10 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             reranker_service,
             config_service,
             org_info,
+            graph_type
         )
 
-        graph_to_use = _select_agent_graph_for_query(query_info, logger)
+        graph_to_use = selected_graph
         config = {"recursion_limit": 50}
         final_state = await graph_to_use.ainvoke(initial_state, config=config)
 
@@ -2486,7 +2489,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 reranker_service,
                 config_service,
                 org_info,
-                selected_graph=_select_agent_graph_for_query(query_info, logger),
             ),
             media_type="text/event-stream",
         )

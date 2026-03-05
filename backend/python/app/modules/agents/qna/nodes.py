@@ -836,7 +836,7 @@ class ToolExecutor:
             tool_args = tool_call.get("args", {})
 
             # Normalize tool name
-            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
             actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
 
             if actual_tool_name not in tools_by_name:
@@ -1012,7 +1012,7 @@ class ToolExecutor:
             tool_args = tool_call.get("args", {})
 
             # Normalize tool name
-            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
             actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
 
             if actual_tool_name not in tools_by_name:
@@ -4097,7 +4097,7 @@ def _validate_planned_tools(
         for tool_call in planned_tools:
             if isinstance(tool_call, dict):
                 tool_name = tool_call.get('name', '')
-                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
 
                 if normalized_name not in available_tool_names and tool_name not in available_tool_names:
                     invalid_tools.append(tool_name)

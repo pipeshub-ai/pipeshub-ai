@@ -60,25 +60,10 @@ def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
         pass
     except Exception:
         pass
-
-    try:
-        from langchain_openai import ChatOpenAI
-        if isinstance(llm, ChatOpenAI):
-            return True
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-    # Fallback: sanitize if the model class name suggests OpenAI/Anthropic-style API
-    if llm is not None:
-        cls_name = type(llm).__name__
-        if "OpenAI" in cls_name or "Anthropic" in cls_name:
-            return True
     return False
 
 
-def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel']) -> str:
+def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel'], state: ChatState) -> str:
     """
     Sanitize tool name only if the LLM requires it.
 
@@ -90,6 +75,8 @@ def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel']
         Sanitized name (dots replaced with underscores) if needed, original name otherwise
     """
     if _requires_sanitized_tool_names(llm):
+        return tool_name.replace('.', '_')
+    if state.get("graph_type") == "react":
         return tool_name.replace('.', '_')
     return tool_name
 
@@ -557,7 +544,7 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
 
                 # Sanitize tool name only if LLM requires it (e.g., Anthropic)
                 original_tool_name = tool_wrapper.name
-                sanitized_tool_name = _sanitize_tool_name_if_needed(original_tool_name, llm)
+                sanitized_tool_name = _sanitize_tool_name_if_needed(original_tool_name, llm, state)
 
                 # Create an async wrapper function that calls tool_wrapper.arun()
                 # This ensures proper async execution in the same event loop as FastAPI
