@@ -385,7 +385,7 @@ class PostgreSQLClientBuilder(IClient):
             config_dict = await cls._get_connector_config(
                 logger, config_service, connector_instance_id
             )
-            logger.debug(f"🔧 [PostgreSQLClientBuilder] Raw config_dict: {config_dict}")
+            
             
             config = PostgreSQLConnectorConfig.model_validate(config_dict)
             logger.debug(

@@ -100,10 +100,10 @@ class SnowflakeDataSource:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
 
-        logger.debug(f"🔧 [SnowflakeDataSource] Final URL: '{url}'")
+        # logger.debug(f"🔧 [SnowflakeDataSource] Final URL: '{url}'")
         
         headers = self.http.headers.copy()
-        logger.debug(f"🔧 [SnowflakeDataSource] Request headers (excluding auth): { {k: v for k, v in headers.items() if 'authorization' not in k.lower()} }")
+        # logger.debug(f"🔧 [SnowflakeDataSource] Request headers (excluding auth): { {k: v for k, v in headers.items() if 'authorization' not in k.lower()} }")
 
         request = HTTPRequest(
             method="GET",

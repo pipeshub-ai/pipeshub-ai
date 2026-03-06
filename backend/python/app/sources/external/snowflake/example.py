@@ -172,7 +172,6 @@ async def main() -> None:
             # Build OAuth scope based on TEST_ROLE config
             oauth_role = TEST_ROLE if TEST_ROLE else "PUBLIC"
             oauth_scopes = [f"session:role:{oauth_role}"]
-            print(f"ℹ️  Using role for OAuth: {oauth_role}")
 
             token_response = perform_oauth_flow(
                 client_id=CLIENT_ID,
