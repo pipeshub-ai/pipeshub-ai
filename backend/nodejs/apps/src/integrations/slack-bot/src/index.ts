@@ -58,6 +58,7 @@ interface StreamEvent {
   data: unknown;
 }
 
+const FAILED_RESPONSE_GENERATION_MESSAGE = 'Something went wrong while generating the response. Please try again later.';
 const STREAM_UPDATE_THROTTLE_MS = 900;
 const SLACK_MAX_TEXT_LENGTH = 39000;
 const SLACK_STREAM_MARKDOWN_LIMIT = 11500;
@@ -79,7 +80,7 @@ const DEFAULT_SLACK_ERROR_MESSAGE = "Something went wrong! Please try again late
 const MAX_USER_VISIBLE_ERROR_LENGTH = 320;
 const STREAM_FAILURE_MESSAGE =
   "I ran into an issue while streaming the response. Please try again.";
-const BACKEND_STREAM_TIMEOUT_MS = 10 * 60 * 1000; // 5 minutes
+const BACKEND_STREAM_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const TABLE_STREAMING_PAUSED_HINT =
   "\n\n:hourglass_flowing_sand:";
 
@@ -90,7 +91,7 @@ interface CachedUserInfo {
 }
 
 const userInfoCache = new Map<string, CachedUserInfo>();
-const USER_INFO_CACHE_TTL_MS = 24* 60 * 60 * 1000; // 1 day
+const USER_INFO_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 
 function getCachedUserInfo(userId: string): SlackUserRecord | undefined | null {
   const cached = userInfoCache.get(userId);
@@ -800,7 +801,6 @@ function hasMarkdownTableStartOutsideCodeFences(content: string): boolean {
   if (!content) {
     return false;
   }
-
   
   const normalizedContent = content.replace(/\r\n/g, "\n").replace(/\\n/g, "\n");
 
@@ -1338,6 +1338,7 @@ async function resolveMentionsInText(
     } catch (error) {
       console.error(`Failed to resolve Slack user mention for ${userId}:`, error);
       // Keep the original Slack mention token so the mention isn't silently lost.
+
       replacements.set(mention, mention);
     }
   }
@@ -1708,7 +1709,7 @@ async function processSlackMessage(
       await typedClient.chat.postMessage({
         channel: typedMessage.channel!,
         thread_ts: threadId,
-        text: "Something went wrong while generating the response. Please try again later.",
+        text: FAILED_RESPONSE_GENERATION_MESSAGE,
       });
     }
   };
@@ -1935,7 +1936,6 @@ async function processSlackMessage(
       tablePauseHintSent = true;
 
       if (streamTs) {
-        
         if (streamStopped || streamErrorMessage) {
           return;
         }
@@ -2195,7 +2195,7 @@ async function processSlackMessage(
               replacementError,
             );
             await sendOrUpdateNonStreamMessage(
-              "Something went wrong while generating the response. Please try again later.",
+              FAILED_RESPONSE_GENERATION_MESSAGE,
             );
           }
         }
