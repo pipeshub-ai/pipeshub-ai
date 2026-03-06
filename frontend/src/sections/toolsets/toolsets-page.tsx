@@ -447,19 +447,26 @@ const ToolsetsPage: React.FC = () => {
     [activeTab, fetchConfigured, fetchRegistry]
   );
 
-  const refreshAllData = useCallback(async () => {
+  const refreshAllData = useCallback(async (showLoader = true, forceRefreshBoth = false) => {
     if (isRequestInProgressRef.current) return;
 
-    if (activeTab === 'my-toolsets') {
+    if (forceRefreshBoth) {
+      // Refresh "my-toolsets" tab when a toolset instance is created
+      // Registry tab doesn't need to be refreshed as it's static data
       setConfiguredToolsets([]);
       setConfiguredPage(INITIAL_PAGE);
       setHasMoreConfigured(true);
-      await fetchConfigured(INITIAL_PAGE, false);
+      await fetchConfigured(INITIAL_PAGE, showLoader);
+    } else if (activeTab === 'my-toolsets') {
+      setConfiguredToolsets([]);
+      setConfiguredPage(INITIAL_PAGE);
+      setHasMoreConfigured(true);
+      await fetchConfigured(INITIAL_PAGE, showLoader);
     } else {
       setRegistryToolsets([]);
       setRegistryPage(INITIAL_PAGE);
       setHasMoreRegistry(true);
-      await fetchRegistry(INITIAL_PAGE, false);
+      await fetchRegistry(INITIAL_PAGE, showLoader);
     }
   }, [activeTab, fetchConfigured, fetchRegistry]);
 
@@ -570,7 +577,7 @@ const ToolsetsPage: React.FC = () => {
             </Stack>
 
             <Tooltip title="Refresh">
-              <IconButton onClick={refreshAllData} disabled={isFirstLoad || isLoadingMore}>
+              <IconButton onClick={(e) => { e.preventDefault(); refreshAllData(); }} disabled={isFirstLoad || isLoadingMore}>
                 <Iconify
                   icon={refreshIcon}
                   width={20}
