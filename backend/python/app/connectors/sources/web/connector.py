@@ -1314,7 +1314,12 @@ class WebConnector(BaseConnector):
 
     def _remove_unwanted_tags(self, soup: BeautifulSoup) -> None:
         """Remove script, style, noscript, and iframe tags from the soup."""
-        for tag in soup(["script", "style", "noscript", "iframe"]):
+        unwanted = [
+            "script", "style", "noscript", "iframe",  # Original
+            "meta", "head", "base", "nav",            # Metadata
+            "button", "form", "input", "select",      # Interactive
+        ]
+        for tag in soup(unwanted):
             tag.decompose()
 
     def _remove_image_tags(self, soup: BeautifulSoup) -> None:
