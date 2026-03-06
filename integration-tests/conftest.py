@@ -9,7 +9,7 @@ _HELPER_DIR = _THIS_DIR / "helper"
 if str(_HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(_HELPER_DIR))
 
-from pipeshub_client import PipeshubClient
+from pipeshub_client import PipeshubClient  # noqa: E402
 
 
 def _load_env() -> None:
