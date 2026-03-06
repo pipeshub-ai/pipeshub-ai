@@ -89,7 +89,7 @@ tags:
 
       **Discovery:**
       - `/.well-known/openid-configuration` - Authorization server metadata
-      - `/.well-known/oauth-protected-resource` - Protected resource metadata (RFC 9728)
+      - `/.well-known/oauth-protected-resource/mcp` - Protected resource metadata (RFC 9728)
       - `/.well-known/jwks.json` - Public keys for token verification
 
       **UserInfo:**
@@ -5503,7 +5503,7 @@ paths:
                     n: "0vx7agoebG..."
                     e: "AQAB"
 
-  /.well-known/oauth-protected-resource:
+  /.well-known/oauth-protected-resource/mcp:
     get:
       tags:
         - OpenID Connect
@@ -18947,3 +18947,31 @@ paths:
           description: Unauthorized
         '500':
           description: Internal server error
+    get:
+      tags:
+        - MCP
+      summary: MCP SSE streaming endpoint
+      description: |
+        Used by MCP clients for SSE (Server-Sent Events) streaming.
+        In stateless mode, the transport returns 405 Method Not Allowed
+        since each request is handled independently via POST.
+      operationId: handleMCPStreamingRequest
+      servers:
+        - url: "{instance_url}"
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
+      security:
+        - bearerAuth: []
+        - oauth2: []
+      responses:
+        '200':
+          description: SSE event stream (when stateful mode is enabled)
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '405':
+          description: Method Not Allowed (stateless mode does not support SSE streaming)
+        '401':
+          description: Unauthorized

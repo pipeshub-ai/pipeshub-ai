@@ -275,6 +275,12 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
   },
 }
 
+export const DefaultMcpScopes = [
+  'openid', 'profile', 'email', 'offline_access', 'connector:read', 
+  'connector:write', 'semantic:read', 'semantic:write', 
+  'conversation:read', 'conversation:write', 'conversation:chat'
+];
+
 export const ScopeCategories = [
   'Identity',
   'Access',

@@ -33,6 +33,16 @@ export function createMCPRouter(container: Container): Router {
     authMiddleware.authenticate,
     handleMCPRequest(appConfig),
   );
+
+  /**
+   * GET /
+   * Used by clients for SSE streaming — in stateless mode the transport returns 405
+   */
+  router.get(
+    '/',
+    authMiddleware.authenticate,
+    handleMCPRequest(appConfig),
+  )
  
   return router;
 }
