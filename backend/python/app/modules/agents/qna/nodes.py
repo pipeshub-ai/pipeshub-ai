@@ -1738,16 +1738,107 @@ TEAMS_GUIDANCE = r"""
 | Get chat details | `teams.get_chat` | `chat_id` |
 | Add team member | `teams.add_member` | `team_id`, `user_id`, `role` |
 | Remove team member | `teams.remove_member` | `team_id`, `membership_id` |
+| List meetings for a period | `teams.get_my_meetings_for_given_period` | `start_datetime`, `end_datetime` |
+| List recurring meetings | `teams.get_my_recurring_meetings` | `top` (optional) |
+| Create a meeting/event | `teams.create_event` | `subject`, `start_datetime`, `end_datetime` |
+| Edit a meeting/event | `teams.edit_event` | `event_id`, fields to update |
+| Delete a meeting/event | `teams.delete_event` | `event_id` |
+| Get meeting transcript | `teams.get_my_meetings_transcript` | `meeting_id` |
+| Get people invited | `teams.get_people_invited` | `meeting_id` |
+| Get people who attended | `teams.get_people_attended` | `meeting_id` |
+| Search messages | `teams.search_messages` | `query`, `top_per_channel` (optional) |
+
+---
+
+## R-TEAMS-0: Universal Data Resolution Hierarchy (CRITICAL — applies to EVERY tool call)
+
+Before executing any tool, every required parameter must be resolved. Use this strict
+priority order — never skip a tier, never jump to "ask the user" while a higher tier
+is available.
+
+### Resolution Tiers (evaluate in order):
+
+**Tier 1 — Explicit in the current message**
+The user stated the value directly.
+→ "get transcript of the sprint planning" → meeting keyword = "sprint planning"
+→ "send summary to #test" → Slack channel = #test
+→ "day before yesterday's meetings" → date = 2 days ago
+
+**Tier 2 — Derivable from the current message**
+The value isn't stated but can be computed from what was said.
+→ "yesterday" = yesterday's date 00:00–23:59
+→ "day before yesterday" = 2 days ago 00:00–23:59
+→ "this week" = Monday 00:00 to Sunday 23:59
+→ "last 3 days" = 3 days ago to today
+→ "slack test channel" = `#test`
+→ "the engineering channel" = `#engineering`
+Never ask the user to restate something you can compute or interpret yourself.
+
+**Tier 3 — Available in conversation history or prior tool results**
+A previous tool call or message already returned this value.
+→ meeting_id was returned in the last search → reuse it, don't re-fetch
+→ user said "that meeting" → the one from the previous turn
+→ transcript was just fetched → use it for summary, don't re-fetch
+Always check conversation history before making a redundant API call.
+
+**Tier 4 — Fetchable via an existing tool**
+The value doesn't exist yet but a tool can retrieve it right now.
+→ Need meeting_id? → call `teams.get_my_meetings_for_given_period` first
+→ Need team_id? → call `teams.get_teams` first
+→ Need channel_id? → call `teams.get_channels` first
+→ Need a transcript? → call `teams.get_my_meetings_transcript`
+This is the fetch-before-ask rule. If a tool can get it, USE the tool.
+
+**Tier 5 — Ask the user (last resort only)**
+Only reach this tier if ALL of the following are true:
+  a) The value cannot be derived from the current message (not Tier 2)
+  b) It does not exist in conversation history (not Tier 3)
+  c) No tool can retrieve it — it is subjective, personal, or unknowable by the system
+     (e.g., "which Slack channel?" when no channel was mentioned at all)
+When asking, ask for ALL missing Tier-5 values in a single message. Never ask one
+at a time across multiple turns.
+
+---
+
+### Applied to common Teams patterns:
+
+| Missing value | Wrong (jump to Tier 5) | Correct tier |
+|---|---|---|
+| meeting_id for "yesterday's meeting" | Ask user for meeting ID | Tier 4: `get_my_meetings_for_given_period` with yesterday's dates |
+| meeting_id for "the sprint planning" | Ask user which meeting | Tier 4: `get_my_meetings_for_given_period` + filter by subject |
+| team_id for "the Engineering team" | Ask user for team ID | Tier 4: `get_teams` then match by name |
+| channel_id for "#general" | Ask user for channel ID | Tier 4: `get_channels` then match by name |
+| transcript for a meeting | Ask user if they want it | Tier 4: `get_my_meetings_transcript` with meeting_id |
+| date for "yesterday's meetings" | Ask user for dates | Tier 2: compute yesterday = current date - 1 day |
+| Slack channel for "send to slack test" | Ask user which channel | Tier 2: interpret "slack test" = `#test` |
+| Slack channel for "send to Slack" (nothing else) | — | Tier 5: genuinely missing, ask |
+| Which meetings when user says "all from yesterday" | Ask user which specific one | Tier 2: "all" = process every meeting from that date |
+
+### The Fetch-Before-Ask Decision Tree:
+Is the value stated or computable from the user's message?
+YES → use it (Tier 1 or 2)
+NO  → Is it in conversation history or prior tool results?
+YES → use it (Tier 3)
+NO  → Does any available tool return this kind of data?
+YES → call that tool now, then proceed (Tier 4)
+NO  → ask the user (Tier 5)
+
+This hierarchy is non-negotiable. Asking the user for data that a tool can fetch
+is always wrong, regardless of which workflow is active.
+
+---
 
 **R-TEAMS-1: NEVER use retrieval for live Teams data/actions.**
 - ❌ "Show my Teams channels" → Do NOT use retrieval → ✅ Use `teams.get_channels`
 - ❌ "Post message in Teams" → Do NOT use retrieval → ✅ Use `teams.send_message`
 - ❌ "Create Teams workspace" → Do NOT use retrieval → ✅ Use `teams.create_team`
+- ❌ "Get my meetings" → Do NOT use retrieval → ✅ Use `teams.get_my_meetings_for_given_period`
 
 **R-TEAMS-2: Resolve IDs before action tools.**
-Action tools need exact IDs (`team_id`, `channel_id`, `chat_id`, `membership_id`).
-- If the user gives names only, first fetch IDs with lookup tools (`teams.get_teams`, `teams.get_channels`)
-- Use placeholders only in multi-tool cascades, e.g. `{{teams.get_teams.data.results[0].id}}`
+Action tools need exact IDs (`team_id`, `channel_id`, `chat_id`, `meeting_id`, `membership_id`).
+- If the user gives names only, first fetch IDs with lookup tools (`teams.get_teams`, `teams.get_channels`, `teams.get_my_meetings_for_given_period`)
+- Use placeholders only in multi-tool cascades
+- NEVER ask the user for internal IDs — they don't know them
 
 **R-TEAMS-3: Send channel messages with IDs, not names.**
 `teams.send_message` requires both `team_id` and `channel_id`.
@@ -1769,7 +1860,46 @@ For `teams.remove_member`, pass a conversation membership identifier. Do not pas
 - Use `oneOnOne` for direct messages
 - Use `group` when multiple members or a topic is required
 
-**Common Planning Patterns:**
+**R-TEAMS-6: Meeting fetching — choose the right tool based on query type.**
+- **Date-based** ("get my meetings for yesterday") → `teams.get_my_meetings_for_given_period` with date range
+- **Keyword-based** ("get the sprint planning meeting") → `teams.get_my_meetings_for_given_period` with date range, then filter results by subject match
+- **Recurring meetings** ("show my recurring meetings") → `teams.get_my_recurring_meetings`
+- **Ambiguous** ("get my meetings" with no date or keyword) → Ask ONLY for the date range
+- **With attendee filter** ("meetings with alice@company.com") → Fetch by date, filter results by attendee
+
+**R-TEAMS-7: Transcript handling.**
+- `teams.get_my_meetings_transcript` requires `meeting_id` — get this from meeting fetch results
+- If the transcript tool returns empty or an error → report: "No transcript available for [Meeting Name]." Do NOT fabricate.
+- If the meeting wasn't a Teams online meeting → no transcript is possible. Report it.
+- When processing multiple meetings, attempt ALL transcripts. Report which succeeded and which didn't. Do NOT ask the user to pick — process everything, report exceptions.
+
+**R-TEAMS-8: Summary generation from transcripts.**
+When generating a summary from a transcript (you write this, NOT a tool call), include:
+- Meeting title + date/time
+- Attendees present
+- Key discussion points
+- Decisions made
+- Action items (who, what, deadline if mentioned)
+- Open questions / follow-ups
+
+Rules:
+- Do NOT over-summarize. Someone who missed the meeting should understand what happened.
+- Do NOT hallucinate — only include information from the transcript.
+- If user specified a focus ("just action items"), prioritize that but still overview other topics.
+
+**R-TEAMS-9: Multi-meeting processing — process ALL, report exceptions.**
+When the user asks about multiple meetings ("yesterday's meetings", "this week's meetings"):
+- Fetch ALL meetings for the date range.
+- For each meeting, attempt the requested action (transcript, summary, etc.).
+- Do NOT ask the user to pick which meetings. Process all of them.
+- Report results and exceptions at the end:
+  - ✅ meetings that succeeded
+  - ℹ️ meetings with no transcript / no Teams link
+  - ❌ meetings that failed
+
+---
+
+### Common Planning Patterns:
 
 **Pattern: Search and reply to a Teams message thread**
 ```json
@@ -1842,13 +1972,13 @@ For `teams.remove_member`, pass a conversation membership identifier. Do not pas
 }
 ```
 
-**Pattern: Get transcript for a selected meeting**
+**Pattern: Get transcript for a meeting**
 ```json
 {
   "tools": [
     {"name": "teams.get_my_meetings_for_given_period", "args": {
-      "start_datetime": "2026-03-01T00:00:00",
-      "end_datetime": "2026-03-07T23:59:59"
+      "start_datetime": "2026-03-04T00:00:00",
+      "end_datetime": "2026-03-04T23:59:59"
     }},
     {"name": "teams.get_my_meetings_transcript", "args": {
       "meeting_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}"
@@ -1870,6 +2000,13 @@ For `teams.remove_member`, pass a conversation membership identifier. Do not pas
   ]
 }
 ```
+
+**Pattern: Full workflow — meeting → transcript → summary → Slack**
+1. Fetch meetings: `teams.get_my_meetings_for_given_period`
+2. Get transcript: `teams.get_my_meetings_transcript` for each meeting
+3. YOU (the LLM) generate the summary — this is NOT a tool call
+4. Send to Slack: `slack.send_message(channel="...", message="<your summary>")`
+NEVER pass raw transcript to Slack — always your generated summary.
 """
 
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
