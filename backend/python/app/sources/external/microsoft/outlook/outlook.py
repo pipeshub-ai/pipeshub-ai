@@ -26,6 +26,11 @@ from msgraph.generated.users.item.mail_folders.item.messages.delta.delta_request
 from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import (  # type: ignore
     MailFoldersRequestBuilder,
 )
+from msgraph.generated.users.item.events.item.instances.instances_request_builder import (
+    InstancesRequestBuilder,
+)
+
+from datetime import date
 
 # Import MS Graph specific query parameter classes for Outlook
 from msgraph.generated.users.item.messages.messages_request_builder import (  # type: ignore
@@ -53790,28 +53795,15 @@ class OutlookCalendarContactsDataSource:
         timezone: str = "UTC",
         headers: Optional[Dict[str, str]] = None,
     ) -> OutlookCalendarContactsResponse:
-        """List all occurrences of a recurring event series, paginating through all results.
+        """List occurrences of a recurring event within a date window.
         Outlook operation: GET /me/events/{id}/instances?startDateTime=...&endDateTime=...
         """
         try:
-            from msgraph.generated.users.item.events.item.instances.instances_request_builder import (
-                InstancesRequestBuilder,
-            )
-            from datetime import date
-
-            start_dt = f"{start_date or date.today().isoformat()}T00:00:00"
-            end_dt = f"{end_date}T23:59:59"
-
-            print(f"[me_list_event_occurrences] event_id={event_id!r}, range={start_dt!r}..{end_dt!r}")
-
-            all_occurrences = []
-            page = 1
-
             query_params = InstancesRequestBuilder.InstancesRequestBuilderGetQueryParameters(
-                start_date_time=start_dt,
-                end_date_time=end_dt,
+                start_date_time=f"{start_date or date.today().isoformat()}T00:00:00",
+                end_date_time=f"{end_date}T23:59:59",
             )
-            query_params.top = 100  # override default of 10
+            query_params.top = 100
 
             config = InstancesRequestBuilder.InstancesRequestBuilderGetRequestConfiguration(
                 query_parameters=query_params,
@@ -53825,188 +53817,31 @@ class OutlookCalendarContactsDataSource:
                 request_configuration=config
             )
 
-            while response is not None:
-                items = getattr(response, 'value', None) or []
-                print(f"[me_list_event_occurrences] page {page}: got {len(items)}, total={len(all_occurrences) + len(items)}")
+            occurrences = []
+            for item in (getattr(response, "value", None) or []):
+                item_dict = {
+                    attr: val
+                    for attr in ("id", "subject", "type", "series_master_id")
+                    if (val := getattr(item, attr, None)) is not None
+                }
 
-                for item in items:
-                    item_dict = {}
-                    for attr in ['id', 'subject', 'type', 'series_master_id']:
-                        val = getattr(item, attr, None)
-                        if val is not None:
-                            item_dict[attr] = val
+                if not item_dict.get("id"):
+                    continue
 
-                    start_obj = getattr(item, 'start', None)
-                    if start_obj:
-                        item_dict['start'] = {
-                            'dateTime': getattr(start_obj, 'date_time', None),
-                            'timeZone': getattr(start_obj, 'time_zone', None),
-                        }
-                    end_obj = getattr(item, 'end', None)
-                    if end_obj:
-                        item_dict['end'] = {
-                            'dateTime': getattr(end_obj, 'date_time', None),
-                            'timeZone': getattr(end_obj, 'time_zone', None),
+                for key, obj_attr in (("start", "start"), ("end", "end")):
+                    obj = getattr(item, obj_attr, None)
+                    if obj:
+                        item_dict[key] = {
+                            "dateTime": getattr(obj, "date_time", None),
+                            "timeZone": getattr(obj, "time_zone", None),
                         }
 
-                    if item_dict.get('id'):
-                        all_occurrences.append(item_dict)
+                occurrences.append(item_dict)
 
-                next_link = getattr(response, 'odata_next_link', None)
-                print(f"[me_list_event_occurrences] page {page} odata_next_link={next_link!r}")
-
-                if not next_link:
-                    break
-
-                page += 1
-                next_config = RequestConfiguration()
-                next_config.headers.try_add("Prefer", f'outlook.timezone="{timezone}"')
-                response = await self.client.me.events.by_event_id(
-                    event_id
-                ).instances.with_url(next_link).get(
-                    request_configuration=next_config
-                )
-
-            print(f"[me_list_event_occurrences] done, total occurrences={len(all_occurrences)}")
-
-            return OutlookCalendarContactsResponse(
-                success=True,
-                data={"value": all_occurrences},
-            )
+            return OutlookCalendarContactsResponse(success=True, data={"value": occurrences})
 
         except Exception as e:
             return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
-            )
-
-    async def delete_recurring_event_occurrence(
-        self,
-        event_id: str,
-        occurrence_dates: List[str],
-        timezone: str = "UTC",
-    ) -> tuple[bool, str]:
-        """Delete multiple occurrences of a recurring event on specific dates."""
-        try:
-            from datetime import date, timedelta
-
-            print(f"[delete_recurring_event_occurrence] event_id={event_id!r}, dates={occurrence_dates!r}")
-
-            # Normalize and deduplicate dates
-            target_dates = sorted(set(d.strip() for d in occurrence_dates))
-            parsed_dates = [date.fromisoformat(d) for d in target_dates]
-
-            window_start = (min(parsed_dates) - timedelta(days=1)).isoformat()
-            window_end = (max(parsed_dates) + timedelta(days=1)).isoformat()
-
-            print(f"[delete_recurring_event_occurrence] window={window_start!r}..{window_end!r}")
-
-            # Single call — me_list_event_occurrences now handles pagination internally
-            occurrences_resp = await self.client.me_list_event_occurrences(
-                event_id=event_id,
-                start_date=window_start,  # ← was missing in datasource loop
-                end_date=window_end,
-                timezone=timezone,
-            )
-
-            if not occurrences_resp.success:
-                return False, json.dumps({
-                    "error": occurrences_resp.error or "Failed to fetch occurrences"
-                })
-
-            raw_data = occurrences_resp.data or {}
-            occurrences = raw_data.get("value", []) if isinstance(raw_data, dict) else []
-
-            print(f"[delete_recurring_event_occurrence] fetched {len(occurrences)} total occurrences")
-
-            # Build date → occurrence map
-            date_to_occ: Dict[str, Any] = {}
-            for occ in occurrences:
-                occ_start = (occ.get("start", {}) or {}).get("dateTime", "") if isinstance(occ, dict) else ""
-                occ_date_str = occ_start[:10]
-                if occ_date_str:
-                    date_to_occ[occ_date_str] = occ
-
-            print(f"[delete_recurring_event_occurrence] mapped dates: {sorted(date_to_occ.keys())}")
-
-            deleted = []
-            not_found = []
-            delete_errors = []
-
-            for target_date_str in target_dates:
-                occ = date_to_occ.get(target_date_str)
-
-                if not occ:
-                    print(f"[delete_recurring_event_occurrence] no occurrence on {target_date_str!r}")
-                    not_found.append(target_date_str)
-                    continue
-
-                occ_id = occ.get("id")
-                occ_subject = occ.get("subject", "")
-
-                print(f"[delete_recurring_event_occurrence] deleting {occ_id!r} on {target_date_str!r}")
-                del_resp = await self.client.me_calendar_delete_event(event_id=occ_id)
-
-                if del_resp.success:
-                    deleted.append({"date": target_date_str, "event_id": occ_id, "subject": occ_subject})
-                    print(f"[delete_recurring_event_occurrence] deleted ok: {target_date_str!r}")
-                else:
-                    delete_errors.append({"date": target_date_str, "event_id": occ_id, "error": del_resp.error})
-                    print(f"[delete_recurring_event_occurrence] failed {target_date_str!r}: {del_resp.error}")
-
-            print(
-                f"[delete_recurring_event_occurrence] done. "
-                f"deleted={len(deleted)}, not_found={len(not_found)}, errors={len(delete_errors)}"
-            )
-
-            return True, json.dumps({
-                "success": True,
-                "series_master_id": event_id,
-                "deleted": deleted,
-                "not_found": not_found,
-                "errors": delete_errors,
-                "summary": {
-                    "requested": len(target_dates),
-                    "deleted": len(deleted),
-                    "not_found": len(not_found),
-                    "failed": len(delete_errors),
-                },
-            })
-
-        except Exception as e:
-            print(f"[delete_recurring_event_occurrence] exception: {e!r}")
-            return self._handle_error(e, "delete recurring event occurrence")
-
-    async def me_calendar_delete_event(
-        self,
-        event_id: str,
-        headers: Optional[Dict[str, str]] = None,
-    ) -> OutlookCalendarContactsResponse:
-        """Delete a calendar event or occurrence.
-        Outlook operation: DELETE /me/events/{event-id}
-        """
-        try:
-            config = RequestConfiguration()
-            if headers:
-                for key, value in headers.items():
-                    config.headers.try_add(key, value)
-
-            await self.client.me.events.by_event_id(event_id).delete(
-                request_configuration=config
-            )
-            return OutlookCalendarContactsResponse(
-                success=True,
-                data={"message": f"Event {event_id} deleted successfully"},
-            )
-
-        except Exception as e:
-            error_msg = str(e)
-            if "404" in error_msg or "not found" in error_msg.lower():
-                return OutlookCalendarContactsResponse(
-                    success=False,
-                    error=f"Event not found (404). The event ID '{event_id}' may be invalid or already deleted.",
-                )
-            return OutlookCalendarContactsResponse(
-                success=False,
-                error=f"Outlook API call failed: {error_msg}",
             )

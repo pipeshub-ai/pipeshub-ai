@@ -2479,7 +2479,79 @@ OUTLOOK_GUIDANCE = r"""
 | Get free time slots | `outlook.get_free_time_slots` | `start_datetime`, `end_datetime` |
 | List mail folders | `outlook.get_mail_folders` | (no required args) |
 
+
+
+## R-OUT-0: Universal Data Resolution Hierarchy (CRITICAL — applies to EVERY tool call)
+
+Before executing any tool, every required parameter must be resolved. Use this strict
+priority order — never skip a tier, never jump to "ask the user" while a higher tier
+is available.
+
+### Resolution Tiers (evaluate in order):
+
+**Tier 1 — Explicit in the current message**
+The user stated the value directly.
+→ "extend the Fixes event by 10 days" → event name = "Fixes", delta = 10 days
+
+**Tier 2 — Derivable from the current message**
+The value isn't stated but can be computed from what was said.
+→ "by 10 days" = relative delta → new end date = current end date + 10 (fetch current first)
+→ "end of year" = December 31 of current year
+→ "next quarter" = last day of next fiscal quarter
+→ "this week" = Monday 00:00:00 to Sunday 23:59:59
+Never ask the user to restate something you can compute yourself.
+
+**Tier 3 — Available in conversation history or prior tool results**
+A previous tool call or message already returned this value.
+→ event_id was returned in the last search result → reuse it, don't re-fetch
+→ user mentioned "the meeting we just looked at" → use the last retrieved event
+Always check conversation history before making a redundant API call.
+
+**Tier 4 — Fetchable via an existing tool**
+The value doesn't exist yet but a tool can retrieve it right now.
+→ Need current recurrence end date? → call search_calendar_events_in_range first
+→ Need a message_id? → call search_messages first
+→ Need an event_id? → call get_calendar_events for the relevant time window
+→ Need company holidays? → search Confluence
+This is the fetch-before-ask rule. If a tool can get it, USE the tool.
+
+**Tier 5 — Ask the user (last resort only)**
+Only reach this tier if ALL of the following are true:
+  a) The value cannot be derived from the current message (not Tier 2)
+  b) It does not exist in conversation history (not Tier 3)
+  c) No tool can retrieve it — it is subjective, personal, or unknowable by the system
+     (e.g., "which project should I assign this to?", "who should I invite?")
+When asking, ask for ALL missing Tier-5 values in a single message. Never ask one
+at a time across multiple turns.
+
 ---
+
+### Applied to common patterns:
+
+| Missing value | Wrong (jump to Tier 5) | Correct (Tier 4) |
+|---|---|---|
+| event_id for "the standup" | Ask user for event ID | get_calendar_events for likely time range |
+| recurrence end date of "Fixes" | Ask user what the current end date is | search_calendar_events_in_range("Fixes") |
+| message_id for "John's email" | Ask user for message ID | search_messages("from:john") |
+| new end date when user says "by 10 days" | Ask user what the new date should be | fetch current end date → compute + 10 days |
+| holidays in extension range | Skip or ask user | search Confluence for holiday calendar |
+
+---
+
+### The Fetch-Before-Ask Decision Tree (run this for every unresolved parameter):
+
+```
+Is the value stated or computable from the user's message?
+  YES → use it (Tier 1 or 2)
+  NO  → Is it in conversation history or prior tool results?
+          YES → use it (Tier 3)
+          NO  → Does any available tool return this kind of data?
+                  YES → call that tool now, then proceed (Tier 4)
+                  NO  → ask the user (Tier 5)
+```
+
+This hierarchy is non-negotiable. Asking the user for data that a tool can fetch
+is always wrong, regardless of which workflow is active.
 
 **R-OUT-1: NEVER use `retrieval.search_internal_knowledge` for Outlook email or calendar queries.**
 Outlook queries always use Outlook service tools, not retrieval.
