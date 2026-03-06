@@ -754,10 +754,7 @@ class WebConnector(BaseConnector):
             external_id = final_url
 
             existing_record = await self.data_entities_processor.get_record_by_external_id(connector_id=self.connector_id, external_record_id=external_id)
-            if existing_record:
-                record_id = existing_record.id
-            else:
-                record_id = str(uuid.uuid4())
+            record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
             # Get title and clean content for HTML
             title = self._extract_title_from_url(final_url)
@@ -770,9 +767,7 @@ class WebConnector(BaseConnector):
                     soup = BeautifulSoup(content_bytes, "html.parser")
                     title = self._extract_title(soup, final_url)
 
-                    # Remove script and style elements
-                    for script in soup(["script", "style", "noscript", "iframe"]):
-                        script.decompose()
+                    self._remove_unwanted_tags(soup)
 
                     # Get text content
                     text_content = soup.get_text(separator="\n", strip=True)
@@ -959,7 +954,7 @@ class WebConnector(BaseConnector):
         try:
             parsed = urlparse(url)
             # Remove fragment and normalize
-            normalized = urlunparse((
+            return urlunparse((
                 parsed.scheme,
                 parsed.netloc.lower(),
                 parsed.path.rstrip('/') or '/',
@@ -967,7 +962,6 @@ class WebConnector(BaseConnector):
                 parsed.query,
                 ''  # Remove fragment
             ))
-            return normalized
         except Exception:
             return url
 
@@ -1310,12 +1304,43 @@ class WebConnector(BaseConnector):
 
         return ''.join(result)
 
-    # ==================== HTML Processing Helpers ====================
-
     def _remove_unwanted_tags(self, soup: BeautifulSoup) -> None:
-        """Remove script, style, noscript, and iframe tags from the soup."""
-        for tag in soup(["script", "style", "noscript", "iframe"]):
+        """
+        Remove all non-content tags and structural noise (nav, sidebars, etc.)
+        """
+
+        # 1. Technical & Invisible Noise
+        # These are tags that never contain user-facing article content.
+        technical_tags = [
+            "script", "style", "noscript", "iframe", "meta",
+            "base", "link", "canvas"
+        ]
+
+        # 2. Functional/Interactive Noise
+        # UI elements that don't represent the text content of the page.
+        ui_tags = ["button", "form", "input", "select", "textarea", "label"]
+
+        # 3. Structural/Navigational Noise
+        structural_tags = ["nav"]
+
+        # Combine and decompose
+        for tag in soup(technical_tags + ui_tags + structural_tags):
             tag.decompose()
+
+        # 4. Common CSS Selectors (Class/ID Noise)
+        # These catch elements on sites that don't use semantic tags.
+        # Covers sidebars, menus, ads, and common 'skip' links.
+        unwanted_selectors = [
+            ".sidebar", "#sidebar", ".menu", ".nav", ".navigation",
+            ".ads", ".promo", ".banner", ".popup", ".modal",
+            ".toc", ".table-of-contents", ".breadcrumb",
+            ".pagination", ".share-buttons", ".social-media",
+            "a[href='#content']", "a.skip-to-content", ".edit-page-link"
+        ]
+
+        for selector in unwanted_selectors:
+            for match in soup.select(selector):
+                match.decompose()
 
     def _remove_image_tags(self, soup: BeautifulSoup) -> None:
         """Remove all image and SVG tags from the soup."""
@@ -1636,9 +1661,8 @@ class WebConnector(BaseConnector):
 
             # Serialize and clean data URIs
             cleaned_html = str(soup)
-            cleaned_html = self._clean_data_uris_in_html(cleaned_html)
+            return self._clean_data_uris_in_html(cleaned_html)
 
-            return cleaned_html
 
         except Exception as e:
             self.logger.error(f"⚠️ Failed to parse/clean HTML: {e}")
@@ -1714,7 +1738,7 @@ class WebConnector(BaseConnector):
                     raise HTTPException(
                         status_code=HttpStatusCode.BAD_GATEWAY.value,
                         detail=f"Failed to fetch {url} after {max_retries} retries: {e}",
-                    )
+                    ) from e
 
                 delay = self._calculate_retry_delay(attempt, base_delay, max_delay)
                 self.logger.warning(
