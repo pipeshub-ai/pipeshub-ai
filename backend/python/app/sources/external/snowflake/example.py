@@ -66,6 +66,25 @@ PAT_TOKEN = os.getenv("SNOWFLAKE_PAT_TOKEN")
 # Optional: Pre-obtained OAuth access token (third priority)
 OAUTH_TOKEN = os.getenv("SNOWFLAKE_OAUTH_TOKEN")
 
+# --- TEST CONFIGURATION ---
+# Override these to test specific database/schema/stage instead of auto-discovery
+# Set to None to use auto-discovery (first database/schema found)
+TEST_DATABASE = os.getenv("SNOWFLAKE_TEST_DATABASE", "TEST_DB")  # e.g., "TEST_DB"
+TEST_SCHEMA = os.getenv("SNOWFLAKE_TEST_SCHEMA", "TEST_SCHEMA1")  # e.g., "TEST_SCHEMA1"  
+TEST_STAGE = os.getenv("SNOWFLAKE_TEST_STAGE", "TEST_STAGE1")  # e.g., "TEST_STAGE1"
+
+# Role and Warehouse configuration
+# The role determines what permissions you have - use a role with access to your test objects
+TEST_ROLE = os.getenv("SNOWFLAKE_TEST_ROLE", "SNOWFLAKE_LEARNING_ROLE")  # e.g., "ACCOUNTADMIN", "SYSADMIN", "PUBLIC"
+TEST_WAREHOUSE = os.getenv("SNOWFLAKE_TEST_WAREHOUSE", None)  # e.g., "COMPUTE_WH" - None = auto-discover
+
+# Set to None to use auto-discovery:
+# TEST_DATABASE = None
+# TEST_SCHEMA = None
+# TEST_STAGE = None
+# TEST_ROLE = None  # Will use default role from OAuth scope
+
+
 
 def print_section(title: str):
     print(f"\n{'-'*80}")
@@ -150,13 +169,18 @@ async def main() -> None:
             # Get Snowflake OAuth endpoints
             endpoints = get_snowflake_oauth_endpoints(ACCOUNT_IDENTIFIER)
 
+            # Build OAuth scope based on TEST_ROLE config
+            oauth_role = TEST_ROLE if TEST_ROLE else "PUBLIC"
+            oauth_scopes = [f"session:role:{oauth_role}"]
+            print(f"ℹ️  Using role for OAuth: {oauth_role}")
+
             token_response = perform_oauth_flow(
                 client_id=CLIENT_ID,
                 client_secret=CLIENT_SECRET,
                 auth_endpoint=endpoints["auth_endpoint"],
                 token_endpoint=endpoints["token_endpoint"],
                 redirect_uri=REDIRECT_URI,
-                scopes=["session:role:PUBLIC"],  # Adjust scopes as needed
+                scopes=oauth_scopes,
                 scope_delimiter=" ",
                 auth_method="body",  # Snowflake uses POST body for token exchange
             )
@@ -209,9 +233,12 @@ async def main() -> None:
     databases_resp = await data_source.list_databases()
     print_result("List Databases", databases_resp)
 
-    # Get first database name for subsequent operations
-    database_name = None
-    if databases_resp.success and databases_resp.data:
+    # Use configured database or auto-discover first one
+    database_name = TEST_DATABASE  # Use config value first
+    if database_name:
+        print(f"ℹ️  Using configured TEST_DATABASE: {database_name}")
+    elif databases_resp.success and databases_resp.data:
+        # Auto-discover from first database
         data = databases_resp.data
         if isinstance(data, dict) and "data" in data:
             databases = data["data"]
@@ -229,6 +256,7 @@ async def main() -> None:
                 database_name = first_db.get("name") or first_db.get("database_name")
             elif isinstance(first_db, list):
                 database_name = first_db[0] if first_db else None
+            print(f"ℹ️  Auto-discovered database: {database_name}")
 
     # 3. Get Database Details
     schema_name = None
@@ -242,8 +270,12 @@ async def main() -> None:
         schemas_resp = await data_source.list_schemas(database=database_name)
         print_result("List Schemas", schemas_resp)
 
-        # Get first schema name
-        if schemas_resp.success and schemas_resp.data:
+        # Use configured schema or auto-discover first one
+        schema_name = TEST_SCHEMA  # Use config value first
+        if schema_name:
+            print(f"ℹ️  Using configured TEST_SCHEMA: {schema_name}")
+        elif schemas_resp.success and schemas_resp.data:
+            # Auto-discover from first schema
             data = schemas_resp.data
             if isinstance(data, dict) and "data" in data:
                 schemas = data["data"]
@@ -260,6 +292,7 @@ async def main() -> None:
                     schema_name = first_schema.get("name") or first_schema.get("schema_name")
                 elif isinstance(first_schema, list):
                     schema_name = first_schema[0] if first_schema else None
+                print(f"ℹ️  Auto-discovered schema: {schema_name}")
 
         # 5. List Tables in Schema
         if schema_name:
@@ -390,12 +423,15 @@ async def main() -> None:
         print("ℹ️  Testing SQL SDK with OAuth token...")
         try:
             # Initialize SDK client with OAuth
+            sdk_role = TEST_ROLE if TEST_ROLE else "PUBLIC"
+            sdk_warehouse = TEST_WAREHOUSE if TEST_WAREHOUSE else warehouse_name
             sdk_client = SnowflakeSDKClient(
                 account_identifier=ACCOUNT_IDENTIFIER,
                 oauth_token=oauth_token,
-                warehouse=warehouse_name,  # Use the warehouse we found earlier
-                role="PUBLIC",  # Match the OAuth scope role
+                warehouse=sdk_warehouse,
+                role=sdk_role,
             )
+            print(f"   Using role: {sdk_role}, warehouse: {sdk_warehouse}")
 
             # Use context manager for automatic connection handling
             with sdk_client:
@@ -444,12 +480,347 @@ async def main() -> None:
         except Exception as e:
             print(f"❌ SQL SDK error: {e}")
     else:
-        print("⚠️  SQL SDK examples skipped (requires OAuth token)")
+        print(f"⚠️  SQL SDK examples skipped (requires OAuth token)")
+
+    # ========================================================================
+    # NEW API TESTS - SQL Statements, Grants, Database Roles, Files, etc.
+    # ========================================================================
+
+    # 19. Execute SQL API - Run custom SQL queries
+    print_section("SQL Statements API - execute_sql()")
+    
+    # Test 1: Simple query
+    sql_resp = await data_source.execute_sql(
+        statement="SELECT CURRENT_USER() AS current_user, CURRENT_ROLE() AS current_role",
+        warehouse=warehouse_name
+    )
+    print_result("Execute SQL - Current User/Role", sql_resp)
+
+    # Test 2: Show grants (useful for permission sync)
+    if database_name:
+        print("\n   Testing SHOW GRANTS on database...")
+        grants_sql_resp = await data_source.execute_sql(
+            statement=f"SHOW GRANTS ON DATABASE {database_name}",
+            warehouse=warehouse_name
+        )
+        print_result(f"Execute SQL - SHOW GRANTS ON DATABASE {database_name}", grants_sql_resp)
+
+    # Test 3: Describe table (useful for table metadata indexing)
+    if database_name and schema_name:
+        # First get a table name
+        tables_resp = await data_source.list_tables(database=database_name, schema=schema_name)
+        table_name = None
+        if tables_resp.success and tables_resp.data:
+            data = tables_resp.data
+            tables = data.get("data", []) if isinstance(data, dict) else data
+            if tables and len(tables) > 0:
+                first_table = tables[0]
+                table_name = first_table.get("name") if isinstance(first_table, dict) else None
+        
+        if table_name:
+            print(f"\n   Testing DESCRIBE TABLE {database_name}.{schema_name}.{table_name}...")
+            describe_resp = await data_source.execute_sql(
+                statement=f"DESCRIBE TABLE {database_name}.{schema_name}.{table_name}",
+                warehouse=warehouse_name
+            )
+            print_result(f"Execute SQL - DESCRIBE TABLE", describe_resp)
+
+    # 20. Grants API - List grants to role
+    print_section("Grants API - list_grants_to_role()")
+    
+    # Get first role name for testing
+    role_name = None
+    if roles_resp.success and roles_resp.data:
+        data = roles_resp.data
+        roles = data.get("data", []) if isinstance(data, dict) else data
+        if roles and len(roles) > 0:
+            first_role = roles[0]
+            role_name = first_role.get("name") if isinstance(first_role, dict) else None
+
+    if role_name:
+        grants_to_role_resp = await data_source.list_grants_to_role(role_name=role_name)
+        print_result(f"List Grants to Role '{role_name}'", grants_to_role_resp)
+    else:
+        print("   ⚠️  Skipped - No roles found to test")
+
+    # 21. Grants API - List grants to user
+    print_section("Grants API - list_grants_to_user()")
+    
+    # Get first user name for testing
+    user_name = None
+    if users_resp.success and users_resp.data:
+        data = users_resp.data
+        users = data.get("data", []) if isinstance(data, dict) else data
+        if users and len(users) > 0:
+            first_user = users[0]
+            user_name = first_user.get("name") if isinstance(first_user, dict) else None
+
+    if user_name:
+        grants_to_user_resp = await data_source.list_grants_to_user(user_name=user_name)
+        print_result(f"List Grants to User '{user_name}'", grants_to_user_resp)
+    else:
+        print("   ⚠️  Skipped - No users found to test")
+
+    # 22. Grants API - List grants of role (who has this role)
+    print_section("Grants API - list_grants_of_role()")
+    
+    if role_name:
+        grants_of_role_resp = await data_source.list_grants_of_role(role_name=role_name)
+        print_result(f"List Grants of Role '{role_name}' (members)", grants_of_role_resp)
+    else:
+        print("   ⚠️  Skipped - No roles found to test")
+
+    # 23. Grants API - List grants on object
+    print_section("Grants API - list_grants_on_object()")
+    
+    if database_name:
+        grants_on_db_resp = await data_source.list_grants_on_object(
+            object_type="DATABASE",
+            object_name=database_name
+        )
+        print_result(f"List Grants on DATABASE {database_name}", grants_on_db_resp)
+    
+    if database_name and schema_name:
+        grants_on_schema_resp = await data_source.list_grants_on_object(
+            object_type="SCHEMA",
+            object_name=f"{database_name}.{schema_name}"
+        )
+        print_result(f"List Grants on SCHEMA {database_name}.{schema_name}", grants_on_schema_resp)
+
+    # 24. Database Roles API
+    print_section("Database Roles API - list_database_roles()")
+    
+    if database_name:
+        db_roles_resp = await data_source.list_database_roles(database=database_name)
+        print_result(f"List Database Roles in '{database_name}'", db_roles_resp)
+        
+        # Try to get details of first database role
+        if db_roles_resp.success and db_roles_resp.data:
+            data = db_roles_resp.data
+            db_roles = data.get("data", []) if isinstance(data, dict) else data
+            if db_roles and len(db_roles) > 0:
+                first_db_role = db_roles[0]
+                db_role_name = first_db_role.get("name") if isinstance(first_db_role, dict) else None
+                if db_role_name:
+                    db_role_detail = await data_source.get_database_role(
+                        database=database_name,
+                        name=db_role_name
+                    )
+                    print_result(f"Get Database Role '{db_role_name}'", db_role_detail)
+    else:
+        print("   ⚠️  Skipped - No database found to test")
+
+    # 25. Dynamic Tables API
+    print_section("Dynamic Tables API - list_dynamic_tables()")
+    
+    if database_name and schema_name:
+        dynamic_tables_resp = await data_source.list_dynamic_tables(
+            database=database_name,
+            schema=schema_name
+        )
+        print_result(f"List Dynamic Tables in {database_name}.{schema_name}", dynamic_tables_resp)
+        
+        # Try to get details of first dynamic table
+        if dynamic_tables_resp.success and dynamic_tables_resp.data:
+            data = dynamic_tables_resp.data
+            dyn_tables = data.get("data", []) if isinstance(data, dict) else data
+            if dyn_tables and len(dyn_tables) > 0:
+                first_dyn_table = dyn_tables[0]
+                dyn_table_name = first_dyn_table.get("name") if isinstance(first_dyn_table, dict) else None
+                if dyn_table_name:
+                    dyn_table_detail = await data_source.get_dynamic_table(
+                        database=database_name,
+                        schema=schema_name,
+                        name=dyn_table_name
+                    )
+                    print_result(f"Get Dynamic Table '{dyn_table_name}'", dyn_table_detail)
+    else:
+        print("   ⚠️  Skipped - No database/schema found to test")
+
+    # 26. Stage Files API - List files in a stage (Directory Table)
+    print_section("Stage Files API - list_stage_files()")
+    
+    # Use configured stage or auto-discover first one
+    stage_name = TEST_STAGE  # Use config value first
+    if database_name and schema_name:
+        # Re-fetch stages to ensure we have the latest data
+        print(f"   Fetching stages from {database_name}.{schema_name}...")
+        stages_for_files_resp = await data_source.list_stages(
+            database=database_name,
+            schema=schema_name
+        )
+        print_result(f"List Stages in {database_name}.{schema_name}", stages_for_files_resp)
+        
+        if stage_name:
+            print(f"ℹ️  Using configured TEST_STAGE: {stage_name}")
+        elif stages_for_files_resp.success and stages_for_files_resp.data:
+            # Auto-discover from first stage
+            data = stages_for_files_resp.data
+            stages = data.get("data", []) if isinstance(data, dict) else data
+            if stages and len(stages) > 0:
+                first_stage = stages[0]
+                stage_name = first_stage.get("name") if isinstance(first_stage, dict) else None
+                print(f"ℹ️  Auto-discovered stage: {stage_name}")
+        
+        if stage_name:
+            print(f"   Testing list_stage_files for stage: {stage_name}")
+            print(f"   Using warehouse: {warehouse_name}")
+            stage_files_resp = await data_source.list_stage_files(
+                database=database_name,
+                schema=schema_name,
+                stage=stage_name,
+                warehouse=warehouse_name  # Required for SQL execution
+            )
+            print_result(f"List Files in Stage '{stage_name}'", stage_files_resp)
+            
+            # 27. Generate Pre-signed URL for a file
+            print_section("Files API - generate_presigned_url()")
+            
+            if stage_files_resp.success and stage_files_resp.data:
+                # Check if there are files in the stage
+                # SQL API returns results in "data" key, not "rowset"
+                resp_data = stage_files_resp.data
+                file_rows = resp_data.get("data", []) if isinstance(resp_data, dict) else []
+                
+                print(f"   Found {len(file_rows)} file(s) in stage")
+                
+                if file_rows and len(file_rows) > 0:
+                    # Get first file - SQL API returns array of arrays
+                    # Columns: RELATIVE_PATH, SIZE, LAST_MODIFIED, MD5, ETAG, FILE_URL
+                    first_file = file_rows[0]
+                    print(f"   First file data: {first_file}")
+                    
+                    # RELATIVE_PATH is first column (index 0)
+                    file_path = first_file[0] if isinstance(first_file, list) else first_file.get("RELATIVE_PATH")
+                    
+                    if file_path:
+                        print(f"   Generating pre-signed URL for: {file_path}")
+                        presigned_resp = await data_source.generate_presigned_url(
+                            database=database_name,
+                            schema=schema_name,
+                            stage=stage_name,
+                            file_path=file_path,
+                            expiration_seconds=3600,
+                            warehouse=warehouse_name  # Required for SQL execution
+                        )
+                        print_result(f"Generate Pre-signed URL for '{file_path}'", presigned_resp)
+                        
+                        # Extract presigned URL from response
+                        presigned_url = None
+                        if presigned_resp.success and presigned_resp.data:
+                            presigned_data = presigned_resp.data.get("data", [])
+                            if presigned_data and len(presigned_data) > 0:
+                                presigned_url = presigned_data[0][0] if isinstance(presigned_data[0], list) else presigned_data[0]
+                        
+                        # 28. Download File API test - Try presigned URL first (most reliable)
+                        print_section("Files API - download_file_from_presigned_url()")
+                        
+                        if presigned_url:
+                            print(f"   Pre-signed URL: {presigned_url[:100]}...")
+                            print(f"   Attempting to download via presigned URL...")
+                            download_resp = await data_source.download_file_from_presigned_url(presigned_url=presigned_url)
+                            if download_resp.success:
+                                file_content = download_resp.raw_content
+                                file_size = len(file_content) if file_content else 0
+                                print(f"   ✅ Downloaded file successfully!")
+                                print(f"   📦 File size: {file_size} bytes")
+                                
+                                # Show content preview
+                                if file_content and file_size > 0:
+                                    # Check if it's a PDF (starts with %PDF)
+                                    if file_content[:4] == b'%PDF':
+                                        print(f"   📄 File type: PDF document")
+                                        print(f"   📝 PDF Header: {file_content[:50].decode('latin-1', errors='replace')}")
+                                    else:
+                                        # Try to decode as text, fallback to hex
+                                        try:
+                                            text_preview = file_content[:200].decode('utf-8')
+                                            print(f"   📝 Content (text): {text_preview[:100]}...")
+                                        except UnicodeDecodeError:
+                                            # Binary file - show hex
+                                            hex_preview = file_content[:50].hex()
+                                            print(f"   🔢 Content (hex): {hex_preview}...")
+                                    
+                                    # Show file magic bytes
+                                    print(f"   🔍 First 20 bytes (hex): {file_content[:20].hex()}")
+                            else:
+                                print(f"   ⚠️  Presigned download failed: {download_resp.message}")
+                                print(f"   Error: {download_resp.error}")
+                        else:
+                            print("   ⚠️  Could not extract presigned URL from response")
+                        
+                        # 28b. Also try the Files API download for comparison
+                        print_section("Files API - download_file() [via Snowflake API]")
+                        
+                        # FILE_URL is the last column (index -1)
+                        file_url = first_file[-1] if isinstance(first_file, list) else first_file.get("FILE_URL")
+                        
+                        if file_url:
+                            print(f"   File URL: {file_url}")
+                            print(f"   Attempting to download via Snowflake Files API...")
+                            download_resp = await data_source.download_file(file_url=file_url)
+                            if download_resp.success:
+                                file_content = download_resp.raw_content
+                                file_size = len(file_content) if file_content else 0
+                                print(f"   ✅ Downloaded file successfully: {file_size} bytes")
+                            else:
+                                print(f"   ⚠️  Download failed: {download_resp.message}")
+                                print(f"   Error: {download_resp.error}")
+                        else:
+                            print("   ⚠️  No FILE_URL available in directory table result")
+                    else:
+                        print("   ⚠️  No file path found in stage directory")
+                else:
+                    print("   ⚠️  Stage is empty - no files to test")
+            else:
+                print("   ⚠️  Could not list stage files")
+        else:
+            print("   ⚠️  No stages found to test")
+    else:
+        print("   ⚠️  Skipped - No database/schema found to test")
+
+    # 29. Test async SQL execution
+    print_section("SQL Statements API - Async Execution")
+    
+    async_resp = await data_source.execute_sql(
+        statement="SELECT * FROM INFORMATION_SCHEMA.TABLES LIMIT 10",
+        database=database_name if database_name else "SNOWFLAKE",
+        warehouse=warehouse_name,
+        async_exec=True  # Execute asynchronously
+    )
+    print_result("Execute SQL (async mode)", async_resp)
+    
+    if async_resp.success and async_resp.data:
+        statement_handle = async_resp.data.get("statementHandle")
+        if statement_handle:
+            print(f"   Statement Handle: {statement_handle}")
+            
+            # Check status
+            import asyncio as aio
+            await aio.sleep(1)  # Wait a bit for the query to complete
+            
+            status_resp = await data_source.get_statement_status(statement_handle=statement_handle)
+            print_result("Get Statement Status", status_resp)
 
     print("\n" + "=" * 80)
     print("✅ All examples completed successfully!")
     print("=" * 80)
+    print("\n📝 NEW APIs Tested:")
+    print("   - execute_sql() - Run custom SQL queries")
+    print("   - get_statement_status() - Check async query status")
+    print("   - list_grants_to_role() - Get role privileges")
+    print("   - list_grants_to_user() - Get user privileges")
+    print("   - list_grants_of_role() - Get role members")
+    print("   - list_grants_on_object() - Get object permissions")
+    print("   - list_database_roles() - List database-scoped roles")
+    print("   - get_database_role() - Get database role details")
+    print("   - list_dynamic_tables() - List dynamic tables")
+    print("   - get_dynamic_table() - Get dynamic table details")
+    print("   - list_stage_files() - List files in stage (Directory Table)")
+    print("   - generate_presigned_url() - Create shareable file URLs")
+    print("   - download_file() - Download file content for indexing")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+
