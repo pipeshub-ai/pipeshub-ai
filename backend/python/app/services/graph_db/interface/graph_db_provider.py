@@ -1574,7 +1574,7 @@ class IGraphDBProvider(ABC):
         record_id: str,
         transaction: Optional[str] = None,
     ) -> bool:
-        """Delete PARENT_CHILD edge from parent to record."""
+        """Delete PARENT_CHILD edge(s) to a record."""
         pass
 
     @abstractmethod
