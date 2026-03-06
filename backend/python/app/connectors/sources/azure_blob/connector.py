@@ -130,10 +130,7 @@ def get_folder_path_segments_from_blob_name(blob_name: str) -> List[str]:
         return []
     parts = normalized.split("/")
     # Last part is the file (or folder blob); segments are the folder path prefix
-    segments = []
-    for i in range(1, len(parts)):
-        segments.append("/".join(parts[:i]))
-    return segments
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
 
 
 def get_mimetype_for_azure_blob(blob_name: str, is_folder: bool = False) -> str:
@@ -1181,10 +1178,7 @@ class AzureBlobConnector(BaseConnector):
                 async with self.data_store_provider.transaction() as tx_store:
                     await self._remove_old_parent_relationship(record_id, tx_store)
 
-            if not existing_record:
-                version = 0
-            else:
-                version = existing_record.version + 1
+            version = 0 if not existing_record else existing_record.version + 1
 
             # Get content MD5 hash for md5_hash field
             content_md5 = blob.get("content_md5")
@@ -1229,9 +1223,12 @@ class AzureBlobConnector(BaseConnector):
                 etag=raw_etag,
             )
 
-            if hasattr(self, 'indexing_filters') and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            if (
+                hasattr(self, 'indexing_filters')
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+            ):
+                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 
@@ -1645,9 +1642,12 @@ class AzureBlobConnector(BaseConnector):
                 etag=current_etag,
             )
 
-            if hasattr(self, 'indexing_filters') and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            if (
+                hasattr(self, 'indexing_filters')
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+            ):
+                updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 
@@ -1744,7 +1744,7 @@ class AzureBlobConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        connector = cls(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,
@@ -1752,4 +1752,3 @@ class AzureBlobConnector(BaseConnector):
             connector_id,
         )
 
-        return connector

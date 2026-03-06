@@ -1085,10 +1085,7 @@ class AzureFilesConnector(BaseConnector):
                         f"Error deleting old record {old_record_id} during move/rename: {e}"
                     )
 
-            if not existing_record:
-                version = 0
-            else:
-                version = existing_record.version + 1
+            version = 0 if not existing_record else existing_record.version + 1
 
             # Get content MD5 hash for md5_hash field (same handling as Azure Blob)
             content_md5 = item.get("content_md5")
@@ -1141,11 +1138,14 @@ class AzureFilesConnector(BaseConnector):
                 file_record.parent_external_record_id = None
                 file_record.parent_record_type = None
 
-            if hasattr(self, "indexing_filters") and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(
+            if (
+                hasattr(self, "indexing_filters")
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(
                     IndexingFilterKey.FILES, default=True
-                ):
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                )
+            ):
+                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_files_permissions(
                 share_name, normalized_path
@@ -1395,7 +1395,7 @@ class AzureFilesConnector(BaseConnector):
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=f"Failed to stream file: {str(e)}",
-            )
+            ) from e
 
     async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
@@ -1698,11 +1698,14 @@ class AzureFilesConnector(BaseConnector):
                 updated_record.parent_external_record_id = None
                 updated_record.parent_record_type = None
 
-            if hasattr(self, "indexing_filters") and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(
+            if (
+                hasattr(self, "indexing_filters")
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(
                     IndexingFilterKey.FILES, default=True
-                ):
-                    updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                )
+            ):
+                updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_files_permissions(
                 share_name, item_path
@@ -1803,7 +1806,7 @@ class AzureFilesConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        connector = cls(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,
@@ -1811,4 +1814,3 @@ class AzureFilesConnector(BaseConnector):
             connector_id,
         )
 
-        return connector
