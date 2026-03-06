@@ -23,6 +23,7 @@ import { Iconify } from 'src/components/iconify';
 import checkCircleIcon from '@iconify-icons/mdi/check-circle';
 import clockCircleIcon from '@iconify-icons/mdi/clock-outline';
 import settingsIcon from '@iconify-icons/mdi/settings';
+import deletingIcon from '@iconify-icons/mdi/delete-clock';
 import boltIcon from '@iconify-icons/mdi/bolt';
 import eyeIcon from '@iconify-icons/mdi/eye';
 import { useNavigate } from 'react-router-dom';
@@ -43,9 +44,20 @@ const ConnectorCard = ({ connector, isBusiness }: ConnectorCardProps) => {
 
   const isActive = connector.isActive;
   const isConfigured = connector.isConfigured;
+  const isDeleting = connector.status === 'DELETING';
   const supportsSync = connector.supportsSync || false;
 
   const getStatusConfig = () => {
+    if (isDeleting) {
+      return {
+        label: 'Deleting...',
+        color: theme.palette.error.main,
+        bgColor: isDark
+          ? alpha(theme.palette.error.main, 0.8)
+          : alpha(theme.palette.error.main, 0.1),
+        icon: deletingIcon,
+      };
+    }
     if (isActive) {
       return {
         label: 'Active',
@@ -93,18 +105,20 @@ const ConnectorCard = ({ connector, isBusiness }: ConnectorCardProps) => {
         display: 'flex',
         flexDirection: 'column',
         borderRadius: 2,
-        border: `1px solid ${theme.palette.divider}`,
+        border: `1px solid ${isDeleting ? alpha(theme.palette.error.main, 0.3) : theme.palette.divider}`,
         backgroundColor: theme.palette.background.paper,
-        cursor: 'pointer',
+        cursor: isDeleting ? 'default' : 'pointer',
+        opacity: isDeleting ? 0.65 : 1,
+        pointerEvents: isDeleting ? 'none' : undefined,
         transition: theme.transitions.create(
-          ['transform', 'box-shadow', 'border-color'],
+          ['transform', 'box-shadow', 'border-color', 'opacity'],
           {
             duration: theme.transitions.duration.shorter,
             easing: theme.transitions.easing.easeOut,
           }
         ),
         position: 'relative',
-        '&:hover': {
+        '&:hover': isDeleting ? {} : {
           transform: 'translateY(-2px)',
           borderColor: alpha(theme.palette.primary.main, 0.5),
           boxShadow: isDark
@@ -115,7 +129,7 @@ const ConnectorCard = ({ connector, isBusiness }: ConnectorCardProps) => {
           },
         },
       }}
-      onClick={handleManageClick}
+      onClick={isDeleting ? undefined : handleManageClick}
     >
         <Box
           sx={{
@@ -375,6 +389,7 @@ const ConnectorCard = ({ connector, isBusiness }: ConnectorCardProps) => {
           variant="outlined"
           size="medium"
           startIcon={<Iconify icon={eyeIcon} width={16} height={16} />}
+          disabled={isDeleting}
           onClick={(e) => {
             e.stopPropagation();
             handleManageClick();
@@ -393,7 +408,7 @@ const ConnectorCard = ({ connector, isBusiness }: ConnectorCardProps) => {
             },
           }}
         >
-          Manage
+          {isDeleting ? 'Deleting...' : 'Manage'}
         </Button>
       </CardContent>
     </Card>

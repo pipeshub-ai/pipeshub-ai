@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import io
 import json
 import mimetypes
@@ -21,7 +22,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
@@ -32,7 +33,6 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
-    EventTypes,
     MimeTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -241,8 +241,7 @@ async def get_graph_provider(request: Request) -> IGraphDBProvider:
 
 async def get_kafka_service(request: Request) -> KafkaService:
     container: ConnectorAppContainer = request.app.container
-    kafka_service = container.kafka_service()
-    return kafka_service
+    return container.kafka_service()
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
@@ -474,8 +473,7 @@ async def stream_record_internal(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail=f"Connector '{connector_name}' not found"
             )
-        buffer = await connector.stream_record(record)
-        return buffer
+        return await connector.stream_record(record)
 
     except JWTError as e:
         logger.error("JWT validation error: %s", str(e))
@@ -1465,10 +1463,9 @@ def _encode_state_with_instance(state: str, connector_id: str) -> str:
         "state": state,
         "connector_id": connector_id
     }
-    encoded = base64.urlsafe_b64encode(
+    return base64.urlsafe_b64encode(
         json.dumps(state_data).encode()
     ).decode()
-    return encoded
 
 
 def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
@@ -1485,8 +1482,7 @@ def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
     """
     try:
         decoded = base64.urlsafe_b64decode(encoded_state.encode()).decode()
-        state_data = json.loads(decoded)
-        return state_data
+        return json.loads(decoded)
     except Exception as e:
         raise ValueError(f"Invalid state format: {e}")
 
@@ -4968,10 +4964,8 @@ async def _ensure_connector_initialized(
             error_msg = "Failed to initialize connector. Please check your credentials and configuration."
             logger.error(f"❌ {error_msg}")
             # Cleanup on failure
-            try:
+            with contextlib.suppress(Exception):
                 await connector.cleanup()
-            except Exception:
-                pass
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=error_msg
@@ -4985,10 +4979,8 @@ async def _ensure_connector_initialized(
                 error_msg = "Connection test failed. Please verify your credentials have proper access."
                 logger.error(f"❌ {error_msg}")
                 # Cleanup on failure
-                try:
+                with contextlib.suppress(Exception):
                     await connector.cleanup()
-                except Exception:
-                    pass
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail=error_msg
@@ -4999,10 +4991,8 @@ async def _ensure_connector_initialized(
             error_msg = f"Connection test failed: {str(test_error)}"
             logger.error(f"❌ {error_msg}", exc_info=True)
             # Cleanup on failure
-            try:
+            with contextlib.suppress(Exception):
                 await connector.cleanup()
-            except Exception:
-                pass
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=error_msg
@@ -5291,40 +5281,23 @@ async def delete_connector_instance(
     connector_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-) -> Dict[str, Any]:
+) -> JSONResponse:
     """
-    Delete a connector instance and all its related data.
+    Initiate async deletion of a connector instance.
 
-    This is a destructive operation that:
-    1. Stops any active sync services for this connector
-    2. Deletes all records, record groups, roles, groups, drives for this connector
-    3. Deletes all edges (permissions, relations, classifications)
-    4. Publishes event to delete embeddings from Qdrant
-    5. Deletes the connector app itself
-    6. Cleans up connector credentials from configuration store
+    Marks the connector as DELETING, sends an appDisabled event to stop
+    active sync, then publishes a connectorType.delete event to the
+    sync-events Kafka topic and returns 202 immediately.  The actual
+    graph-DB deletion and Qdrant cleanup run in the sync consumer.
 
-    Classification nodes (departments, categories, topics, languages) are NOT deleted
-    as they are shared resources across connectors.
-    Users are NOT deleted - only userAppRelation edges are removed.
-
-    Args:
-        connector_id: Unique connector instance key
-        request: FastAPI request object
-        graph_provider: Injected graph DB provider
-
-    Returns:
-        Dictionary with deletion statistics
-
-    Raises:
-        HTTPException: 401 if not authenticated, 403 if not authorized,
-                      404 if connector not found, 500 for internal errors
+    Returns 409 if a deletion is already in progress for this connector.
     """
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
 
     try:
-        # 1. Get and validate user context
+        # 1. Validate user context
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
@@ -5336,7 +5309,7 @@ async def delete_connector_instance(
                 detail="User not authenticated"
             )
 
-        # 2. Get and validate connector instance
+        # 2. Fetch and validate connector instance
         instance = await connector_registry.get_connector_instance(
             connector_id=connector_id,
             user_id=user_id,
@@ -5356,117 +5329,88 @@ async def delete_connector_instance(
         # Check beta connector access
         await check_beta_connector_access(connector_type, request)
 
-        # 3. Check permissions - only creator or admin can delete
+        # 3. Permission check — only creator or admin can delete
         _validate_connector_deletion_permissions(instance, user_id, is_admin, logger)
 
-        logger.info(f"🗑️ Starting deletion of connector instance {connector_id} by user {user_id}")
+        # 4. Guard against duplicate deletion requests
+        if instance.get("status") == "DELETING":
+            raise HTTPException(
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail="Connector deletion is already in progress"
+            )
 
-        # 4. Stop any active sync services for this connector (send appDisabled event)
+        logger.info(f"🗑️ Initiating async deletion of connector {connector_id} by user {user_id}")
+
+        # 5. Mark connector as DELETING in the graph DB so the UI can reflect it
+        await graph_provider.batch_upsert_nodes(
+            [{
+                "id": connector_id,
+                "status": "DELETING",
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }],
+            CollectionNames.APPS.value
+        )
+
+        producer = container.messaging_producer
+
+        # 6. Stop any running sync for this connector
         try:
-            producer = container.messaging_producer
-            disable_payload = {
-                "orgId": org_id,
-                "appGroup": instance.get("appGroup"),
-                "appGroupId": instance.get("appGroupId"),
-                "connectorId": connector_id,
-                "apps": [connector_type.replace(" ", "").lower()],  # Normalize for appDisabled event
-                "scope": instance.get("scope")
-            }
             disable_message = {
                 "eventType": "appDisabled",
-                "payload": disable_payload,
-                "timestamp": get_epoch_timestamp_in_ms()
+                "payload": {
+                    "orgId": org_id,
+                    "appGroup": instance.get("appGroup"),
+                    "appGroupId": instance.get("appGroupId"),
+                    "connectorId": connector_id,
+                    "apps": [connector_type.replace(" ", "").lower()],
+                    "scope": instance.get("scope"),
+                },
+                "timestamp": get_epoch_timestamp_in_ms(),
             }
             await producer.send_message(topic="entity-events", message=disable_message)
             logger.info(f"✅ Sent appDisabled event for connector {connector_id}")
         except Exception as e:
             logger.error(
                 f"❌ Failed to send appDisabled event for connector {connector_id}: {e}. "
-                f"This is critical - sync services may continue running. Manual intervention may be required. "
-                f"Continuing with data deletion..."
-            )
-            # Continue with deletion - data cleanup is more important than event publishing
-            # Manual cleanup of sync services may be needed if this event fails
-
-        # 5. Delete from graph database (returns records for Qdrant cleanup)
-        deletion_result = await graph_provider.delete_connector_instance(
-            connector_id=connector_id,
-            org_id=org_id
-        )
-
-        if not deletion_result.get("success"):
-            error_msg = deletion_result.get("error", "Unknown error occurred during deletion")
-            logger.error(f"Failed to delete connector data: {error_msg}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to delete connector data: {error_msg}"
+                f"Sync services may continue running. Proceeding with deletion event."
             )
 
-        # 6. Publish BULK_DELETE_RECORDS event to Kafka for Qdrant cleanup
-        virtual_record_ids = deletion_result.get("virtual_record_ids", [])
-        if virtual_record_ids:
-            try:
-                bulk_delete_payload = {
-                    "orgId": org_id,
-                    "connectorId": connector_id,
-                    "virtualRecordIds": virtual_record_ids,
-                    "totalRecords": len(virtual_record_ids)
-                }
-                bulk_delete_message = {
-                    "eventType": EventTypes.BULK_DELETE_RECORDS.value,
-                    "payload": bulk_delete_payload,
-                    "timestamp": get_epoch_timestamp_in_ms()
-                }
-
-                # Publish bulk delete event using messaging producer for consistency
-                await producer.send_message(topic="record-events", message=bulk_delete_message)
-                logger.info(f"✅ Published bulk delete event for {len(virtual_record_ids)} records")
-            except Exception as e:
-                logger.error(
-                    f"❌ Failed to publish bulk delete event for connector {connector_id}: {e}. "
-                    f"This is critical - embeddings may persist in Qdrant. Manual cleanup may be required. "
-                    f"Continuing with deletion completion..."
-                )
-                # Continue with deletion - ArangoDB cleanup is complete
-                # Qdrant cleanup can be triggered manually if needed
-
-        # 7. Clean up connector credentials from etcd/config store
-        try:
-            config_service = container.config_service()
-            config_path = _get_config_path_for_instance(connector_id)
-            await config_service.delete_config(config_path)
-            logger.info(f"✅ Deleted config for connector {connector_id}")
-        except Exception as e:
-            logger.error(
-                f"❌ Failed to delete config for connector {connector_id}: {e}. "
-                f"Orphaned configuration may remain in etcd."
-            )
-            # Don't re-raise - config cleanup failure is less critical than data deletion
-
-        logger.info(
-            f"✅ Successfully deleted connector instance {connector_id}. "
-            f"Records: {deletion_result.get('deleted_records_count', 0)}, "
-            f"Embeddings queued for deletion: {len(virtual_record_ids)}"
-        )
-
-        return {
-            "success": True,
-            "message": f"Connector instance {connector_id} deleted successfully",
-            "deletedRecords": deletion_result.get("deleted_records_count", 0),
-            "deletedRecordGroups": deletion_result.get("deleted_record_groups_count", 0),
-            "deletedRoles": deletion_result.get("deleted_roles_count", 0),
-            "deletedGroups": deletion_result.get("deleted_groups_count", 0),
-            "deletedDrives": deletion_result.get("deleted_drives_count", 0),
-            "embeddingsQueuedForDeletion": len(virtual_record_ids)
+        # 7. Publish the async deletion event — consumed by the sync consumer
+        event_type = f"{connector_type.replace(' ', '').lower()}.delete"
+        delete_message = {
+            "eventType": event_type,
+            "payload": {
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "connectorType": connector_type,
+                "appGroup": instance.get("appGroup"),
+                "appGroupId": instance.get("appGroupId"),
+                "scope": instance.get("scope"),
+                "previousIsActive": instance.get("isActive", False),
+                "initiatedBy": user_id,
+            },
+            "timestamp": get_epoch_timestamp_in_ms(),
         }
+        await producer.send_message(topic="sync-events", message=delete_message)
+        logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")
+
+        return JSONResponse(
+            status_code=202,
+            content={
+                "success": True,
+                "message": "Connector deletion initiated",
+                "connectorId": connector_id,
+                "status": "DELETING",
+            },
+        )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Failed to delete connector instance {connector_id}: {e}", exc_info=True)
+        logger.error(f"❌ Failed to initiate deletion for connector {connector_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Failed to delete connector instance. Please try again."
+            detail="Failed to initiate connector deletion. Please try again."
         )
 
 
@@ -5939,8 +5883,7 @@ def _get_oauth_field_names_from_registry(connector_type: str) -> List[str]:
             return ["clientId", "clientSecret"]
 
         # Extract field names from auth_fields
-        field_names = [field.name for field in oauth_config.auth_fields]
-        return field_names
+        return [field.name for field in oauth_config.auth_fields]
     except Exception:
         # Fallback to common OAuth fields if registry lookup fails
         return ["clientId", "clientSecret"]

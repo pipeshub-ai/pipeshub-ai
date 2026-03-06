@@ -148,6 +148,7 @@ app_schema = {
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "status": {"type": ["string", "null"]},
         },
         "required": [
             "name",

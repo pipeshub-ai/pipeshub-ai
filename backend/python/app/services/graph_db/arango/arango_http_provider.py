@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from fastapi import Request
 
 
+import contextlib
+
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
@@ -1504,8 +1506,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 collection, arango_nodes, txn_id=transaction, overwrite=True
             )
 
-            success = result.get("errors", 0) == 0
-            return success
+            return result.get("errors", 0) == 0
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert failed: {str(e)}")
@@ -4141,8 +4142,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if not user_doc:
                 return None
-            user_ = User.from_arango_user(user_doc)
-            return user_
+            return User.from_arango_user(user_doc)
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch user for {connector_id}: {str(e)}")
             return None
@@ -4200,7 +4200,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars = {}
 
             results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
-            return [dept for dept in results] if results else []
+            return list(results) if results else []
         except Exception as e:
             self.logger.error(f"❌ Get departments failed: {str(e)}")
             return []
@@ -4245,10 +4245,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             ref_record = None
             if results:
-                try:
+                with contextlib.suppress(IndexError, StopIteration):
                     ref_record = results[0]
-                except (IndexError, StopIteration):
-                    pass
 
             if not ref_record:
                 self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
@@ -5791,47 +5789,126 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger.debug(f"📊 Found {len(edge_collections)} edge collections from graph")
         return edge_collections
 
-    async def _delete_all_edges_for_nodes(
+    async def _delete_edges_by_connector_id(
         self,
-        transaction: str,
-        node_ids: List[str],
+        transaction: Optional[str],
+        connector_id: str,
         edge_collections: List[str]
     ) -> Tuple[int, List[str]]:
         """
-        Delete all edges where _from or _to matches any of the node_ids.
-        Iterates through each edge collection dynamically.
+        Delete all edges connected to nodes belonging to a connector.
 
         Returns:
             Tuple of (total_deleted_count, list_of_failed_collections)
         """
-        if not node_ids:
-            return (0, [])
-
         total_deleted = 0
         failed_collections = []
 
-        deletion_query = """
+        # Node collections that have connectorId attribute
+        node_collections_with_connector_id = [
+            CollectionNames.RECORDS.value,
+            CollectionNames.RECORD_GROUPS.value,
+            CollectionNames.ROLES.value,
+            CollectionNames.GROUPS.value,
+        ]
+
+        # Query templates for deleting edges by joining with node collections
+        # Using separate queries for _from and _to to better leverage indexes.
+        # Use @node_collection_name (string) in CONCAT - @@ bind vars resolve to collection refs
+        # and cannot be used as expression operands (ArangoDB error 1568).
+        delete_edges_from_query = """
+        FOR node IN @@node_collection
+            FILTER node.connectorId == @connector_id
+            LET node_id = CONCAT(@node_collection_name, '/', node._key)
+            FOR edge IN @@edge_collection
+                FILTER edge._from == node_id
+                REMOVE edge IN @@edge_collection
+                RETURN 1
+        """
+
+        delete_edges_to_query = """
+        FOR node IN @@node_collection
+            FILTER node.connectorId == @connector_id
+            LET node_id = CONCAT(@node_collection_name, '/', node._key)
+            FOR edge IN @@edge_collection
+                FILTER edge._to == node_id
+                REMOVE edge IN @@edge_collection
+                RETURN 1
+        """
+
+        # Special query for apps collection (filter by _key instead of connectorId)
+        delete_edges_from_app_query = """
+        LET app_id = CONCAT('apps/', @connector_id)
         FOR edge IN @@edge_collection
-            FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+            FILTER edge._from == app_id
+            REMOVE edge IN @@edge_collection
+            RETURN 1
+        """
+
+        delete_edges_to_app_query = """
+        LET app_id = CONCAT('apps/', @connector_id)
+        FOR edge IN @@edge_collection
+            FILTER edge._to == app_id
             REMOVE edge IN @@edge_collection
             RETURN 1
         """
 
         for edge_collection in edge_collections:
             try:
+                collection_deleted = 0
+
+                # Delete edges for each node collection with connectorId
+                for node_collection in node_collections_with_connector_id:
+                    # Delete edges where _from matches nodes with connector_id
+                    results = await self.http_client.execute_aql(
+                        query=delete_edges_from_query,
+                        bind_vars={
+                            "@node_collection": node_collection,
+                            "node_collection_name": node_collection,
+                            "@edge_collection": edge_collection,
+                            "connector_id": connector_id
+                        },
+                        txn_id=transaction
+                    )
+                    collection_deleted += len(results or [])
+
+                    # Delete edges where _to matches nodes with connector_id
+                    results = await self.http_client.execute_aql(
+                        query=delete_edges_to_query,
+                        bind_vars={
+                            "@node_collection": node_collection,
+                            "node_collection_name": node_collection,
+                            "@edge_collection": edge_collection,
+                            "connector_id": connector_id
+                        },
+                        txn_id=transaction
+                    )
+                    collection_deleted += len(results or [])
+
+                # Delete edges connected to the app itself
                 results = await self.http_client.execute_aql(
-                    query=deletion_query,
+                    query=delete_edges_from_app_query,
                     bind_vars={
                         "@edge_collection": edge_collection,
-                        "node_ids": node_ids
+                        "connector_id": connector_id
                     },
                     txn_id=transaction
                 )
-                deleted_count = len(results or [])
-                total_deleted += deleted_count
+                collection_deleted += len(results or [])
 
-                if deleted_count > 0:
-                    self.logger.debug(f"🗑️ Deleted {deleted_count} edges from {edge_collection}")
+                results = await self.http_client.execute_aql(
+                    query=delete_edges_to_app_query,
+                    bind_vars={
+                        "@edge_collection": edge_collection,
+                        "connector_id": connector_id
+                    },
+                    txn_id=transaction
+                )
+                collection_deleted += len(results or [])
+
+                total_deleted += collection_deleted
+                if collection_deleted > 0:
+                    self.logger.debug(f"🗑️ Deleted {collection_deleted} edges from {edge_collection}")
 
             except Exception as e:
                 self.logger.error(f"❌ Error deleting edges from {edge_collection}: {str(e)}")
@@ -5841,34 +5918,37 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if failed_collections:
             self.logger.warning(f"⚠️ Failed to delete edges from {len(failed_collections)} collections: {failed_collections}")
         else:
-            self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections")
+            self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections for connector {connector_id}")
 
         return (total_deleted, failed_collections)
 
-    async def _collect_isoftype_targets(self, transaction: str, record_ids: List[str]) -> Tuple[List[Dict], bool]:
+    async def _collect_isoftype_targets(self, transaction: Optional[str], connector_id: str) -> Tuple[List[Dict], bool]:
         """
         Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges.
-        This must be called before _delete_all_edges_for_nodes to ensure we can find the targets.
 
         Returns:
             Tuple of (list_of_targets, success_flag)
         """
-        if not record_ids:
+        if not connector_id:
             return ([], True)
 
         collect_query = """
-        FOR edge IN @@isOfType
-            FILTER edge._from IN @record_ids
-            LET target = PARSE_IDENTIFIER(edge._to)
-            RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
+        FOR record IN @@records
+            FILTER record.connectorId == @connector_id
+            LET record_id = CONCAT('records/', record._key)
+            FOR edge IN @@isOfType
+                FILTER edge._from == record_id
+                LET target = PARSE_IDENTIFIER(edge._to)
+                RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
         """
 
         try:
             results = await self.http_client.execute_aql(
                 query=collect_query,
                 bind_vars={
+                    "@records": CollectionNames.RECORDS.value,
                     "@isOfType": CollectionNames.IS_OF_TYPE.value,
-                    "record_ids": record_ids
+                    "connector_id": connector_id
                 },
                 txn_id=transaction
             )
@@ -5892,24 +5972,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             transaction: The transaction ID
             targets: List of target dicts with keys: collection, key, full_id (from _collect_isoftype_targets)
-            edge_collections: List of edge collection names for cleanup
+            edge_collections: List of edge collection names for cleanup (unused, kept for signature compatibility)
 
         Returns:
             Tuple of (total_deleted_count, list_of_failed_collections)
         """
         if not targets:
             return (0, [])
-
-        # Build list of type node IDs for edge cleanup
-        type_node_ids = [target["full_id"] for target in targets]
-
-        # Delete edges connected to type nodes BEFORE deleting the nodes
-        _, failed_edge_collections = await self._delete_all_edges_for_nodes(transaction, type_node_ids, edge_collections)
-        if failed_edge_collections:
-            raise Exception(
-                f"CRITICAL: Failed to delete edges from isOfType target nodes in {len(failed_edge_collections)} collections: {failed_edge_collections}. "
-                f"Transaction will be rolled back."
-            )
 
         # Group targets by collection
         targets_by_collection: Dict[str, List[str]] = {}
@@ -5953,7 +6022,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
         return (total_deleted, [])
 
-    async def _delete_nodes_by_keys(self, transaction: str, keys: List[str], collection: str, batch_size: int = 1000) -> Tuple[int, int]:
+    async def _delete_nodes_by_keys(self, transaction: str, keys: List[str], collection: str, batch_size: int = 5000) -> Tuple[int, int]:
         """
         Delete documents by their _key values using batching.
 
@@ -6107,7 +6176,39 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Step 3: Get all edge collections from graph definition
             edge_collections = await self._get_all_edge_collections()
 
-            # Step 4: Define all node collections that might have documents to delete
+            # Step 4: Collect isOfType targets BEFORE opening the write transaction.
+            # This is a read-only operation and running it inside a write transaction causes
+            # significant lock contention when processing tens of thousands of nodes.
+            # Uses connectorId directly to avoid passing large lists of record IDs.
+            isoftype_targets, isoftype_collect_success = await self._collect_isoftype_targets(
+                None,
+                connector_id
+            )
+            if not isoftype_collect_success:
+                return {
+                    "success": False,
+                    "error": "Failed to collect isOfType targets. Cannot safely delete type nodes (files, mails, etc.)."
+                }
+
+            # Step 5: Delete edges OUTSIDE the main transaction.
+            # Edge deletion runs non-transactionally to avoid lock contention when processing
+            # tens of thousands of nodes across multiple edge collections. Orphan edges
+            # (edges pointing to deleted nodes) don't break data integrity and can be
+            # cleaned up later if needed. The critical part is deleting nodes atomically.
+            self.logger.info(f"🗑️ Deleting edges for connector {connector_id} (non-transactional)")
+            deleted_edges, failed_edge_collections = await self._delete_edges_by_connector_id(
+                None,  # No transaction - run each query independently
+                connector_id,
+                edge_collections
+            )
+            if failed_edge_collections:
+                # Log warning but continue - partial edge deletion is acceptable
+                self.logger.warning(
+                    f"⚠️ Failed to delete edges from {len(failed_edge_collections)} collections: {failed_edge_collections}. "
+                    f"Continuing with node deletion - orphan edges are acceptable."
+                )
+
+            # Step 6: Define all node collections that might have documents to delete
             node_collections = [
                 CollectionNames.RECORDS.value,
                 CollectionNames.RECORD_GROUPS.value,
@@ -6125,10 +6226,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
             ]
 
-            # Start transaction if not provided
-            # Note: lock_timeout is set to 60 seconds (60000ms).
-            # For very large connector instances with millions of records, this may need to be increased.
-            # Consider implementing a more granular deletion strategy for extremely large datasets if timeouts occur.
+            # Start transaction for node deletions only
+            # Edge collections still included for isOfType target edge deletion
             if transaction is None:
                 transaction = await self.begin_transaction(
                     read=edge_collections + node_collections,
@@ -6137,29 +6236,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 created_transaction = True
 
             try:
-                # Step 5: Collect isOfType targets BEFORE deleting edges
-                # If this fails, we can't properly clean up type nodes, so fail the transaction
-                isoftype_targets, isoftype_collect_success = await self._collect_isoftype_targets(
-                    transaction,
-                    collected["record_ids"]
-                )
-                if not isoftype_collect_success:
-                    raise Exception(
-                        "CRITICAL: Failed to collect isOfType targets. "
-                        "Cannot safely delete type nodes (files, mails, etc.). Transaction will be rolled back."
-                    )
-
-                # Step 6: Delete all edges connected to nodes (CRITICAL - all must succeed)
-                deleted_edges, failed_edge_collections = await self._delete_all_edges_for_nodes(
-                    transaction,
-                    collected["all_node_ids"],
-                    edge_collections
-                )
-                if failed_edge_collections:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete edges from {len(failed_edge_collections)} collections: {failed_edge_collections}. "
-                        f"Transaction will be rolled back to maintain data consistency."
-                    )
 
                 # Step 7: Delete isOfType target nodes (files, mails, etc.)
                 # This method will raise an exception if any failures occur
@@ -8397,7 +8473,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             total_count = count_result[0] if count_result and len(count_result) > 0 else 0
             filter_data = await self.execute_query(filters_query, filters_bind_vars, transaction) or []
 
-            available_permissions = list(set(item["permission"] for item in filter_data if item.get("permission")))
+            available_permissions = list({item["permission"] for item in filter_data if item.get("permission")})
             available_filters = {
                 "permissions": available_permissions,
                 "sortFields": ["name", "createdAtTimestamp", "updatedAtTimestamp", "userRole"],
@@ -9478,7 +9554,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             timestamp = get_epoch_timestamp_in_ms()
 
             # Construct the payload matching the Node.js NewRecordEvent interface
-            payload = {
+            return {
                 "orgId": record_doc.get("orgId"),
                 "recordId": record_id,
                 "recordName": record_doc.get("recordName"),
@@ -9493,7 +9569,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
             }
 
-            return payload
         except Exception as e:
             self.logger.error(f"❌ Failed to create new record event payload: {str(e)}")
             return None
@@ -10559,8 +10634,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 },
                 transaction=transaction,
             )
-            count = results[0] if results else 0
-            return count
+            return results[0] if results else 0
         except Exception as e:
             self.logger.error(f"❌ Failed to count KB owners: {str(e)}")
             return 0
@@ -16135,10 +16209,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             ref_record = None
             if results:
-                try:
+                with contextlib.suppress(IndexError, StopIteration):
                     ref_record = results[0]
-                except (IndexError, StopIteration):
-                    pass
 
             if not ref_record:
                 self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
@@ -16184,10 +16256,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             queued_record = None
             if results:
-                try:
+                with contextlib.suppress(IndexError, StopIteration):
                     queued_record = results[0]
-                except (IndexError, StopIteration):
-                    pass
 
             if queued_record:
                 self.logger.info(
@@ -17679,8 +17749,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Handle None or empty results, and filter out any None values
             if agents:
-                agent_names = list(set(a.get("agentName", "Unknown") for a in agents if a and isinstance(a, dict)))
-                return agent_names
+                return list({a.get("agentName", "Unknown") for a in agents if a and isinstance(a, dict)})
 
             return []
 
@@ -18460,7 +18529,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug(f"Deleted {len(deleted_knowledge_edges)} agent -> knowledge edges")
 
                 # Step 2: Delete all knowledge nodes (AGENT_KNOWLEDGE)
-                knowledge_ids = list(set([edge['_to'] for edge in deleted_knowledge_edges]))
+                knowledge_ids = list({edge['_to'] for edge in deleted_knowledge_edges})
                 if knowledge_ids:
                     delete_knowledge_query = f"""
                     FOR knowledge_id IN @knowledge_ids
@@ -18516,7 +18585,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     self.logger.debug(f"Deleted {len(deleted_tool_edges)} toolset -> tool edges")
 
                     # Step 5: Delete all tool nodes (AGENT_TOOLS)
-                    tool_ids = list(set([edge['_to'] for edge in deleted_tool_edges]))
+                    tool_ids = list({edge['_to'] for edge in deleted_tool_edges})
                     if tool_ids:
                         delete_tools_query = f"""
                         FOR tool_id IN @tool_ids

@@ -109,12 +109,14 @@ export const handleConnectorResponse = (
   operation: string,
   failureMessage: string,
 ) => {
-  if (connectorResponse && connectorResponse.statusCode !== 200) {
+  const statusCode = connectorResponse?.statusCode;
+  const isSuccess = statusCode >= 200 && statusCode < 300;
+  if (connectorResponse && !isSuccess) {
     throw handleBackendError(connectorResponse, operation);
   }
   const connectorsData = connectorResponse.data;
   if (!connectorsData) {
     throw new NotFoundError(`${operation} failed: ${failureMessage}`);
   }
-  res.status(200).json(connectorsData);
+  res.status(statusCode ?? 200).json(connectorsData);
 };
