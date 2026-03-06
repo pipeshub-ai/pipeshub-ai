@@ -17729,27 +17729,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             )
 
-            // Check team permissions on the agent (only if no individual access)
-            LET team_access = LENGTH(individual_access) == 0 ? (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from IN user_teams
-                    FILTER perm._to == agent_path
-                    FILTER perm.type == "TEAM"
-                    LET agent = DOCUMENT(agent_path)
-                    FILTER agent != null
-                    FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
-                        access_type: "TEAM",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
-            ) : []
-
-            // Check org permissions on the agent (only if no individual or team access)
-            LET org_access = LENGTH(individual_access) == 0 && LENGTH(team_access) == 0 && org_key != null ? (
+            // Check org permissions on the agent (only if no individual access)
+            LET org_access = LENGTH(individual_access) == 0 && org_key != null ? (
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
                     FILTER perm._to == agent_path
@@ -17767,11 +17748,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             ) : []
 
-            // Get base agent with permissions
+            // Check team permissions on the agent (only if no individual or org access)
+            LET team_access = LENGTH(individual_access) == 0 && LENGTH(org_access) == 0 ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "TEAM"
+                    LET agent = DOCUMENT(agent_path)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            ) : []
+
+            // Get base agent with permissions (first available access type)
             LET base_agent = LENGTH(individual_access) > 0 ?
                 FIRST(individual_access) :
-                (LENGTH(team_access) > 0 ? FIRST(team_access) :
-                (LENGTH(org_access) > 0 ? FIRST(org_access) : null))
+                (LENGTH(org_access) > 0 ? FIRST(org_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) : null))
 
             // Get linked toolsets with their tools
             LET linked_toolsets = base_agent != null ? (
