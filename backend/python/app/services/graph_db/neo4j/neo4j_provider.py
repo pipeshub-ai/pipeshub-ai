@@ -62,6 +62,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants
 MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
+EDGE_DELETE_BATCH_SIZE = 2000  # Batch size for edge deletion to avoid huge single-query transactions
 
 
 class Neo4jProvider(IGraphDBProvider):
@@ -489,7 +490,37 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:RecordGroup) ON (n.groupType)"
         )
 
+        # ==================== ROLE INDEXES (Connector deletion / scoped queries) ====================
+
+        # SINGLE: connectorId (connector instance deletion, list-by-connector)
+        indexes.append(
+            "CREATE INDEX role_connector_id IF NOT EXISTS "
+            "FOR (n:Role) ON (n.connectorId)"
+        )
+
+        # ==================== GROUP INDEXES (Connector deletion / scoped queries) ====================
+
+        # SINGLE: connectorId (connector instance deletion, list-by-connector)
+        indexes.append(
+            "CREATE INDEX group_connector_id IF NOT EXISTS "
+            "FOR (n:Group) ON (n.connectorId)"
+        )
+
+        # ==================== SYNCPOINT INDEXES (Connector deletion) ====================
+
+        # SINGLE: connectorId (connector instance deletion)
+        indexes.append(
+            "CREATE INDEX syncpoint_connector_id IF NOT EXISTS "
+            "FOR (n:SyncPoint) ON (n.connectorId)"
+        )
+
         # ==================== APP INDEXES (Medium Priority) ====================
+
+        # SINGLE: id (connector lookup for delete, get_document)
+        indexes.append(
+            "CREATE INDEX app_id IF NOT EXISTS "
+            "FOR (n:App) ON (n.id)"
+        )
 
         # SINGLE: orgId (org-scoped queries)
         indexes.append(
@@ -1421,12 +1452,11 @@ class Neo4jProvider(IGraphDBProvider):
             Optional[List[Dict]]: Query results
         """
         try:
-            results = await self.client.execute_query(
+            return await self.client.execute_query(
                 query,
                 parameters=bind_vars or {},
                 txn_id=transaction
             )
-            return results
         except Exception as e:
             self.logger.error(f"❌ Query execution failed: {str(e)}")
             raise
@@ -4882,7 +4912,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         RETURN {
           record_keys: record_ids,
-          record_ids: [id IN record_ids | 'records/' + id],
+          record_ids: record_ids,
           virtual_record_ids: virtual_record_ids,
           record_group_keys: record_group_ids,
           role_keys: role_ids,
@@ -4953,37 +4983,38 @@ class Neo4jProvider(IGraphDBProvider):
         """
 
         try:
-            results = await self.client.execute_query(
-                query,
-                parameters={"node_ids": node_ids},
-                txn_id=transaction
+            total_deleted = 0
+            total_batches = (len(node_ids) + EDGE_DELETE_BATCH_SIZE - 1) // EDGE_DELETE_BATCH_SIZE
+
+            for i in range(0, len(node_ids), EDGE_DELETE_BATCH_SIZE):
+                batch_node_ids = node_ids[i:i + EDGE_DELETE_BATCH_SIZE]
+                results = await self.client.execute_query(
+                    query,
+                    parameters={"node_ids": batch_node_ids},
+                    txn_id=transaction
+                )
+                deleted_in_batch = results[0]["deleted_count"] if results else 0
+                total_deleted += deleted_in_batch
+
+            self.logger.info(
+                f"✅ Deleted {total_deleted} relationships for {len(node_ids)} nodes in {total_batches} batch(es)"
             )
-
-            deleted_count = results[0]["deleted_count"] if results else 0
-
-            self.logger.info(f"✅ Deleted {deleted_count} relationships for {len(node_ids)} nodes")
-
-            return (deleted_count, [])
+            return (total_deleted, [])
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete relationships: {str(e)}")
             return (0, edge_collections)
 
-    async def _collect_isoftype_targets(self, transaction: str, record_ids: List[str]) -> Tuple[List[Dict], bool]:
-        """Collect isOfType target nodes before deleting relationships."""
-        if not record_ids:
+    async def _collect_isoftype_targets(self, transaction: Optional[str], connector_id: str) -> Tuple[List[Dict], bool]:
+        """Collect isOfType target nodes using connectorId directly."""
+        if not connector_id:
             return ([], True)
 
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
 
         query = """
-        UNWIND $record_ids AS record_id_str
-        WITH split(record_id_str, '/') AS parts
-        WHERE size(parts) = 2 AND parts[0] = 'records'
-        WITH parts[1] AS record_id
-
-        MATCH (record:Record {id: record_id})-[:IS_OF_TYPE]->(typeNode)
+        MATCH (record:Record {connectorId: $connector_id})-[:IS_OF_TYPE]->(typeNode)
         WITH DISTINCT typeNode, labels(typeNode) AS nodeLabels
         WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project'])
         RETURN {
@@ -4996,7 +5027,7 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             results = await self.client.execute_query(
                 query,
-                parameters={"record_ids": record_ids},
+                parameters={"connector_id": connector_id},
                 txn_id=transaction
             )
 
@@ -5013,23 +5044,18 @@ class Neo4jProvider(IGraphDBProvider):
     async def _delete_isoftype_targets_from_collected(
         self,
         transaction: str,
-        targets: List[Dict],
-        edge_collections: List[str]
+        targets: List[Dict]
     ) -> Tuple[int, List[str]]:
-        """Delete isOfType target nodes using pre-collected targets."""
+        """Delete isOfType target nodes using pre-collected targets.
+
+        Note: Uses DETACH DELETE which automatically removes all relationships
+        connected to the nodes being deleted, so no separate edge deletion needed.
+        """
         if not targets:
             return (0, [])
 
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
-
-        type_node_ids = [target["full_id"] for target in targets]
-        _, failed_edge_collections = await self._delete_all_edges_for_nodes(transaction, type_node_ids, edge_collections)
-        if failed_edge_collections:
-            raise Exception(
-                f"CRITICAL: Failed to delete edges from isOfType target nodes in {len(failed_edge_collections)} collections: {failed_edge_collections}. "
-                f"Transaction will be rolled back."
-            )
 
         targets_by_collection: Dict[str, List[str]] = {}
         for target in targets:
@@ -5073,7 +5099,7 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str,
         keys: List[str],
         collection: str,
-        batch_size: int = 1000
+        batch_size: int = 5000
     ) -> Tuple[int, int]:
         """Delete documents by their ID values using batching."""
         if not keys:
@@ -5194,8 +5220,8 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Delete a connector instance and all its related data with strict transaction handling.
-        Validates all deletion counts and rolls back on any failure.
+        Delete a connector instance and all its related data with single-transaction atomicity.
+        Collects data first, then deletes within a single transaction for rollback capability.
         """
         created_transaction = False
 
@@ -5213,9 +5239,25 @@ class Neo4jProvider(IGraphDBProvider):
                     "error": f"Connector instance {connector_id} not found"
                 }
 
+            # Phase 1: Collect data needed for return values (outside transaction)
             collected = await self._collect_connector_entities(connector_id, transaction)
             edge_collections = await self._get_all_edge_collections()
 
+            # Collect isOfType targets before opening write transaction
+            isoftype_targets, isoftype_collect_success = await self._collect_isoftype_targets(None, connector_id)
+            if not isoftype_collect_success:
+                return {
+                    "success": False,
+                    "error": "Failed to collect isOfType targets. Cannot safely delete type nodes."
+                }
+
+            self.logger.info(
+                f"📊 Collected for deletion - Records: {len(collected['record_keys'])}, "
+                f"RecordGroups: {len(collected['record_group_keys'])}, Roles: {len(collected['role_keys'])}, "
+                f"Groups: {len(collected['group_keys'])}, TypeNodes: {len(isoftype_targets)}"
+            )
+
+            # Phase 2: Delete within a single transaction
             node_collections = [
                 CollectionNames.RECORDS.value,
                 CollectionNames.RECORD_GROUPS.value,
@@ -5240,142 +5282,72 @@ class Neo4jProvider(IGraphDBProvider):
                 created_transaction = True
 
             try:
-                isoftype_targets, isoftype_collect_success = await self._collect_isoftype_targets(
-                    transaction,
-                    collected["record_ids"]
-                )
-                if not isoftype_collect_success:
-                    raise Exception(
-                        "CRITICAL: Failed to collect isOfType targets. "
-                        "Cannot safely delete type nodes (files, mails, etc.). Transaction will be rolled back."
-                    )
-
-                deleted_edges, failed_edge_collections = await self._delete_all_edges_for_nodes(
-                    transaction,
-                    collected["all_node_ids"],
-                    edge_collections
-                )
-                if failed_edge_collections:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete edges from {len(failed_edge_collections)} collections: {failed_edge_collections}. "
-                        f"Transaction will be rolled back to maintain data consistency."
-                    )
-
+                # Step 1: Delete isOfType target nodes (Files, Mails, Webpages, etc.)
                 deleted_isoftype, _ = await self._delete_isoftype_targets_from_collected(
                     transaction,
-                    isoftype_targets,
-                    edge_collections
+                    isoftype_targets
                 )
 
+                # Step 2: Delete records
                 deleted_records, failed_record_batches = await self._delete_nodes_by_keys(
                     transaction,
                     collected["record_keys"],
                     CollectionNames.RECORDS.value
                 )
-                if len(collected["record_keys"]) > 0:
-                    if deleted_records == 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete any records. Expected {len(collected['record_keys'])} but deleted 0. "
-                            f"Transaction will be rolled back."
-                        )
-                    elif deleted_records < len(collected["record_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_records}/{len(collected['record_keys'])} records. "
-                            f"Transaction will be rolled back to maintain data consistency."
-                        )
-                    if failed_record_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_record_batches} batch(es) of records. "
-                            f"Transaction will be rolled back."
-                        )
+                if len(collected["record_keys"]) > 0 and deleted_records == 0:
+                    raise Exception(
+                        f"CRITICAL: Failed to delete any records. Expected {len(collected['record_keys'])} but deleted 0."
+                    )
 
-                deleted_rg, failed_rg_batches = await self._delete_nodes_by_keys(
+                # Step 3: Delete record groups
+                deleted_rg, _ = await self._delete_nodes_by_keys(
                     transaction,
                     collected["record_group_keys"],
                     CollectionNames.RECORD_GROUPS.value
                 )
-                if len(collected["record_group_keys"]) > 0:
-                    if deleted_rg < len(collected["record_group_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_rg}/{len(collected['record_group_keys'])} record groups. "
-                            f"Transaction will be rolled back."
-                        )
-                    if failed_rg_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_rg_batches} batch(es) of record groups. "
-                            f"Transaction will be rolled back."
-                        )
 
-                deleted_roles, failed_roles_batches = await self._delete_nodes_by_keys(
+                # Step 4: Delete roles
+                deleted_roles, _ = await self._delete_nodes_by_keys(
                     transaction,
                     collected["role_keys"],
                     CollectionNames.ROLES.value
                 )
-                if len(collected["role_keys"]) > 0:
-                    if deleted_roles < len(collected["role_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_roles}/{len(collected['role_keys'])} roles. "
-                            f"Transaction will be rolled back."
-                        )
-                    if failed_roles_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_roles_batches} batch(es) of roles. "
-                            f"Transaction will be rolled back."
-                        )
 
-                deleted_groups, failed_groups_batches = await self._delete_nodes_by_keys(
+                # Step 5: Delete groups
+                deleted_groups, _ = await self._delete_nodes_by_keys(
                     transaction,
                     collected["group_keys"],
                     CollectionNames.GROUPS.value
                 )
-                if len(collected["group_keys"]) > 0:
-                    if deleted_groups < len(collected["group_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_groups}/{len(collected['group_keys'])} groups. "
-                            f"Transaction will be rolled back."
-                        )
-                    if failed_groups_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_groups_batches} batch(es) of groups. "
-                            f"Transaction will be rolled back."
-                        )
 
+                # Step 6: Delete sync points
                 deleted_sync, sync_success = await self._delete_nodes_by_connector_id(
                     transaction,
                     connector_id,
                     CollectionNames.SYNC_POINTS.value
                 )
                 if not sync_success:
-                    raise Exception(
-                        "CRITICAL: Failed to delete sync points. Transaction will be rolled back."
-                    )
+                    raise Exception("CRITICAL: Failed to delete sync points.")
 
-                deleted_app, failed_app_batches = await self._delete_nodes_by_keys(
+                # Step 7: Delete the app itself
+                deleted_app, _ = await self._delete_nodes_by_keys(
                     transaction,
                     [connector_id],
                     CollectionNames.APPS.value
                 )
                 if deleted_app == 0:
                     raise Exception(
-                        f"CRITICAL: Failed to delete the connector app itself. Connector {connector_id} may still exist. "
-                        f"Transaction will be rolled back."
-                    )
-                if failed_app_batches > 0:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete app in {failed_app_batches} batch(es). "
-                        f"Transaction will be rolled back."
+                        f"CRITICAL: Failed to delete the connector app itself. Connector {connector_id} may still exist."
                     )
 
+                # Commit transaction
                 if created_transaction:
                     await self.commit_transaction(transaction)
 
                 self.logger.info(
                     f"✅ Connector instance {connector_id} deleted successfully. "
-                    f"Records: {deleted_records}/{len(collected['record_keys'])}, "
-                    f"RecordGroups: {deleted_rg}/{len(collected['record_group_keys'])}, "
-                    f"Roles: {deleted_roles}/{len(collected['role_keys'])}, "
-                    f"Groups: {deleted_groups}/{len(collected['group_keys'])}, "
-                    f"Edges: {deleted_edges}, "
+                    f"Records: {deleted_records}, RecordGroups: {deleted_rg}, "
+                    f"Roles: {deleted_roles}, Groups: {deleted_groups}, "
                     f"isOfType targets: {deleted_isoftype}"
                 )
 
@@ -9048,7 +9020,7 @@ class Neo4jProvider(IGraphDBProvider):
 
     def _populate_file_destinations(self, folder_analysis: Dict, folder_map: Dict[str, str]) -> None:
         """Update file destinations with resolved folder IDs"""
-        for index, destination in folder_analysis["file_destinations"].items():
+        for destination in folder_analysis["file_destinations"].values():
             if destination["type"] == "folder":
                 hierarchy_path = destination["folder_hierarchy_path"]
                 if hierarchy_path in folder_map:
@@ -9275,7 +9247,7 @@ class Neo4jProvider(IGraphDBProvider):
             timestamp = get_epoch_timestamp_in_ms()
 
             # Construct the payload matching the Node.js NewRecordEvent interface
-            payload = {
+            return {
                 "orgId": record_doc.get("orgId"),
                 "recordId": record_id,
                 "recordName": record_doc.get("recordName"),
@@ -9290,7 +9262,6 @@ class Neo4jProvider(IGraphDBProvider):
                 "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
             }
 
-            return payload
         except Exception:
             self.logger.error(
                 f"❌ Failed to publish NewRecordEvent for record_id: {record_doc.get('_key', 'N/A')}",
@@ -11016,10 +10987,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Get available filters from all records
             available_filters = {
-                "recordTypes": list(set([r.get("recordType") for r in all_records if r.get("recordType")])),
-                "origins": list(set([r.get("origin") for r in all_records if r.get("origin")])),
-                "connectors": list(set([r.get("connectorName") for r in all_records if r.get("connectorName")])),
-                "indexingStatus": list(set([r.get("indexingStatus") for r in all_records if r.get("indexingStatus")]))
+                "recordTypes": list({r.get("recordType") for r in all_records if r.get("recordType")}),
+                "origins": list({r.get("origin") for r in all_records if r.get("origin")}),
+                "connectors": list({r.get("connectorName") for r in all_records if r.get("connectorName")}),
+                "indexingStatus": list({r.get("indexingStatus") for r in all_records if r.get("indexingStatus")})
             }
 
             # Build response
@@ -11232,10 +11203,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Get available filters from all records
             available_filters = {
-                "recordTypes": list(set([r.get("recordType") for r in all_records if r.get("recordType")])),
-                "origins": list(set([r.get("origin") for r in all_records if r.get("origin")])),
-                "connectors": list(set([r.get("connectorName") for r in all_records if r.get("connectorName")])),
-                "indexingStatus": list(set([r.get("indexingStatus") for r in all_records if r.get("indexingStatus")]))
+                "recordTypes": list({r.get("recordType") for r in all_records if r.get("recordType")}),
+                "origins": list({r.get("origin") for r in all_records if r.get("origin")}),
+                "connectors": list({r.get("connectorName") for r in all_records if r.get("connectorName")}),
+                "indexingStatus": list({r.get("indexingStatus") for r in all_records if r.get("indexingStatus")})
             }
 
             # Build response
@@ -11517,8 +11488,7 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters={"from_id": from_id, "relationship_types": relationship_types},
                 txn_id=transaction
             )
-            total = sum(row.get("deleted_count", 0) for row in results) if results else 0
-            return total
+            return sum(row.get("deleted_count", 0) for row in results) if results else 0
         except Exception as e:
             self.logger.error(f"❌ Delete edges by relationship types failed: {str(e)}")
             return 0
@@ -11959,8 +11929,7 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters={"record_id": record_id, "parent_val": parent_val},
                 txn_id=transaction
             )
-            updated = results[0].get("updated", False) if results else False
-            return updated
+            return results[0].get("updated", False) if results else False
         except Exception as e:
             self.logger.error(f"❌ Update record external parent ID failed for {record_id}: {str(e)}")
             raise
@@ -15393,8 +15362,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                agent_names = list(set(r.get("agentName", "Unknown") for r in results if r))
-                return agent_names
+                return list({r.get("agentName", "Unknown") for r in results if r})
 
             return []
 

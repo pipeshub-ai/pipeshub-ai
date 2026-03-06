@@ -343,11 +343,10 @@ class ConnectorRegistry:
         """
         try:
             graph_provider = await self._get_graph_provider()
-            document = await graph_provider.get_document(
+            return await graph_provider.get_document(
                 connector_id,
                 self._collection_name
             )
-            return document
 
         except Exception as e:
             self.logger.debug(
@@ -636,6 +635,7 @@ class ConnectorRegistry:
                 'isAgentActive': instance_data.get('isAgentActive', False),
                 'isConfigured': instance_data.get('isConfigured', False),
                 'isAuthenticated': instance_data.get('isAuthenticated', False),
+                'status': instance_data.get('status'),
                 'createdAtTimestamp': instance_data.get('createdAtTimestamp'),
                 'updatedAtTimestamp': instance_data.get('updatedAtTimestamp'),
                 '_key': instance_data.get('_key') or instance_data.get('id'),
@@ -1199,17 +1199,17 @@ class ConnectorRegistry:
         Returns:
             Dictionary containing lists of available filter values
         """
-        app_groups = list(set(
+        app_groups = list({
             metadata['appGroup']
             for metadata in self._connectors.values()
-        ))
+        })
 
         # Collect all supported auth types from all connectors
         all_auth_types = set()
         for metadata in self._connectors.values():
             supported_types = metadata.get('supportedAuthTypes', [])
             all_auth_types.update(supported_types)
-        auth_types = sorted(list(all_auth_types))
+        auth_types = sorted(all_auth_types)
 
         connector_names = list(self._connectors.keys())
 
