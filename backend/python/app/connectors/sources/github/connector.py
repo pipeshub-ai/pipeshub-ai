@@ -282,7 +282,7 @@ class GithubConnector(BaseConnector):
             }
             file_data = b""
             try:
-                async with httpx.AsyncClient(follow_redirects=True) as client:
+                async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
                     resp = await client.get(record_url, headers=headers)
                     file_data = resp.content
                     self.logger.info(f"Fetched file of size: {len(file_data)} bytes")
@@ -291,7 +291,7 @@ class GithubConnector(BaseConnector):
                     f"HTTP {e.response.status_code} fetching file content from {record_url}"
                 )
             except Exception as e:
-                self.logger.error(f"Error fetching file from {record_url}: {e}")
+                self.logger.error(f"Error fetching file from {record_url}: {str(e)}")
 
             async def stream_markdown(
                 markdown_content, chunk_size=16000
@@ -577,7 +577,7 @@ class GithubConnector(BaseConnector):
                 parent_record_type = RecordType.TICKET
                 issue_type = "sub_issue"
             label_names: List[str] = [label.name for label in issue.labels]
-            assignee_list = []
+            assignee_list: List[str] = []
             if issue.assignees:
                 assignee_list.extend(assignee.login for assignee in issue.assignees)
 
@@ -703,7 +703,7 @@ class GithubConnector(BaseConnector):
         )
         block_groups.extend(comments_bg)
         block_group_number += len(comments_bg)
-        return  BlocksContainer(blocks=blocks, block_groups=block_groups)
+        return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     async def _sync_records_incremental(self) -> None:
         """_summary_
@@ -783,10 +783,13 @@ class GithubConnector(BaseConnector):
         comments_res = self.data_source.list_issue_comments(
             owner=username, repo=repo_name, number=int(issue_number), since=since_dt
         )
-        if not comments_res.success or not comments_res.data:
+        if not comments_res.success :
             self.logger.error(
                 f"Failed to fetch comments for issue {issue_url}: {comments_res.error}"
             )
+            return []
+        if not comments_res.data:
+            self.logger.info(f"No comments found for issue {issue_url}")
             return []
         block_groups: List[BlockGroup] = []
         block_group_number = parent_index + 1
@@ -1119,14 +1122,18 @@ class GithubConnector(BaseConnector):
             try:
                 image_bytes = await self.get_img_bytes(attachment_url)
                 if image_bytes:
-                    # to get image format as in attachment data just an image
-                    img = Image.open(BytesIO(image_bytes))
-                    fmt = img.format.lower() if img.format else "png"
+                    start = image_bytes.lstrip()
+                    if start.startswith(b"<?xml") or start.startswith(b'<svg'):
+                        fmt = "svg+xml"
+                    else:
+                        # to get image format as in attachment data just an image
+                        img = Image.open(BytesIO(image_bytes))
+                        fmt = img.format.lower() if img.format else "png"
                     base64_data = base64.b64encode(image_bytes).decode("utf-8")
                     md_image_data = f"![Image](data:image/{fmt};base64,{base64_data})"
                     markdown_content_clean += f"{md_image_data}"
             except Exception as e:
-                self.logger.error(f"Error embedding image from {attachment_url}: {e}")
+                self.logger.error(f"Error embedding image from {attachment_url}: {str(e)}")
                 continue
         return markdown_content_clean
 
@@ -1275,10 +1282,10 @@ class GithubConnector(BaseConnector):
         self.logger.info(f"Fetching image from URL: {image_url}")
         headers = {
             "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
+            "Accept": "*/*",
         }
         try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
                 resp = await client.get(image_url, headers=headers)
                 resp.raise_for_status()
                 img_data = resp.content
@@ -1290,7 +1297,7 @@ class GithubConnector(BaseConnector):
             )
             return None
         except Exception as e:
-            self.logger.error(f"Error fetching image from {image_url}: {e}")
+            self.logger.error(f"Error fetching image from {image_url}: {str(e)}")
             return None
 
     def _get_iso_time(self) -> str:

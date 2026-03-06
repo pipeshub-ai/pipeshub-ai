@@ -6,6 +6,7 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 
 All operations are non-blocking and use aiohttp for async I/O.
 """
+import contextlib
 import time
 import unicodedata
 import uuid
@@ -4246,7 +4247,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if results:
                 with contextlib.suppress(IndexError, StopIteration):
                     ref_record = results[0]
-
             if not ref_record:
                 self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
