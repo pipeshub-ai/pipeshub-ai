@@ -767,9 +767,14 @@ class WebConnector(BaseConnector):
                     soup = BeautifulSoup(content_bytes, "html.parser")
                     title = self._extract_title(soup, final_url)
 
+                    unwanted = [
+                        "script", "style", "noscript", "iframe",  # Original
+                        "meta", "head", "base", "nav",            # Metadata
+                        "button", "form", "input", "select",      # Interactive
+                    ]
                     # Remove script and style elements
-                    for script in soup(["script", "style", "noscript", "iframe"]):
-                        script.decompose()
+                    for tag in soup(unwanted):
+                        tag.decompose()
 
                     # Get text content
                     text_content = soup.get_text(separator="\n", strip=True)
