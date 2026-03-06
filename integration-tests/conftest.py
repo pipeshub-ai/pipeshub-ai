@@ -1,5 +1,6 @@
 import os
 import sys
+import warnings
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -74,8 +75,9 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
             missing.append(key)
 
     if missing:
-        session.config.warn(  # type: ignore[attr-defined]
-            "PIPESHUB_REMOTE_ENV_MISSING",
+        warnings.warn(
             f"Missing remote integration env vars: {', '.join(sorted(set(missing)))}",
+            UserWarning,
+            stacklevel=2,
         )
 
