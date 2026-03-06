@@ -838,6 +838,28 @@ export default function Collections() {
     }
   };
 
+  const handleRetryIndexingFolder = async (recordId: string) => {
+    if (!currentKB) {
+      setError('No KB id found, please refresh');
+      return;
+    }
+    try {
+      // Folder: depth 100 to include all children
+      const response = await KnowledgeBaseAPI.reindexRecord(recordId, false, 100);
+      if (response.success) {
+        setSuccess('Folder indexing started successfully');
+        await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
+      } else {
+        setError(response.reason || 'Failed to start reindexing folder');
+      }
+      handleMenuClose();
+    } catch (err: any) {
+      console.error('Failed to reindex folder', err);
+      setError(err.response?.data?.reason || err.message || 'Failed to start reindexing folder');
+      handleMenuClose();
+    }
+  };
+
   const handleDownload = async (recordId: string, recordName: string) => {
     try {
       await KnowledgeBaseAPI.handleDownloadDocument(recordId, recordName);
@@ -875,6 +897,19 @@ export default function Collections() {
           },
         ]
         : []),
+        ...(canReindex
+          ? [
+            {
+              key: 'reindex',
+              label: 'Start Indexing',
+              icon: refreshIcon,
+              onClick: () => {
+                handleRetryIndexingFolder(contextItem.id);
+                handleMenuClose();
+              },
+            },
+          ]
+          : []),
       ...(canModify
         ? [
           {
