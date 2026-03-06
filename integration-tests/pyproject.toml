@@ -16,6 +16,10 @@ dependencies = [
   "azure-storage-file-share>=12.13.0",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["helper", "connectors*"]
+
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
