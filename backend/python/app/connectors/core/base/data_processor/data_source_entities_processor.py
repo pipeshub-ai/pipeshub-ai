@@ -791,7 +791,11 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning(f"Record {record_id} not found for status reset")
                 return
 
-            current_status = record.indexing_status
+            # get_record_by_key may return a raw dict (camelCase) or a Record model
+            if isinstance(record, dict):
+                current_status = record.get("indexingStatus")
+            else:
+                current_status = getattr(record, "indexing_status", None)
 
             # Only reset if not already QUEUED or EMPTY
             if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
@@ -826,6 +830,7 @@ class DataSourceEntitiesProcessor:
                         records_to_publish.append(processed_record)
 
             if records_to_publish:
+                record_ids_to_queued = []
                 for record in records_to_publish:
                     # Skip publishing indexing events for records with AUTO_INDEX_OFF status
                     if hasattr(record, 'indexing_status') and record.indexing_status == IndexingStatus.AUTO_INDEX_OFF.value:
@@ -840,6 +845,12 @@ class DataSourceEntitiesProcessor:
                             {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
                             key=record.id
                         )
+                    record_ids_to_queued.append(record.id)
+
+                if record_ids_to_queued:
+                    async with self.data_store_provider.transaction() as tx_store:
+                        for record_id in record_ids_to_queued:
+                            await self._reset_indexing_status_to_queued(record_id, tx_store)
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
             raise e
@@ -856,16 +867,14 @@ class DataSourceEntitiesProcessor:
                 )
                 return
 
-            # Reset indexing status to QUEUED before sending update event
-            current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
-            if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
-                await self._reset_indexing_status_to_queued(record.id, tx_store)
-
             await self.messaging_producer.send_message(
                 "record-events",
                 {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
                 key=record.id
             )
+            current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
+            if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                await self._reset_indexing_status_to_queued(record.id, tx_store)
 
     async def on_record_metadata_update(self, record: Record) -> None:
         async with self.data_store_provider.transaction() as tx_store:
@@ -884,6 +893,7 @@ class DataSourceEntitiesProcessor:
         Publish reindex events for existing records without DB operations.
         Used for reindexing functionality where records already exist in DB.
         This method publishes reindexRecord events to trigger re-indexing in the indexing service.
+        Indexing status is set to QUEUED in a single transaction after all events are published.
 
         Args:
             records: List of properly typed Record instances (FileRecord, MailRecord, etc.)
@@ -893,18 +903,9 @@ class DataSourceEntitiesProcessor:
                 self.logger.info("No records to reindex")
                 return
 
-            # Reset status to QUEUED for all records before reindexing
-            async with self.data_store_provider.transaction() as tx_store:
-                for record in records:
-                    current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
-                    # Only reset if not already QUEUED or EMPTY
-                    if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
-                        await self._reset_indexing_status_to_queued(record.id, tx_store)
-
-            # Now send the reindex events
+            record_ids_to_queued = []
             for record in records:
                 payload = record.to_kafka_record()
-
                 await self.messaging_producer.send_message(
                     "record-events",
                     {
@@ -914,6 +915,14 @@ class DataSourceEntitiesProcessor:
                     },
                     key=record.id
                 )
+                current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
+                if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                    record_ids_to_queued.append(record.id)
+
+            if record_ids_to_queued:
+                async with self.data_store_provider.transaction() as tx_store:
+                    for record_id in record_ids_to_queued:
+                        await self._reset_indexing_status_to_queued(record_id, tx_store)
 
             self.logger.info(f"Published reindex events for {len(records)} records")
         except Exception as e:
