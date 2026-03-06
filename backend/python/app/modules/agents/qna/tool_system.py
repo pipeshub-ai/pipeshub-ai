@@ -40,8 +40,8 @@ FAILURE_THRESHOLD = 3
 def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
     """
     Check if the LLM requires sanitized tool names (dots replaced with underscores).
-    Only Anthropic models require sanitized names due to their tool name format restrictions.
-    Other LLMs (OpenAI, Gemini, etc.) support dots in tool names.
+    OpenAI and Anthropic APIs require tool/function names to match ^[a-zA-Z0-9_-]+$
+    (no dots). Other LLMs may vary.
 
     Args:
         llm: The LLM instance to check (can be None)
@@ -54,13 +54,28 @@ def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
 
     try:
         from langchain_anthropic import ChatAnthropic
-        return isinstance(llm, ChatAnthropic)
+        if isinstance(llm, ChatAnthropic):
+            return True
     except ImportError:
-        # If langchain_anthropic is not available, assume no sanitization needed
-        return False
+        pass
     except Exception:
-        # If any error occurs, default to no sanitization (safer for other LLMs)
-        return False
+        pass
+
+    try:
+        from langchain_openai import ChatOpenAI
+        if isinstance(llm, ChatOpenAI):
+            return True
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Fallback: sanitize if the model class name suggests OpenAI/Anthropic-style API
+    if llm is not None:
+        cls_name = type(llm).__name__
+        if "OpenAI" in cls_name or "Anthropic" in cls_name:
+            return True
+    return False
 
 
 def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel']) -> str:
@@ -509,8 +524,8 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
     This function is used by the ReAct agent to get tools with proper
     schema validation for function calling.
 
-    Tool names are sanitized (dots -> underscores) only for LLMs that require it
-    (e.g., Anthropic). Other LLMs (OpenAI, Gemini, etc.) keep original names with dots.
+    Tool names are sanitized (dots -> underscores) for LLMs whose API requires
+    ^[a-zA-Z0-9_-]+$ (e.g., OpenAI, Anthropic). Other LLMs keep original names when not restricted.
 
     Args:
         state: Chat state containing tool configuration and LLM instance
