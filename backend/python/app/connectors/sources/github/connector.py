@@ -1123,7 +1123,7 @@ class GithubConnector(BaseConnector):
                 image_bytes = await self.get_img_bytes(attachment_url)
                 if image_bytes:
                     start = image_bytes.lstrip()
-                    if start.startswith(b"<?xml") or start.startswith(b'<svg'):
+                    if start.startswith((b"<?xml", b"<svg")):
                         fmt = "svg+xml"
                     else:
                         # to get image format as in attachment data just an image
