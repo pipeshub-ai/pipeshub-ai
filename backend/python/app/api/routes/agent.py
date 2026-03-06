@@ -240,7 +240,8 @@ def _select_agent_graph_for_query(query_info: Dict[str, Any], logger: Logger):
     # - only outlook
     # - outlook + confluence
     use_react = bool(apps) and ("outlook" in apps) and apps.issubset({"outlook", "confluence"})
-
+    use_react = use_react or bool(apps) and ("teams" in apps) and apps.issubset({"teams", "slack"})
+    
     selected = modern_agent_graph if use_react else agent_graph
     logger.info(
         "Agent graph route: %s | apps=%s | tools=%d",

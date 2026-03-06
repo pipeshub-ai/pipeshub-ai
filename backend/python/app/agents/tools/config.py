@@ -118,6 +118,10 @@ class ToolDiscoveryConfig:
             app_name="outlook",
             client_builder="MSGraphClient",
         ),
+        "teams": AppConfiguration(
+            app_name="teams",
+            client_builder="MSGraphClient",
+        ),
         "onedrive": AppConfiguration(
             app_name="onedrive",
             client_builder="MSGraphClient",
