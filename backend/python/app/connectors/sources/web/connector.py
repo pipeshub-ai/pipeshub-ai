@@ -754,10 +754,7 @@ class WebConnector(BaseConnector):
             external_id = final_url
 
             existing_record = await self.data_entities_processor.get_record_by_external_id(connector_id=self.connector_id, external_record_id=external_id)
-            if existing_record:
-                record_id = existing_record.id
-            else:
-                record_id = str(uuid.uuid4())
+            record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
             # Get title and clean content for HTML
             title = self._extract_title_from_url(final_url)
@@ -959,7 +956,7 @@ class WebConnector(BaseConnector):
         try:
             parsed = urlparse(url)
             # Remove fragment and normalize
-            normalized = urlunparse((
+            return urlunparse((
                 parsed.scheme,
                 parsed.netloc.lower(),
                 parsed.path.rstrip('/') or '/',
@@ -967,7 +964,6 @@ class WebConnector(BaseConnector):
                 parsed.query,
                 ''  # Remove fragment
             ))
-            return normalized
         except Exception:
             return url
 
@@ -1641,9 +1637,8 @@ class WebConnector(BaseConnector):
 
             # Serialize and clean data URIs
             cleaned_html = str(soup)
-            cleaned_html = self._clean_data_uris_in_html(cleaned_html)
+            return self._clean_data_uris_in_html(cleaned_html)
 
-            return cleaned_html
 
         except Exception as e:
             self.logger.error(f"⚠️ Failed to parse/clean HTML: {e}")
@@ -1719,7 +1714,7 @@ class WebConnector(BaseConnector):
                     raise HTTPException(
                         status_code=HttpStatusCode.BAD_GATEWAY.value,
                         detail=f"Failed to fetch {url} after {max_retries} retries: {e}",
-                    )
+                    ) from e
 
                 delay = self._calculate_retry_delay(attempt, base_delay, max_delay)
                 self.logger.warning(
