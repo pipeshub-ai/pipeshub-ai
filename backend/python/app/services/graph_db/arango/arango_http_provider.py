@@ -6,6 +6,7 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 
 All operations are non-blocking and use aiohttp for async I/O.
 """
+import contextlib
 import time
 import unicodedata
 import uuid
@@ -1504,8 +1505,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 collection, arango_nodes, txn_id=transaction, overwrite=True
             )
 
-            success = result.get("errors", 0) == 0
-            return success
+            return result.get("errors", 0) == 0
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert failed: {str(e)}")
@@ -2492,7 +2492,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             # Generate conditions for each collection
-            for collection, record_types in collection_to_types.items():
+            for record_types in collection_to_types.items():
                 # Create condition for checking if record type matches any in this group
                 if len(record_types) == 1:
                     type_check = f"record.recordType == @type_{record_types[0].lower()}"
@@ -2652,7 +2652,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             '''
 
             # Build dynamic typeDoc conditions
-            for collection, record_types in collection_to_types.items():
+            for record_types in collection_to_types.items():
                 if len(record_types) == 1:
                     type_check = f"record.recordType == @type_{record_types[0].lower()}"
                     bind_vars[f"type_{record_types[0].lower()}"] = record_types[0]
@@ -4199,7 +4199,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars = {}
 
             results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
-            return [dept for dept in results] if results else []
+            return list(results) if results else []
         except Exception as e:
             self.logger.error(f"❌ Get departments failed: {str(e)}")
             return []
@@ -4244,11 +4244,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             ref_record = None
             if results:
-                try:
+                with contextlib.suppress(IndexError, StopIteration):
                     ref_record = results[0]
-                except (IndexError, StopIteration):
-                    pass
-
             if not ref_record:
                 self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
@@ -8396,7 +8393,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             total_count = count_result[0] if count_result and len(count_result) > 0 else 0
             filter_data = await self.execute_query(filters_query, filters_bind_vars, transaction) or []
 
-            available_permissions = list(set(item["permission"] for item in filter_data if item.get("permission")))
+            available_permissions = list({item["permission"] for item in filter_data if item.get("permission")})
             available_filters = {
                 "permissions": available_permissions,
                 "sortFields": ["name", "createdAtTimestamp", "updatedAtTimestamp", "userRole"],
@@ -9477,7 +9474,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             timestamp = get_epoch_timestamp_in_ms()
 
             # Construct the payload matching the Node.js NewRecordEvent interface
-            payload = {
+            return {
                 "orgId": record_doc.get("orgId"),
                 "recordId": record_id,
                 "recordName": record_doc.get("recordName"),
@@ -9492,7 +9489,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
             }
 
-            return payload
         except Exception as e:
             self.logger.error(f"❌ Failed to create new record event payload: {str(e)}")
             return None
@@ -10494,9 +10490,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     return {"success": False, "reason": "Knowledge base not found", "code": 404}
             users_to_insert = result.get("users_to_insert", [])
             teams_to_insert = result.get("teams_to_insert", [])
-            insert_docs = []
-            for u in users_to_insert:
-                insert_docs.append({
+            insert_docs = [
+                {
                     "from_id": u["user_key"],
                     "from_collection": CollectionNames.USERS.value,
                     "to_id": kb_id,
@@ -10507,9 +10502,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                     "lastUpdatedTimestampAtSource": timestamp,
-                })
-            for t in teams_to_insert:
-                insert_docs.append({
+                }
+                for u in users_to_insert
+            ]
+            insert_docs.extend(
+                {
                     "from_id": t["team_key"],
                     "from_collection": CollectionNames.TEAMS.value,
                     "to_id": kb_id,
@@ -10519,7 +10516,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                     "lastUpdatedTimestampAtSource": timestamp,
-                })
+                }
+                for t in teams_to_insert
+            )
             if insert_docs:
                 await self.batch_create_edges(insert_docs, CollectionNames.PERMISSION.value)
             granted_count = len(users_to_insert) + len(teams_to_insert)
@@ -10558,8 +10557,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 },
                 transaction=transaction,
             )
-            count = results[0] if results else 0
-            return count
+            return results[0] if results else 0
+
         except Exception as e:
             self.logger.error(f"❌ Failed to count KB owners: {str(e)}")
             return 0
@@ -11727,11 +11726,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # Delete type-specific documents (files, mails, etc.)
         for collection in type_collections:
-            try:
+            # Collection might not have this document
+            with contextlib.suppress(Exception):
                 await self.delete_nodes([record_key], collection, transaction)
-            except Exception:
-                pass  # Collection might not have this document
-
         # Delete main record
         await self.delete_nodes([record_key], CollectionNames.RECORDS.value, transaction)
 
@@ -16136,10 +16133,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             ref_record = None
             if results:
-                try:
+                with contextlib.suppress(IndexError, StopIteration):
                     ref_record = results[0]
-                except (IndexError, StopIteration):
-                    pass
 
             if not ref_record:
                 self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
@@ -16185,10 +16180,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             queued_record = None
             if results:
-                try:
+                with contextlib.suppress(IndexError, StopIteration):
                     queued_record = results[0]
-                except (IndexError, StopIteration):
-                    pass
 
             if queued_record:
                 self.logger.info(
@@ -17676,8 +17669,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Handle None or empty results, and filter out any None values
             if agents:
-                agent_names = list(set(a.get("agentName", "Unknown") for a in agents if a and isinstance(a, dict)))
-                return agent_names
+                return list({a.get("agentName", "Unknown") for a in agents if a and isinstance(a, dict)})
 
             return []
 
@@ -18428,7 +18420,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug(f"Deleted {len(deleted_knowledge_edges)} agent -> knowledge edges")
 
                 # Step 2: Delete all knowledge nodes (AGENT_KNOWLEDGE)
-                knowledge_ids = list(set([edge['_to'] for edge in deleted_knowledge_edges]))
+                knowledge_ids = list({edge['_to'] for edge in deleted_knowledge_edges})
                 if knowledge_ids:
                     delete_knowledge_query = f"""
                     FOR knowledge_id IN @knowledge_ids
@@ -18484,7 +18476,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     self.logger.debug(f"Deleted {len(deleted_tool_edges)} toolset -> tool edges")
 
                     # Step 5: Delete all tool nodes (AGENT_TOOLS)
-                    tool_ids = list(set([edge['_to'] for edge in deleted_tool_edges]))
+                    tool_ids = list({[edge['_to'] for edge in deleted_tool_edges]})
                     if tool_ids:
                         delete_tools_query = f"""
                         FOR tool_id IN @tool_ids

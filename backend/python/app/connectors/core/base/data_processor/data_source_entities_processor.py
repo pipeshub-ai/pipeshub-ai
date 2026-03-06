@@ -1335,8 +1335,7 @@ class DataSourceEntitiesProcessor:
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
         async with self.data_store_provider.transaction() as tx_store:
-            record = await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
-            return record
+            return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
 
     async def on_user_group_member_removed(
         self,
@@ -1565,9 +1564,9 @@ class DataSourceEntitiesProcessor:
         """
         # If no transaction provided, create one and recursively call with it
         if tx_store is None:
-            async with self.data_store_provider.transaction() as tx_store:
+            async with self.data_store_provider.transaction() as new_tx_store:
                 return await self.migrate_group_permissions_to_user(
-                    group_id, user_email, connector_id, tx_store
+                    group_id, user_email, connector_id, new_tx_store
                 )
 
         # Get the user object
