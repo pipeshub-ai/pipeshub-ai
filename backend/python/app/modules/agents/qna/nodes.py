@@ -6553,7 +6553,7 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
         tool_name = serialized.get("name", kwargs.get("name", "unknown"))
         self._tool_names[str(run_id)] = tool_name
         status_msg = _get_tool_status_message(tool_name)
-        self.log.debug(f"Streaming tool start: {tool_name} -> {status_msg}")
+        self.log.info(f"Streaming tool start: {tool_name} -> {status_msg}")
         self._write_event({
             "event": "status",
             "data": {"status": "executing", "message": status_msg}
@@ -6563,7 +6563,7 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
         tool_name = self._tool_names.pop(str(run_id), kwargs.get("name", "unknown"))
         tool_status = _detect_tool_result_status(output)
         result_preview = str(output)[:MAX_TOOL_RESULT_PREVIEW_LENGTH]
-        self.log.debug(f"Streaming tool end: {tool_name} -> {tool_status}")
+        self.log.info(f"Streaming tool end: {tool_name} -> {tool_status}")
 
         if tool_status == "error":
             action_readable = tool_name.split(".", 1)[-1].replace("_", " ")
@@ -6587,7 +6587,7 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
     async def on_tool_error(self, error, *, run_id, **kwargs) -> None:
         tool_name = self._tool_names.pop(str(run_id), kwargs.get("name", "unknown"))
         error_msg = str(error)[:200]
-        self.log.debug(f"Streaming tool error: {tool_name} -> {error_msg}")
+        self.log.info(f"Streaming tool error: {tool_name} -> {error_msg}")
         self._write_event({
             "event": "status",
             "data": {
@@ -6635,7 +6635,7 @@ async def react_agent_node(
 
         # Stream tool count info
         tool_names_for_log = [getattr(t, 'name', str(t)) for t in tools[:5]]
-        log.debug(f"Available tools: {tool_names_for_log}{'...' if len(tools) > 5 else ''}")
+        log.info(f"Available tools: {tool_names_for_log}{'...' if len(tools) > 5 else ''}")
 
         # Build system prompt
         system_prompt = _build_react_system_prompt(state, log)
@@ -6866,42 +6866,77 @@ def _build_workflow_patterns(state: ChatState) -> str:
     if has_outlook and has_confluence:
         patterns.append("""### Cross-Service Pattern: Recurring Meetings + Holiday Exclusions
 
-When user asks to extend recurring meetings and skip holidays/weekends:
+When user asks to extend/create recurring meetings and skip holidays/weekends:
 
-**Step 1 — Find recurring events ending soon:**
-Use `outlook.get_recurring_events_ending` with `end_before` set to the target date.
-Extract the `seriesMasterId` (or `id` if type is `seriesMaster`) from each result.
+**Step 1 — Find or create the recurring event:**
+- For EXTEND: Use `outlook.get_recurring_events_ending` or `outlook.search_calendar_events_in_range`
+  to find the event. Extract the `seriesMasterId` (or `id` if type is `seriesMaster`).
+  Check conversation history first — if the event was recently displayed, use that data directly.
+- For CREATE: Use `outlook.create_calendar_event` with the recurrence pattern.
 
-**Step 2 — Get holiday information from Confluence:**
-Use `confluence.search_content(query="holidays 2026")` to find holiday pages.
-Then use `confluence.get_page_content(page_id=...)` to read the full page content.
-
-**Step 3 — Parse holidays from the page content:**
-Extract specific dates (YYYY-MM-DD format) from the Confluence page text/HTML.
-Look for date patterns, tables, or lists of holidays.
-
-**Step 4 — Compute ALL exclusion dates:**
-Combine:
-  a) Holiday dates extracted from Confluence
-  b) ALL Saturdays in the extension period (compute programmatically)
-  c) ALL Sundays in the extension period (compute programmatically)
-Create a single merged list of YYYY-MM-DD strings.
-
-**Step 5 — Update recurrence end date:**
-For each recurring event, call:
+**Step 2 — Update recurrence end date (extend only):**
 `outlook.update_calendar_event(event_id=<seriesMasterId>, recurrence={pattern: <keep_existing>, range: {type: "endDate", startDate: "<original_start>", endDate: "<new_end_date>"}})`
+Preserve the EXISTING pattern — only change `range.endDate`.
+After updating, verify: re-fetch the event and confirm the end date changed.
+
+**Step 3 — Get holiday information from Confluence:**
+Use `confluence.search_content(query="Holidays <year>")` to find holiday pages.
+If no results, try: "Company holidays <year>", "Holiday calendar <year>", "holidays", "holiday calendar".
+When found, use `confluence.get_page_content(page_id=...)` to read the FULL page content.
+
+**Step 4 — Parse holiday dates from page content (USE THE TOOL):**
+Call `date_calculator.parse_holiday_dates(text=<raw_page_content>, year=<year>)`
+This extracts ALL dates from the page deterministically. Do NOT parse dates manually.
+The tool returns a clean list of YYYY-MM-DD strings.
+
+**Step 5 — Compute ALL exclusion dates (USE THE TOOL):**
+Call `date_calculator.get_exclusion_dates(
+    start_date=<today or day after old end date>,
+    end_date=<series end date>,
+    holiday_dates=<list from Step 4>
+)`
+This returns the COMPLETE deduplicated list of weekends + holidays. Do NOT compute dates manually.
+The tool returns `exclusion_dates` (the list) and `breakdown` (counts for the summary).
 
 **Step 6 — Delete excluded occurrences:**
 For each event, call:
-`outlook.delete_recurring_event_occurrence(event_id=<seriesMasterId>, occurrence_dates=[<all_exclusion_dates>], timezone=<user_timezone>)`
-Batch ALL exclusion dates into ONE call per event.
+`outlook.delete_recurring_event_occurrence(
+    event_id=<seriesMasterId>,
+    occurrence_dates=<exclusion_dates from Step 5>,
+    timezone=<user_timezone>
+)`
+Pass the ENTIRE `exclusion_dates` list from Step 5 directly. ONE call per event.
 
-**IMPORTANT:**
-- The `seriesMasterId` is the ID you need for update/delete operations on recurring events.
-- Weekends: enumerate all Saturdays and Sundays between the current end date and the new end date.
-- Holidays: extract from Confluence page content as YYYY-MM-DD strings.
+**CRITICAL RULES:**
+- ALWAYS use `date_calculator.parse_holiday_dates` for extracting dates from Confluence pages.
+- ALWAYS use `date_calculator.get_exclusion_dates` for computing the exclusion list.
+- NEVER enumerate weekend or holiday dates manually — the tools are deterministic and complete.
+- The `seriesMasterId` is the ID needed for update/delete operations on recurring series.
 - Always use the user's timezone for the `timezone` parameter.
-- Do NOT ask the user for event IDs — resolve them from search results.
+- Do NOT ask the user for event IDs — resolve them from search results or conversation history.
+""")
+
+    if has_outlook:
+        patterns.append("""### Pattern: Extend a Recurring Event
+
+1. Find the event: check conversation history first, or use
+   `outlook.get_recurring_events_ending(end_before="...", timezone="...")` or
+   `outlook.search_calendar_events_in_range(keyword="event name", ...)`
+2. Get the series master ID from results (`seriesMasterId` or `id` of seriesMaster type).
+3. Get the current recurrence pattern from the event result.
+4. Update recurrence end date:
+   `outlook.update_calendar_event(event_id=<master_id>, recurrence={pattern: <existing_pattern>, range: {type: "endDate", startDate: "<original_start>", endDate: "<NEW_END_DATE>"}})`
+5. Preserve the EXISTING pattern — only change the range endDate.
+6. Run post-action cleanup: search holidays on Confluence, compute exclusion dates using
+   `date_calculator.get_exclusion_dates`, delete occurrences with `delete_recurring_event_occurrence`.
+
+### Pattern: Create a Recurring Event + Cleanup
+
+1. Create the event with `outlook.create_calendar_event` including the recurrence pattern.
+2. Search Confluence for company holidays.
+3. Parse holidays: `date_calculator.parse_holiday_dates(text=<page_content>, year=<year>)`
+4. Compute exclusions: `date_calculator.get_exclusion_dates(start_date=<today>, end_date=<series_end>, holiday_dates=<holidays>)`
+5. Delete occurrences: `outlook.delete_recurring_event_occurrence(event_id=<id>, occurrence_dates=<exclusion_dates>)`
 """)
 
     if has_teams and has_slack:
@@ -6941,18 +6976,6 @@ For multiple meetings, either send one message per meeting or one combined messa
 
 **Step 6 — Confirm:**
 Brief report: which meetings summarized, where sent, any without transcripts.
-""")
-
-
-    if has_outlook:
-        patterns.append("""### Pattern: Extend a Recurring Event
-
-1. Find the event: `outlook.get_recurring_events_ending(end_before="...", timezone="...")` or
-   `outlook.search_calendar_events_in_range(keyword="event name", start_datetime="...", end_datetime="...")`
-2. Get the series master ID from results (the `seriesMasterId` field or `id` of a seriesMaster type event).
-3. Get the current recurrence pattern from the event result (pattern type, daysOfWeek, interval, etc.).
-4. Update recurrence end date: `outlook.update_calendar_event(event_id=<master_id>, recurrence={pattern: <existing_pattern>, range: {type: "endDate", startDate: "<original_start_date>", endDate: "<NEW_END_DATE>"}})`
-5. Preserve the EXISTING pattern — only change the range endDate.
 """)
 
     if not patterns:

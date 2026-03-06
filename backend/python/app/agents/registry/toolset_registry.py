@@ -376,6 +376,7 @@ class ToolsetRegistry:
             # Internal toolsets (always available, no auth)
             'app.agents.actions.retrieval.retrieval',
             'app.agents.actions.calculator.calculator',
+            'app.agents.actions.calculator.date_calculator',
             # Google toolsets
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',

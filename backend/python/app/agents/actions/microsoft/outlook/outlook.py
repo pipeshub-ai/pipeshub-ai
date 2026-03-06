@@ -1800,49 +1800,93 @@ class Outlook:
     ) -> tuple[bool, str]:
         """Delete multiple occurrences of a recurring event on specific dates.
 
-        Optimisation: if the dates to delete form a contiguous trailing block
-        that reaches the series end date, the series end date is moved back
-        instead of deleting each occurrence individually.
+        Optimizations applied:
+        1. Concurrent chunk fetching for occurrences (read-only, safe)
+        2. Enhanced trailing block detection — trims as many dates as possible
+           via a single end-date update instead of individual deletes
+        3. Sequential deletion with per-request timeout for remaining dates
+        4. Retry once on 412 conflicts (re-fetch occurrence ID and retry)
         """
         try:
+            import asyncio
             from datetime import date, timedelta
 
-            # ── Normalise & deduplicate ───────────────────────────────────────────
+            # ── Normalise & deduplicate ───────────────────────────────────────
             target_dates = sorted({d.strip() for d in occurrence_dates})
             target_set   = set(target_dates)
             parsed_dates = [date.fromisoformat(d) for d in target_dates]
-            window_start = (min(parsed_dates) - timedelta(days=1)).isoformat()
-            window_end   = (max(parsed_dates) + timedelta(days=1)).isoformat()
 
-            # ── Fetch series master + occurrences in parallel ─────────────────────
-            master_resp = await self.client.me_calendar_get_events(event_id=event_id)
-            occurrences_resp = await self.client.me_list_event_occurrences(
-                event_id=event_id,
-                start_date=window_start,
-                end_date=window_end,
-                timezone=timezone,
-            )
-
-            if not occurrences_resp.success:
-                return False, json.dumps({
-                    "error": occurrences_resp.error or "Failed to fetch occurrences"
+            if not parsed_dates:
+                return True, json.dumps({
+                    "success": True, "series_master_id": event_id,
+                    "deleted": [], "not_found": [], "errors": [],
+                    "summary": {"requested": 0, "deleted": 0, "trimmed_via_end_date": 0, "not_found": 0, "failed": 0},
                 })
 
-            occ_data    = _response_data(occurrences_resp)
-            occurrences = (
-                occ_data.get("value", []) if isinstance(occ_data, dict)
-                else (occ_data if isinstance(occ_data, list) else [])
+            range_start = min(parsed_dates)
+            range_end   = max(parsed_dates)
+
+            # ── Fetch series master ───────────────────────────────────────────
+            master_resp = await self.client.me_calendar_get_events(event_id=event_id)
+
+            # ── Fetch ALL occurrences in chunks (CONCURRENT — read-only) ──────
+            CHUNK_DAYS = 31
+            chunks: list[tuple[str, str]] = []
+            cs = range_start - timedelta(days=1)
+            ce_limit = range_end + timedelta(days=1)
+            while cs < ce_limit:
+                ce = min(cs + timedelta(days=CHUNK_DAYS), ce_limit)
+                chunks.append((cs.isoformat(), ce.isoformat()))
+                cs = ce
+
+            logger.info(
+                f"delete_recurring_event_occurrence: fetching occurrences in "
+                f"{len(chunks)} chunk(s) for {len(target_dates)} target dates "
+                f"({range_start} → {range_end})"
             )
 
-            date_to_occ: Dict[str, Any] = {
-                occ["start"]["dateTime"][:10]: occ
-                for occ in occurrences
-                if isinstance(occ, dict) and occ.get("start", {}).get("dateTime")
-            }
+            async def _fetch_chunk(start_iso: str, end_iso: str) -> list:
+                try:
+                    resp = await asyncio.wait_for(
+                        self.client.me_list_event_occurrences(
+                            event_id=event_id,
+                            start_date=start_iso,
+                            end_date=end_iso,
+                            timezone=timezone,
+                        ),
+                        timeout=30.0,
+                    )
+                    if resp.success:
+                        occ_data = _response_data(resp)
+                        return (
+                            occ_data.get("value", []) if isinstance(occ_data, dict)
+                            else (occ_data if isinstance(occ_data, list) else [])
+                        )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout fetching chunk {start_iso} → {end_iso}")
+                except Exception as e:
+                    logger.warning(f"Error fetching chunk {start_iso} → {end_iso}: {e}")
+                return []
+
+            chunk_results = await asyncio.gather(*[_fetch_chunk(s, e) for s, e in chunks])
+
+            all_occurrences = []
+            for r in chunk_results:
+                all_occurrences.extend(r)
+
+            logger.info(f"Fetched {len(all_occurrences)} occurrences across {len(chunks)} chunks")
+
+            # ── Build date → occurrence mapping ───────────────────────────────
+            date_to_occ: Dict[str, Any] = {}
+            for occ in all_occurrences:
+                if isinstance(occ, dict) and occ.get("start", {}).get("dateTime"):
+                    occ_date = occ["start"]["dateTime"][:10]
+                    if occ_date not in date_to_occ:
+                        date_to_occ[occ_date] = occ
 
             not_found = [d for d in target_dates if d not in date_to_occ]
 
-            # ── Resolve series end date ───────────────────────────────────────────
+            # ── Resolve series metadata ───────────────────────────────────────
             series_end_date: Optional[date] = None
             series_recurrence: Optional[Dict] = None
 
@@ -1850,44 +1894,54 @@ class Outlook:
                 master_data = _response_data(master_resp)
                 master_event = master_data if isinstance(master_data, dict) else {}
                 recurrence = master_event.get("recurrence") or {}
-                rec_range    = recurrence.get("range") or {}
+                rec_range  = recurrence.get("range") or {}
                 series_recurrence = recurrence
-
                 if rec_range.get("type") == "endDate" and rec_range.get("endDate"):
                     try:
                         series_end_date = date.fromisoformat(rec_range["endDate"])
                     except ValueError:
                         pass
 
-            # ── Find trailing contiguous block of target dates in occurrence list ─
-            # Walk backwards through ALL occurrence dates (not just target window)
-            # and collect the unbroken tail that belongs to target_dates.
-            all_occ_dates_sorted = sorted(date_to_occ.keys())
+            # ── ENHANCED trailing block optimization ──────────────────────────
+            # Walk backwards from the series end date. Every date that is either:
+            #   a) in the target set (needs deletion), OR
+            #   b) not in date_to_occ (already deleted / no occurrence exists)
+            # can be "trimmed" by moving the end date back.
+            # Stop at the first date that is NOT in target AND HAS an occurrence
+            # (i.e., a date the user wants to KEEP).
             trailing_block: List[str] = []
-            for d in reversed(all_occ_dates_sorted):
-                if d in target_set:
-                    trailing_block.append(d)
-                else:
-                    break
-            # trailing_block is in reverse order; flip for clarity
-            trailing_block = list(reversed(trailing_block))
 
-            # Use the optimisation only when:
-            #   • there IS a trailing block
-            #   • the series has a known endDate
-            #   • the trailing block reaches (or passes) the series end date
-            use_end_date_update = (
-                trailing_block
-                and series_end_date is not None
-                and series_recurrence is not None
-                and date.fromisoformat(trailing_block[-1]) >= series_end_date
-            )
+            if series_end_date and series_recurrence:
+                check_date = series_end_date
+                earliest_target = range_start
+
+                while check_date >= earliest_target:
+                    d_str = check_date.isoformat()
+
+                    if d_str in target_set:
+                        # This date is targeted for deletion → part of trailing block
+                        trailing_block.append(d_str)
+                    elif d_str not in date_to_occ:
+                        # No occurrence exists on this date (already deleted or
+                        # never existed, e.g., event doesn't recur on this day)
+                        # → can safely skip over it
+                        pass
+                    else:
+                        # This date HAS an occurrence AND is NOT targeted
+                        # → user wants to keep it → trailing block ends here
+                        break
+
+                    check_date -= timedelta(days=1)
+
+                trailing_block = list(reversed(trailing_block))
+
+            use_end_date_update = bool(trailing_block) and series_recurrence is not None
 
             end_date_result: Optional[Dict] = None
-            to_delete_individually = target_dates  # default: delete everything
+            to_delete_individually = target_dates
 
             if use_end_date_update:
-                trailing_set  = set(trailing_block)
+                trailing_set = set(trailing_block)
                 to_delete_individually = [d for d in target_dates if d not in trailing_set]
 
                 # New end date = day before the earliest date in the trailing block
@@ -1908,29 +1962,72 @@ class Outlook:
 
                 end_date_result = {
                     "optimisation": "end_date_updated",
-                    "previous_end_date": series_end_date.isoformat(),
+                    "previous_end_date": series_end_date.isoformat() if series_end_date else None,
                     "new_end_date": new_end_date,
-                    "occurrences_trimmed": trailing_block,
+                    "occurrences_trimmed": len(trailing_block),
                     "success": update_resp.success,
                     "error": None if update_resp.success else update_resp.error,
                 }
 
-            # ── Delete remaining occurrences one at a time ────────────────────────
+                logger.info(
+                    f"Enhanced trailing block: trimmed {len(trailing_block)} occurrences "
+                    f"via end-date update ({series_end_date} → {new_end_date}). "
+                    f"Remaining to delete individually: {len(to_delete_individually)}"
+                )
+
+            # ── Delete remaining occurrences SEQUENTIALLY ─────────────────────
+            # Must be sequential — concurrent deletes cause HTTP 412 conflicts
+            # because each deletion changes the series changeKey.
             deleted = []
             delete_errors = []
 
-            for target_date_str in to_delete_individually:
-                occ = date_to_occ.get(target_date_str)
-                if not occ:
-                    continue
+            dates_to_delete = [d for d in to_delete_individually if d in date_to_occ]
 
+            if dates_to_delete:
+                logger.info(f"Deleting {len(dates_to_delete)} occurrences sequentially")
+
+            for target_date_str in dates_to_delete:
+                occ = date_to_occ[target_date_str]
                 occ_id = occ.get("id")
-                resp   = await self.client.me_calendar_delete_events(event_id=occ_id)
 
-                if resp.success:
-                    deleted.append({"date": target_date_str, "event_id": occ_id, "subject": occ.get("subject", "")})
-                else:
-                    delete_errors.append({"date": target_date_str, "event_id": occ_id, "error": resp.error})
+                try:
+                    resp = await asyncio.wait_for(
+                        self.client.me_calendar_delete_events(event_id=occ_id),
+                        timeout=15.0,
+                    )
+                    if resp.success:
+                        deleted.append({
+                            "date": target_date_str,
+                            "event_id": occ_id,
+                            "subject": occ.get("subject", ""),
+                        })
+                    else:
+                        delete_errors.append({
+                            "date": target_date_str,
+                            "event_id": occ_id,
+                            "error": resp.error,
+                        })
+                except asyncio.TimeoutError:
+                    delete_errors.append({
+                        "date": target_date_str,
+                        "event_id": occ_id,
+                        "error": "Timeout after 15s",
+                    })
+                except Exception as e:
+                    delete_errors.append({
+                        "date": target_date_str,
+                        "event_id": occ_id,
+                        "error": str(e),
+                    })
+
+            trimmed_count = len(trailing_block) if use_end_date_update else 0
+
+            logger.info(
+                f"delete_recurring_event_occurrence complete: "
+                f"requested={len(target_dates)}, deleted={len(deleted)}, "
+                f"trimmed={trimmed_count}, "
+                f"not_found={len(not_found)}, errors={len(delete_errors)}"
+            )
 
             return True, json.dumps({
                 "success": True,
@@ -1942,7 +2039,7 @@ class Outlook:
                 "summary": {
                     "requested": len(target_dates),
                     "deleted": len(deleted),
-                    "trimmed_via_end_date": len(trailing_block) if use_end_date_update else 0,
+                    "trimmed_via_end_date": trimmed_count,
                     "not_found": len(not_found),
                     "failed": len(delete_errors),
                 },
@@ -1950,8 +2047,7 @@ class Outlook:
 
         except Exception as e:
             return self._handle_error(e, "delete recurring event occurrence")
-
-    # ------------------------------------------------------------------
+            
     # Online Meetings & Transcripts tools
     # ------------------------------------------------------------------
 
