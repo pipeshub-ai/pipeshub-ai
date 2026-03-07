@@ -56,14 +56,13 @@ import { checkAndMigrateIfNeeded } from './libs/keyValueStore/migration/kvStoreM
 import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
-import {
-  createOAuthProviderRouter,
-  createOAuthClientsRouter,
-  createOIDCDiscoveryRouter,
-} from './modules/oauth_provider/routes';
+import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
+import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
+import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
+import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 
 const loggerConfig = {
   service: 'Application',
@@ -457,8 +456,15 @@ export class Application {
       createOAuthClientsRouter(this.oauthProviderContainer),
     );
 
-    // OIDC Discovery routes - mounted at root level per RFC 8414
+    // MCP (Model Context Protocol) routes
+    this.app.use(
+      '/mcp',
+      createMCPRouter(this.oauthProviderContainer),
+    );
+
+    // OIDC Discovery routes - mounted at root level per RFC 8414 & RFC 9728
     // Exposes: GET /.well-known/openid-configuration
+    //          GET /.well-known/oauth-protected-resource
     //          GET /.well-known/jwks.json
     this.app.use(
       '/.well-known',

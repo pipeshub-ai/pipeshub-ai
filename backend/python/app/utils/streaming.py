@@ -1461,6 +1461,10 @@ async def call_aiter_llm_stream(
                 # Only process if we have new content beyond what we've already emitted
                 if len(safe_answer) <= state.emit_upto:
                     # Nothing safe to emit yet, wait for more content
+                    yield {
+                        "event": "metadata",
+                        "data": {},
+                    }
                     continue
 
                 state.emit_upto = len(safe_answer)

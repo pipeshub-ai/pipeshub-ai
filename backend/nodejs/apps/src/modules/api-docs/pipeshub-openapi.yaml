@@ -31,6 +31,12 @@ servers:
       instance_url:
         default: https://app.pipeshub.com
         description: Base server URL (without /api/v1)
+  - url: "{instance_url}"
+    description: Root URL (used for MCP endpoints mounted at /mcp)
+    variables:
+      instance_url:
+        default: https://app.pipeshub.com
+        description: Base server URL
 
 tags:
   # Authentication
@@ -83,6 +89,7 @@ tags:
 
       **Discovery:**
       - `/.well-known/openid-configuration` - Authorization server metadata
+      - `/.well-known/oauth-protected-resource/mcp` - Protected resource metadata (RFC 9728)
       - `/.well-known/jwks.json` - Public keys for token verification
 
       **UserInfo:**
@@ -192,6 +199,24 @@ tags:
       - All metrics are anonymized before collection
       - No personally identifiable information (PII) is collected
       - Organization can disable collection at any time
+  # MCP (Model Context Protocol)
+  - name: MCP
+    description: |
+      Model Context Protocol (MCP) endpoints for AI tool integration.
+
+      PipesHub exposes a Streamable HTTP MCP server that allows MCP-compatible clients
+      (such as Claude Desktop, Cursor, or custom agents) to interact with PipesHub tools
+      including search, conversations, knowledge base management, and connector operations.
+
+      **Transport:** Streamable HTTP (JSON-RPC over HTTP)
+      **Base Path:** `/mcp` (not under `/api/v1`)
+
+      **Authentication:**
+      All MCP requests require a valid Bearer token or OAuth 2.0 access token.
+
+      **Stateless Mode:**
+      The server operates in stateless mode — each request creates an independent MCP session.
+
   - name: Crawling Jobs
     description: |
       Endpoints for scheduling, managing, and monitoring data crawling jobs for enterprise connectors.
@@ -1131,6 +1156,42 @@ components:
             type: string
           description: Supported PKCE code challenge methods
           example: ["S256", "plain"]
+
+    OAuthProtectedResourceMetadata:
+      type: object
+      description: |
+        OAuth Protected Resource Metadata (RFC 9728).
+        Describes the protected resource, its authorization servers, supported scopes, and bearer token methods.
+      required:
+        - resource
+        - authorization_servers
+      properties:
+        resource:
+          type: string
+          format: uri
+          description: Protected resource identifier
+        authorization_servers:
+          type: array
+          items:
+            type: string
+            format: uri
+          description: Authorization servers that can issue tokens for this resource
+        scopes_supported:
+          type: array
+          items:
+            type: string
+          description: OAuth scopes supported by this resource
+          example: ["read:records", "write:records", "admin:connectors"]
+        bearer_methods_supported:
+          type: array
+          items:
+            type: string
+          description: Methods supported for sending bearer tokens
+          example: ["header"]
+        resource_documentation:
+          type: string
+          format: uri
+          description: URL to human-readable documentation for the resource
 
     JWKS:
       type: object
@@ -5534,6 +5595,42 @@ paths:
                     kid: "key-1"
                     n: "0vx7agoebG..."
                     e: "AQAB"
+
+  /.well-known/oauth-protected-resource/mcp:
+    get:
+      tags:
+        - OpenID Connect
+      summary: OAuth Protected Resource Metadata
+      description: |
+        OAuth Protected Resource Metadata Endpoint (RFC 9728).
+        <br><br>
+        Returns metadata about the protected resource including the resource
+        identifier, authorization servers, supported scopes, and bearer token methods.
+        <br><br>
+        <b>Use Cases:</b><br>
+        - Discovering which authorization server to use for this resource<br>
+        - Determining supported scopes and bearer token methods<br>
+        - MCP client auto-configuration
+        <br><br>
+        <b>Note:</b> This endpoint does not require authentication.
+      operationId: oauthProtectedResource
+      security: []
+      servers:
+        - url: /
+          description: Root URL (not /api/v1)
+      responses:
+        '200':
+          description: Protected resource metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthProtectedResourceMetadata'
+              example:
+                resource: "https://api.pipeshub.com/mcp"
+                authorization_servers: ["https://api.pipeshub.com"]
+                scopes_supported: ["read:records", "write:records", "admin:connectors"]
+                bearer_methods_supported: ["header"]
+                resource_documentation: "https://api.pipeshub.com/api/v1/docs"
 
   # ==================== OAUTH APP MANAGEMENT ENDPOINTS ====================
   /oauth-clients:
@@ -19081,5 +19178,111 @@ paths:
             application/json:
               schema:
                 type: object
+        '401':
+          description: Unauthorized
+
+  # ── MCP (Model Context Protocol) ──────────────────────────────────
+  # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).
+  # Use the root server URL: {instance_url}/mcp
+
+  /mcp:
+    post:
+      tags:
+        - MCP
+      summary: Handle MCP JSON-RPC request
+      description: |
+        Main MCP endpoint that handles all JSON-RPC requests including:
+        - `initialize` — Negotiate capabilities and protocol version
+        - `tools/list` — List available tools
+        - `tools/call` — Execute a tool (search, conversations, KB management, etc.)
+
+        The server operates in stateless mode with Streamable HTTP transport.
+        Each request creates an independent MCP server session.
+      operationId: handleMCPRequest
+      servers:
+        - url: "{instance_url}"
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
+      security:
+        - bearerAuth: []
+        - oauth2: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: JSON-RPC 2.0 request object
+              properties:
+                jsonrpc:
+                  type: string
+                  enum: ["2.0"]
+                id:
+                  oneOf:
+                    - type: string
+                    - type: integer
+                method:
+                  type: string
+                  description: "MCP method (e.g. initialize, tools/list, tools/call)"
+                params:
+                  type: object
+              required:
+                - jsonrpc
+                - method
+      responses:
+        '200':
+          description: JSON-RPC 2.0 response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jsonrpc:
+                    type: string
+                    enum: ["2.0"]
+                  id:
+                    oneOf:
+                      - type: string
+                      - type: integer
+                  result:
+                    type: object
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: integer
+                      message:
+                        type: string
+        '401':
+          description: Unauthorized
+        '500':
+          description: Internal server error
+    get:
+      tags:
+        - MCP
+      summary: MCP SSE streaming endpoint
+      description: |
+        Used by MCP clients for SSE (Server-Sent Events) streaming.
+        In stateless mode, the transport returns 405 Method Not Allowed
+        since each request is handled independently via POST.
+      operationId: handleMCPStreamingRequest
+      servers:
+        - url: "{instance_url}"
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
+      security:
+        - bearerAuth: []
+        - oauth2: []
+      responses:
+        '200':
+          description: SSE event stream (when stateful mode is enabled)
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '405':
+          description: Method Not Allowed (stateless mode does not support SSE streaming)
         '401':
           description: Unauthorized

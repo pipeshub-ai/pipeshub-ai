@@ -815,6 +815,10 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
       setError('Please save configuration first');
       return;
     }
+
+    // Keep a ref to the interval so we can clean up on unmount
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+
     try {
       setAuthenticating(true);
       setError(null);
@@ -827,45 +831,71 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
       const height = 700;
       const left = window.screen.width / 2 - width / 2;
       const top = window.screen.height / 2 - height / 2;
-      const popup = window.open(response.authorizationUrl, 'oauth_popup',
-        `width=${width},height=${height},left=${left},top=${top},scrollbars=yes,resizable=yes`);
+      const popup = window.open(
+        response.authorizationUrl,
+        'oauth_popup',
+        `width=${width},height=${height},left=${left},top=${top},scrollbars=yes,resizable=yes`
+      );
 
       if (!popup) throw new Error('Popup blocked. Please allow popups for this site and try again.');
       popup.focus();
 
+      // ── Poll exclusively for popup closure ──
+      // Do NOT check status until popup.closed is confirmed true.
+      // This prevents false "authentication failed" messages while the OAuth
+      // flow is still in progress inside the popup.
+      let statusChecked = false;
       let pollCount = 0;
-      const maxPolls = 300;
-      const pollInterval = setInterval(async () => {
+      const maxPolls = 300; // 5 minutes at 1-second intervals
+
+      pollInterval = setInterval(async () => {
         pollCount += 1;
-        if (popup.closed) {
-          clearInterval(pollInterval);
-          setAuthenticating(false);
-          await new Promise(resolve => setTimeout(resolve, 500));
-          try {
-            const status = await ToolsetApiService.getInstanceStatus(idToUse);
-            if (status.isAuthenticated) {
-              setIsAuthenticated(true);
-              setSuccess('Authentication successful!');
-              showLocalToast('Authentication successful!', 'success');
-              onSuccess(); // Refresh state without closing dialog
-            } else {
-              setError('Authentication failed or was cancelled');
-              showLocalToast('Authentication failed or was cancelled', 'error');
-            }
-          } catch (err) {
-            console.error('Failed to verify auth status:', err);
-            setError('Failed to verify authentication status');
-          }
-          return;
-        }
+
+        // Timed out: close popup and surface error
         if (pollCount >= maxPolls) {
-          clearInterval(pollInterval);
+          clearInterval(pollInterval!);
+          pollInterval = null;
           if (!popup.closed) popup.close();
           setAuthenticating(false);
-          setError('Authentication timeout. Please try again.');
+          setError('Authentication timed out. Please try again.');
+          return;
+        }
+
+        // Only act once the popup has genuinely closed
+        if (!popup.closed || statusChecked) return;
+
+        // Popup is confirmed closed — mark immediately so subsequent ticks are no-ops
+        statusChecked = true;
+        clearInterval(pollInterval!);
+        pollInterval = null;
+        setAuthenticating(false);
+
+        // Give the backend a moment to finish processing the OAuth callback
+        // before we query the status endpoint.
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+
+        try {
+          const status = await ToolsetApiService.getInstanceStatus(idToUse);
+          if (status.isAuthenticated) {
+            setIsAuthenticated(true);
+            setSuccess('Authentication successful!');
+            showLocalToast('Authentication successful!', 'success');
+            onSuccess();
+          } else {
+            // Popup closed without completing auth (user cancelled or provider error)
+            setError('Authentication was not completed. Please try again.');
+            showLocalToast('Authentication was not completed.', 'warning');
+          }
+        } catch (err) {
+          console.error('Failed to verify auth status:', err);
+          setError('Failed to verify authentication status. Please refresh and check.');
         }
       }, 1000);
     } catch (err: any) {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
       console.error('Failed to start OAuth flow:', err);
       setError(err.response?.data?.detail || err.message || 'Failed to start authentication');
       setAuthenticating(false);
@@ -926,16 +956,17 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
         await ToolsetApiService.removeToolsetCredentials(idToUse);
         setSuccess('Credentials removed successfully');
         showLocalToast('Credentials removed successfully', 'success');
+        onSuccess(); // Refresh state without closing dialog
       } else {
         // Admin: delete entire instance
         await ToolsetApiService.deleteToolsetInstance(idToUse);
         setSuccess('Toolset instance deleted successfully');
         showLocalToast('Toolset instance deleted successfully', 'success');
-        // For delete, actually close the dialog
+        // Refresh the list before closing the dialog
+        onSuccess();
+        // For delete, close the dialog after a short delay to show success message
         setTimeout(() => { onClose(); }, 1000);
-        return;
       }
-      onSuccess(); // Refresh state without closing dialog
     } catch (err: any) {
       console.error('Failed to delete/remove toolset:', err);
       const errorMsg = err.response?.data?.detail || err.response?.data?.message || 'Failed to delete';

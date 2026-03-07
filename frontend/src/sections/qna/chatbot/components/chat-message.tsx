@@ -117,118 +117,96 @@ const CITATION_SIZE_CONFIG = {
   MIN_GROUP_FONT_SIZE: 0.6,
 } as const;
 
-// Scrollable table wrapper with auto-scroll during streaming
-const ScrollableTableWrapper = ({ 
-  children, 
-  isStreaming = false 
-}: { 
-  children: React.ReactNode;
-  isStreaming?: boolean;
-}) => {
-  const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom when streaming and content changes
-  React.useLayoutEffect(() => {
-    if (isStreaming && scrollRef.current) {
-      // Scroll to bottom to show latest content
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [children, isStreaming]);
+interface ScrollableTableWrapperProps {
+  children?: React.ReactNode;
+  isStreamingRef: React.MutableRefObject<boolean>;
+}
 
-  return (
-    <Box
-      ref={scrollRef}
-      sx={{
-        my: 2,
-        width: '100%',
-        maxHeight: '50vh',
-        overflow: 'auto',
-        WebkitOverflowScrolling: 'touch',
-        borderRadius: 1,
-        border: (themeVal) =>
-          `1px solid ${
-            themeVal.palette.mode === 'dark'
-              ? 'rgba(255, 255, 255, 0.08)'
-              : 'rgba(0, 0, 0, 0.08)'
-          }`,
-        '&::-webkit-scrollbar': {
-          width: 6,
-          height: 6,
-        },
-        '&::-webkit-scrollbar-track': {
-          bgcolor: (themeVal) =>
-            themeVal.palette.mode === 'dark'
-              ? 'rgba(255, 255, 255, 0.05)'
-              : 'rgba(0, 0, 0, 0.05)',
-          borderRadius: 3,
-        },
-        '&::-webkit-scrollbar-thumb': {
-          bgcolor: (themeVal) =>
-            themeVal.palette.mode === 'dark'
-              ? 'rgba(255, 255, 255, 0.2)'
-              : 'rgba(0, 0, 0, 0.2)',
-          borderRadius: 3,
-          '&:hover': {
-            bgcolor: (themeVal) =>
-              themeVal.palette.mode === 'dark'
-                ? 'rgba(255, 255, 255, 0.3)'
-                : 'rgba(0, 0, 0, 0.3)',
-          },
-        },
-        '&::-webkit-scrollbar-corner': {
-          bgcolor: (themeVal) =>
-            themeVal.palette.mode === 'dark'
-              ? 'rgba(255, 255, 255, 0.05)'
-              : 'rgba(0, 0, 0, 0.05)',
-        },
-      }}
-    >
+const ScrollableTableWrapper = React.memo(
+  ({ children, isStreamingRef }: ScrollableTableWrapperProps) => {
+    const streaming = isStreamingRef.current;
+
+    const maxHeight = '55vh';
+
+    return (
       <Box
-        component="table"
         sx={{
-          minWidth: 'max-content',
+          my: 2,
           width: '100%',
-          borderCollapse: 'collapse',
-          '& th, & td': {
-            border: (themeVal) =>
-              `1px solid ${
-                themeVal.palette.mode === 'dark'
-                  ? 'rgba(255, 255, 255, 0.12)'
-                  : 'rgba(0, 0, 0, 0.12)'
-              }`,
-            padding: '10px 14px',
-            textAlign: 'left',
-            minWidth: 100,
-            maxWidth: 280,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            verticalAlign: 'top',
-            whiteSpace: 'normal',
-            wordBreak: 'break-word',
+          maxHeight,
+          overflowX: 'auto',
+          overflowY: 'auto',
+          WebkitOverflowScrolling: 'touch',
+          touchAction: 'pan-x pan-y',
+          borderRadius: 1,
+          border: (t) =>
+            `1px solid ${t.palette.mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'}`,
+          // Slightly more prominent scrollbar so users notice the table is scrollable.
+          '&::-webkit-scrollbar': { width: 6, height: 6 },
+          '&::-webkit-scrollbar-track': {
+            bgcolor: (t) =>
+              t.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)',
+            borderRadius: 3,
           },
-          '& th': {
-            fontWeight: 600,
-            bgcolor: (themeVal) =>
-              themeVal.palette.mode === 'dark'
-                ? '#2a2a2a'
-                : '#f5f5f5',
-            position: 'sticky',
-            top: 0,
-            zIndex: 2,
-            boxShadow: (themeVal) =>
-              themeVal.palette.mode === 'dark'
-                ? '0 2px 4px rgba(0, 0, 0, 0.3)'
-                : '0 2px 4px rgba(0, 0, 0, 0.1)',
+          '&::-webkit-scrollbar-thumb': {
+            bgcolor: (t) =>
+              t.palette.mode === 'dark' ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)',
+            borderRadius: 3,
+            '&:hover': {
+              bgcolor: (t) =>
+                t.palette.mode === 'dark' ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)',
+            },
+          },
+          '&::-webkit-scrollbar-corner': {
+            bgcolor: (t) =>
+              t.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)',
           },
         }}
       >
-        {children}
+        <Box
+          component="table"
+          sx={{
+            minWidth: 'max-content',
+            width: '100%',
+            borderCollapse: 'collapse',
+            '& th, & td': {
+              border: (t) =>
+                `1px solid ${t.palette.mode === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)'}`,
+              padding: '10px 14px',
+              textAlign: 'left',
+              minWidth: 100,
+              maxWidth: 280,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              verticalAlign: 'top',
+              whiteSpace: 'normal',
+              wordBreak: 'break-word',
+            },
+            '& th': {
+              fontWeight: 600,
+              bgcolor: (t) => (t.palette.mode === 'dark' ? '#2a2a2a' : '#f5f5f5'),
+              position: 'sticky',
+              top: 0,
+              zIndex: 2,
+              boxShadow: (t) =>
+                t.palette.mode === 'dark'
+                  ? '0 2px 4px rgba(0,0,0,0.3)'
+                  : '0 2px 4px rgba(0,0,0,0.1)',
+            },
+          }}
+        >
+          {children}
+        </Box>
       </Box>
-    </Box>
-  );
-};
+    );
+  }
+);
 
-// StreamingContent component
+// ─────────────────────────────────────────────────────────────────────────────
+// StreamingContent
+// ─────────────────────────────────────────────────────────────────────────────
+
 const StreamingContent = React.memo(
   ({
     messageId,
@@ -263,12 +241,13 @@ const StreamingContent = React.memo(
     // Determine if this message is currently streaming
     const isStreaming = streamingState.messageId === messageId && streamingState.isActive;
 
-    // Process content and citations properly
-    const {
-      processedContent,
-      citations: processedCitations,
-      citationMap,
-    } = useMemo(() => {
+    // ── isStreamingRef ────────────────────────────────────────────────────
+    // Mutated synchronously on every render so tableRenderer (useMemo [])
+    // always reads the current value without needing to be recreated.
+    const isStreamingRef = useRef(isStreaming);
+    isStreamingRef.current = isStreaming;
+
+    const { processedContent, citationMap } = useMemo(() => {
       const rawContent =
         isStreaming && streamingState.content ? streamingState.content : fallbackContent;
 
@@ -292,11 +271,7 @@ const StreamingContent = React.memo(
     const handleMouseEnter = useCallback(
       (event: React.MouseEvent, citationRef: string, citationId: string) => {
         if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-
-        // Get the citation element's bounding rect for better positioning
-        const citationElement = event.currentTarget as HTMLElement;
-        const rect = citationElement.getBoundingClientRect();
-
+        const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
         setPopperAnchor({
           getBoundingClientRect: () => ({
             width: rect.width,
@@ -310,14 +285,11 @@ const StreamingContent = React.memo(
             toJSON: () => '',
           }),
         });
-
-        const citationNumber = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
-        const citation = citationMap[citationNumber];
-
+        const num = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
+        const citation = citationMap[num];
         if (citation) {
           if (citation.metadata?.recordId) {
-            const recordCitations = aggregatedCitations[citation.metadata.recordId] || [];
-            setHoveredRecordCitations(recordCitations);
+            setHoveredRecordCitations(aggregatedCitations[citation.metadata.recordId] || []);
           }
           setHoveredCitation(citation);
           setHoveredCitationId(citationId);
@@ -334,9 +306,7 @@ const StreamingContent = React.memo(
     }, []);
 
     const handleMouseLeave = useCallback(() => {
-      hoverTimeoutRef.current = setTimeout(() => {
-        handleCloseHoverCard();
-      }, 150);
+      hoverTimeoutRef.current = setTimeout(handleCloseHoverCard, 150);
     }, [handleCloseHoverCard]);
 
     const handleHoverCardMouseEnter = useCallback(() => {
@@ -347,11 +317,8 @@ const StreamingContent = React.memo(
     const handleClick = useCallback(
       (event: React.MouseEvent, citationRef: string) => {
         event.stopPropagation();
-
-        const citationNumber = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
-        const citation = citationMap[citationNumber];
-
-        // Check if previewRenderable is false - if so, open webUrl instead of viewer
+        const num = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
+        const citation = citationMap[num];
         if (citation?.metadata?.previewRenderable === false) {
           const webUrl = getWebUrlWithFragment(citation);
           if (webUrl) {
@@ -408,63 +375,34 @@ const StreamingContent = React.memo(
 
     // Render a single citation number (hoverable)
     const renderCitationNumber = useCallback(
-      (
-        citationNumber: number,
-        citationId: string,
-        isHovered: boolean,
-        groupSize: number = 1
-      ): React.ReactElement | null => {
-        const citation = citationMap[citationNumber];
+      (num: number, citationId: string, isHovered: boolean, groupSize = 1): React.ReactElement | null => {
+        const citation = citationMap[num];
         if (!citation) return null;
-
-        const size = getCitationSize(citationNumber, groupSize);
-
+        const size = getCitationSize(num, groupSize);
         return (
           <Box
             component="span"
             className={`citation-number citation-number-${citationId}`}
-            onMouseEnter={(e) => {
-              e.stopPropagation();
-              handleMouseEnter(e, `[${citationNumber}]`, citationId);
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              handleClick(e, `[${citationNumber}]`);
-            }}
+            onMouseEnter={(e) => { e.stopPropagation(); handleMouseEnter(e, `[${num}]`, citationId); }}
+            onClick={(e) => { e.stopPropagation(); handleClick(e, `[${num}]`); }}
             onMouseLeave={handleMouseLeave}
             sx={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              minWidth: `${size.size}px`,
-              height: `${size.size}px`,
-              px: size.padding,
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              minWidth: `${size.size}px`, height: `${size.size}px`, px: size.padding,
               borderRadius: `${size.borderRadius}px`,
-              bgcolor: isHovered
-                ? 'primary.main'
-                : 'rgba(25, 118, 210, 0.08)',
+              bgcolor: isHovered ? 'primary.main' : 'rgba(25,118,210,0.08)',
               color: isHovered ? 'white' : 'primary.main',
-              fontSize: `${size.fontSize}rem`,
-              fontWeight: 600,
-              transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
-              textDecoration: 'none',
-              boxShadow: isHovered
-                ? '0 3px 8px rgba(25, 118, 210, 0.3)'
-                : '0 1px 3px rgba(0,0,0,0.06)',
+              fontSize: `${size.fontSize}rem`, fontWeight: 600,
+              transition: 'all 0.3s cubic-bezier(0.34,1.56,0.64,1)',
+              boxShadow: isHovered ? '0 3px 8px rgba(25,118,210,0.3)' : '0 1px 3px rgba(0,0,0,0.06)',
               border: '1px solid',
-              borderColor: isHovered
-                ? 'primary.main'
-                : 'rgba(25, 118, 210, 0.12)',
-              position: 'relative',
-              zIndex: 2,
-              cursor: 'pointer',
+              borderColor: isHovered ? 'primary.main' : 'rgba(25,118,210,0.12)',
+              position: 'relative', zIndex: 2, cursor: 'pointer',
               transform: isHovered ? 'scale(1.1) translateY(-1px)' : 'scale(1)',
-              ml: 0,
-              flexShrink: 0,
-              lineHeight: 1,
+              ml: 0, flexShrink: 0, lineHeight: 1,
             }}
           >
-            {citationNumber}
+            {num}
           </Box>
         );
       },
@@ -480,113 +418,55 @@ const StreamingContent = React.memo(
       ) => {
         const groupId = `citation-group-${lineIndex}-${groupIndex}-${messageId}`;
         const groupSize = group.citations.length;
-        
-        const hoveredCitationIds = group.citations.map((num, idx) => 
-          `citation-${num}-${groupId}-${idx}`
-        );
-        const isGroupHovered = hoveredCitationIds.some(id => hoveredCitationId === id);
-
-        // Calculate dynamic sizes based on group size
-        const maxCitationDigits = Math.max(...group.citations.map(n => n.toString().length));
+        const hoveredCitationIds = group.citations.map((n, i) => `citation-${n}-${groupId}-${i}`);
+        const isGroupHovered = hoveredCitationIds.some((id) => hoveredCitationId === id);
+        const maxDigits = Math.max(...group.citations.map((n) => n.toString().length));
         const sizeScale = Math.min(
           1,
-          1 / (1 + (maxCitationDigits - 1) * CITATION_SIZE_CONFIG.GROUP_DIGITS_SCALE + (groupSize - 1) * CITATION_SIZE_CONFIG.GROUP_SIZE_SCALE_ALT)
+          1 /
+            (1 +
+              (maxDigits - 1) * CITATION_SIZE_CONFIG.GROUP_DIGITS_SCALE +
+              (groupSize - 1) * CITATION_SIZE_CONFIG.GROUP_SIZE_SCALE_ALT)
         );
         const filenameMaxLength = Math.max(
           CITATION_SIZE_CONFIG.MIN_FILENAME_LENGTH,
           Math.floor(CITATION_SIZE_CONFIG.BASE_FILENAME_LENGTH * sizeScale)
         );
         const fontSize = Math.max(CITATION_SIZE_CONFIG.MIN_GROUP_FONT_SIZE, CITATION_SIZE_CONFIG.BASE_GROUP_FONT_SIZE * sizeScale);
-        const maxWidth = `${filenameMaxLength}ch`;
         const gap = Math.max(CITATION_SIZE_CONFIG.MIN_GAP, CITATION_SIZE_CONFIG.BASE_GAP * sizeScale);
-
         const truncatedName = truncateFilename(group.recordName, filenameMaxLength);
-        let iconPath = '/assets/icons/connectors/collections.svg';
-        if (group.connector) {
-          iconPath = `/assets/icons/connectors/${group.connector.replace(' ', '').toLowerCase()}.svg`;
-        }
+        const iconPath = group.connector
+          ? `/assets/icons/connectors/${group.connector.replace(' ', '').toLowerCase()}.svg`
+          : '/assets/icons/connectors/collections.svg';
+
         return (
           <Box
             key={groupId}
             component="span"
-            sx={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              flexWrap: 'wrap',
-              ml: 0.5,
-              mr: 0.25,
-              mb: 0.25,
-              position: 'relative',
-              gap: 0.5,
-              maxWidth: '100%',
-              overflowWrap: 'break-word',
-            }}
+            sx={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', ml: 0.5, mr: 0.25, mb: 0.25, position: 'relative', gap: 0.5, maxWidth: '100%', overflowWrap: 'break-word' }}
           >
             {truncatedName && (
-              <Box
-                component="span"
-                sx={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 0.5,
-                  maxWidth,
-                  overflow: 'hidden',
-                }}
-              >
+              <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, maxWidth: `${filenameMaxLength}ch`, overflow: 'hidden' }}>
                 <img
-                  src={iconPath}
-                  alt={group.connector}
-                  width={20}
-                  height={20}
-                  style={{
-                    objectFit: 'contain',
-                    borderRadius: '2px',
-                    flexShrink: 0,
-                    opacity: isGroupHovered ? 1 : 0.8,
-                    transition: 'opacity 0.2s ease',
-                  }}
-                  onError={(e) => {
-                    e.currentTarget.src = '/assets/icons/connectors/collections.svg';
-                  }}
+                  src={iconPath} alt={group.connector} width={20} height={20}
+                  style={{ objectFit: 'contain', borderRadius: '2px', flexShrink: 0, opacity: isGroupHovered ? 1 : 0.8, transition: 'opacity 0.2s ease' }}
+                  onError={(e) => { e.currentTarget.src = '/assets/icons/connectors/collections.svg'; }}
                 />
                 <Typography
                   component="span"
                   className={`citation-record-name citation-record-name-${groupId}`}
-                  sx={{
-                    fontSize: `${fontSize}rem`,
-                    fontWeight: isGroupHovered ? 600 : 500,
-                    color: isGroupHovered ? 'primary.main' : 'text.secondary',
-                    transition: 'all 0.2s ease',
-                    lineHeight: 1.2,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    position: 'relative',
-                    zIndex: 1,
-                    pointerEvents: 'none',
-                    flexShrink: 1,
-                  }}
+                  sx={{ fontSize: `${fontSize}rem`, fontWeight: isGroupHovered ? 600 : 500, color: isGroupHovered ? 'primary.main' : 'text.secondary', transition: 'all 0.2s ease', lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', position: 'relative', zIndex: 1, pointerEvents: 'none', flexShrink: 1 }}
                 >
                   {truncatedName}
                 </Typography>
               </Box>
             )}
-            <Box
-              component="span"
-              sx={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap,
-                maxWidth: '100%',
-              }}
-            >
+            <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap, maxWidth: '100%' }}>
               {group.citations.map((citationNumber, idx) => {
                 const citationId = `citation-${citationNumber}-${groupId}-${idx}`;
-                const isHovered = hoveredCitationId === citationId;
                 return (
                   <Fragment key={citationId}>
-                    {renderCitationNumber(citationNumber, citationId, isHovered, groupSize)}
+                    {renderCitationNumber(citationNumber, citationId, hoveredCitationId === citationId, groupSize)}
                   </Fragment>
                 );
               })}
@@ -601,21 +481,14 @@ const StreamingContent = React.memo(
       (part: string, index: number) => {
         const citationMatch = part.match(/\[(\d+)\]/);
         if (citationMatch) {
-          // This should not be reached in normal flow since we process groups
-          // But keep as fallback - create a unique ID that includes index to ensure uniqueness
-          const citationNumber = parseInt(citationMatch[1], 10);
-          const citation = citationMap[citationNumber];
-          // Use a unique fallback ID that includes index to ensure uniqueness across different instances
+          const num = parseInt(citationMatch[1], 10);
+          const citation = citationMap[num];
+          if (!citation) return <Fragment key={index}>{part}</Fragment>;
           const fallbackGroupId = `fallback-group-${index}-${messageId}`;
-          const citationId = `citation-${citationNumber}-${fallbackGroupId}-0`;
-
-          if (!citation) {
-            return <Fragment key={index}>{part}</Fragment>;
-          }
-
+          const citationId = `citation-${num}-${fallbackGroupId}-0`;
           return (
             <Fragment key={citationId}>
-              {renderCitationNumber(citationNumber, citationId, hoveredCitationId === citationId, 1)}
+              {renderCitationNumber(num, citationId, hoveredCitationId === citationId, 1)}
             </Fragment>
           );
         }
@@ -624,12 +497,9 @@ const StreamingContent = React.memo(
       [citationMap, messageId, hoveredCitationId, renderCitationNumber]
     );
 
-    // Process text to group consecutive citations by filename on the same line
     const processTextWithGroupedCitations = useCallback(
       (text: string, lineIndex: number): React.ReactNode[] => {
         if (!text) return [text];
-
-        // Split by citations while keeping the citations
         const parts = text.split(/(\[\d+\])/g);
         const result: React.ReactNode[] = [];
         let currentGroup: { citations: number[]; recordName: string; recordId?: string; connector?: string } | null = null;
@@ -638,70 +508,33 @@ const StreamingContent = React.memo(
         for (let i = 0; i < parts.length; i += 1) {
           const part = parts[i];
           const citationMatch = part.match(/\[(\d+)\]/);
-
           if (citationMatch) {
-            const citationNumber = parseInt(citationMatch[1], 10);
-            const citation = citationMap[citationNumber];
-
+            const num = parseInt(citationMatch[1], 10);
+            const citation = citationMap[num];
             if (citation) {
               const recordName = citation.metadata?.recordName || '';
               const recordId = citation.metadata?.recordId;
               const connector = citation.metadata?.connector;
-
-              // Check if this citation belongs to the current group
-              if (
-                currentGroup &&
-                currentGroup.recordName === recordName &&
-                currentGroup.recordId === recordId
-              ) {
-                // Add to existing group
-                currentGroup.citations.push(citationNumber);
+              if (currentGroup && currentGroup.recordName === recordName && currentGroup.recordId === recordId) {
+                currentGroup.citations.push(num);
               } else {
-                // Start a new group
-                if (currentGroup) {
-                  // Render the previous group
-                  result.push(
-                    renderGroupedCitation(currentGroup, lineIndex, groupIndex)
-                  );
-                  groupIndex += 1;
-                }
-                currentGroup = {
-                  citations: [citationNumber],
-                  recordName,
-                  recordId,
-                  connector,
-                };
+                if (currentGroup) { result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex)); groupIndex += 1; }
+                currentGroup = { citations: [num], recordName, recordId, connector };
               }
             } else {
-              // Citation not found, render as-is
-              if (currentGroup) {
-                result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex));
-                currentGroup = null;
-                groupIndex += 1;
-              }
+              if (currentGroup) { result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex)); currentGroup = null; groupIndex += 1; }
               result.push(renderContentPart(part, lineIndex * 1000 + i));
             }
           } else {
-            // Non-citation text - break the group if there's actual content
-            // (empty strings between adjacent citations are fine and won't break grouping)
             if (currentGroup && part.trim().length > 0) {
-              // Render the current group before non-whitespace text
               result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex));
               currentGroup = null;
               groupIndex += 1;
             }
-            // Add whitespace or text (whitespace between citations is preserved but doesn't break grouping)
-            if (part) {
-              result.push(part);
-            }
+            if (part) result.push(part);
           }
         }
-
-        // Render any remaining group
-        if (currentGroup) {
-          result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex));
-        }
-
+        if (currentGroup) result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex));
         return result;
       },
       [citationMap, renderGroupedCitation, renderContentPart]
@@ -709,36 +542,151 @@ const StreamingContent = React.memo(
 
     const processChildrenForCitations = useCallback(
       (children: React.ReactNode): React.ReactNode =>
-        React.Children.toArray(children).flatMap((child, childIndex) => {
-          if (typeof child === 'string') {
-            return processTextWithGroupedCitations(child, childIndex);
-          }
+        React.Children.toArray(children).flatMap((child, idx) => {
+          if (typeof child === 'string') return processTextWithGroupedCitations(child, idx);
           return child;
         }),
       [processTextWithGroupedCitations]
     );
 
+    // ── STABLE TABLE RENDERER ─────────────────────────────────────────────
+    // useMemo with [] creates this function exactly ONCE for the lifetime of
+    // this StreamingContent instance. Same function reference = React updates
+    // the existing ScrollableTableWrapper DOM node (no unmount/remount) =
+    // browser preserves scrollLeft natively between streaming chunks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const tableRenderer = useMemo(
+      () =>
+        ({ children }: { children?: React.ReactNode }) =>
+          (
+            <ScrollableTableWrapper isStreamingRef={isStreamingRef}>
+              {children}
+            </ScrollableTableWrapper>
+          ),
+      [] // intentionally empty – isStreamingRef is a stable MutableRefObject
+    );
+
+    // ── Markdown components object ────────────────────────────────────────
+    // Memoised so ReactMarkdown doesn't re-register renderers on every render.
+    // tableRenderer is always the same reference (useMemo []) so it is safe
+    // to include it in the deps without breaking the stability guarantee.
+    const markdownComponents = useMemo(
+      () => ({
+        table: tableRenderer,
+        thead: ({ children }: any) => (
+          <Box component="thead" sx={{ display: 'table-header-group' }}>{children}</Box>
+        ),
+        tbody: ({ children }: any) => (
+          <Box component="tbody" sx={{ display: 'table-row-group' }}>{children}</Box>
+        ),
+        tr: ({ children }: any) => (
+          <Box component="tr" sx={{ display: 'table-row' }}>{children}</Box>
+        ),
+        th: ({ children }: any) => {
+          const text = typeof children === 'string' ? children
+            : Array.isArray(children) ? children.filter((c: any) => typeof c === 'string').join('') : '';
+          return (
+            <Box component="th" title={text.length > 30 ? text : undefined}
+              sx={{ display: 'table-cell', fontWeight: 600, fontSize: '0.875rem', cursor: text.length > 30 ? 'help' : 'default' }}>
+              {processChildrenForCitations(children)}
+            </Box>
+          );
+        },
+        td: ({ children }: any) => {
+          const text = typeof children === 'string' ? children
+            : Array.isArray(children) ? children.filter((c: any) => typeof c === 'string').join('') : '';
+          return (
+            <Box component="td" title={text.length > 30 ? text : undefined}
+              sx={{ display: 'table-cell', fontSize: '0.875rem', cursor: text.length > 30 ? 'help' : 'default' }}>
+              {processChildrenForCitations(children)}
+            </Box>
+          );
+        },
+        p: ({ children }: any) => (
+          <Typography component="p" sx={{ mb: 1.5, '&:last-child': { mb: 0 }, fontSize: '0.90rem', lineHeight: 1.6, letterSpacing: '0.01em', overflowWrap: 'break-word', color: 'text.primary', fontWeight: 400 }}>
+            {processChildrenForCitations(children)}
+          </Typography>
+        ),
+        h1: ({ children }: any) => (
+          <Typography variant="h3" sx={{ fontSize: '1.3rem', my: 2, fontWeight: 600 }}>
+            {processChildrenForCitations(children)}
+          </Typography>
+        ),
+        h2: ({ children }: any) => (
+          <Typography variant="h4" sx={{ fontSize: '1.2rem', my: 2, fontWeight: 600 }}>
+            {processChildrenForCitations(children)}
+          </Typography>
+        ),
+        h3: ({ children }: any) => (
+          <Typography variant="h4" sx={{ fontSize: '1.1rem', my: 1.5, fontWeight: 600 }}>
+            {processChildrenForCitations(children)}
+          </Typography>
+        ),
+        ul: ({ children }: any) => (
+          <Box component="ul" sx={{ pl: 2.5, mb: 1.5, '& li': { mb: 0.5 }, overflowWrap: 'break-word', maxWidth: '100%' }}>
+            {children}
+          </Box>
+        ),
+        ol: ({ children }: any) => (
+          <Box component="ol" sx={{ pl: 2.5, mb: 1.5, '& li': { mb: 0.5 }, overflowWrap: 'break-word', maxWidth: '100%' }}>
+            {children}
+          </Box>
+        ),
+        li: ({ children }: any) => (
+          <Typography component="li" sx={{ mb: 0.5, lineHeight: 1.6, overflowWrap: 'break-word', maxWidth: '100%' }}>
+            {processChildrenForCitations(children)}
+          </Typography>
+        ),
+        strong: ({ children }: any) => (
+          <Box component="strong" sx={{ fontWeight: 600, overflowWrap: 'break-word' }}>
+            {processChildrenForCitations(children)}
+          </Box>
+        ),
+        em: ({ children }: any) => (
+          <Box component="em" sx={{ fontStyle: 'italic', overflowWrap: 'break-word' }}>
+            {processChildrenForCitations(children)}
+          </Box>
+        ),
+        hr: () => <Divider sx={{ my: 3 }} />,
+        blockquote: ({ children }: any) => (
+          <Box component="blockquote" sx={{ pl: 2, py: 1, my: 2, borderLeft: (t) => `4px solid ${t.palette.primary.main}`, bgcolor: (t) => t.palette.mode === 'dark' ? 'rgba(33,150,243,0.1)' : 'rgba(25,118,210,0.05)', fontStyle: 'italic', '& p': { mb: 0 } }}>
+            {children}
+          </Box>
+        ),
+        a: ({ href, children }: any) => (
+          <Box component="a" href={href} target="_blank" rel="noopener noreferrer" sx={{ color: 'primary.main', textDecoration: 'underline', '&:hover': { textDecoration: 'none' } }}>
+            {children}
+          </Box>
+        ),
+        code: ({ children, className }: any) => {
+          const match = /language-(\w+)/.exec(className || '');
+          if (!match) {
+            return (
+              <Box component="code" sx={{ bgcolor: (t) => t.palette.mode === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)', px: '0.4em', py: '0.2em', borderRadius: '4px', fontFamily: '"Fira Code","JetBrains Mono",monospace', fontSize: '0.875em', fontWeight: 500, color: (t) => t.palette.mode === 'dark' ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.8)' }}>
+                {children}
+              </Box>
+            );
+          }
+          return (
+            <Box sx={{ bgcolor: (t) => t.palette.mode === 'dark' ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.04)', p: 2, borderRadius: '8px', fontFamily: '"Fira Code","JetBrains Mono",monospace', fontSize: '0.85em', overflow: 'auto', my: 2, border: (t) => `1px solid ${t.palette.mode === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'}`, position: 'relative', '&::before': { content: `"${match[1]}"`, position: 'absolute', top: '8px', right: '12px', fontSize: '0.75em', color: 'text.secondary', opacity: 0.7, textTransform: 'uppercase', fontWeight: 500 } }}>
+              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
+                <code style={{ color: 'inherit' }}>{children}</code>
+              </pre>
+            </Box>
+          );
+        },
+      }),
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      [processChildrenForCitations, tableRenderer]
+    );
+
     return (
-      <Box 
-        sx={{ 
-          position: 'relative',
-          width: '100%',
-          maxWidth: '100%',
-          overflow: 'hidden', // Prevent overflow
-          overflowWrap: 'break-word', // Break long words
-        }}
-      >
-        {/* Streaming indicator */}
+      <Box sx={{ position: 'relative', width: '100%', maxWidth: '100%', overflowWrap: 'break-word' }}>
         {showStreamingIndicator && (
           <Box
             sx={{
-              position: 'absolute',
-              top: -8,
-              right: -8,
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              bgcolor: 'success.main',
+              position: 'absolute', top: -8, right: -8,
+              width: 8, height: 8, borderRadius: '50%', bgcolor: 'success.main',
               animation: 'pulse 1.5s ease-in-out infinite',
               '@keyframes pulse': {
                 '0%': { opacity: 1, transform: 'scale(1)' },
@@ -749,365 +697,26 @@ const StreamingContent = React.memo(
           />
         )}
 
-        {/* Placeholder when waiting for streaming to start */}
-        {/* {showPlaceholder && (
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 1.5,
-              py: 1,
-              px: 2,
-              borderRadius: 2,
-              bgcolor: (theme) =>
-                theme.palette.mode === 'dark'
-                  ? 'rgba(255, 255, 255, 0.03)'
-                  : 'rgba(0, 0, 0, 0.02)',
-              border: (theme) =>
-                `1px solid ${
-                  theme.palette.mode === 'dark'
-                    ? 'rgba(255, 255, 255, 0.08)'
-                    : 'rgba(0, 0, 0, 0.08)'
-                }`,
-            }}
-          >
-            <Box
-              sx={{
-                display: 'flex',
-                gap: 0.5,
-                alignItems: 'center',
-              }}
-            >
-              {[0, 1, 2].map((i) => (
-                <Box
-                  key={i}
-                  sx={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: '50%',
-                    bgcolor: 'text.secondary',
-                    animation: `bounce 1.4s ease-in-out ${i * 0.16}s infinite`,
-                    '@keyframes bounce': {
-                      '0%, 80%, 100%': { transform: 'scale(0.8)', opacity: 0.5 },
-                      '40%': { transform: 'scale(1)', opacity: 1 },
-                    },
-                  }}
-                />
-              ))}
-            </Box>
-            <Typography
-              variant="body2"
-              sx={{
-                fontSize: '0.875rem',
-                color: 'text.secondary',
-                fontStyle: 'italic',
-              }}
-            >
-              Regenerating response...
-            </Typography>
-          </Box>
-        )} */}
-
+        {/*
+          Do NOT add overflow:hidden here.
+          overflow:hidden on a parent clips the child's scrollbar when the
+          scrollbar sits near the container edge. Let the table's own scroll
+          container be the clipping boundary instead.
+        */}
         <Box
           sx={{
             width: '100%',
             maxWidth: '100%',
-            overflow: 'hidden',
             overflowWrap: 'break-word',
-            // Target specific elements that can cause overflow
             '& p, & li, & span, & strong, & em, & code': {
               maxWidth: '100%',
               overflowWrap: 'break-word',
             },
           }}
         >
-          <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            p: ({ children }) => {
-              const processedChildren = processChildrenForCitations(children);
-              return (
-                <Typography
-                  component="p"
-                  sx={{
-                    mb: 1.5,
-                    '&:last-child': { mb: 0 },
-                    fontSize: '0.90rem',
-                    lineHeight: 1.6,
-                    letterSpacing: '0.01em',
-                    overflowWrap: 'break-word',
-                    color: 'text.primary',
-                    fontWeight: 400,
-                    // Ensure citations don't overflow
-                    '& .citation-number, & .citation-record-name': {
-                      maxWidth: '100%',
-                    },
-                  }}
-                >
-                  {processedChildren}
-                </Typography>
-              );
-            },
-            h1: ({ children }) => (
-              <Typography variant="h3" sx={{ fontSize: '1.3rem', my: 2, fontWeight: 600 }}>
-                {processChildrenForCitations(children)}
-              </Typography>
-            ),
-            h2: ({ children }) => (
-              <Typography variant="h4" sx={{ fontSize: '1.2rem', my: 2, fontWeight: 600 }}>
-                {processChildrenForCitations(children)}
-              </Typography>
-            ),
-            h3: ({ children }) => (
-              <Typography variant="h4" sx={{ fontSize: '1.1rem', my: 1.5, fontWeight: 600 }}>
-                {processChildrenForCitations(children)}
-              </Typography>
-            ),
-            ul: ({ children }) => (
-              <Box 
-                component="ul" 
-                sx={{ 
-                  pl: 2.5, 
-                  mb: 1.5, 
-                  '& li': { mb: 0.5 },
-                  overflowWrap: 'break-word',
-                  maxWidth: '100%',
-                }}
-              >
-                {children}
-              </Box>
-            ),
-            ol: ({ children }) => (
-              <Box 
-                component="ol" 
-                sx={{ 
-                  pl: 2.5, 
-                  mb: 1.5, 
-                  '& li': { mb: 0.5 },
-                  overflowWrap: 'break-word',
-                  maxWidth: '100%',
-                }}
-              >
-                {children}
-              </Box>
-            ),
-            li: ({ children }) => {
-              const processedChildren = processChildrenForCitations(children);
-              return (
-                <Typography 
-                  component="li" 
-                  sx={{ 
-                    mb: 0.5, 
-                    lineHeight: 1.6,
-                    overflowWrap: 'break-word',
-                    maxWidth: '100%',
-                    '& .citation-number, & .citation-record-name': {
-                      maxWidth: '100%',
-                    },
-                  }}
-                >
-                  {processedChildren}
-                </Typography>
-              );
-            },
-            code: ({ children, className }) => {
-              const match = /language-(\w+)/.exec(className || '');
-
-              // Inline code
-              if (!match) {
-                return (
-                  <Box
-                    component="code"
-                    sx={{
-                      bgcolor: (theme) =>
-                        theme.palette.mode === 'dark'
-                          ? 'rgba(255, 255, 255, 0.1)'
-                          : 'rgba(0, 0, 0, 0.08)',
-                      px: '0.4em',
-                      py: '0.2em',
-                      borderRadius: '4px',
-                      fontFamily:
-                        '"Fira Code", "JetBrains Mono", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace',
-                      fontSize: '0.875em',
-                      fontWeight: 500,
-                      color: (theme) =>
-                        theme.palette.mode === 'dark'
-                          ? 'rgba(255, 255, 255, 0.9)'
-                          : 'rgba(0, 0, 0, 0.8)',
-                    }}
-                  >
-                    {children}
-                  </Box>
-                );
-              }
-
-              // Code block
-              return (
-                <Box
-                  sx={{
-                    bgcolor: (theme) =>
-                      theme.palette.mode === 'dark' ? 'rgba(0, 0, 0, 0.4)' : 'rgba(0, 0, 0, 0.04)',
-                    p: 2,
-                    borderRadius: '8px',
-                    fontFamily:
-                      '"Fira Code", "JetBrains Mono", "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace',
-                    fontSize: '0.85em',
-                    overflow: 'auto',
-                    my: 2,
-                    border: (theme) =>
-                      `1px solid ${
-                        theme.palette.mode === 'dark'
-                          ? 'rgba(255, 255, 255, 0.1)'
-                          : 'rgba(0, 0, 0, 0.1)'
-                      }`,
-                    position: 'relative',
-                    '&::before': match
-                      ? {
-                          content: `"${match[1]}"`,
-                          position: 'absolute',
-                          top: '8px',
-                          right: '12px',
-                          fontSize: '0.75em',
-                          color: 'text.secondary',
-                          opacity: 0.7,
-                          textTransform: 'uppercase',
-                          fontWeight: 500,
-                        }
-                      : {},
-                  }}
-                >
-                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
-                    <code style={{ color: 'inherit' }}>{children}</code>
-                  </pre>
-                </Box>
-              );
-            },
-            blockquote: ({ children }) => (
-              <Box
-                component="blockquote"
-                sx={{
-                  pl: 2,
-                  py: 1,
-                  my: 2,
-                  borderLeft: (theme) => `4px solid ${theme.palette.primary.main}`,
-                  bgcolor: (theme) =>
-                    theme.palette.mode === 'dark'
-                      ? 'rgba(33, 150, 243, 0.1)'
-                      : 'rgba(25, 118, 210, 0.05)',
-                  fontStyle: 'italic',
-                  '& p': { mb: 0 },
-                }}
-              >
-                {children}
-              </Box>
-            ),
-            a: ({ href, children }) => (
-              <Box
-                component="a"
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                sx={{
-                  color: 'primary.main',
-                  textDecoration: 'underline',
-                  '&:hover': {
-                    textDecoration: 'none',
-                  },
-                }}
-              >
-                {children}
-              </Box>
-            ),
-            strong: ({ children }) => (
-              <Box 
-                component="strong" 
-                sx={{ 
-                  fontWeight: 600,
-                  overflowWrap: 'break-word',
-                }}
-              >
-                {processChildrenForCitations(children)}
-              </Box>
-            ),
-            em: ({ children }) => (
-              <Box 
-                component="em" 
-                sx={{ 
-                  fontStyle: 'italic',
-                  overflowWrap: 'break-word',
-                }}
-              >
-                {processChildrenForCitations(children)}
-              </Box>
-            ),
-            hr: () => <Divider sx={{ my: 3 }} />,
-            table: ({ children }) => (
-              <ScrollableTableWrapper isStreaming={isStreaming}>{children}</ScrollableTableWrapper>
-            ),
-            thead: ({ children }) => (
-              <Box component="thead" sx={{ display: 'table-header-group' }}>
-                {children}
-              </Box>
-            ),
-            tbody: ({ children }) => (
-              <Box component="tbody" sx={{ display: 'table-row-group' }}>
-                {children}
-              </Box>
-            ),
-            tr: ({ children }) => (
-              <Box component="tr" sx={{ display: 'table-row' }}>
-                {children}
-              </Box>
-            ),
-            th: ({ children }) => {
-              const processedChildren = processChildrenForCitations(children);
-              // Extract text content for title attribute
-              const textContent = typeof children === 'string' 
-                ? children 
-                : Array.isArray(children) 
-                  ? children.filter(c => typeof c === 'string').join('') 
-                  : '';
-              return (
-                <Box
-                  component="th"
-                  title={textContent.length > 30 ? textContent : undefined}
-                  sx={{
-                    display: 'table-cell',
-                    fontWeight: 600,
-                    fontSize: '0.875rem',
-                    cursor: textContent.length > 30 ? 'help' : 'default',
-                  }}
-                >
-                  {processedChildren}
-                </Box>
-              );
-            },
-            td: ({ children }) => {
-              const processedChildren = processChildrenForCitations(children);
-              // Extract text content for title attribute
-              const textContent = typeof children === 'string' 
-                ? children 
-                : Array.isArray(children) 
-                  ? children.filter(c => typeof c === 'string').join('') 
-                  : '';
-              return (
-                <Box
-                  component="td"
-                  title={textContent.length > 30 ? textContent : undefined}
-                  sx={{
-                    display: 'table-cell',
-                    fontSize: '0.875rem',
-                    cursor: textContent.length > 30 ? 'help' : 'default',
-                  }}
-                >
-                  {processedChildren}
-                </Box>
-              );
-            },
-          }}
-        >
-          {processedContent}
-        </ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {processedContent}
+          </ReactMarkdown>
         </Box>
 
         <Popper
@@ -1117,34 +726,9 @@ const StreamingContent = React.memo(
           disablePortal={false}
           modifiers={[
             { name: 'offset', options: { offset: [0, 8] } },
-            {
-              name: 'flip',
-              enabled: true,
-              options: {
-                altBoundary: true,
-                rootBoundary: 'viewport',
-                padding: 8,
-                fallbackPlacements: ['top-start', 'bottom-end', 'top-end'],
-              },
-            },
-            {
-              name: 'preventOverflow',
-              enabled: true,
-              options: {
-                altAxis: true,
-                altBoundary: true,
-                boundary: 'viewport',
-                padding: 16,
-                tether: false,
-              },
-            },
-            {
-              name: 'computeStyles',
-              options: {
-                adaptive: false, // Prevents adaptive positioning that causes jumps
-                roundOffsets: true, // Rounds offsets to prevent subpixel rendering
-              },
-            },
+            { name: 'flip', enabled: true, options: { altBoundary: true, rootBoundary: 'viewport', padding: 8, fallbackPlacements: ['top-start', 'bottom-end', 'top-end'] } },
+            { name: 'preventOverflow', enabled: true, options: { altAxis: true, altBoundary: true, boundary: 'viewport', padding: 16, tether: false } },
+            { name: 'computeStyles', options: { adaptive: false, roundOffsets: true } },
           ]}
           sx={{ zIndex: 9999, maxWidth: '95vw', width: '380px' }}
         >
@@ -1152,28 +736,13 @@ const StreamingContent = React.memo(
             <Box
               onMouseEnter={handleHoverCardMouseEnter}
               onMouseLeave={handleMouseLeave}
-              sx={{
-                pointerEvents: 'auto',
-                // Add a bridge area to prevent gap issues
-                '&::before': {
-                  content: '""',
-                  position: 'absolute',
-                  top: -8,
-                  left: -8,
-                  right: -8,
-                  height: 12,
-                  zIndex: -1,
-                },
-              }}
+              sx={{ pointerEvents: 'auto', '&::before': { content: '""', position: 'absolute', top: -8, left: -8, right: -8, height: 12, zIndex: -1 } }}
             >
               {hoveredCitation && (
                 <CitationHoverCard
                   citation={hoveredCitation}
                   isVisible={Boolean(hoveredCitationId)}
-                  onRecordClick={(record) => {
-                    handleCloseHoverCard();
-                    onRecordClick(record);
-                  }}
+                  onRecordClick={(record) => { handleCloseHoverCard(); onRecordClick(record); }}
                   onClose={handleCloseHoverCard}
                   aggregatedCitations={hoveredRecordCitations}
                   onViewPdf={onViewPdf}
@@ -1186,6 +755,10 @@ const StreamingContent = React.memo(
     );
   }
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ChatMessage
+// ─────────────────────────────────────────────────────────────────────────────
 
 const ChatMessage = React.memo(
   ({
@@ -1203,27 +776,18 @@ const ChatMessage = React.memo(
     const [isRecordDialogOpen, setRecordDialogOpen] = useState<boolean>(false);
 
     const isStreamingMessage = message.id.startsWith('streaming-');
-    
-    // Check if this is a streaming message with no content yet
-    // Hide the message box until content starts arriving
     const isStreamingThisMessage = streamingState.messageId === message.id && streamingState.isActive;
-    const hasContent = 
+    const hasContent =
       (message.content && message.content.trim().length > 0) ||
       (isStreamingThisMessage && streamingState.content && streamingState.content.trim().length > 0);
-    
-    // Hide the message box if it's a streaming message with no content
     const shouldHideMessage = isStreamingMessage && !hasContent;
 
     const aggregatedCitations = useMemo(() => {
       if (!message.citations) return {};
-
       return message.citations.reduce<{ [key: string]: CustomCitation[] }>((acc, citation) => {
         const recordId = citation.metadata?.recordId;
         if (!recordId) return acc;
-
-        if (!acc[recordId]) {
-          acc[recordId] = [];
-        }
+        if (!acc[recordId]) acc[recordId] = [];
         acc[recordId].push(citation);
         return acc;
       }, {});
@@ -1283,298 +847,114 @@ const ChatMessage = React.memo(
     }, []);
 
     const handleViewPdf = useCallback(
-      async (
-        url: string,
-        citation: CustomCitation,
-        citations: CustomCitation[],
-        isExcelFile?: boolean,
-        buffer?: ArrayBuffer
-      ): Promise<void> =>
-        new Promise<void>((resolve) => {
-          onViewPdf(url, citation, citations, isExcelFile, buffer);
-          resolve();
-        }),
+      async (url: string, citation: CustomCitation, citations: CustomCitation[], isExcelFile?: boolean, buffer?: ArrayBuffer): Promise<void> =>
+        new Promise<void>((resolve) => { onViewPdf(url, citation, citations, isExcelFile, buffer); resolve(); }),
       [onViewPdf]
     );
 
     return (
       <Box sx={{ mb: 3, width: '100%', position: 'relative' }}>
-        {/* Hide header when message box is hidden */}
         {!shouldHideMessage && (
-          <Box
-            sx={{
-              mb: 1,
-              display: 'flex',
-              justifyContent: message.type === 'user' ? 'flex-end' : 'flex-start',
-              px: 1,
-            }}
-          >
-          <Stack
-            direction="row"
-            spacing={1.5}
-            alignItems="center"
-            sx={{
-              px: 1.5,
-              py: 0.5,
-              borderRadius: 1.5,
-              backgroundColor: (themeVal) =>
-                themeVal.palette.mode === 'dark'
-                  ? 'rgba(255, 255, 255, 0.03)'
-                  : 'rgba(0, 0, 0, 0.03)',
-              border: (themeVal) =>
-                `1px solid ${
-                  themeVal.palette.mode === 'dark'
-                    ? 'rgba(255, 255, 255, 0.08)'
-                    : 'rgba(0, 0, 0, 0.08)'
-                }`,
-              backdropFilter: 'blur(8px)',
-            }}
-          >
-            <Box
-              sx={{
-                width: 24,
-                height: 24,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: '50%',
-                backgroundColor: (themeVal) =>
-                  message.type === 'user'
-                    ? themeVal.palette.primary.main
-                    : themeVal.palette.success.main,
-                flexShrink: 0,
-                boxShadow: (themeVal) =>
-                  themeVal.palette.mode === 'dark'
-                    ? '0 2px 8px rgba(0, 0, 0, 0.4)'
-                    : '0 2px 8px rgba(0, 0, 0, 0.15)',
-              }}
+          <Box sx={{ mb: 1, display: 'flex', justifyContent: message.type === 'user' ? 'flex-end' : 'flex-start', px: 1 }}>
+            <Stack
+              direction="row" spacing={1.5} alignItems="center"
+              sx={{ px: 1.5, py: 0.5, borderRadius: 1.5, backgroundColor: (t) => t.palette.mode === 'dark' ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)', border: (t) => `1px solid ${t.palette.mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'}`, backdropFilter: 'blur(8px)' }}
             >
-              <Icon
-                icon={message.type === 'user' ? accountIcon : 'lucide:sparkles'}
-                width={12}
-                height={12}
-                color="white"
-              />
-            </Box>
-
-            <Typography
-              variant="caption"
-              sx={{
-                color: (themeVal) =>
-                  themeVal.palette.mode === 'dark'
-                    ? theme.palette.text.secondary
-                    : 'rgba(0, 0, 0, 0.7)',
-                fontSize: '0.75rem',
-                fontWeight: 500,
-                lineHeight: 1.2,
-                letterSpacing: '0.2px',
-              }}
-            >
-              {formatDate(message.createdAt)} • {formatTime(message.createdAt)}
-            </Typography>
-
-            {message.type === 'bot' &&
-              message.confidence &&
-              !isStreamingMessage &&
-              message.confidence.trim() !== '' && (
-                <Box
-                  sx={{
-                    px: 1.25,
-                    py: 0.25,
-                    borderRadius: 1.5,
-                    backgroundColor: (themeVal) => {
-                      const isHighConfidence = message.confidence === 'Very High';
-                      const baseColor = isHighConfidence
-                        ? themeVal.palette.success.main
-                        : themeVal.palette.warning.main;
-                      return themeVal.palette.mode === 'dark' ? `${baseColor}20` : `${baseColor}15`;
-                    },
-                    border: (themeVal) => {
-                      const isHighConfidence = message.confidence === 'Very High';
-                      const baseColor = isHighConfidence
-                        ? themeVal.palette.success.main
-                        : themeVal.palette.warning.main;
-                      return `1px solid ${themeVal.palette.mode === 'dark' ? `${baseColor}40` : `${baseColor}30`}`;
-                    },
-                  }}
-                >
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      color: (themeVal) => {
-                        const isHighConfidence = message.confidence === 'Very High';
-                        return isHighConfidence
-                          ? themeVal.palette.success.main
-                          : themeVal.palette.warning.main;
-                      },
-                      fontSize: '0.65rem',
-                      fontWeight: 500,
-                      lineHeight: 1,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.5px',
-                    }}
-                  >
+              <Box sx={{ width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '50%', backgroundColor: (t) => message.type === 'user' ? t.palette.primary.main : t.palette.success.main, flexShrink: 0, boxShadow: (t) => t.palette.mode === 'dark' ? '0 2px 8px rgba(0,0,0,0.4)' : '0 2px 8px rgba(0,0,0,0.15)' }}>
+                <Icon icon={message.type === 'user' ? accountIcon : 'lucide:sparkles'} width={12} height={12} color="white" />
+              </Box>
+              <Typography variant="caption" sx={{ color: (t) => t.palette.mode === 'dark' ? theme.palette.text.secondary : 'rgba(0,0,0,0.7)', fontSize: '0.75rem', fontWeight: 500, lineHeight: 1.2, letterSpacing: '0.2px' }}>
+                {formatDate(message.createdAt)} • {formatTime(message.createdAt)}
+              </Typography>
+              {message.type === 'bot' && message.confidence && !isStreamingMessage && message.confidence.trim() !== '' && (
+                <Box sx={{ px: 1.25, py: 0.25, borderRadius: 1.5, backgroundColor: (t) => { const c = message.confidence === 'Very High' ? t.palette.success.main : t.palette.warning.main; return t.palette.mode === 'dark' ? `${c}20` : `${c}15`; }, border: (t) => { const c = message.confidence === 'Very High' ? t.palette.success.main : t.palette.warning.main; return `1px solid ${t.palette.mode === 'dark' ? `${c}40` : `${c}30`}`; } }}>
+                  <Typography variant="caption" sx={{ color: (t) => message.confidence === 'Very High' ? t.palette.success.main : t.palette.warning.main, fontSize: '0.65rem', fontWeight: 500, lineHeight: 1, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                     {message.confidence}
                   </Typography>
                 </Box>
               )}
-          </Stack>
+            </Stack>
           </Box>
         )}
 
-        {/* Hide the message box if it's a streaming message with no content yet */}
         {!shouldHideMessage && (
           <Box sx={{ position: 'relative' }}>
             <Paper
               elevation={0}
-            sx={{
-              width: '100%',
-              maxWidth: message.type === 'user' ? '70%' : '90%',
-              p: message.type === 'user' ? 1.5 : 2,
-              ml: message.type === 'user' ? 'auto' : 0,
-              bgcolor: (themeVal) => {
-                if (message.type === 'user') {
-                  return themeVal.palette.mode === 'dark'
-                    ? 'rgba(33, 150, 243, 0.1)'
-                    : 'rgba(25, 118, 210, 0.08)';
-                }
-                return themeVal.palette.mode === 'dark'
-                  ? 'rgba(255, 255, 255, 0.02)'
-                  : 'rgba(0, 0, 0, 0.02)';
-              },
-              color: 'text.primary',
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: (themeVal) => {
-                if (message.type === 'user') {
-                  return themeVal.palette.mode === 'dark'
-                    ? alpha(themeVal.palette.primary.main, 0.4)
-                    : alpha(themeVal.palette.primary.main, 0.3);
-                }
-                return themeVal.palette.mode === 'dark'
-                  ? 'rgba(255, 255, 255, 0.1)'
-                  : 'rgba(0, 0, 0, 0.1)';
-              },
-              position: 'relative',
-              transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-              fontFamily:
-                '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-              boxShadow: (themeVal) =>
-                themeVal.palette.mode === 'dark'
-                  ? '0 4px 20px rgba(0, 0, 0, 0.15)'
-                  : '0 2px 12px rgba(0, 0, 0, 0.08)',
-              overflow: 'hidden', // Prevent content overflow
-              overflowWrap: 'break-word', // Break long words
-              '&:hover': {
-                borderColor: (themeVal) => {
-                  if (message.type === 'user') {
-                    return themeVal.palette.mode === 'dark'
-                      ? alpha(themeVal.palette.primary.main, 0.6)
-                      : alpha(themeVal.palette.primary.main, 0.5);
-                  }
-                  return themeVal.palette.mode === 'dark'
-                    ? 'rgba(255, 255, 255, 0.15)'
-                    : 'rgba(0, 0, 0, 0.15)';
+              sx={{
+                width: '100%',
+                maxWidth: message.type === 'user' ? '70%' : '90%',
+                p: message.type === 'user' ? 1.5 : 2,
+                ml: message.type === 'user' ? 'auto' : 0,
+                bgcolor: (t) => {
+                  if (message.type === 'user') return t.palette.mode === 'dark' ? 'rgba(33,150,243,0.1)' : 'rgba(25,118,210,0.08)';
+                  return t.palette.mode === 'dark' ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)';
                 },
-                boxShadow: (themeVal) =>
-                  themeVal.palette.mode === 'dark'
-                    ? '0 8px 32px rgba(0, 0, 0, 0.2)'
-                    : '0 4px 20px rgba(0, 0, 0, 0.12)',
-              },
-            }}
-          >
-            {message.type === 'bot' ? (
-              <StreamingContent
-                messageId={message.id}
-                fallbackContent={message.content}
-                fallbackCitations={message.citations || []}
-                onRecordClick={handleOpenRecordDetails}
-                aggregatedCitations={aggregatedCitations}
-                onViewPdf={handleViewPdf}
-              />
-            ) : (
-              <Box
-                sx={{
-                  fontSize: '14px',
-                  lineHeight: 1.6,
-                  letterSpacing: '0.1px',
-                  overflowWrap: 'break-word',
-                  fontFamily:
-                    '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-                  color: (themeVal) =>
-                    themeVal.palette.mode === 'dark'
-                      ? 'rgba(255, 255, 255, 0.95)'
-                      : 'rgba(0, 0, 0, 0.87)',
-                }}
-              >
-                <ReactMarkdown>{message.content}</ReactMarkdown>
-              </Box>
-            )}
-
-            {/* Use the new unified SourcesAndCitations component */}
-            <SourcesAndCitations
-              citations={message.citations || []}
-              aggregatedCitations={aggregatedCitations}
-              onRecordClick={handleOpenRecordDetails}
-              onViewPdf={handleViewPdf}
-              modelInfo={(message as any).modelInfo || null}
-            />
-
-            {message.type === 'bot' && !isStreamingMessage && (
-              <>
-                <Divider
-                  sx={{
-                    my: 2,
-                    borderColor: (themeVal) =>
-                      themeVal.palette.mode === 'dark'
-                        ? 'rgba(255, 255, 255, 0.08)'
-                        : 'rgba(0, 0, 0, 0.08)',
-                  }}
+                color: 'text.primary',
+                borderRadius: 3,
+                border: '1px solid',
+                borderColor: (t) => {
+                  if (message.type === 'user') return t.palette.mode === 'dark' ? alpha(t.palette.primary.main, 0.4) : alpha(t.palette.primary.main, 0.3);
+                  return t.palette.mode === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+                },
+                position: 'relative',
+                transition: 'all 0.3s cubic-bezier(0.4,0,0.2,1)',
+                fontFamily: '"Inter","SF Pro Display",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
+                boxShadow: (t) => t.palette.mode === 'dark' ? '0 4px 20px rgba(0,0,0,0.15)' : '0 2px 12px rgba(0,0,0,0.08)',
+                overflow: 'hidden',
+                overflowWrap: 'break-word',
+                '&:hover': {
+                  borderColor: (t) => {
+                    if (message.type === 'user') return t.palette.mode === 'dark' ? alpha(t.palette.primary.main, 0.6) : alpha(t.palette.primary.main, 0.5);
+                    return t.palette.mode === 'dark' ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)';
+                  },
+                  boxShadow: (t) => t.palette.mode === 'dark' ? '0 8px 32px rgba(0,0,0,0.2)' : '0 4px 20px rgba(0,0,0,0.12)',
+                },
+              }}
+            >
+              {message.type === 'bot' ? (
+                <StreamingContent
+                  messageId={message.id}
+                  fallbackContent={message.content}
+                  fallbackCitations={message.citations || []}
+                  onRecordClick={handleOpenRecordDetails}
+                  aggregatedCitations={aggregatedCitations}
+                  onViewPdf={handleViewPdf}
                 />
-                <Stack direction="row" spacing={1.5} alignItems="center">
-                  {showRegenerate && (
-                    <>
-                      <IconButton
-                        onClick={() => onRegenerate(message.id)}
-                        size="small"
-                        sx={{
-                          borderRadius: 1.5,
-                          p: 1,
-                          backgroundColor: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? 'rgba(255, 255, 255, 0.05)'
-                              : 'rgba(0, 0, 0, 0.04)',
-                          border: (themeVal) =>
-                            `1px solid ${
-                              themeVal.palette.mode === 'dark'
-                                ? 'rgba(255, 255, 255, 0.1)'
-                                : 'rgba(0, 0, 0, 0.08)'
-                            }`,
-                          '&:hover': {
-                            backgroundColor: (themeVal) =>
-                              themeVal.palette.mode === 'dark'
-                                ? 'rgba(255, 255, 255, 0.08)'
-                                : 'rgba(0, 0, 0, 0.06)',
-                          },
-                        }}
-                      >
-                        <Icon
-                          icon={refreshIcon}
-                          width={16}
-                          height={16}
-                        />
-                      </IconButton>
-                      <MessageFeedback
-                        messageId={message.id}
-                        conversationId={conversationId}
-                        onFeedbackSubmit={onFeedbackSubmit}
-                      />
-                    </>
-                  )}
-                </Stack>
-              </>
-            )}
-          </Paper>
+              ) : (
+                <Box sx={{ fontSize: '14px', lineHeight: 1.6, letterSpacing: '0.1px', overflowWrap: 'break-word', fontFamily: '"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', color: (t) => t.palette.mode === 'dark' ? 'rgba(255,255,255,0.95)' : 'rgba(0,0,0,0.87)' }}>
+                  <ReactMarkdown>{message.content}</ReactMarkdown>
+                </Box>
+              )}
+
+              <SourcesAndCitations
+                citations={message.citations || []}
+                aggregatedCitations={aggregatedCitations}
+                onRecordClick={handleOpenRecordDetails}
+                onViewPdf={handleViewPdf}
+                modelInfo={(message as any).modelInfo || null}
+              />
+
+              {message.type === 'bot' && !isStreamingMessage && (
+                <>
+                  <Divider sx={{ my: 2, borderColor: (t) => t.palette.mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)' }} />
+                  <Stack direction="row" spacing={1.5} alignItems="center">
+                    {showRegenerate && (
+                      <>
+                        <IconButton
+                          onClick={() => onRegenerate(message.id)}
+                          size="small"
+                          sx={{ borderRadius: 1.5, p: 1, backgroundColor: (t) => t.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)', border: (t) => `1px solid ${t.palette.mode === 'dark' ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'}`, '&:hover': { backgroundColor: (t) => t.palette.mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' } }}
+                        >
+                          <Icon icon={refreshIcon} width={16} height={16} />
+                        </IconButton>
+                        <MessageFeedback messageId={message.id} conversationId={conversationId} onFeedbackSubmit={onFeedbackSubmit} />
+                      </>
+                    )}
+                  </Stack>
+                </>
+              )}
+            </Paper>
           </Box>
         )}
 
@@ -1583,31 +963,15 @@ const ChatMessage = React.memo(
           onClose={handleCloseRecordDetails}
           maxWidth="md"
           fullWidth
-          PaperProps={{
-            sx: {
-              borderRadius: 3,
-              bgcolor: (themeVal) =>
-                themeVal.palette.mode === 'dark'
-                  ? 'rgba(18, 18, 18, 0.95)'
-                  : 'rgba(255, 255, 255, 0.95)',
-              backdropFilter: 'blur(12px)',
-            },
-          }}
+          PaperProps={{ sx: { borderRadius: 3, bgcolor: (t) => t.palette.mode === 'dark' ? 'rgba(18,18,18,0.95)' : 'rgba(255,255,255,0.95)', backdropFilter: 'blur(12px)' } }}
         >
-          <DialogTitle
-            sx={{
-              fontFamily:
-                '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-              fontWeight: 600,
-            }}
-          >
+          <DialogTitle sx={{ fontFamily: '"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif', fontWeight: 600 }}>
             Record Details
           </DialogTitle>
           <DialogContent>
             {selectedRecord && <RecordDetails recordId={selectedRecord.recordId} />}
           </DialogContent>
         </Dialog>
-
       </Box>
     );
   },

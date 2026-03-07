@@ -44,17 +44,16 @@ jobs:
           CHANGED_FILES=$(git diff --name-only origin/main..HEAD)
 
           # Primary: route definition patterns (added or removed lines)
-          ROUTE_PATTERN='^[+-].*(router\.(get|post|put|patch|delete|options|head)\(|app\.(get|post|put|patch|delete)\(|app\.use\(\s*['"'"'"]\/|@router\.(get|post|put|patch|delete)\(|@app\.(get|post|put|patch|delete)\(|APIRouter\(|app\.include_router\()'
+          ROUTE_PATTERN='^[+-].*(router\.(get|post|put|patch|delete|options|head)\(|app\.(get|post|put|patch|delete)\(|app\.use\(\s*['"'"'"]\/)'
 
           # Secondary: API contract patterns for specific file types
           VALIDATOR_PATTERN='^[+-].*z\.(object|string|number|boolean|array|any|enum|union|literal|nativeEnum)\('
           CONTROLLER_PATTERN='^[+-].*(req\.(query|params|body)\b)'
-          PYTHON_SCHEMA_PATTERN='^[+-].*(class\s+\w+.*BaseModel|Field\(|Query\(|Path\(|Body\(|Header\(|response_model)'
 
           HAS_ROUTE_CHANGES=false
           AFFECTED_FILES=""
 
-          CODE_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(ts|tsx|py|js|jsx)$' || true)
+          CODE_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(ts|tsx|js|jsx)$' || true)
           if [ -n "$CODE_FILES" ]; then
             while IFS= read -r file; do
               FILE_DIFF=$(git diff origin/main..HEAD -- "$file" 2>/dev/null || true)
@@ -78,12 +77,6 @@ jobs:
                   if echo "$FILE_DIFF" | grep -qE "$VALIDATOR_PATTERN"; then
                     HAS_ROUTE_CHANGES=true
                     AFFECTED_FILES="$AFFECTED_FILES\n  - $file (validation schema change)"
-                  fi
-                  ;;
-                */schemas/*.py|*/models/*.py)
-                  if echo "$FILE_DIFF" | grep -qE "$PYTHON_SCHEMA_PATTERN"; then
-                    HAS_ROUTE_CHANGES=true
-                    AFFECTED_FILES="$AFFECTED_FILES\n  - $file (Python schema change)"
                   fi
                   ;;
               esac

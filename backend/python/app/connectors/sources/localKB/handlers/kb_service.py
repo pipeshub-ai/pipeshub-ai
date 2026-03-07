@@ -1897,7 +1897,6 @@ class KnowledgeBaseService:
             if parent_info is not None:
                 deleted = await self.graph_provider.delete_parent_child_edge_to_record(
                     record_id=record_id,
-                    collection=CollectionNames.RECORD_RELATIONS.value,
                     transaction=txn_id,
                 )
                 if not deleted:

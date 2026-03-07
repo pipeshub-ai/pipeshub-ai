@@ -16554,54 +16554,6 @@ class BaseArangoService:
             self.logger.error(f"Failed to get agent: {str(e)}")
             return None
 
-    async def check_toolset_in_use(self, toolset_name: str, user_id: str) -> List[str]:
-        """
-        Check if a toolset is currently in use by any active agents.
-
-        Args:
-            toolset_name: Normalized toolset name
-            user_id: User ID who owns the toolset
-
-        Returns:
-            List of agent names that are using the toolset. Empty list if not in use.
-        """
-        try:
-            # Find toolset nodes
-            toolset_query = f"""
-            FOR ts IN {CollectionNames.AGENT_TOOLSETS.value}
-                FILTER ts.name == @name AND ts.userId == @user_id
-                RETURN ts._id
-            """
-            cursor = self.db.aql.execute(toolset_query, bind_vars={
-                "name": toolset_name,
-                "user_id": user_id
-            })
-            toolset_ids = list(cursor)
-
-            if not toolset_ids:
-                return []
-
-            # Check for active agents using this toolset
-            agent_query = f"""
-            FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
-                FILTER edge._to IN @toolset_ids
-                LET agent = DOCUMENT(edge._from)
-                FILTER agent != null AND agent.isDeleted != true AND agent.deleted != true
-                RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
-            """
-            agent_cursor = self.db.aql.execute(agent_query, bind_vars={"toolset_ids": toolset_ids})
-            agents = list(agent_cursor)
-
-            if agents:
-                agent_names = list(set(a.get("agentName", "Unknown") for a in agents))
-                return agent_names
-
-            return []
-
-        except Exception as e:
-            self.logger.error(f"Failed to check toolset usage: {str(e)}")
-            raise
-
     async def get_all_agents(self, user_id: str, org_id: str) -> List[Dict]:
         """Get all agents accessible to a user via individual, team, or org access - flattened response with deduplication"""
         try:

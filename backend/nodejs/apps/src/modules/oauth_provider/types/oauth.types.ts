@@ -195,6 +195,15 @@ export interface OAuthErrorResponse {
   state?: string
 }
 
+// OAuth Protected Resource Metadata (RFC 9728)
+export interface OAuthProtectedResourceMetadata {
+  resource: string
+  authorization_servers: string[]
+  scopes_supported: string[]
+  bearer_methods_supported: string[]
+  resource_documentation?: string
+}
+
 // OIDC Discovery Response
 export interface OpenIDConfiguration {
   issuer: string

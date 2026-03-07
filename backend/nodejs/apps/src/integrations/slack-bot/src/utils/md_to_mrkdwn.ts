@@ -20,25 +20,7 @@
  * Code spans and code blocks are protected from transformation.
  */
 
-/**
- * Decode HTML numeric and named entities to their character equivalents.
- * Handles &#xNN; (hex), &#NN; (decimal), and common named entities.
- */
-export function decodeHtmlEntities(text: string): string {
-  if (!text) return text;
-  return text.replace(/&(#?)(x?)([0-9a-zA-Z]+);/g, (_m, hash, hex, code) => {
-    if (!hash) {
-      const named: Record<string, string> = {
-        amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
-        nbsp: " ", copy: "\u00A9", reg: "\u00AE", euro: "\u20AC",
-      };
-      return named[code.toLowerCase()] ?? `&${code};`;
-    }
-    const num = hex ? parseInt(code, 16) : parseInt(code, 10);
-    if (Number.isFinite(num)) return String.fromCharCode(num);
-    return "";
-  });
-}
+
 
 interface ConvertOptions {
     /** Preserve original link markdown instead of converting to Slack format */
@@ -216,7 +198,6 @@ interface ConvertOptions {
     if (!markdown) return "";
     markdown = markdown.replace(/\\n/g, "\n");
 
-  
     // ── Step 1: Extract and protect code blocks & inline code ──────────
     // We replace them with placeholders so regex transforms don't touch them.
   
@@ -227,7 +208,11 @@ interface ConvertOptions {
       placeholders.push(content);
       return `\x00PLACEHOLDER_${idx}\x00`;
     }
-  
+    
+    markdown = markdown.replace(/&amp;/g, '&amp;amp;');
+    markdown = markdown.replace(/&lt;/g, '&amp;lt;');
+    markdown = markdown.replace(/&gt;/g, '&amp;gt;');
+
     // Protect fenced code blocks (``` ... ```)
     let text = markdown.replace(
       /```(\w*)\n([\s\S]*?)```/g,
@@ -243,7 +228,12 @@ interface ConvertOptions {
     // Slack has no table syntax, so we render as an aligned code block.
   
     text = convertTables(text, placeholder, tableMode);
-  
+
+    // ── Step 1c: Escape &, <, > for Slack ──────────────────────────────
+    // Run AFTER code/table extraction so content inside backticks and
+    // code fences is not escaped.
+    text = escapeForSlack(text);
+
     // ── Step 2: Line-level transformations ─────────────────────────────
   
     const lines = text.split("\n");
@@ -332,11 +322,14 @@ interface ConvertOptions {
     text = text.replace(/<\/?(br|p|div|span|em|strong|b|i|u|s|del|hr)\s*\/?>/gi, "");
   
     // ── Step 4: Restore placeholders ───────────────────────────────────
-  
-    text = text.replace(/\x00PLACEHOLDER_(\d+)\x00/g, (_m, idx) => placeholders[+idx] ?? "");
-  
-    // ── Step 4b: Decode any HTML entities ──────────────────────────────────────────
-    text = decodeHtmlEntities(text);
+
+    // Loop to resolve nested placeholders (e.g. bold wrapping inline code)
+    // Max iterations prevent infinite loop if placeholder content contains placeholder pattern
+    let placeholderIterations = 0;
+    while (/\x00PLACEHOLDER_(\d+)\x00/.test(text) && placeholderIterations < 50) {
+      text = text.replace(/\x00PLACEHOLDER_(\d+)\x00/g, (_m, idx) => placeholders[+idx] ?? "");
+      placeholderIterations++;
+    }
   
     // ── Step 5: Clean up excess blank lines ────────────────────────────
   
@@ -410,20 +403,58 @@ export function markdownToText(md: string): string {
   // 15) Remove any remaining HTML tags
   s = s.replace(/<\/?[^>]+(>|$)/g, "");
 
-  // 16) Decode HTML entities (common ones + numeric)
-  s = decodeHtmlEntities(s);
 
-  // 17) Remove leftover backticks, tildes, and excessive punctuation leftover
   s = s.replace(/[`~]{1,}/g, "");
 
-  // 18) Collapse multiple blank lines to maximum two
   s = s.replace(/\n{3,}/g, "\n\n");
 
-  // 19) Trim whitespace on each line and overall
   s = s.split("\n").map(line => line.trimEnd()).join("\n").trim();
 
-  // 20) Final cleanup: collapse multiple spaces
   s = s.replace(/[ \t]{2,}/g, " ");
 
+  s = s.replace(/&amp;/g, '&amp;amp;');
+  s = s.replace(/&lt;/g, '&amp;lt;');
+  s = s.replace(/&gt;/g, '&amp;gt;');
+  s = escapeForSlack(s);
+
   return s;
+}
+
+
+/**
+ * Escapes &, <, and > for Slack text formatting,
+ * but only when they appear standalone — not as part of
+ * existing HTML entities, Slack special syntax, or markdown constructs.
+ */
+export function escapeForSlack(text: string): string {
+ 
+
+
+  // 1. Escape standalone `&` (not already part of an HTML entity like &amp; &lt; &#123; &#x1F; etc.)
+  text = text.replace(/&(?!amp;|lt;|gt;|#\d+;|#x[0-9a-fA-F]+;|\w+;)/g, '&amp;');
+
+  // 2. Escape standalone `<` (not part of Slack special syntax like <url>, <@U123>, <#C123>, <!here>)
+  text = text.replace(/<(?!(?:https?:\/\/|mailto:|tel:)[^>]*>|[@#!][^>]*>)/g, '&lt;');
+
+  // 3. Escape standalone `>` (not closing a Slack special syntax block, and not a blockquote marker at line start)
+  //    We protect Slack links/mentions first, then escape remaining `>`
+  text = text.replace(
+    /(?<=^|\n)>(?=\s)/g,   // preserve blockquote `> ` at start of line — temp marker
+    '\0BLOCKQUOTE\0'
+  );
+
+  // Protect closing `>` of Slack special syntax: <...>
+  // We re-scan for valid Slack tokens and protect their closing `>`
+  text = text.replace(
+    /(<(?:https?:\/\/|mailto:|tel:)[^>]*|<[@#!][^>]*)>/g,
+    '$1\0SLACKCLOSE\0'
+  );
+
+  text = text.replace(/>/g, '&gt;');
+
+  // Restore protected sequences
+  text = text.replace(/\0BLOCKQUOTE\0/g, '>');
+  text = text.replace(/\0SLACKCLOSE\0/g, '>');
+
+  return text;
 }

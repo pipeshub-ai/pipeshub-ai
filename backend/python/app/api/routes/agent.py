@@ -1800,7 +1800,9 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
 @router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
-    """Delete an agent"""
+    """Delete an agent using a transaction to ensure atomicity"""
+    txn_id = None
+    services = None
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
@@ -1815,18 +1817,70 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent.get("can_delete", False):
             raise PermissionDeniedError("delete this agent (only owner can delete)")
 
-        result = await services["graph_provider"].delete_agent(agent_id, user_doc["_key"], org_key)
-        if not result:
+        # Begin transaction for atomic deletion
+        txn_id = await services["graph_provider"].begin_transaction(
+            read=[
+                CollectionNames.AGENT_INSTANCES.value,
+                CollectionNames.AGENT_TOOLSETS.value,
+                CollectionNames.AGENT_TOOLS.value,
+                CollectionNames.AGENT_KNOWLEDGE.value,
+            ],
+            write=[
+                CollectionNames.AGENT_INSTANCES.value,
+                CollectionNames.AGENT_TOOLSETS.value,
+                CollectionNames.AGENT_TOOLS.value,
+                CollectionNames.AGENT_KNOWLEDGE.value,
+                CollectionNames.AGENT_HAS_TOOLSET.value,
+                CollectionNames.AGENT_HAS_KNOWLEDGE.value,
+                CollectionNames.TOOLSET_HAS_TOOL.value,
+                CollectionNames.PERMISSION.value,
+            ],
+        )
+        services["logger"].debug(f"🔄 Started transaction {txn_id} for agent deletion")
+
+        # Use hard delete to completely remove agent and all related nodes/edges
+        result = await services["graph_provider"].hard_delete_agent(agent_id, transaction=txn_id)
+        if not result or result.get("agents_deleted", 0) == 0:
+            if txn_id is not None:
+                await services["graph_provider"].rollback_transaction(txn_id)
             raise HTTPException(status_code=500, detail="Failed to delete agent")
+
+        # Commit transaction on success
+        await services["graph_provider"].commit_transaction(txn_id)
+        services["logger"].info(f"✅ Successfully deleted agent {agent_id} in transaction {txn_id}")
 
         return JSONResponse(
             status_code=200,
-            content={"status": "success", "message": "Agent deleted successfully"}
+            content={
+                "status": "success",
+                "message": "Agent deleted successfully",
+                "deleted": {
+                    "agents": result.get("agents_deleted", 0),
+                    "toolsets": result.get("toolsets_deleted", 0),
+                    "tools": result.get("tools_deleted", 0),
+                    "knowledge": result.get("knowledge_deleted", 0),
+                    "edges": result.get("edges_deleted", 0)
+                }
+            }
         )
     except HTTPException:
+        if txn_id is not None and services is not None:
+            try:
+                await services["graph_provider"].rollback_transaction(txn_id)
+                services["logger"].debug(f"🔄 Rolled back transaction {txn_id} due to HTTPException")
+            except Exception as rb_err:
+                if services is not None:
+                    services["logger"].warning(f"⚠️ Failed to rollback transaction {txn_id}: {rb_err}")
         raise
     except Exception as e:
-        services["logger"].error(f"Error deleting agent: {e}", exc_info=True)
+        if txn_id is not None and services is not None:
+            try:
+                await services["graph_provider"].rollback_transaction(txn_id)
+                services["logger"].debug(f"🔄 Rolled back transaction {txn_id} due to error")
+            except Exception as rb_err:
+                services["logger"].warning(f"⚠️ Failed to rollback transaction {txn_id}: {rb_err}")
+        if services is not None:
+            services["logger"].error(f"Error deleting agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
