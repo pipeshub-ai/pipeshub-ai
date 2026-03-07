@@ -300,6 +300,7 @@ export const streamChat =
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
+        conversationId: savedConversation._id?.toString() || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -1339,6 +1340,7 @@ export const addMessageStream =
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
+        conversationId: conversationId || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -2590,6 +2592,7 @@ async function regenerateAnswersInternal(
       modelName: req.body.modelName || null,
       modelFriendlyName: req.body.modelFriendlyName || null,
       chatMode: req.body.chatMode || 'quick',
+      conversationId: conversationId || null,
     };
 
     const aiCommandOptions: AICommandOptions = {
