@@ -15,8 +15,17 @@ Install:
 import random
 import time
 from dataclasses import dataclass
-from typing import Any, Literal, Optional, cast
+from typing import Literal, Optional
 from urllib.parse import urlparse
+
+# ---------------------------------------------------------------------------
+# HTTP status constants
+# ---------------------------------------------------------------------------
+HTTP_STATUS_OK = 200
+HTTP_STATUS_BAD_REQUEST = 400
+HTTP_STATUS_FORBIDDEN = 403
+HTTP_STATUS_CLIENT_ERROR_MAX = 500
+
 
 # ---------------------------------------------------------------------------
 # Response wrapper (unified across all strategies)
@@ -31,9 +40,7 @@ class FetchResult:
     url: str
     strategy: str  # which strategy succeeded
 
-    def json(self):
-        import json
-        return json.loads(self.text)
+
 
 
 class FetchError(Exception):
@@ -133,7 +140,7 @@ def _try_curl_cffi(
 
                 resp = session.get(url, headers=headers, allow_redirects=True)
 
-                if resp.status_code == 200:
+                if resp.status_code == HTTP_STATUS_OK:
                     return FetchResult(
                         status_code=resp.status_code,
                         text=resp.text,
@@ -144,12 +151,12 @@ def _try_curl_cffi(
                     )
 
                 # 403 → try next profile
-                if resp.status_code == 403:
+                if resp.status_code == HTTP_STATUS_FORBIDDEN:
                     print(f"403 error for {url} with profile {profile}")
                     continue
 
                 # Other non-retryable errors
-                if 400 <= resp.status_code < 500:
+                if HTTP_STATUS_BAD_REQUEST <= resp.status_code < HTTP_STATUS_CLIENT_ERROR_MAX:
                     return FetchResult(
                         status_code=resp.status_code,
                         text=resp.text,
@@ -182,7 +189,7 @@ def _try_cloudscraper(url: str, headers: dict, timeout: int) -> Optional[FetchRe
         )
         resp = scraper.get(url, headers=headers, timeout=timeout, allow_redirects=True)
 
-        if resp.status_code == 200:
+        if resp.status_code == HTTP_STATUS_OK:
             return FetchResult(
                 status_code=resp.status_code,
                 text=resp.text,
@@ -221,7 +228,7 @@ def _try_requests(url: str, headers: dict, timeout: int) -> Optional[FetchResult
 
         resp = session.get(url, timeout=timeout, allow_redirects=True)
 
-        if resp.status_code == 200:
+        if resp.status_code == HTTP_STATUS_OK:
             return FetchResult(
                 status_code=resp.status_code,
                 text=resp.text,
@@ -338,47 +345,3 @@ def fetch_url(
     )
 
 
-# ---------------------------------------------------------------------------
-# Fetcher class (for repeated fetches with connection reuse)
-# ---------------------------------------------------------------------------
-
-class Fetcher:
-    """Session-based fetcher for batch operations. Reuses connections."""
-
-    def __init__(self, timeout: int = 15, max_retries: int = 2, verbose: bool = False) -> None:
-        self.timeout = timeout
-        self.max_retries = max_retries
-        self.verbose = verbose
-
-    def fetch(self, url: str, **kwargs) -> FetchResult:
-        kwargs.setdefault("timeout", self.timeout)
-        kwargs.setdefault("max_retries", self.max_retries)
-        kwargs.setdefault("verbose", self.verbose)
-        return fetch_url(url, **kwargs)
-
-    def fetch_many(
-        self,
-        urls: list[str],
-        *,
-        delay: float = 1.0,
-        **kwargs,
-    ) -> list[FetchResult | FetchError]:
-        """Fetch multiple URLs sequentially with a delay between each."""
-        results = []
-        for i, url in enumerate(urls):
-            try:
-                result = self.fetch(url, **kwargs)
-                results.append(result)
-            except FetchError as e:
-                results.append(e)
-
-            if i < len(urls) - 1 and delay > 0:
-                time.sleep(delay + random.uniform(0, 0.5))
-
-        return results
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass

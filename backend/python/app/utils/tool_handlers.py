@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from app.utils.image_utils import _fetch_image_as_base64, supported_mime_types
 from app.utils.logger import create_logger
+
 logger = create_logger(__name__)
 
 
@@ -31,7 +32,7 @@ class ToolResultType(str, Enum):
 class ToolResultHandler(ABC):
     """
     Base class for tool result handlers.
-    
+
     Each handler defines how to:
     1. format_message: Convert tool result to LLM-consumable format
     2. post_process: Optional processing (e.g., token counting, retrieval)
@@ -42,11 +43,11 @@ class ToolResultHandler(ABC):
     async def format_message(self, tool_result: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Format tool result for ToolMessage content.
-        
+
         Args:
             tool_result: Raw result from tool execution
             context: Execution context (message_contents, etc.)
-            
+
         Returns:
             Dict to be JSON-serialized as ToolMessage content
         """
@@ -55,12 +56,12 @@ class ToolResultHandler(ABC):
     def extract_records(self, tool_result: Dict[str, Any], org_id: Optional[str]=None) -> List[Dict[str, Any]]:
         """
         Extract records from tool result for citation tracking.
-        
+
         Override this if your tool returns records that need citation handling.
-        
+
         Args:
             tool_result: Raw result from tool execution
-            
+
         Returns:
             List of record dicts, empty list if no records
         """
@@ -69,7 +70,7 @@ class ToolResultHandler(ABC):
     def needs_token_management(self) -> bool:
         """
         Whether this handler's results need token counting/management.
-        
+
         Override to return True if results may exceed context limits
         and need retrieval service fallback.
         """
@@ -220,7 +221,7 @@ class UrlContentHandler(ToolResultHandler):
                 img_uri = block.url
 
                 if img_uri:
-                    
+
                     if img_uri.startswith("data:image/"):
                         mime_type = img_uri.split(";")[0].split(":")[1]
                         image_base64 = img_uri.split(",")[1]
@@ -289,7 +290,7 @@ content: {block.content}'''
 class ToolHandlerRegistry:
     """
     Registry for tool result handlers.
-    
+
     Provides dispatch mechanism for handling different tool result types.
     Falls back to ContentHandler for unknown types.
     """
@@ -301,7 +302,7 @@ class ToolHandlerRegistry:
     def register(cls, result_type: str, handler: ToolResultHandler) -> None:
         """
         Register a handler for a result type.
-        
+
         Args:
             result_type: The result_type string tools will return
             handler: Handler instance for this type
@@ -313,15 +314,15 @@ class ToolHandlerRegistry:
     def get_handler(cls, tool_result: Dict[str, Any]) -> ToolResultHandler:
         """
         Get appropriate handler for a tool result.
-        
+
         Determines handler by:
         1. Explicit 'result_type' key in tool_result (preferred)
         2. Presence of known keys ('records', 'web_results') for backwards compatibility
         3. Falls back to default ContentHandler
-        
+
         Args:
             tool_result: The tool's output dict
-            
+
         Returns:
             Appropriate ToolResultHandler instance
         """

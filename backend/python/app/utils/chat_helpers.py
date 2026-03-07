@@ -36,8 +36,8 @@ from app.modules.qna.prompt_templates import (
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
-from app.utils.logger import create_logger
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.logger import create_logger
 
 valid_group_labels = [
         GroupType.LIST.value,
@@ -1661,7 +1661,6 @@ Record blocks (sorted):\n\n"""
                     data = corresponding_block_group.get("data", {})
 
                     if block_type == GroupType.TABLE.value:
-                        table_summary = data.get("table_summary", "") if isinstance(data, dict) else str(data)
 
                         children = corresponding_block_group.get("children")
                         rows_to_be_included_list = []
@@ -1986,7 +1985,7 @@ def build_message_content_array(flattened_results: list[dict[str, Any]], virtual
                 continue
         else:
             continue
-    
+
     content.append({
         "type": "text",
         "text": "</record>"

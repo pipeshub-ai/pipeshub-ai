@@ -3,9 +3,12 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 from langchain_community.tools import DuckDuckGoSearchResults
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
+from app.utils.logger import create_logger
+
+logger = create_logger(__name__)
 
 class WebSearchArgs(BaseModel):
     """Arguments for web search tool."""
@@ -85,7 +88,7 @@ def _search_with_tavily(query: str, config: Dict[str, Any]) -> List[Dict[str, An
 def create_web_search_tool(
     url_counter: Optional[Dict[str, int]] = None,
     config: Optional[Dict[str, Any]] = None,
-):
+) -> BaseTool:
     """
     Factory function to create web search tool.
 
@@ -134,9 +137,9 @@ def create_web_search_tool(
         """
         try:
             results = search_func(query, provider_config)
+            logger.info(f"Got web search results using {provider}: {len(results)} results")
             url_counter["count"] += 1
             url_number = url_counter["count"]
-            print(f"Web search results using {provider}: ", results)
             return {
                 "ok": True,
                 "result_type": "web_search",

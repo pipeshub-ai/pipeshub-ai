@@ -3,14 +3,16 @@ import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-import requests
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
 from app.utils.html_to_blocks import html_to_blocks
-from app.utils.url_fetcher import FetchError, fetch_url
+from app.utils.url_fetcher import fetch_url
 
 logger = logging.getLogger(__name__)
+
+HTTP_STATUS_OK = 200
+
 
 class FetchUrlArgs(BaseModel):
     """Arguments for fetch URL tool."""
@@ -72,10 +74,13 @@ def split_long_text(text: str, max_words: int = 200) -> List[str]:
 
 
 
-def create_fetch_url_tool(url_counter: Optional[Dict[str, int]] = None,is_multimodal_llm: bool = False):
+def create_fetch_url_tool(
+    url_counter: Optional[Dict[str, int]] = None,
+    is_multimodal_llm: bool = False,
+) -> BaseTool:
     """
     Factory function to create fetch URL tool.
-    
+
     Args:
         url_counter: Shared counter dict to track URL numbers across multiple calls.
                     Pass {"count": 0} to track W1, W2, W3, etc.
@@ -87,11 +92,11 @@ def create_fetch_url_tool(url_counter: Optional[Dict[str, int]] = None,is_multim
     def fetch_url_tool(url: str) -> Dict[str, Any]:
         """
         This tool Fetches and extracts main content from a URL for detailed analysis.
-        
+
         Use this tool when you need the full content from a specific webpage to answer the query accurately. If multiple URLs are available, select the ones most likely to contain the required information and invoke the tool separately for each selected URL.
 
         The content is returned as array of blocks.
-        
+
         Args:
             url: The URL to fetch content from (must be HTTP/HTTPS)
 
@@ -114,7 +119,7 @@ def create_fetch_url_tool(url_counter: Optional[Dict[str, int]] = None,is_multim
 
             response = fetch_url(url,verbose=True)
 
-            if response.status_code != 200:
+            if response.status_code != HTTP_STATUS_OK:
                 return {
                     "ok": False,
                     "error": f"{response.text}, status: {response.status_code}"
