@@ -109,11 +109,11 @@ export class Logger {
         }),
         ...(process.env.NODE_ENV !== 'production'
           ? [new winston.transports.Console({
-            format: winston.format.combine(
-              winston.format.colorize(),
-              logFormat
-            )
-          })]
+              format: winston.format.combine(
+                winston.format.colorize(),
+                logFormat
+              )
+            })]
           : []),
       ],
     });
