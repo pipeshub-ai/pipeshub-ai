@@ -1096,7 +1096,7 @@ class Neo4jProvider(IGraphDBProvider):
                 grouped_edges[key].append(edge)
 
             # Process each group separately
-            for (from_label, to_label, edge_type), group_edges in grouped_edges.items():
+            for (from_label, to_label, _edge_type), group_edges in grouped_edges.items():
                 query = f"""
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_id}})
@@ -1421,12 +1421,11 @@ class Neo4jProvider(IGraphDBProvider):
             Optional[List[Dict]]: Query results
         """
         try:
-            results = await self.client.execute_query(
+            return await self.client.execute_query(
                 query,
                 parameters=bind_vars or {},
                 txn_id=transaction
             )
-            return results
         except Exception as e:
             self.logger.error(f"❌ Query execution failed: {str(e)}")
             raise
@@ -9048,7 +9047,7 @@ class Neo4jProvider(IGraphDBProvider):
 
     def _populate_file_destinations(self, folder_analysis: Dict, folder_map: Dict[str, str]) -> None:
         """Update file destinations with resolved folder IDs"""
-        for index, destination in folder_analysis["file_destinations"].items():
+        for _index, destination in folder_analysis["file_destinations"].values():
             if destination["type"] == "folder":
                 hierarchy_path = destination["folder_hierarchy_path"]
                 if hierarchy_path in folder_map:
@@ -9275,7 +9274,7 @@ class Neo4jProvider(IGraphDBProvider):
             timestamp = get_epoch_timestamp_in_ms()
 
             # Construct the payload matching the Node.js NewRecordEvent interface
-            payload = {
+            return {
                 "orgId": record_doc.get("orgId"),
                 "recordId": record_id,
                 "recordName": record_doc.get("recordName"),
@@ -9290,7 +9289,6 @@ class Neo4jProvider(IGraphDBProvider):
                 "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
             }
 
-            return payload
         except Exception:
             self.logger.error(
                 f"❌ Failed to publish NewRecordEvent for record_id: {record_doc.get('_key', 'N/A')}",
@@ -11016,10 +11014,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Get available filters from all records
             available_filters = {
-                "recordTypes": list(set([r.get("recordType") for r in all_records if r.get("recordType")])),
-                "origins": list(set([r.get("origin") for r in all_records if r.get("origin")])),
-                "connectors": list(set([r.get("connectorName") for r in all_records if r.get("connectorName")])),
-                "indexingStatus": list(set([r.get("indexingStatus") for r in all_records if r.get("indexingStatus")]))
+                "recordTypes": list({[r.get("recordType") for r in all_records if r.get("recordType")]}),
+                "origins": list({[r.get("origin") for r in all_records if r.get("origin")]}),
+                "connectors": list({[r.get("connectorName") for r in all_records if r.get("connectorName")]}),
+                "indexingStatus": list({[r.get("indexingStatus") for r in all_records if r.get("indexingStatus")]})
             }
 
             # Build response
@@ -11232,10 +11230,10 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Get available filters from all records
             available_filters = {
-                "recordTypes": list(set([r.get("recordType") for r in all_records if r.get("recordType")])),
-                "origins": list(set([r.get("origin") for r in all_records if r.get("origin")])),
-                "connectors": list(set([r.get("connectorName") for r in all_records if r.get("connectorName")])),
-                "indexingStatus": list(set([r.get("indexingStatus") for r in all_records if r.get("indexingStatus")]))
+                "recordTypes": list({[r.get("recordType") for r in all_records if r.get("recordType")]}),
+                "origins": list({[r.get("origin") for r in all_records if r.get("origin")]}),
+                "connectors": list({[r.get("connectorName") for r in all_records if r.get("connectorName")]}),
+                "indexingStatus": list({[r.get("indexingStatus") for r in all_records if r.get("indexingStatus")]})
             }
 
             # Build response
@@ -11517,8 +11515,7 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters={"from_id": from_id, "relationship_types": relationship_types},
                 txn_id=transaction
             )
-            total = sum(row.get("deleted_count", 0) for row in results) if results else 0
-            return total
+            return sum(row.get("deleted_count", 0) for row in results) if results else 0
         except Exception as e:
             self.logger.error(f"❌ Delete edges by relationship types failed: {str(e)}")
             return 0
@@ -11958,8 +11955,7 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters={"record_id": record_id, "parent_val": parent_val},
                 txn_id=transaction
             )
-            updated = results[0].get("updated", False) if results else False
-            return updated
+            return results[0].get("updated", False) if results else False
         except Exception as e:
             self.logger.error(f"❌ Update record external parent ID failed for {record_id}: {str(e)}")
             raise
@@ -15392,8 +15388,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results:
-                agent_names = list(set(r.get("agentName", "Unknown") for r in results if r))
-                return agent_names
+                return list({r.get("agentName", "Unknown") for r in results if r})
 
             return []
 
@@ -17015,7 +17010,7 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to update agent template: %s", str(e))
             return False
 
-    async def get_app_creator_user(self, connector_id: str, transaction: Optional[str] = None) -> Optional[User]:
+    async def get_app_creator_user(self, connector_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
         """
         Get the creator user for an app by connectorId.
         """
@@ -17023,7 +17018,13 @@ class Neo4jProvider(IGraphDBProvider):
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
             if app is None:
                 return None
-            return app.get("createdBy")
+            user_id = app.get("createdBy")
+            if user_id is None:
+                return None
+            user  =  await self.get_user_by_user_id(user_id)
+            if user is None:
+                return None
+            return user
         except Exception as e:
             self.logger.error("❌ Failed to get app creator user: %s", str(e))
             return None
