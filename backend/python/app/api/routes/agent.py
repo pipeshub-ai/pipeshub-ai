@@ -21,6 +21,8 @@ from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import agent_graph, modern_agent_graph
+from app.modules.agents.deep.graph import deep_agent_graph
+from app.modules.agents.deep.state import build_deep_agent_state
 
 
 from app.modules.agents.qna.memory_optimizer import (
@@ -228,11 +230,17 @@ def _extract_tool_names_for_routing(query_info: Dict[str, Any]) -> List[str]:
 def _select_agent_graph_for_query(query_info: Dict[str, Any], logger: Logger):
     """
     Hybrid graph selection:
+    - chatMode="deep" -> deep agent graph (orchestrator + sub-agents)
     - If global ReAct is disabled via env -> always legacy graph.
     - If enabled: use ReAct only for Outlook-only or Outlook+Confluence tools.
       Otherwise use legacy graph.
     """
-
+    # chat_mode = query_info.get("chatMode", "quick")
+    # if chat_mode == "deep":
+    #     logger.info("Agent graph route: deep | chatMode=deep")
+    #     return deep_agent_graph
+    return deep_agent_graph
+    
     tool_names = _extract_tool_names_for_routing(query_info)
     apps = {name.split(".", 1)[0] for name in tool_names if isinstance(name, str) and "." in name}
 
@@ -242,7 +250,7 @@ def _select_agent_graph_for_query(query_info: Dict[str, Any], logger: Logger):
     use_react = bool(apps) and ("outlook" in apps) and apps.issubset({"outlook", "confluence"})
     use_react = use_react or bool(apps) and ("teams" in apps) and apps.issubset({"teams", "slack"})
     use_react = True
-    
+
     selected = modern_agent_graph if use_react else agent_graph
     logger.info(
         "Agent graph route: %s | apps=%s | tools=%d",
@@ -770,20 +778,33 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
 
         # Build and execute graph
         selected_graph = _select_agent_graph_for_query(query_info.model_dump(), logger)
-        graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
 
-        initial_state = build_initial_state(
-            query_info.model_dump(),
-            enriched_user_info,
-            services["llm"],
-            logger,
-            retrieval_service,
-            graph_provider,
-            reranker_service,
-            config_service,
-            org_info,
-            graph_type
-        )
+        if selected_graph == deep_agent_graph:
+            initial_state = build_deep_agent_state(
+                query_info.model_dump(),
+                enriched_user_info,
+                services["llm"],
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+            )
+        else:
+            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+            initial_state = build_initial_state(
+                query_info.model_dump(),
+                enriched_user_info,
+                services["llm"],
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                graph_type,
+            )
 
         graph_to_use = selected_graph
         config = {"recursion_limit": 30}
@@ -852,22 +873,36 @@ async def stream_response(
     """Stream agent response"""
 
     selected_graph = _select_agent_graph_for_query(query_info, logger)
-    graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
 
-    initial_state = build_initial_state(
-        query_info,
-        user_info,
-        llm,
-        logger,
-        retrieval_service,
-        graph_provider,
-        reranker_service,
-        config_service,
-        org_info,
-        graph_type
-    )
+    if selected_graph == deep_agent_graph:
+        graph_type = "deep"
+        initial_state = build_deep_agent_state(
+            query_info,
+            user_info,
+            llm,
+            logger,
+            retrieval_service,
+            graph_provider,
+            reranker_service,
+            config_service,
+            org_info,
+        )
+    else:
+        graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+        initial_state = build_initial_state(
+            query_info,
+            user_info,
+            llm,
+            logger,
+            retrieval_service,
+            graph_provider,
+            reranker_service,
+            config_service,
+            org_info,
+            graph_type,
+        )
 
-    config = {"recursion_limit": 30}
+    config = {"recursion_limit": 50}
     chunk_count = 0
 
     graph_to_use = selected_graph
@@ -2169,20 +2204,33 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "currentTime": chat_query.currentTime,
         }
         selected_graph = _select_agent_graph_for_query(query_info, logger)
-        graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
-        # Execute graph
-        initial_state = build_initial_state(
-            query_info,
-            enriched_user_info,
-            llm,
-            logger,
-            retrieval_service,
-            graph_provider,
-            reranker_service,
-            config_service,
-            org_info,
-            graph_type
-        )
+
+        if selected_graph == deep_agent_graph:
+            initial_state = build_deep_agent_state(
+                query_info,
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+            )
+        else:
+            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+            initial_state = build_initial_state(
+                query_info,
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                graph_type,
+            )
 
         graph_to_use = selected_graph
         config = {"recursion_limit": 50}

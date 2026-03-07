@@ -21,7 +21,12 @@ ToolResult = Union[tuple, str, dict, list, int, float, bool]
 
 
 class ToolInstanceCreator:
-    """Handles creation of tool instances with proper client initialization"""
+    """Handles creation of tool instances with proper client initialization.
+
+    Caches created clients per (app_name, toolset_id) so that multiple
+    tool calls within the same request reuse the same authenticated client
+    instead of re-creating OAuth/MSAL/Graph from scratch each time.
+    """
 
     def __init__(self, state: ChatState) -> None:
         """Initialize tool instance creator.
@@ -34,6 +39,11 @@ class ToolInstanceCreator:
         self.state = state
         self.logger = state.get("logger")
         self.config_service = self._get_config_service()
+        # Per-request client cache lives on state so it's shared across all
+        # ToolInstanceCreator instances within the same request/sub-agent.
+        if "_client_cache" not in state:
+            state["_client_cache"] = {}
+        self._client_cache: Dict[tuple, object] = state["_client_cache"]
 
     def _get_config_service(self) -> object:
         """Get configuration service from state.
@@ -95,6 +105,9 @@ class ToolInstanceCreator:
     ) -> object:
         """Create instance using factory with async client creation (no thread-pool loop).
 
+        Uses per-request client cache to avoid re-creating OAuth/MSAL/Graph
+        clients on every tool call within the same request.
+
         Args:
             factory: Client factory instance
             action_class: Class to instantiate
@@ -108,6 +121,20 @@ class ToolInstanceCreator:
             toolset_config = self._get_toolset_config(tool_full_name) if tool_full_name else None
 
             config = toolset_config if toolset_config else {}
+
+            # Build cache key from app_name + toolset_id (same toolset = same client)
+            toolset_id = None
+            if tool_full_name:
+                tool_to_toolset_map = self.state.get("tool_to_toolset_map", {})
+                toolset_id = tool_to_toolset_map.get(tool_full_name)
+            cache_key = (app_name, toolset_id or "default")
+
+            # Check cache first
+            client = self._client_cache.get(cache_key)
+            if client is not None:
+                if self.logger:
+                    self.logger.debug(f"Reusing cached client for {app_name} (toolset: {toolset_id})")
+                return action_class(client)
 
             if self.logger:
                 if toolset_config:
@@ -124,6 +151,12 @@ class ToolInstanceCreator:
                 config,
                 self.state
             )
+
+            # Cache the client for subsequent calls
+            self._client_cache[cache_key] = client
+            if self.logger:
+                self.logger.debug(f"Cached client for {app_name} (toolset: {toolset_id})")
+
             return action_class(client)
         except Exception as e:
             if self.logger:

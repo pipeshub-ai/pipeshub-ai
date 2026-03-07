@@ -41,7 +41,7 @@ def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
     """
     Check if the LLM requires sanitized tool names (dots replaced with underscores).
     OpenAI and Anthropic APIs require tool/function names to match ^[a-zA-Z0-9_-]+$
-    (no dots). Other LLMs may vary.
+    (no dots). Most major LLM APIs have this restriction.
 
     Args:
         llm: The LLM instance to check (can be None)
@@ -50,7 +50,8 @@ def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
         True if tool names should be sanitized, False otherwise
     """
     if not llm:
-        return False
+        # Default to sanitized — most APIs require ^[a-zA-Z0-9_-]+$
+        return True
 
     try:
         from langchain_anthropic import ChatAnthropic
@@ -60,7 +61,18 @@ def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
         pass
     except Exception:
         pass
-    return False
+
+    try:
+        from langchain_openai import ChatOpenAI, AzureChatOpenAI
+        if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)):
+            return True
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Default to sanitized for safety — dots break most LLM function-calling APIs
+    return True
 
 
 def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel'], state: ChatState) -> str:
@@ -70,13 +82,12 @@ def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel']
     Args:
         tool_name: Original tool name (may contain dots)
         llm: LLM instance to check requirements (can be None)
+        state: Chat state
 
     Returns:
         Sanitized name (dots replaced with underscores) if needed, original name otherwise
     """
     if _requires_sanitized_tool_names(llm):
-        return tool_name.replace('.', '_')
-    if state.get("graph_type") == "react":
         return tool_name.replace('.', '_')
     return tool_name
 
@@ -459,6 +470,7 @@ def clear_tool_cache(state: ChatState) -> None:
     state.pop("_cached_agent_tools", None)
     state.pop("_tool_instance_cache", None)
     state.pop("_cached_blocked_tools", None)
+    state.pop("_cached_schema_tools", None)
     logger.info("Tool cache cleared")
 
 
@@ -508,11 +520,13 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
     """
     Convert registry tools to StructuredTools with Pydantic schemas.
 
-    This function is used by the ReAct agent to get tools with proper
-    schema validation for function calling.
+    This function is used by the ReAct agent and deep agent to get tools with
+    proper schema validation for function calling.
 
     Tool names are sanitized (dots -> underscores) for LLMs whose API requires
     ^[a-zA-Z0-9_-]+$ (e.g., OpenAI, Anthropic). Other LLMs keep original names when not restricted.
+
+    Results are cached in state to avoid redundant conversions.
 
     Args:
         state: Chat state containing tool configuration and LLM instance
@@ -523,8 +537,27 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
     try:
         from langchain_core.tools import StructuredTool
 
+        # Check for cached StructuredTools — avoid re-converting if
+        # the underlying registry tools haven't changed
+        cached_schema_tools = state.get("_cached_schema_tools")
+        cached_registry_tools = state.get("_cached_agent_tools")
+
         # Get tools from registry (RegistryToolWrapper objects)
         registry_tools = get_agent_tools(state)
+
+        # Cache hit: if registry tools are the same object (same cache), reuse
+        if (
+            cached_schema_tools is not None
+            and cached_registry_tools is not None
+            and cached_registry_tools is registry_tools
+        ):
+            state_logger = state.get("logger")
+            if state_logger:
+                state_logger.debug(
+                    f"Using cached StructuredTools ({len(cached_schema_tools)} tools)"
+                )
+            return cached_schema_tools
+
         structured_tools = []
 
         # Get LLM from state to determine if sanitization is needed
@@ -617,6 +650,9 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
                 state_logger = state.get("logger")
                 if state_logger:
                     state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
+
+        # Cache the StructuredTools for reuse
+        state["_cached_schema_tools"] = structured_tools
 
         return structured_tools
     except ImportError:
