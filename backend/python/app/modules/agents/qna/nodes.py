@@ -19,9 +19,11 @@ import re
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
+from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
 from app.modules.agents.qna.chat_state import ChatState
@@ -310,7 +312,7 @@ class ToolResultExtractor:
                                 # Next field is numeric — LLM wrote data[N] instead of data.items[N]
                                 # Search for a list value in the current dict (priority order)
                                 list_data = None
-                                for list_key in ("items", "results", "records", "values", "data"):
+                                for list_key in ("items", "results", "records", "messages", "values", "data", "value"):
                                     candidate = current.get(list_key)
                                     if isinstance(candidate, list):
                                         list_data = candidate
@@ -834,7 +836,7 @@ class ToolExecutor:
             tool_args = tool_call.get("args", {})
 
             # Normalize tool name
-            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
             actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
 
             if actual_tool_name not in tools_by_name:
@@ -1010,7 +1012,7 @@ class ToolExecutor:
             tool_args = tool_call.get("args", {})
 
             # Normalize tool name
-            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
             actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
 
             if actual_tool_name not in tools_by_name:
@@ -1715,6 +1717,298 @@ After getting history, the respond node will:
 4. NEVER tell the user to run more tools
 """
 
+TEAMS_GUIDANCE = r"""
+## Microsoft Teams-Specific Guidance
+
+### Tool Selection — Use the Right Teams Tool for Every Task
+
+| User intent | Correct Teams tool | Key parameters |
+|---|---|---|
+| List my teams | `teams.get_teams` | `top` (optional) |
+| Get one team details | `teams.get_team` | `team_id` |
+| List channels in a team | `teams.get_channels` | `team_id`, `top` (optional) |
+| Create a team | `teams.create_team` | `display_name`, `description` (optional) |
+| Delete a team | `teams.delete_team` | `team_id` |
+| Create channel in a team | `teams.create_channel` | `team_id`, `display_name`, `description`, `channel_type` |
+| Update channel info | `teams.update_channel` | `team_id`, `channel_id`, `display_name`/`description` |
+| Delete channel | `teams.delete_channel` | `team_id`, `channel_id` |
+| Send message to channel | `teams.send_message` | `team_id`, `channel_id`, `message` |
+| Read channel messages | `teams.get_channel_messages` | `team_id`, `channel_id`, `top` (optional) |
+| Create 1:1/group chat | `teams.create_chat` | `chat_type`, `member_user_ids`, `topic` (group only) |
+| Get chat details | `teams.get_chat` | `chat_id` |
+| Add team member | `teams.add_member` | `team_id`, `user_id`, `role` |
+| Remove team member | `teams.remove_member` | `team_id`, `membership_id` |
+| List meetings for a period | `teams.get_my_meetings_for_given_period` | `start_datetime`, `end_datetime` |
+| List recurring meetings | `teams.get_my_recurring_meetings` | `top` (optional) |
+| Create a meeting/event | `teams.create_event` | `subject`, `start_datetime`, `end_datetime` |
+| Edit a meeting/event | `teams.edit_event` | `event_id`, fields to update |
+| Delete a meeting/event | `teams.delete_event` | `event_id` |
+| Get meeting transcript | `teams.get_my_meetings_transcript` | `meeting_id` |
+| Get people invited | `teams.get_people_invited` | `meeting_id` |
+| Get people who attended | `teams.get_people_attended` | `meeting_id` |
+| Search messages | `teams.search_messages` | `query`, `top_per_channel` (optional) |
+
+---
+
+## R-TEAMS-0: Universal Data Resolution Hierarchy (CRITICAL — applies to EVERY tool call)
+
+Before executing any tool, every required parameter must be resolved. Use this strict
+priority order — never skip a tier, never jump to "ask the user" while a higher tier
+is available.
+
+### Resolution Tiers (evaluate in order):
+
+**Tier 1 — Explicit in the current message**
+The user stated the value directly.
+→ "get transcript of the sprint planning" → meeting keyword = "sprint planning"
+→ "send summary to #test" → Slack channel = #test
+→ "day before yesterday's meetings" → date = 2 days ago
+
+**Tier 2 — Derivable from the current message**
+The value isn't stated but can be computed from what was said.
+→ "yesterday" = yesterday's date 00:00–23:59
+→ "day before yesterday" = 2 days ago 00:00–23:59
+→ "this week" = Monday 00:00 to Sunday 23:59
+→ "last 3 days" = 3 days ago to today
+→ "slack test channel" = `#test`
+→ "the engineering channel" = `#engineering`
+Never ask the user to restate something you can compute or interpret yourself.
+
+**Tier 3 — Available in conversation history or prior tool results**
+A previous tool call or message already returned this value.
+→ meeting_id was returned in the last search → reuse it, don't re-fetch
+→ user said "that meeting" → the one from the previous turn
+→ transcript was just fetched → use it for summary, don't re-fetch
+Always check conversation history before making a redundant API call.
+
+**Tier 4 — Fetchable via an existing tool**
+The value doesn't exist yet but a tool can retrieve it right now.
+→ Need meeting_id? → call `teams.get_my_meetings_for_given_period` first
+→ Need team_id? → call `teams.get_teams` first
+→ Need channel_id? → call `teams.get_channels` first
+→ Need a transcript? → call `teams.get_my_meetings_transcript`
+This is the fetch-before-ask rule. If a tool can get it, USE the tool.
+
+**Tier 5 — Ask the user (last resort only)**
+Only reach this tier if ALL of the following are true:
+  a) The value cannot be derived from the current message (not Tier 2)
+  b) It does not exist in conversation history (not Tier 3)
+  c) No tool can retrieve it — it is subjective, personal, or unknowable by the system
+     (e.g., "which Slack channel?" when no channel was mentioned at all)
+When asking, ask for ALL missing Tier-5 values in a single message. Never ask one
+at a time across multiple turns.
+
+---
+
+### Applied to common Teams patterns:
+
+| Missing value | Wrong (jump to Tier 5) | Correct tier |
+|---|---|---|
+| meeting_id for "yesterday's meeting" | Ask user for meeting ID | Tier 4: `get_my_meetings_for_given_period` with yesterday's dates |
+| meeting_id for "the sprint planning" | Ask user which meeting | Tier 4: `get_my_meetings_for_given_period` + filter by subject |
+| team_id for "the Engineering team" | Ask user for team ID | Tier 4: `get_teams` then match by name |
+| channel_id for "#general" | Ask user for channel ID | Tier 4: `get_channels` then match by name |
+| transcript for a meeting | Ask user if they want it | Tier 4: `get_my_meetings_transcript` with meeting_id |
+| date for "yesterday's meetings" | Ask user for dates | Tier 2: compute yesterday = current date - 1 day |
+| Slack channel for "send to slack test" | Ask user which channel | Tier 2: interpret "slack test" = `#test` |
+| Slack channel for "send to Slack" (nothing else) | — | Tier 5: genuinely missing, ask |
+| Which meetings when user says "all from yesterday" | Ask user which specific one | Tier 2: "all" = process every meeting from that date |
+
+### The Fetch-Before-Ask Decision Tree:
+Is the value stated or computable from the user's message?
+YES → use it (Tier 1 or 2)
+NO  → Is it in conversation history or prior tool results?
+YES → use it (Tier 3)
+NO  → Does any available tool return this kind of data?
+YES → call that tool now, then proceed (Tier 4)
+NO  → ask the user (Tier 5)
+
+This hierarchy is non-negotiable. Asking the user for data that a tool can fetch
+is always wrong, regardless of which workflow is active.
+
+---
+
+**R-TEAMS-1: NEVER use retrieval for live Teams data/actions.**
+- ❌ "Show my Teams channels" → Do NOT use retrieval → ✅ Use `teams.get_channels`
+- ❌ "Post message in Teams" → Do NOT use retrieval → ✅ Use `teams.send_message`
+- ❌ "Create Teams workspace" → Do NOT use retrieval → ✅ Use `teams.create_team`
+- ❌ "Get my meetings" → Do NOT use retrieval → ✅ Use `teams.get_my_meetings_for_given_period`
+
+**R-TEAMS-2: Resolve IDs before action tools.**
+Action tools need exact IDs (`team_id`, `channel_id`, `chat_id`, `meeting_id`, `membership_id`).
+- If the user gives names only, first fetch IDs with lookup tools (`teams.get_teams`, `teams.get_channels`, `teams.get_my_meetings_for_given_period`)
+- Use placeholders only in multi-tool cascades
+- NEVER ask the user for internal IDs — they don't know them
+
+**R-TEAMS-3: Send channel messages with IDs, not names.**
+`teams.send_message` requires both `team_id` and `channel_id`.
+- If channel/team IDs are not already known, lookup first:
+```json
+{
+  "tools": [
+    {"name": "teams.get_teams", "args": {}},
+    {"name": "teams.get_channels", "args": {"team_id": "{{teams.get_teams.data.results[0].id}}"}},
+    {"name": "teams.send_message", "args": {"team_id": "{{teams.get_teams.data.results[0].id}}", "channel_id": "{{teams.get_channels.data.results[0].id}}", "message": "Update posted"}}
+  ]
+}
+```
+
+**R-TEAMS-4: Member removal uses `membership_id`, not `user_id`.**
+For `teams.remove_member`, pass a conversation membership identifier. Do not pass a raw user ID.
+
+**R-TEAMS-5: `create_chat.chat_type` must be `oneOnOne` or `group`.**
+- Use `oneOnOne` for direct messages
+- Use `group` when multiple members or a topic is required
+
+**R-TEAMS-6: Meeting fetching — choose the right tool based on query type.**
+- **Date-based** ("get my meetings for yesterday") → `teams.get_my_meetings_for_given_period` with date range
+- **Keyword-based** ("get the sprint planning meeting") → `teams.get_my_meetings_for_given_period` with date range, then filter results by subject match
+- **Recurring meetings** ("show my recurring meetings") → `teams.get_my_recurring_meetings`
+- **Ambiguous** ("get my meetings" with no date or keyword) → Ask ONLY for the date range
+- **With attendee filter** ("meetings with alice@company.com") → Fetch by date, filter results by attendee
+
+**R-TEAMS-7: Transcript handling.**
+- `teams.get_my_meetings_transcript` requires `meeting_id` — get this from meeting fetch results
+- If the transcript tool returns empty or an error → report: "No transcript available for [Meeting Name]." Do NOT fabricate.
+- If the meeting wasn't a Teams online meeting → no transcript is possible. Report it.
+- When processing multiple meetings, attempt ALL transcripts. Report which succeeded and which didn't. Do NOT ask the user to pick — process everything, report exceptions.
+
+**R-TEAMS-8: Summary generation from transcripts.**
+When generating a summary from a transcript (you write this, NOT a tool call), include:
+- Meeting title + date/time
+- Attendees present
+- Key discussion points
+- Decisions made
+- Action items (who, what, deadline if mentioned)
+- Open questions / follow-ups
+
+Rules:
+- Do NOT over-summarize. Someone who missed the meeting should understand what happened.
+- Do NOT hallucinate — only include information from the transcript.
+- If user specified a focus ("just action items"), prioritize that but still overview other topics.
+
+**R-TEAMS-9: Multi-meeting processing — process ALL, report exceptions.**
+When the user asks about multiple meetings ("yesterday's meetings", "this week's meetings"):
+- Fetch ALL meetings for the date range.
+- For each meeting, attempt the requested action (transcript, summary, etc.).
+- Do NOT ask the user to pick which meetings. Process all of them.
+- Report results and exceptions at the end:
+  - ✅ meetings that succeeded
+  - ℹ️ meetings with no transcript / no Teams link
+  - ❌ meetings that failed
+
+---
+
+### Common Planning Patterns:
+
+**Pattern: Search and reply to a Teams message thread**
+```json
+{
+  "tools": [
+    {"name": "teams.search_messages", "args": {"query": "Q4 report", "top_per_channel": 20}},
+    {"name": "teams.reply_to_message", "args": {
+      "team_id": "{{teams.search_messages.data.results[0].team_id}}",
+      "channel_id": "{{teams.search_messages.data.results[0].channel_id}}",
+      "parent_message_id": "{{teams.search_messages.data.results[0].id}}",
+      "message": "Thanks for sharing this. I will review and follow up by EOD."
+    }}
+  ]
+}
+```
+
+**Pattern: Create a one-time meeting**
+```json
+{
+  "tools": [
+    {"name": "teams.create_event", "args": {
+      "subject": "Team Sync",
+      "start_datetime": "2026-03-05T14:00:00",
+      "end_datetime": "2026-03-05T15:00:00",
+      "timezone": "India Standard Time",
+      "description": "Weekly sync for project updates.",
+      "is_online_meeting": true
+    }}
+  ]
+}
+```
+
+**Pattern: Get recurring meetings**
+```json
+{
+  "tools": [
+    {"name": "teams.get_my_recurring_meetings", "args": {"top": 25}}
+  ]
+}
+```
+
+**Pattern: Get meetings for a given period**
+```json
+{
+  "tools": [
+    {"name": "teams.get_my_meetings_for_given_period", "args": {
+      "start_datetime": "2026-03-01T00:00:00",
+      "end_datetime": "2026-03-07T23:59:59",
+      "top": 100
+    }}
+  ]
+}
+```
+
+**Pattern: Reschedule a meeting by searching first**
+```json
+{
+  "tools": [
+    {"name": "teams.get_my_meetings_for_given_period", "args": {
+      "start_datetime": "2026-03-01T00:00:00",
+      "end_datetime": "2026-03-07T23:59:59"
+    }},
+    {"name": "teams.edit_event", "args": {
+      "event_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}",
+      "start_datetime": "2026-03-04T15:00:00",
+      "end_datetime": "2026-03-04T16:00:00",
+      "timezone": "India Standard Time"
+    }}
+  ]
+}
+```
+
+**Pattern: Get transcript for a meeting**
+```json
+{
+  "tools": [
+    {"name": "teams.get_my_meetings_for_given_period", "args": {
+      "start_datetime": "2026-03-04T00:00:00",
+      "end_datetime": "2026-03-04T23:59:59"
+    }},
+    {"name": "teams.get_my_meetings_transcript", "args": {
+      "meeting_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}"
+    }}
+  ]
+}
+```
+
+**Pattern: Compare invited vs attended people**
+```json
+{
+  "tools": [
+    {"name": "teams.get_my_meetings_for_given_period", "args": {
+      "start_datetime": "2026-03-03T00:00:00",
+      "end_datetime": "2026-03-03T23:59:59"
+    }},
+    {"name": "teams.get_people_invited", "args": {"meeting_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}"}},
+    {"name": "teams.get_people_attended", "args": {"meeting_id": "{{teams.get_my_meetings_for_given_period.data.results[0].id}}"}}
+  ]
+}
+```
+
+**Pattern: Full workflow — meeting → transcript → summary → Slack**
+1. Fetch meetings: `teams.get_my_meetings_for_given_period`
+2. Get transcript: `teams.get_my_meetings_transcript` for each meeting
+3. YOU (the LLM) generate the summary — this is NOT a tool call
+4. Send to Slack: `slack.send_message(channel="...", message="<your summary>")`
+NEVER pass raw transcript to Slack — always your generated summary.
+"""
+
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
 
 ## Core Planning Logic - Understanding User Intent
@@ -2048,6 +2342,9 @@ Generate:
 {jira_guidance}
 {confluence_guidance}
 {slack_guidance}
+{onedrive_guidance}
+{outlook_guidance}
+{teams_guidance}
 
 ## Planning Best Practices
 
@@ -2375,6 +2672,569 @@ Examples:
 ```
 """
 
+ONEDRIVE_GUIDANCE = r"""
+## OneDrive-Specific Guidance
+
+### ⚠️ CRITICAL: drive_id Resolution — ALWAYS Call `get_drives` First
+
+Almost every OneDrive tool requires a `drive_id` parameter. **NEVER ask the user for a drive_id.** Resolve it automatically:
+
+1. Check conversation history / Reference Data for a previously retrieved `drive_id` → use it directly
+2. If unknown → call `onedrive.get_drives` first, then use the result in subsequent tools
+
+**The `drive_id` is an internal Graph API identifier (e.g., `b!xxxx...`). Users don't know it. Always resolve it via `get_drives`.**
+
+### ⚠️ CRITICAL: item_id Resolution — Use `search_files` or `get_files`
+
+File operations (rename, delete, move, copy, etc.) require an `item_id`. **NEVER ask the user for an item_id.** Resolve it automatically:
+
+1. Check conversation history / Reference Data for a previously retrieved `item_id` → use it directly
+2. If the user mentions a file name → call `onedrive.search_files` to find it
+3. If browsing → call `onedrive.get_files` or `onedrive.get_folder_children`
+
+### Cascading Patterns (CRITICAL)
+
+**Pattern: Rename a file by name**
+User says: "rename X to Y"
+```json
+{{
+  "tools": [
+    {{"name": "onedrive.get_drives", "args": {{}}}},
+    {{"name": "onedrive.search_files", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "query": "X"}}}},
+    {{"name": "onedrive.rename_item", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "item_id": "{{{{onedrive.search_files.data.value[0].id}}}}", "new_name": "Y"}}}}
+  ]
+}}
+```
+
+**Pattern: Delete a file by name**
+```json
+{{
+  "tools": [
+    {{"name": "onedrive.get_drives", "args": {{}}}},
+    {{"name": "onedrive.search_files", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "query": "filename"}}}},
+    {{"name": "onedrive.delete_item", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "item_id": "{{{{onedrive.search_files.data.value[0].id}}}}"}}}}
+  ]
+}}
+```
+
+**Pattern: Search files**
+```json
+{{
+  "tools": [
+    {{"name": "onedrive.get_drives", "args": {{}}}},
+    {{"name": "onedrive.search_files", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "query": "keyword"}}}}
+  ]
+}}
+```
+
+**Pattern: List files (drive_id already known from conversation history)**
+```json
+{{
+  "tools": [
+    {{"name": "onedrive.get_files", "args": {{"drive_id": "b!abc123..."}}}}
+  ]
+}}
+```
+
+### Multiple Drives
+
+If the user has multiple drives and specifies which one (e.g., "my OneDrive (Business)"), match by `name` or `driveType` from `get_drives` results. If ambiguous:
+- Use the first drive by default (`value[0]`)
+- If the user specifies a drive name, select the matching drive from `get_drives` results
+
+### Never Ask for These
+
+- ❌ "What is your drive_id?" → ✅ Call `onedrive.get_drives` to resolve it
+- ❌ "What is the item_id?" → ✅ Call `onedrive.search_files` or `onedrive.get_files` to resolve it
+- ❌ "Provide your drive_id" → ✅ Always auto-resolve via API calls
+"""
+OUTLOOK_GUIDANCE = r"""
+## Outlook-Specific Guidance
+
+### Tool Selection — Use the Right Outlook Tool for Every Task
+
+| User intent | Correct Outlook tool | Key parameters |
+|---|---|---|
+| Send a new email | `outlook.send_email` | `to_recipients`, `subject`, `body` |
+| Reply to an email | `outlook.reply_to_message` | `message_id`, `comment` |
+| Reply-all to an email | `outlook.reply_all_to_message` | `message_id`, `comment` |
+| Forward an email | `outlook.forward_message` | `message_id`, `to_recipients` |
+| Search / list emails | `outlook.search_messages` | `search` or `filter`, `top` |
+| Get a specific email | `outlook.get_message` | `message_id` |
+| List calendar events | `outlook.get_calendar_events` | `start_datetime`, `end_datetime` |
+| Create a calendar event | `outlook.create_calendar_event` | `subject`, `start_datetime`, `end_datetime` |
+| Get a specific event | `outlook.get_calendar_event` | `event_id` |
+| Update a calendar event | `outlook.update_calendar_event` | `event_id`, fields to update |
+| Delete a calendar event | `outlook.delete_calendar_event` | `event_id` |
+| Search events by name in range | `outlook.search_calendar_events_in_range` | `keyword`, `start_datetime`, `end_datetime` |
+| Get recurring events ending soon | `outlook.get_recurring_events_ending` | `end_before` |
+| Delete recurring event occurrences | `outlook.delete_recurring_event_occurrence` | `event_id`, `occurrence_dates` |
+| Get free time slots | `outlook.get_free_time_slots` | `start_datetime`, `end_datetime` |
+| List mail folders | `outlook.get_mail_folders` | (no required args) |
+
+
+
+## R-OUT-0: Universal Data Resolution Hierarchy (CRITICAL — applies to EVERY tool call)
+
+Before executing any tool, every required parameter must be resolved. Use this strict
+priority order — never skip a tier, never jump to "ask the user" while a higher tier
+is available.
+
+### Resolution Tiers (evaluate in order):
+
+**Tier 1 — Explicit in the current message**
+The user stated the value directly.
+→ "extend the Fixes event by 10 days" → event name = "Fixes", delta = 10 days
+
+**Tier 2 — Derivable from the current message**
+The value isn't stated but can be computed from what was said.
+→ "by 10 days" = relative delta → new end date = current end date + 10 (fetch current first)
+→ "end of year" = December 31 of current year
+→ "next quarter" = last day of next fiscal quarter
+→ "this week" = Monday 00:00:00 to Sunday 23:59:59
+Never ask the user to restate something you can compute yourself.
+
+**Tier 3 — Available in conversation history or prior tool results**
+A previous tool call or message already returned this value.
+→ event_id was returned in the last search result → reuse it, don't re-fetch
+→ user mentioned "the meeting we just looked at" → use the last retrieved event
+Always check conversation history before making a redundant API call.
+
+**Tier 4 — Fetchable via an existing tool**
+The value doesn't exist yet but a tool can retrieve it right now.
+→ Need current recurrence end date? → call search_calendar_events_in_range first
+→ Need a message_id? → call search_messages first
+→ Need an event_id? → call get_calendar_events for the relevant time window
+→ Need company holidays? → search Confluence
+This is the fetch-before-ask rule. If a tool can get it, USE the tool.
+
+**Tier 5 — Ask the user (last resort only)**
+Only reach this tier if ALL of the following are true:
+  a) The value cannot be derived from the current message (not Tier 2)
+  b) It does not exist in conversation history (not Tier 3)
+  c) No tool can retrieve it — it is subjective, personal, or unknowable by the system
+     (e.g., "which project should I assign this to?", "who should I invite?")
+When asking, ask for ALL missing Tier-5 values in a single message. Never ask one
+at a time across multiple turns.
+
+---
+
+### Applied to common patterns:
+
+| Missing value | Wrong (jump to Tier 5) | Correct (Tier 4) |
+|---|---|---|
+| event_id for "the standup" | Ask user for event ID | get_calendar_events for likely time range |
+| recurrence end date of "Fixes" | Ask user what the current end date is | search_calendar_events_in_range("Fixes") |
+| message_id for "John's email" | Ask user for message ID | search_messages("from:john") |
+| new end date when user says "by 10 days" | Ask user what the new date should be | fetch current end date → compute + 10 days |
+| holidays in extension range | Skip or ask user | search Confluence for holiday calendar |
+
+---
+
+### The Fetch-Before-Ask Decision Tree (run this for every unresolved parameter):
+
+```
+Is the value stated or computable from the user's message?
+  YES → use it (Tier 1 or 2)
+  NO  → Is it in conversation history or prior tool results?
+          YES → use it (Tier 3)
+          NO  → Does any available tool return this kind of data?
+                  YES → call that tool now, then proceed (Tier 4)
+                  NO  → ask the user (Tier 5)
+```
+
+This hierarchy is non-negotiable. Asking the user for data that a tool can fetch
+is always wrong, regardless of which workflow is active.
+
+**R-OUT-1: NEVER use `retrieval.search_internal_knowledge` for Outlook email or calendar queries.**
+Outlook queries always use Outlook service tools, not retrieval.
+- ❌ "What emails do I have?" → Do NOT use retrieval → ✅ Use `outlook.search_messages`
+- ❌ "Show my calendar" → Do NOT use retrieval → ✅ Use `outlook.get_calendar_events`
+- ❌ "Search emails about X" → Do NOT use retrieval → ✅ Use `outlook.search_messages` with `search` param
+
+---
+
+**R-OUT-2: `message_id` resolution — NEVER ask the user for a message ID.**
+Users don't know message IDs. Always resolve them automatically:
+1. Check conversation history / Reference Data for a previously retrieved `message_id` → use directly
+2. If the user describes an email ("the email from John", "the meeting invite") → call `outlook.search_messages` first, then cascade
+3. NEVER fabricate or guess a message ID
+
+```json
+{
+  "tools": [
+    {"name": "outlook.search_messages", "args": {"search": "from:john@example.com budget report", "top": 5}},
+    {"name": "outlook.reply_to_message", "args": {"message_id": "{{outlook.search_messages.data.results[0].id}}", "comment": "Thanks, I'll review this."}}
+  ]
+}
+```
+
+---
+
+**R-OUT-3: `event_id` resolution — NEVER ask the user for an event ID.**
+Users don't know event IDs. Always resolve them automatically:
+1. Check conversation history / Reference Data for a previously retrieved `event_id` → use directly
+2. If the user describes an event ("tomorrow's standup", "the 2pm meeting") → call `outlook.get_calendar_events` with a narrow time range first, then cascade
+3. NEVER fabricate or guess an event ID
+
+```json
+{
+  "tools": [
+    {"name": "outlook.get_calendar_events", "args": {"start_datetime": "2026-03-03T00:00:00", "end_datetime": "2026-03-03T23:59:59", "top": 10}},
+    {"name": "outlook.update_calendar_event", "args": {"event_id": "{{outlook.get_calendar_events.data.results[0].id}}", "location": "Conference Room B"}}
+  ]
+}
+```
+
+---
+
+**R-OUT-4: Email search — use `search` for keyword queries, `filter` for OData conditions.**
+- `search` (OData `$search`): keyword-based, natural language → e.g., `"budget report"`, `"from:john@example.com"`
+- `filter` (OData `$filter`): structured conditions → e.g., `"isRead eq false"`, `"receivedDateTime ge 2026-03-01T00:00:00Z"`
+- Use `search` for "find emails about X" queries
+- Use `filter` for "unread emails", "emails from today", "emails after date" queries
+- Both can be combined with `top` and `orderby`
+
+```json
+// Keyword search
+{"name": "outlook.search_messages", "args": {"search": "project proposal", "top": 10}}
+
+// Structured filter
+{"name": "outlook.search_messages", "args": {"filter": "isRead eq false", "orderby": "receivedDateTime desc", "top": 20}}
+
+// Emails from a specific date
+{"name": "outlook.search_messages", "args": {"filter": "receivedDateTime ge 2026-03-01T00:00:00Z", "top": 25}}
+```
+
+---
+
+**R-OUT-5: Calendar events — ALWAYS provide both `start_datetime` and `end_datetime`.**
+`get_calendar_events` requires both. Infer sensible defaults from user intent:
+- "today's meetings" → `start_datetime: today 00:00:00`, `end_datetime: today 23:59:59`
+- "this week's events" → `start_datetime: Monday 00:00:00`, `end_datetime: Sunday 23:59:59`
+- "meetings tomorrow" → `start_datetime: tomorrow 00:00:00`, `end_datetime: tomorrow 23:59:59`
+- "next 7 days" → `start_datetime: today 00:00:00`, `end_datetime: 7 days from now 23:59:59`
+- Use ISO 8601 format: `2026-03-03T09:00:00`
+- Always include `timezone` matching the user's context (default `"UTC"` if unknown)
+
+---
+
+**R-OUT-6: Recurring events — pass a `recurrence` dict with `pattern` + `range`. NEVER a plain string.**
+
+The `recurrence` field is a plain Python dict (not a nested model). All keys are **camelCase** matching the MS Graph API directly.
+
+---
+
+**`pattern` keys — how often it repeats:**
+
+| `type` value | Extra required keys | Use case |
+|---|---|---|
+| `"daily"` | *(none)* | Every N days |
+| `"weekly"` | `daysOfWeek` (list of strings) | Specific weekdays each week |
+| `"absoluteMonthly"` | `dayOfMonth` (int) | Same date each month (e.g. 15th) |
+| `"relativeMonthly"` | `daysOfWeek`, `index` | Relative day each month (e.g. first Monday) |
+| `"absoluteYearly"` | `dayOfMonth`, `month` | Same date each year (e.g. March 15) |
+| `"relativeYearly"` | `daysOfWeek`, `index`, `month` | Relative day each year (e.g. last Friday of March) |
+
+- `interval` (int, default `1`): repeat every N units
+- `daysOfWeek` values: `"Sunday"` `"Monday"` `"Tuesday"` `"Wednesday"` `"Thursday"` `"Friday"` `"Saturday"`
+- `index` values: `"first"` `"second"` `"third"` `"fourth"` `"last"`
+- `dayOfMonth`: int 1–31
+- `month`: int 1–12
+
+**`range` keys — when the series ends:**
+
+| `type` value | Extra required keys |
+|---|---|
+| `"endDate"` | `startDate`, `endDate` (YYYY-MM-DD) |
+| `"noEnd"` | `startDate` (YYYY-MM-DD) |
+| `"numbered"` | `startDate`, `numberOfOccurrences` (int) |
+
+**⚠️ `startDate` MUST match the date portion of `start_datetime`.**
+
+---
+
+**All 6 pattern type examples:**
+
+```json
+// 1. Daily — every day, 30 occurrences
+"recurrence": {
+  "pattern": {"type": "daily", "interval": 1},
+  "range":   {"type": "numbered", "startDate": "2026-03-01", "numberOfOccurrences": 30}
+}
+
+// 2. Weekly — Mon, Wed, Fri until Dec 31
+"recurrence": {
+  "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["Monday", "Wednesday", "Friday"]},
+  "range":   {"type": "endDate", "startDate": "2026-03-02", "endDate": "2026-12-31"}
+}
+
+// 3. absoluteMonthly — 15th of every month, forever
+"recurrence": {
+  "pattern": {"type": "absoluteMonthly", "interval": 1, "dayOfMonth": 15},
+  "range":   {"type": "noEnd", "startDate": "2026-03-15"}
+}
+
+// 4. relativeMonthly — last Friday of every month, 6 times
+"recurrence": {
+  "pattern": {"type": "relativeMonthly", "interval": 1, "daysOfWeek": ["Friday"], "index": "last"},
+  "range":   {"type": "numbered", "startDate": "2026-03-28", "numberOfOccurrences": 6}
+}
+
+// 5. absoluteYearly — every March 15, forever
+"recurrence": {
+  "pattern": {"type": "absoluteYearly", "interval": 1, "dayOfMonth": 15, "month": 3},
+  "range":   {"type": "noEnd", "startDate": "2026-03-15"}
+}
+
+// 6. relativeYearly — first Monday of March every year, 3 times
+"recurrence": {
+  "pattern": {"type": "relativeYearly", "interval": 1, "daysOfWeek": ["Monday"], "index": "first", "month": 3},
+  "range":   {"type": "numbered", "startDate": "2026-03-02", "numberOfOccurrences": 3}
+}
+```
+
+**Common mistakes to avoid:**
+- ❌ `"recurrence": "weekly"` — plain string, NOT valid
+- ❌ snake_case keys like `days_of_week`, `day_of_month`, `start_date`, `end_date`, `number_of_occurrences` — NOT valid
+- ✅ camelCase keys: `daysOfWeek`, `dayOfMonth`, `startDate`, `endDate`, `numberOfOccurrences`
+- ❌ `startDate` set to a datetime string — must be `YYYY-MM-DD` date only
+- ❌ `startDate` not matching `start_datetime` date portion — they MUST align
+
+---
+
+**R-OUT-7: Cross-service cascade — fetch from Outlook, act in another service (or vice versa).**
+When the user asks to fetch email/calendar data AND post/use it elsewhere, plan BOTH tools in sequence.
+
+Pattern: "[fetch email/event] and [post/create/update in Service B]"
+
+Step 1 → fetch with Outlook tool
+Step 2 → act in Service B with clean, formatted content
+
+Key rules:
+- Always fetch FIRST, act SECOND
+- NEVER pass raw Outlook API response as content to another service
+- Write clean, human-readable content for the downstream tool
+
+Example — "Get the meeting invite from John and create a Jira ticket":
+```json
+{
+  "tools": [
+    {"name": "outlook.search_messages", "args": {"search": "from:john meeting invite", "top": 3}},
+    {"name": "jira.create_issue", "args": {
+      "project_key": "PA",
+      "summary": "Meeting: {{outlook.search_messages.data.results[0].subject}}",
+      "issue_type": "Task",
+      "description": "Follow-up from meeting invite received via email."
+    }}
+  ]
+}
+```
+
+---
+
+**R-OUT-8: Datetime format — always use ISO 8601 without `Z` suffix for Outlook.**
+- ✅ CORRECT: `"2026-03-03T09:00:00"`
+- ❌ WRONG: `"2026-03-03T09:00:00Z"` (trailing Z may cause timezone conflicts with explicit `timezone` param)
+- Always pair `start_datetime`/`end_datetime` with an explicit `timezone` field
+- Use `"UTC"` as default if user timezone is unknown; use IANA or Windows timezone names for known zones
+  - IANA: `"America/New_York"`, `"Asia/Kolkata"`
+  - Windows: `"Eastern Standard Time"`, `"India Standard Time"`
+
+---
+
+**R-OUT-9: Reply vs Reply-All vs Forward — use the exact right tool.**
+- User says "reply", "respond to" → `outlook.reply_to_message` (replies only to sender)
+- User says "reply all", "respond to everyone" → `outlook.reply_all_to_message`
+- User says "forward", "send to someone else" → `outlook.forward_message`
+- NEVER use `send_email` for replies or forwards — it creates a new unthreaded message
+
+---
+
+**R-OUT-10: `send_email` is for NEW emails only — not replies or forwards.**
+- ❌ "Reply to John's email" → Do NOT use `send_email` → ✅ Use `reply_to_message`
+- ❌ "Forward this to Sarah" → Do NOT use `send_email` → ✅ Use `forward_message`
+- ✅ "Send an email to X about Y" (new message, no thread) → Use `send_email`
+
+---
+
+**R-OUT-11: Pagination for email search.**
+`outlook.search_messages` defaults to `top: 10`. If user asks for "all", "complete", or a large number:
+- Set `top` to the number requested (max 50 per call)
+- If more needed, note that results are limited and present what was fetched
+
+---
+
+**Common Planning Patterns:**
+
+**Pattern: Read and reply to an email**
+```json
+{
+  "tools": [
+    {"name": "outlook.search_messages", "args": {"search": "from:boss@company.com Q4 report", "top": 3}},
+    {"name": "outlook.reply_to_message", "args": {
+      "message_id": "{{outlook.search_messages.data.results[0].id}}",
+      "comment": "Thanks for sending this over. I'll review and follow up by EOD."
+    }}
+  ]
+}
+```
+
+**Pattern: Create a one-time meeting**
+```json
+{
+  "tools": [
+    {"name": "outlook.create_calendar_event", "args": {
+      "subject": "Team Sync",
+      "start_datetime": "2026-03-05T14:00:00",
+      "end_datetime": "2026-03-05T15:00:00",
+      "timezone": "India Standard Time",
+      "attendees": ["alice@example.com", "bob@example.com"],
+      "is_online_meeting": true
+    }}
+  ]
+}
+```
+
+**Pattern: Create a recurring weekly meeting**
+```json
+{
+  "tools": [
+    {"name": "outlook.create_calendar_event", "args": {
+      "subject": "Weekly Standup",
+      "start_datetime": "2026-03-02T09:00:00",
+      "end_datetime": "2026-03-02T09:30:00",
+      "timezone": "India Standard Time",
+      "recurrence": {
+        "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["Monday"]},
+        "range": {"type": "endDate", "startDate": "2026-03-02", "endDate": "2026-12-28"}
+      }
+    }}
+  ]
+}
+```
+
+**Pattern: Create a recurring daily event (30 times)**
+```json
+{
+  "tools": [
+    {"name": "outlook.create_calendar_event", "args": {
+      "subject": "Daily Standup",
+      "start_datetime": "2026-03-01T09:00:00",
+      "end_datetime": "2026-03-01T09:15:00",
+      "timezone": "India Standard Time",
+      "recurrence": {
+        "pattern": {"type": "daily", "interval": 1},
+        "range": {"type": "numbered", "startDate": "2026-03-01", "numberOfOccurrences": 30}
+      }
+    }}
+  ]
+}
+```
+
+**Pattern: Create a recurring monthly event (first Monday, forever)**
+```json
+{
+  "tools": [
+    {"name": "outlook.create_calendar_event", "args": {
+      "subject": "Monthly Planning",
+      "start_datetime": "2026-03-02T10:00:00",
+      "end_datetime": "2026-03-02T11:00:00",
+      "timezone": "India Standard Time",
+      "recurrence": {
+        "pattern": {"type": "relativeMonthly", "interval": 1, "daysOfWeek": ["Monday"], "index": "first"},
+        "range": {"type": "noEnd", "startDate": "2026-03-02"}
+      }
+    }}
+  ]
+}
+```
+
+**Pattern: Reschedule a meeting by name**
+```json
+{
+  "tools": [
+    {"name": "outlook.get_calendar_events", "args": {
+      "start_datetime": "2026-03-01T00:00:00",
+      "end_datetime": "2026-03-07T23:59:59"
+    }},
+    {"name": "outlook.update_calendar_event", "args": {
+      "event_id": "{{outlook.get_calendar_events.data.results[0].id}}",
+      "start_datetime": "2026-03-04T15:00:00",
+      "end_datetime": "2026-03-04T16:00:00",
+      "timezone": "India Standard Time"
+    }}
+  ]
+}
+```
+
+**Pattern: Delete a meeting by searching first**
+```json
+{
+  "tools": [
+    {"name": "outlook.get_calendar_events", "args": {
+      "start_datetime": "2026-03-03T00:00:00",
+      "end_datetime": "2026-03-03T23:59:59"
+    }},
+    {"name": "outlook.delete_calendar_event", "args": {
+      "event_id": "{{outlook.get_calendar_events.data.results[0].id}}"
+    }}
+  ]
+}
+```
+
+---
+
+**R-OUT-12: Recurring event tools — use the right tool for recurring-specific tasks.**
+
+| Task | Tool | Notes |
+|---|---|---|
+| Find recurring events ending within a date range | `outlook.get_recurring_events_ending` | Use `end_before` (required), `end_after` (optional, defaults to now) |
+| Search for a recurring event by name | `outlook.search_calendar_events_in_range` | Use `keyword` to match subject |
+| Delete specific occurrences of a recurring event | `outlook.delete_recurring_event_occurrence` | Pass `event_id` (series master) + `occurrence_dates` (list of YYYY-MM-DD) |
+| Extend a recurring event | `outlook.update_calendar_event` | Update the `recurrence.range.endDate` to a new date |
+
+**Pattern: Get recurring events ending this week**
+```json
+{
+  "tools": [
+    {"name": "outlook.get_recurring_events_ending", "args": {
+      "end_before": "2026-03-08T23:59:59",
+      "end_after": "2026-03-02T00:00:00",
+      "timezone": "India Standard Time",
+      "top": 20
+    }}
+  ]
+}
+```
+
+**Pattern: Extend a recurring event and delete weekend/holiday occurrences**
+Step 1: Find the event → Get `seriesMasterId` from results
+Step 2: Update recurrence end date:
+```json
+{"name": "outlook.update_calendar_event", "args": {
+  "event_id": "<seriesMasterId>",
+  "recurrence": {
+    "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]},
+    "range": {"type": "endDate", "startDate": "2026-03-02", "endDate": "2026-04-30"}
+  }
+}}
+```
+Step 3: Delete holiday/weekend occurrences:
+```json
+{"name": "outlook.delete_recurring_event_occurrence", "args": {
+  "event_id": "<seriesMasterId>",
+  "occurrence_dates": ["2026-03-14", "2026-03-15", "2026-03-21", "2026-03-22"],
+  "timezone": "India Standard Time"
+}}
+```
+
+**CRITICAL for recurring events:**
+- The `seriesMasterId` (or `id` when event type is `seriesMaster`) is the ID you need for ALL operations on a recurring series.
+- When extending, PRESERVE the existing recurrence `pattern` — only update `range.endDate`.
+- When deleting occurrences, batch ALL dates into a SINGLE call (the tool handles them all).
+- `occurrence_dates` must be YYYY-MM-DD format strings.
+"""
 PLANNER_USER_TEMPLATE = """Query: {query}
 
 Plan the tools. Return only valid JSON."""
@@ -2531,12 +3391,18 @@ async def planner_node(
     jira_guidance = JIRA_GUIDANCE if _has_jira_tools(state) else ""
     confluence_guidance = CONFLUENCE_GUIDANCE if _has_confluence_tools(state) else ""
     slack_guidance = SLACK_GUIDANCE if _has_slack_tools(state) else ""
+    onedrive_guidance = ONEDRIVE_GUIDANCE if _has_onedrive_tools(state) else ""
+    outlook_guidance = OUTLOOK_GUIDANCE if _has_outlook_tools(state) else ""
+    teams_guidance = TEAMS_GUIDANCE if _has_teams_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
         jira_guidance=jira_guidance,
         confluence_guidance=confluence_guidance,
-        slack_guidance=slack_guidance
+        slack_guidance=slack_guidance,
+        onedrive_guidance=onedrive_guidance,
+        outlook_guidance=outlook_guidance,
+        teams_guidance=teams_guidance,
     )
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
@@ -3598,7 +4464,7 @@ def _validate_planned_tools(
         for tool_call in planned_tools:
             if isinstance(tool_call, dict):
                 tool_name = tool_call.get('name', '')
-                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
 
                 if normalized_name not in available_tool_names and tool_name not in available_tool_names:
                     invalid_tools.append(tool_name)
@@ -3627,6 +4493,23 @@ def _has_slack_tools(state: ChatState) -> bool:
     """Check if Slack tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "slack" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
+def _has_onedrive_tools(state: ChatState) -> bool:
+    """Check if OneDrive tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "onedrive" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
+def _has_outlook_tools(state: ChatState) -> bool:
+    """Check if Outlook tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "outlook" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+def _has_teams_tools(state: ChatState) -> bool:
+    """Check if Microsoft Teams tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "teams" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     """
@@ -4240,7 +5123,7 @@ async def reflect_node(
     for r in successful:
         log.info(f"  ✅ {r.get('tool_name')}")
     for r in failed:
-        log.info(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))[:100]}")
+        log.info(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))}")
 
     # ========================================================================
     # DECISION 1: Partial Success (some succeeded, some failed)
@@ -5714,6 +6597,143 @@ def _process_retrieval_output(result: object, state: ChatState, log: logging.Log
     return str(result)
 
 
+def _detect_tool_result_status(result_content: Any) -> str:
+    """
+    Detect whether a tool result indicates success or error.
+
+    Parses the tool result content (string or dict) and checks for
+    error indicators. Returns "success" or "error".
+    """
+    try:
+        # Parse JSON string to dict if needed
+        parsed = result_content
+        if isinstance(result_content, str):
+            try:
+                parsed = json.loads(result_content)
+            except (json.JSONDecodeError, ValueError):
+                # Not JSON — check for error keywords in raw string
+                lower_content = result_content.lower()[:500]
+                if any(marker in lower_content for marker in [
+                    "error executing tool",
+                    '"status": "error"',
+                    "authentication failed",
+                    "permission denied",
+                    "unauthorized",
+                    "403 forbidden",
+                    "404 not found",
+                    "500 internal server error",
+                ]):
+                    return "error"
+                return "success"
+
+        # Check dict-style results
+        if isinstance(parsed, dict):
+            # Check explicit status field
+            status = parsed.get("status", "")
+            if isinstance(status, str) and status.lower() == "error":
+                return "error"
+
+            # Check for error key
+            if "error" in parsed and parsed["error"]:
+                return "error"
+
+            # Check for success=False pattern (tuple-style result)
+            if parsed.get("success") is False:
+                return "error"
+
+        # Check tuple-style: (False, "error message")
+        if isinstance(parsed, (list, tuple)) and len(parsed) >= 2:
+            if parsed[0] is False:
+                return "error"
+
+    except Exception:
+        pass  # If we can't parse it, assume success
+
+    return "success"
+
+
+# =============================================================================
+# ReAct Agent Streaming Callback
+# =============================================================================
+
+class _ToolStreamingCallback(AsyncCallbackHandler):
+    """
+    Callback handler that streams tool execution events to the frontend
+    via the outer graph's StreamWriter.
+
+    Used with agent.ainvoke() to stream real-time tool status without
+    the context conflicts that occur with nested agent.astream() calls.
+    """
+
+    def __init__(self, writer: StreamWriter, config: RunnableConfig, log: logging.Logger):
+        super().__init__()
+        self.writer = writer
+        self.config = config
+        self.log = log
+        self._tool_names: Dict[str, str] = {}  # run_id -> tool_name
+
+    def _write_event(self, event_data: Dict[str, Any]) -> bool:
+        """Write event to the outer graph's stream with context restoration."""
+        token = var_child_runnable_config.set(self.config)
+        try:
+            self.writer(event_data)
+            return True
+        except Exception as e:
+            self.log.debug(f"Stream callback write failed: {e}")
+            return False
+        finally:
+            var_child_runnable_config.reset(token)
+
+    async def on_tool_start(
+        self, serialized: Dict[str, Any], input_str: str, *, run_id, **kwargs
+    ) -> None:
+        tool_name = serialized.get("name", kwargs.get("name", "unknown"))
+        self._tool_names[str(run_id)] = tool_name
+        status_msg = _get_tool_status_message(tool_name)
+        self.log.info(f"Streaming tool start: {tool_name} -> {status_msg}")
+        self._write_event({
+            "event": "status",
+            "data": {"status": "executing", "message": status_msg}
+        })
+
+    async def on_tool_end(self, output, *, run_id, **kwargs) -> None:
+        tool_name = self._tool_names.pop(str(run_id), kwargs.get("name", "unknown"))
+        tool_status = _detect_tool_result_status(output)
+        result_preview = str(output)[:MAX_TOOL_RESULT_PREVIEW_LENGTH]
+        self.log.info(f"Streaming tool end: {tool_name} -> {tool_status}")
+
+        if tool_status == "error":
+            action_readable = tool_name.split(".", 1)[-1].replace("_", " ")
+            self._write_event({
+                "event": "status",
+                "data": {
+                    "status": "executing",
+                    "message": f"Retrying {action_readable} with corrected parameters..."
+                }
+            })
+
+        self._write_event({
+            "event": "tool_result",
+            "data": {
+                "tool": tool_name,
+                "result": result_preview,
+                "status": tool_status,
+            }
+        })
+
+    async def on_tool_error(self, error, *, run_id, **kwargs) -> None:
+        tool_name = self._tool_names.pop(str(run_id), kwargs.get("name", "unknown"))
+        error_msg = str(error)[:200]
+        self.log.info(f"Streaming tool error: {tool_name} -> {error_msg}")
+        self._write_event({
+            "event": "status",
+            "data": {
+                "status": "executing",
+                "message": f"Error in {tool_name.replace('_', ' ')}: {error_msg}. Retrying..."
+            }
+        })
+
+
 async def react_agent_node(
     state: ChatState,
     config: RunnableConfig,
@@ -5722,7 +6742,7 @@ async def react_agent_node(
     """
     ReAct agent node with cascading tool execution support.
 
-    This node uses LangGraph's create_react_agent which naturally handles
+    This node uses LangChain's create_agent which naturally handles
     cascading tool calls - one tool's output can be used as input to the next.
 
     The ReAct agent automatically:
@@ -5737,276 +6757,573 @@ async def react_agent_node(
     query = state.get("query", "")
 
     try:
-        from langchain.agents import create_agent
-        from langchain_core.messages import HumanMessage, ToolMessage
+        from langchain_core.messages import ToolMessage
 
         from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
 
         safe_stream_write(writer, {
             "event": "status",
-            "data": {"status": "thinking", "message": "Thinking..."}
+            "data": {"status": "planning", "message": "Analyzing your request and planning actions..."}
         }, config)
 
         # Get tools with Pydantic schemas
         tools = get_agent_tools_with_schemas(state)
         log.info(f"ReAct agent loaded {len(tools)} tools with schemas")
 
+        # Stream tool count info
+        tool_names_for_log = [getattr(t, 'name', str(t)) for t in tools[:5]]
+        log.info(f"Available tools: {tool_names_for_log}{'...' if len(tools) > 5 else ''}")
+
         # Build system prompt
         system_prompt = _build_react_system_prompt(state, log)
 
-        # Create ReAct agent - automatically handles cascading tool calls
+        # ReAct agent via langchain.agents (create_react_agent moved here from langgraph.prebuilt)
+        from langchain.agents import create_agent
+
         agent = create_agent(
-            model=llm,
-            tools=tools,
+            llm,
+            tools,
+            system_prompt=system_prompt,
         )
 
-        # Build messages with system prompt
-        from langchain_core.messages import SystemMessage
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=query)
-        ]
+        # Build message history with conversation context (same as planner path).
+        # This is critical for follow-ups like "yes execute" where parameters were
+        # provided in previous turns.
+        messages = _build_planner_messages(state, query, log)
 
-        # Execute agent - handles cascading automatically
-        final_messages = []
+        # Execute agent with callback-based streaming.
+        # We use ainvoke() + AsyncCallbackHandler instead of astream() because
+        # astream() creates a nested LangGraph execution context that conflicts
+        # with the outer graph's StreamWriter, preventing tool status events from
+        # reaching the frontend SSE stream. Callbacks are invoked during tool
+        # execution and are orthogonal to the graph streaming mechanism.
         tool_results = []
 
-        async for chunk in agent.astream(
+        # Create streaming callback that writes tool events to the outer stream
+        streaming_cb = _ToolStreamingCallback(writer, config, log)
+
+        # Use a clean config for the inner agent to avoid context conflicts
+        # with the outer graph. Only pass recursion_limit and callbacks.
+        agent_config = {
+            "recursion_limit": 50,
+            "callbacks": [streaming_cb],
+        }
+
+        result = await agent.ainvoke(
             {"messages": messages},
-            config=config
-        ):
-            # Process chunk for streaming
-            chunk_messages = chunk.get("messages", [])
-            final_messages = chunk_messages
+            config=agent_config,
+        )
 
-            # Stream tool calls and responses
-            _process_react_chunk(chunk, writer, config, state, log)
+        # Extract messages from the agent result
+        final_messages = result.get("messages", [])
+        log.debug(f"ReAct agent returned {len(final_messages)} messages")
 
-            # Extract tool results as we go
-            for msg in chunk_messages:
-                if isinstance(msg, ToolMessage):
-                    tool_name = msg.name if hasattr(msg, 'name') else "unknown"
-                    result_content = msg.content
+        # Process tool results from final messages
+        for msg in final_messages:
+            if isinstance(msg, ToolMessage):
+                tool_name = msg.name if hasattr(msg, 'name') else "unknown"
+                result_content = msg.content
 
-                    # Process retrieval tool results to extract final_results
-                    # Retrieval tool returns JSON string with RetrievalToolOutput structure
-                    if "retrieval" in tool_name.lower():
-                        try:
-                            # Parse JSON string to dict
-                            if isinstance(result_content, str):
-                                parsed = json.loads(result_content)
-                                _process_retrieval_output(parsed, state, log)
-                            elif isinstance(result_content, dict):
-                                _process_retrieval_output(result_content, state, log)
-                            else:
-                                # Try to convert to string and parse
-                                _process_retrieval_output(str(result_content), state, log)
-                        except Exception as e:
-                            log.warning(f"Failed to process retrieval output: {e}")
-                            # Try direct processing as fallback
+                # Process retrieval tool results to extract final_results
+                if "retrieval" in tool_name.lower():
+                    try:
+                        if isinstance(result_content, str):
+                            parsed = json.loads(result_content)
+                            _process_retrieval_output(parsed, state, log)
+                        elif isinstance(result_content, dict):
                             _process_retrieval_output(result_content, state, log)
+                    except Exception as e:
+                        log.warning(f"Failed to process retrieval output: {e}")
+                        _process_retrieval_output(result_content, state, log)
 
-                    tool_results.append({
-                        "tool_name": tool_name,
-                        "status": "success",
-                        "result": result_content,
-                        "tool_call_id": msg.tool_call_id if hasattr(msg, 'tool_call_id') else None
-                    })
+                # Detect actual tool success/failure from result content
+                tool_status = _detect_tool_result_status(result_content)
+
+                tool_results.append({
+                    "tool_name": tool_name,
+                    "status": tool_status,
+                    "result": result_content,
+                    "tool_call_id": getattr(msg, 'tool_call_id', None),
+                })
+
+        # Stream analyzing status before response generation
+        if tool_results:
+            safe_stream_write(writer, {
+                "event": "status",
+                "data": {"status": "analyzing", "message": "Analyzing results and preparing response..."}
+            }, config)
 
         # Get retrieval results (internal knowledge) - may have been populated by retrieval tool
         final_results = state.get("final_results", [])
-        virtual_record_map = state.get("virtual_record_id_to_result", {})
-        tool_records = state.get("tool_records", [])
         has_retrieval = bool(final_results)
-
-        # Separate retrieval tools from API tools
-        # retrieval_tools = [r for r in tool_results if "retrieval" in r.get("tool_name", "").lower()]
-        api_tools = [r for r in tool_results if "retrieval" not in r.get("tool_name", "").lower()]
 
         # Extract final response from messages
         response = _extract_final_response(final_messages, log)
 
-        # If we have retrieval results, we need to use stream_llm_response for proper citation handling
-        # This matches how the old system (respond_node) handles responses with citations
-        # The ReAct agent may have generated a response, but we need to ensure citations are properly formatted
-        if final_results or tool_results:
-            # Build messages for response generation (similar to respond_node)
-            # This ensures proper citation formatting like the old system
-            messages = create_response_messages(state)
+        # Determine reflection decision based on tool results
+        error_count = sum(1 for r in tool_results if r.get("status") == "error")
+        success_count = sum(1 for r in tool_results if r.get("status") == "success")
+        total_tools = len(tool_results)
 
-            # Add tool results context (same as old system)
-            if tool_results or final_results:
-                context = _build_tool_results_context(tool_results, final_results)
-                if context.strip():
-                    if messages and isinstance(messages[-1], HumanMessage):
-                        messages[-1].content += context
-                    else:
-                        messages.append(HumanMessage(content=context))
-
-            # Use stream_llm_response for proper citation handling (same as old system)
-            # This ensures citations are properly extracted and formatted
-            try:
-                answer_text = ""
-                citations = []
-                reason = None
-                confidence = None
-                reference_data = []
-                block_numbers = []
-
-                async for stream_event in stream_llm_response(
-                    llm=llm,
-                    messages=messages,
-                    final_results=final_results,
-                    logger=log,
-                    target_words_per_chunk=1,
-                    mode="json",
-                    virtual_record_id_to_result=virtual_record_map,
-                    records=tool_records,
-                ):
-                    event_type = stream_event.get("event")
-                    event_data = stream_event.get("data", {})
-
-                    # Stream events to writer
-                    safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
-
-                    if event_type == "complete":
-                        answer_text = event_data.get("answer", "")
-                        citations = event_data.get("citations", [])
-                        reason = event_data.get("reason")
-                        confidence = event_data.get("confidence")
-                        reference_data = event_data.get("referenceData", [])
-                        block_numbers = event_data.get("blockNumbers", [])
-
-                # Use the response from stream_llm_response (has proper citations)
-                # Fallback to ReAct agent response if stream_llm_response didn't provide one
-                if answer_text:
-                    response = answer_text
-                elif not response:
-                    # If ReAct agent didn't generate a response either, use fallback
-                    response = "I completed the task, but couldn't generate a response."
-
-                # Determine answerMatchType
-                if has_retrieval and api_tools:
-                    answer_match_type = "Derived From Blocks"  # Mixed: retrieval + API
-                elif has_retrieval:
-                    answer_match_type = "Derived From Blocks"  # Only retrieval
-                elif api_tools:
-                    answer_match_type = "Derived From Tool Execution"  # Only API tools
-                else:
-                    answer_match_type = "Direct Answer"  # No tools used
-
-                # Build completion data with proper response type (same format as old system)
-                completion_data = {
-                    "answer": response,
-                    "citations": citations,
-                    "confidence": confidence or "High",
-                    "answerMatchType": answer_match_type
-                }
-
-                if block_numbers:
-                    completion_data["blockNumbers"] = block_numbers
-                if reference_data:
-                    completion_data["referenceData"] = reference_data
-                if reason:
-                    completion_data["reason"] = reason
-
-                state["completion_data"] = completion_data
-
-            except Exception as e:
-                log.error(f"Response generation with citations failed: {e}", exc_info=True)
-                # Fallback: extract citations from ReAct agent response
-                citations, block_numbers, reference_data, answer_match_type = _extract_citations_and_metadata(
-                    tool_results, final_results, has_retrieval, api_tools, response, log, virtual_record_map
-                )
-                state["completion_data"] = {
-                    "answer": response,
-                    "citations": citations,
-                    "blockNumbers": block_numbers,
-                    "referenceData": reference_data,
-                    "confidence": "High",
-                    "answerMatchType": answer_match_type
-                }
+        if total_tools == 0:
+            # No tools called — direct answer
+            reflection_decision = "respond_success"
+            reflection_reasoning = "ReAct agent answered directly without tool calls."
+        elif error_count == 0:
+            reflection_decision = "respond_success"
+            reflection_reasoning = f"All {success_count} tool call(s) succeeded."
+        elif success_count > 0:
+            reflection_decision = "respond_success"
+            reflection_reasoning = f"{success_count}/{total_tools} tool calls succeeded, {error_count} failed. Partial results available."
         else:
-            # No tool results or retrieval - use extracted response directly
-            citations, block_numbers, reference_data, answer_match_type = _extract_citations_and_metadata(
-                tool_results, final_results, has_retrieval, api_tools, response, log, virtual_record_map
-            )
-            state["completion_data"] = {
-                "answer": response,
-                "citations": citations,
-                "blockNumbers": block_numbers,
-                "referenceData": reference_data,
-                "confidence": "High",
-                "answerMatchType": answer_match_type
-            }
+            reflection_decision = "respond_error"
+            reflection_reasoning = f"All {error_count} tool call(s) failed."
 
-        # Update state
+        # Hand off final formatting to respond_node so output matches chatbot format.
+        # react_agent_node only performs tool orchestration and state preparation.
         state["response"] = response
         state["tool_results"] = tool_results
         state["all_tool_results"] = tool_results
+        state["reflection_decision"] = reflection_decision
+        state["reflection"] = {
+            "decision": reflection_decision,
+            "confidence": "High" if error_count == 0 else "Medium",
+            "reasoning": reflection_reasoning,
+        }
+
+        execution_plan = state.get("execution_plan") or {}
+        # Temporary guard: do not let respond_node take direct-answer shortcut
+        # after ReAct handoff; this avoids fallback-style responses when ReAct
+        # decides not to call tools in the first pass.
+        execution_plan["can_answer_directly"] = False
+        state["execution_plan"] = execution_plan
 
         duration_ms = (time.perf_counter() - start_time) * 1000
-        log.info(f"⚡ ReAct Agent: {duration_ms:.0f}ms, {len(tool_results)} tool calls")
+        log.info(
+            f"⚡ ReAct Agent: {duration_ms:.0f}ms, {total_tools} tool calls "
+            f"({success_count} success, {error_count} errors)"
+        )
+        log.info(
+            "ReAct handoff -> respond_node | decision=%s | can_answer_directly=%s | has_retrieval=%s | response_len=%d",
+            reflection_decision,
+            execution_plan["can_answer_directly"],
+            has_retrieval,
+            len(response or ""),
+        )
 
     except ImportError as e:
         log.error(f"ReAct agent dependencies not available: {e}")
-        # Fallback to direct response
-        state["response"] = "ReAct agent is not available. Please use the standard agent."
-        state["completion_data"] = {
-            "answer": state["response"],
-            "confidence": "Low",
-            "answerMatchType": "Error"
+        state["error"] = {
+            "status": "error",
+            "message": "ReAct agent is not available. Please use the standard agent.",
+            "status_code": 500,
         }
     except Exception as e:
         log.error(f"ReAct agent error: {e}", exc_info=True)
-        state["response"] = f"I encountered an error: {str(e)}"
-        state["completion_data"] = {
-            "answer": state["response"],
-            "confidence": "Low",
-            "answerMatchType": "Error"
+        state["error"] = {
+            "status": "error",
+            "message": f"I encountered an error: {str(e)}",
+            "status_code": 500,
         }
 
     return state
 
 
+def _build_tool_schema_reference(state: ChatState, log: logging.Logger) -> str:
+    """
+    Build a concise tool schema reference for inclusion in the ReAct system prompt.
+
+    This gives the LLM visibility into required vs optional parameters directly
+    in the prompt text, enabling chain-of-thought reasoning about parameter
+    validation before tool calls.
+    """
+    try:
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+
+        tools = get_agent_tools_with_schemas(state)
+        if not tools:
+            return ""
+
+        lines = ["## Tool Schema Quick Reference\n"]
+        lines.append("Use this reference to validate parameters before every tool call.\n")
+
+        for tool in tools[:30]:  # Limit to prevent prompt bloat
+            name = getattr(tool, 'name', str(tool))
+            lines.append(f"### {name}")
+
+            schema = getattr(tool, 'args_schema', None)
+            if schema:
+                params_info = _extract_parameters_from_schema(schema, log)
+                if params_info:
+                    required_parts = []
+                    optional_parts = []
+                    for pname, pinfo in params_info.items():
+                        ptype = pinfo.get("type", "any")
+                        desc = pinfo.get("description", "")
+                        short_desc = (desc[:60] + "...") if len(desc) > 60 else desc
+                        entry = f"`{pname}` ({ptype})"
+                        if short_desc:
+                            entry += f": {short_desc}"
+                        if pinfo.get("required"):
+                            required_parts.append(entry)
+                        else:
+                            optional_parts.append(entry)
+
+                    if required_parts:
+                        lines.append("  **Required**: " + "; ".join(required_parts))
+                    if optional_parts:
+                        lines.append("  **Optional**: " + "; ".join(optional_parts))
+                else:
+                    lines.append("  (no parameters)")
+            else:
+                lines.append("  (no schema available)")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        log.warning(f"Failed to build tool schema reference: {e}")
+        return ""
+
+
+def _build_workflow_patterns(state: ChatState) -> str:
+    """
+    Build multi-step workflow patterns based on available toolsets.
+
+    Returns cross-service patterns only when the relevant toolsets are both
+    active, so the prompt stays lean for single-service agents.
+    """
+    patterns = []
+
+    has_outlook = _has_outlook_tools(state)
+    has_confluence = _has_confluence_tools(state)
+    has_slack = _has_slack_tools(state)
+    has_teams = _has_teams_tools(state)
+
+    if has_outlook and has_confluence:
+        patterns.append("""### Cross-Service Pattern: Recurring Meetings + Holiday Exclusions
+
+When user asks to extend/create recurring meetings and skip holidays/weekends:
+
+**Step 1 — Find or create the recurring event:**
+- For EXTEND: Use `outlook.get_recurring_events_ending` or `outlook.search_calendar_events_in_range`
+  to find the event. Extract the `seriesMasterId` (or `id` if type is `seriesMaster`).
+  Check conversation history first — if the event was recently displayed, use that data directly.
+- For CREATE: Use `outlook.create_calendar_event` with the recurrence pattern.
+
+**Step 2 — Update recurrence end date (extend only):**
+`outlook.update_calendar_event(event_id=<seriesMasterId>, recurrence={pattern: <keep_existing>, range: {type: "endDate", startDate: "<original_start>", endDate: "<new_end_date>"}})`
+Preserve the EXISTING pattern — only change `range.endDate`.
+After updating, verify: re-fetch the event and confirm the end date changed.
+
+**Step 3 — Get holiday information from Confluence:**
+Use `confluence.search_content(query="Holidays <year>")` to find holiday pages.
+If no results, try: "Company holidays <year>", "Holiday calendar <year>", "holidays", "holiday calendar".
+When found, use `confluence.get_page_content(page_id=...)` to read the FULL page content.
+
+**Step 4 — Parse holiday dates from page content (USE THE TOOL):**
+Call `date_calculator.parse_holiday_dates(text=<raw_page_content>, year=<year>)`
+This extracts ALL dates from the page deterministically. Do NOT parse dates manually.
+The tool returns a clean list of YYYY-MM-DD strings.
+
+**Step 5 — Compute ALL exclusion dates (USE THE TOOL):**
+Call `date_calculator.get_exclusion_dates(
+    start_date=<today or day after old end date>,
+    end_date=<series end date>,
+    holiday_dates=<list from Step 4>
+)`
+This returns the COMPLETE deduplicated list of weekends + holidays. Do NOT compute dates manually.
+The tool returns `exclusion_dates` (the list) and `breakdown` (counts for the summary).
+
+**Step 6 — Delete excluded occurrences:**
+For each event, call:
+`outlook.delete_recurring_event_occurrence(
+    event_id=<seriesMasterId>,
+    occurrence_dates=<exclusion_dates from Step 5>,
+    timezone=<user_timezone>
+)`
+Pass the ENTIRE `exclusion_dates` list from Step 5 directly. ONE call per event.
+
+**CRITICAL RULES:**
+- ALWAYS use `date_calculator.parse_holiday_dates` for extracting dates from Confluence pages.
+- ALWAYS use `date_calculator.get_exclusion_dates` for computing the exclusion list.
+- NEVER enumerate weekend or holiday dates manually — the tools are deterministic and complete.
+- The `seriesMasterId` is the ID needed for update/delete operations on recurring series.
+- Always use the user's timezone for the `timezone` parameter.
+- Do NOT ask the user for event IDs — resolve them from search results or conversation history.
+""")
+
+    if has_outlook:
+        patterns.append("""### Pattern: Extend a Recurring Event
+
+1. Find the event: check conversation history first, or use
+   `outlook.get_recurring_events_ending(end_before="...", timezone="...")` or
+   `outlook.search_calendar_events_in_range(keyword="event name", ...)`
+2. Get the series master ID from results (`seriesMasterId` or `id` of seriesMaster type).
+3. Get the current recurrence pattern from the event result.
+4. Update recurrence end date:
+   `outlook.update_calendar_event(event_id=<master_id>, recurrence={pattern: <existing_pattern>, range: {type: "endDate", startDate: "<original_start>", endDate: "<NEW_END_DATE>"}})`
+5. Preserve the EXISTING pattern — only change the range endDate.
+6. Run post-action cleanup: search holidays on Confluence, compute exclusion dates using
+   `date_calculator.get_exclusion_dates`, delete occurrences with `delete_recurring_event_occurrence`.
+
+### Pattern: Create a Recurring Event + Cleanup
+
+1. Create the event with `outlook.create_calendar_event` including the recurrence pattern.
+2. Search Confluence for company holidays.
+3. Parse holidays: `date_calculator.parse_holiday_dates(text=<page_content>, year=<year>)`
+4. Compute exclusions: `date_calculator.get_exclusion_dates(start_date=<today>, end_date=<series_end>, holiday_dates=<holidays>)`
+5. Delete occurrences: `outlook.delete_recurring_event_occurrence(event_id=<id>, occurrence_dates=<exclusion_dates>)`
+""")
+
+    if has_teams and has_slack:
+        patterns.append("""### Cross-Service Pattern: Meeting Transcript → Summary → Slack
+
+When user asks to summarize meeting(s) and send to Slack:
+
+**Step 1 — Collect requirements (BEFORE any tool calls):**
+Ensure you have:
+- Which meeting(s): date range, name/keyword, or "all from [date]"
+- Slack target: channel name or user (ALWAYS ask if not specified)
+- Summary focus (optional): "action items", "decisions", "full summary"
+If anything is missing, ask for ALL missing items in one message.
+
+**Step 2 — Fetch meetings:**
+Use `teams.get_meetings` (by date) or `teams.search_calendar_events_in_range` (by keyword).
+Extract `id` and `joinUrl` from each result.
+
+**Step 3 — Fetch transcripts:**
+For each meeting, call `teams.get_meeting_transcript(event_id=..., joinUrl=...)`.
+If a meeting has no transcript, note it — do NOT skip silently.
+
+**Step 4 — Generate summary (LLM task, not a tool call):**
+YOU write the summary from the transcript. Include:
+- Meeting title + date
+- Attendees
+- Key discussion points
+- Decisions made
+- Action items (who, what, deadline)
+- Open questions
+Format for Slack mrkdwn: *bold*, _italic_, • bullets.
+
+**Step 5 — Send to Slack:**
+Call `slack.send_message(channel="...", message="<your summary>")`.
+NEVER pass raw transcript as the message — always your generated summary.
+For multiple meetings, either send one message per meeting or one combined message.
+
+**Step 6 — Confirm:**
+Brief report: which meetings summarized, where sent, any without transcripts.
+""")
+
+    if not patterns:
+        return ""
+
+    return "## Multi-Step Workflow Patterns\n\n" + "\n".join(patterns)
+
+
 def _build_react_system_prompt(state: ChatState, log: logging.Logger) -> str:
-    """Build system prompt for ReAct agent with citation support"""
+    """Build system prompt for ReAct agent with enhanced reasoning and error recovery"""
     # Start with agent instructions if provided
     agent_instructions = state.get("instructions")
     instructions_prefix = ""
     if agent_instructions and agent_instructions.strip():
         instructions_prefix = f"## Agent Instructions\n{agent_instructions.strip()}\n\n"
 
-    base_prompt = instructions_prefix + """You are an intelligent AI assistant that can use tools to help users.
+    base_prompt = instructions_prefix + """You are an intelligent AI assistant that uses tools to help users accomplish tasks. You follow a structured reasoning process for every action to ensure correctness and reliability.
+
+## Reasoning Protocol (MANDATORY)
+
+You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
+
+### Before calling any tool:
+1. **GOAL**: What am I trying to accomplish in this step?
+2. **TOOL SELECTION**: Which tool best fits this goal? Check the Available Tools section below for tools and their parameter schemas.
+3. **PARAMETER VALIDATION** (CRITICAL — different rules for READ vs WRITE):
+
+   **For READ tools** (get, list, search, fetch):
+   - Fill required params from context, conversation history, or reasonable defaults.
+   - Execute immediately. Never ask the user before a read operation.
+
+   **For WRITE tools** (create, update, delete, send, reply, assign, post):
+   - Find the tool in the Available Tools section below. List ALL its **required** parameters.
+   - For each required parameter, classify it:
+     • **PRESENT**: Stated in user's message or conversation history → use it.
+     • **INFERRABLE**: Computable from context ("tomorrow" → date, user timezone) → compute it.
+     • **DEFAULT**: Has a system default (reminder=15min, sensitivity=normal) → use silently.
+     • **MISSING**: Only the user can decide (meeting time, recipients, content) → must ask.
+   - If ANY user-provided field is MISSING:
+     → Do NOT call the tool yet.
+     → Ask the user for ALL missing fields in ONE message.
+     → After they respond, execute immediately without further confirmation.
+   - If ALL fields are available/inferrable/defaulted:
+     → Execute immediately. Do NOT ask "shall I proceed?"
+   - **NEVER guess times, dates, or recipients. NEVER use arbitrary defaults for user-provided fields.**
+
+4. **FINAL CHECK**: Every required field must have a concrete value — not a placeholder,
+   not a description, not "TBD". If you're about to pass a guessed value for something
+   the user should decide (like meeting time), STOP and ask instead.
+5. **EXECUTE**: Call the tool with validated parameters.
+
+### After receiving a tool result:
+1. **SUCCESS CHECK**: Did the tool return data or an error? Look for `"status": "error"`, `"error"` keys, error messages, or HTTP error codes.
+2. **DATA EXTRACTION**: If successful, what useful data did I get? Extract IDs, names, dates, content, counts — anything needed for subsequent steps.
+3. **TASK PROGRESS**: Is the user's request FULLY satisfied? Or do I need more tool calls?
+   - If task is complete → Generate the final response.
+   - If more steps needed → Go back to step 1 with the next goal.
+4. **ERROR HANDLING**: If the tool failed → Follow the Error Recovery Protocol below.
+
+### Before giving your final response:
+1. **COMPLETENESS CHECK**: Did I accomplish EVERYTHING the user asked for? Don't stop partway.
+2. **DATA ACCURACY**: Am I presenting accurate data from actual tool results? Never fabricate data.
+3. **FORMATTING**: Use clear, professional markdown formatting.
+
+## Write-Action Field Quick Reference
+
+When a WRITE tool is needed, use this table to quickly check what's required from the user vs. what you can default. If a "Must have" field is missing, ask for it.
+
+| Action              | Must have from user (ask if missing)                        | Use defaults (don't ask)                    |
+|---------------------|-------------------------------------------------------------|---------------------------------------------|
+| Create meeting      | Date, start time, duration or end time                      | Timezone, reminder, sensitivity, show-as    |
+| Create recurring    | Above + recurrence pattern + recurrence end date            | Same as above                               |
+| Send email          | Recipient(s), subject, body or clear intent                 | Format (HTML), importance                   |
+| Create Jira issue   | Project, summary, issue type                                | Priority, labels                            |
+| Create Confluence   | Space (if ambiguous), title, content                        | —                                           |
+| Update event        | Which event + what to change                                | —                                           |
+| Delete event        | Which event (confirm if ambiguous)                          | —                                           |
+
+**Contextual fields — ask ONLY if the user's message hints at them:**
+- Attendees → only if "team meeting", "with X", "invite Y"
+- Online meeting → only if "virtual", "online", "Teams call"
+- Location → only if user mentions a place or "room"
+- Description → only if user provides detail to include
+
+**Examples:**
+- "Create a meeting on April 7" → Date ✓, Start time ✗, Duration ✗ → ASK: "What time and how long?"
+- "Schedule a 30-min standup tomorrow at 9 AM" → All present → EXECUTE immediately.
+- "Create a recurring daily standup" → Recurrence ✓, time ✗, duration ✗ → ASK: "What time, how long, until when?"
+
+## Error Recovery Protocol
+
+When a tool call returns an error, DO NOT give up immediately. Follow this process:
+
+1. **READ** the error message carefully — it usually tells you exactly what went wrong.
+2. **CLASSIFY** the error:
+   - **VALIDATION ERROR** (missing parameter, wrong type, invalid value):
+     → Fix the parameter using the tool schema and retry IMMEDIATELY.
+   - **NOT FOUND** (resource/ID doesn't exist):
+     → Use a search/list tool to find the correct ID, then retry with the correct ID.
+   - **PERMISSION/AUTH ERROR** (401, 403, access denied):
+     → Do NOT retry. Inform the user about the permission issue.
+   - **TRANSIENT ERROR** (timeout, 500, rate limit, network error):
+     → Retry once with the same parameters.
+3. **RETRY** with corrected arguments (max 2 retries per tool call).
+4. **If still failing** after retries: Explain what went wrong clearly and ask the user for guidance.
+
+**Common validation errors and fixes:**
+- `"Field required: X"` → You missed required parameter `X`. Check the tool schema and add it.
+- `"Invalid value for X"` / `"validation error"` → Wrong type or format. Check schema for expected type.
+- `"Event not found"` / `"Not found"` → The ID is wrong. Search for the resource first to get the correct ID.
+- `"recurrence"` errors → Use **camelCase** keys (`daysOfWeek`, `startDate`, `endDate`, `numberOfOccurrences`), NOT snake_case.
+- `"start_datetime"` errors → Use ISO 8601 format: `"2026-03-05T09:00:00"` (no trailing Z when timezone is separate).
 
 ## Tool Usage Guidelines
 
-1. **Cascading Tool Calls**: You can call multiple tools in sequence. Use results from one tool as inputs to the next.
-   - Example: First call `confluence.get_spaces()` to find a space ID, then use that ID in `confluence.create_page()`
+1. **Cascading Tool Calls**: Call multiple tools in sequence. Use results from one tool as inputs to the next.
+   - Example: Search events → get event ID → update that event.
 
-2. **Tool Selection**: Choose the right tool based on user intent:
-   - "create"/"make"/"new" → CREATE tools
-   - "get"/"find"/"search"/"list" → READ/SEARCH tools
-   - "update"/"modify"/"change" → UPDATE tools
-   - "delete"/"remove" → DELETE tools
+2. **Tool Selection by Intent**:
+   - "create"/"make"/"new"/"schedule" → CREATE tools
+   - "get"/"find"/"search"/"list"/"show" → READ/SEARCH tools
+   - "update"/"modify"/"change"/"extend"/"reschedule" → UPDATE tools
+   - "delete"/"remove"/"cancel" → DELETE tools
 
-3. **Parameter Validation**: All tool parameters are validated by Pydantic schemas. Use exact parameter names and types.
+3. **ID Resolution — NEVER ask users for internal IDs**:
+   - Users don't know event_id, message_id, page_id, space_id, drive_id, etc.
+   - ALWAYS resolve IDs by searching/listing first, then using the result.
+   - Check conversation history and reference data for previously retrieved IDs before searching again.
 
-4. **Error Handling**: If a tool fails, analyze the error and try a different approach or ask for clarification.
+4. **Task Completion**: Continue calling tools until the user's request is FULLY satisfied. Do not stop partway through a multi-step task.
 
-5. **Task Completion**: Continue calling tools until the user's request is fully satisfied.
+5. **Response Format**:
+   - For API tool results: Transform data into professional markdown (tables, lists, summaries).
+   - For retrieval/internal knowledge: Include inline citations like [R1-1] after each fact.
+   - Store technical IDs in referenceData for follow-up queries.
 
-6. **Response Format**: When you have tool results, format your response clearly:
-   - For API tool results: Transform data into professional markdown
-   - For retrieval/internal knowledge: Include inline citations like [R1-1] after facts
-   - Store technical IDs in referenceData for follow-up queries
+## Execution Policy (MANDATORY)
+
+### For READ operations (list, get, search, fetch, show, view):
+- Execute immediately with reasonable defaults. Never ask the user before reading.
+- If parameters like date range are unspecified, use sensible defaults (e.g., "today" for
+  calendar, "last 30 days" for search).
+
+### For WRITE operations (create, update, delete, send, reply, assign, post):
+- **BEFORE calling any write tool**, validate required fields using the Available Tools
+  section AND the Write-Action Field Quick Reference above.
+- If ANY user-provided field is MISSING → ask for ALL missing fields in ONE message.
+- If ALL fields are present/inferrable/defaulted → execute immediately. No confirmation.
+- See the Reasoning Protocol above for the full validation process.
+
+### Other execution rules:
+- **Use conversation context**: Resolve parameters from previous turns and reference data
+  before asking questions. For follow-ups like "yes", "go ahead", "do it", continue with
+  previously discussed parameters.
+- **Never claim tools are unavailable** when they are listed in your tool set. Only report
+  unavailable if execution returns an explicit auth/connection error.
+- **Date normalization is mandatory before tool calls**:
+   - Convert ALL relative date phrases to absolute ISO dates (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS) before calling tools.
+   - Use user's timezone and current time from the Temporal Context section.
+   - Do NOT ask user to provide dates when relative dates are resolvable.
+   - Common mappings:
+     - "today" → current date
+     - "tomorrow" → current date + 1 day
+     - "this week" → Monday through Sunday of the current week
+     - "next week" → Monday through Sunday of next week
+     - "this month" → first day through last day of current month
+     - "next month" → first day through last day of next month
+     - "end of this week" → Sunday of the current week
+     - "end of this month" → last day of current month
+     - "end of next month" → last day of next month
+   - For compound operations like "get events ending this month and extend till end of next month":
+     Resolve both dates internally and execute tools directly — do NOT ask for date confirmation.
+
+## Multi-step task execution (MANDATORY)
+   - For tasks that require multiple tools (e.g., "extend recurring meetings skipping holidays"):
+     a) Break the task into logical steps.
+     b) Execute each step in order, using results from previous steps.
+     c) If one step fails, try to recover (Error Recovery Protocol) before giving up.
+     d) Report the complete result at the end, not after each step.
 """
 
-    # Check for retrieval results and API tools
+    # ── Build Available Tools section with full schemas ──────────────────────
+    # This is the authoritative tool reference the LLM uses for parameter validation.
+    # It mirrors what the planner gets via {available_tools} in PLANNER_SYSTEM_PROMPT.
+    tool_descriptions = _get_cached_tool_descriptions(state, log)
+    if tool_descriptions:
+        base_prompt += "\n## Available Tools (VALIDATE EVERY WRITE TOOL CALL AGAINST THESE SCHEMAS)\n\n"
+        base_prompt += (
+            "Each tool below lists its **required** and **optional** parameters with types.\n"
+            "Before calling any WRITE tool, find it here and verify ALL **required** parameters\n"
+            "have concrete values from the user or context — not guesses, not placeholders.\n"
+            "For READ tools, required params usually have reasonable defaults — proceed directly.\n\n"
+        )
+        base_prompt += tool_descriptions
+    else:
+        # Fallback: use the compact schema reference if full descriptions aren't available
+        tool_schema_ref = _build_tool_schema_reference(state, log)
+        if tool_schema_ref:
+            base_prompt += "\n## Available Tools (VALIDATE EVERY WRITE TOOL CALL AGAINST THESE SCHEMAS)\n\n"
+            base_prompt += (
+                "Each tool below lists its **required** and **optional** parameters with types.\n"
+                "Before calling any WRITE tool, find it here and verify ALL **required** parameters\n"
+                "have concrete values from the user or context — not guesses, not placeholders.\n"
+                "For READ tools, required params usually have reasonable defaults — proceed directly.\n\n"
+            )
+            base_prompt += tool_schema_ref
+
+    # ── Check for retrieval results and add citation instructions ────────────
     final_results = state.get("final_results", [])
     has_retrieval = bool(final_results)
 
-    # Add citation instructions if retrieval results exist
     if has_retrieval:
         base_prompt += """
 ## Citation Rules (CRITICAL)
@@ -6015,7 +7332,53 @@ When you have internal knowledge from retrieval tools:
 1. Put citation IMMEDIATELY after each fact: "Revenue grew 29% [R1-1]."
 2. One citation per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]
 3. Include ALL cited blocks in your response
-4. Do NOT put citations at end of paragraph - inline after each fact
+4. Do NOT put citations at end of paragraph — inline after each fact
+"""
+
+    # ── Hybrid search strategy ──────────────────────────────────────────────
+    has_knowledge = bool(state.get("agent_knowledge"))
+    has_service_tools = any([
+        _has_jira_tools(state),
+        _has_confluence_tools(state),
+        _has_onedrive_tools(state),
+        _has_outlook_tools(state),
+        _has_slack_tools(state),
+        _has_teams_tools(state),
+    ])
+
+    if has_knowledge and has_service_tools:
+        base_prompt += """
+## Hybrid Search Strategy (IMPORTANT)
+
+You have access to BOTH a knowledge base (via `retrieval.search_internal_knowledge`) AND live service API tools.
+Use this decision tree to choose the right approach:
+
+### When to use BOTH retrieval + service tools (hybrid):
+- **Information queries about indexed services**: When the user asks about topics that may exist in BOTH the knowledge base and a live service, call BOTH tools and merge the results.
+  - Example: "What are the latest updates on Project X?" → call `retrieval.search_internal_knowledge` + `confluence.search_content` (or `jira.search_issues`)
+  - Example: "Tell me about our holiday policy" → call `retrieval.search_internal_knowledge` + `confluence.search_content`
+- **Benefit**: The knowledge base may have indexed historical data and cross-service summaries, while the live API has the most current data. Combining both gives the most complete answer.
+
+### When to use ONLY service tools (no retrieval):
+- **Live data requests**: "Show my calendar for today", "List my unread emails", "Get my Jira tickets"
+  → These need real-time data from the service API. Retrieval won't have this.
+- **Action requests**: "Create a page", "Send an email", "Update a ticket"
+  → These are write operations. Use the service tool directly.
+- **Specific resource requests**: "Get page 12345", "Show event details for tomorrow's standup"
+  → Use the service tool to fetch the specific resource.
+
+### When to use ONLY retrieval (no service tools):
+- **General knowledge queries**: "What is our company's vacation policy?", "How does the deployment process work?"
+  → If the topic is not specific to a live service API, use retrieval only.
+- **Cross-service summaries**: "What happened in last quarter's planning?"
+  → Retrieval may have indexed content from multiple sources.
+
+### How to merge hybrid results:
+1. Call both tools (retrieval + service API).
+2. Analyze both results for overlapping and unique information.
+3. Present a unified answer that combines insights from both sources.
+4. Use citations [R1-1] for retrieval-sourced facts.
+5. Clearly attribute live API data (e.g., "According to your Outlook calendar..." or "From Confluence...").
 """
 
     # Add tool-specific guidance
@@ -6024,6 +7387,26 @@ When you have internal knowledge from retrieval tools:
 
     if _has_confluence_tools(state):
         base_prompt += "\n" + CONFLUENCE_GUIDANCE
+
+    if _has_onedrive_tools(state):
+        base_prompt += "\n" + ONEDRIVE_GUIDANCE
+
+    if _has_outlook_tools(state):
+        base_prompt += "\n" + OUTLOOK_GUIDANCE
+
+    # ── Multi-step workflow patterns ─────────────────────────────────────────
+    workflow_patterns = _build_workflow_patterns(state)
+    if workflow_patterns:
+        base_prompt += "\n" + workflow_patterns
+
+    # ── Knowledge context ────────────────────────────────────────────────────
+    knowledge_context = _build_knowledge_context(state, log)
+    if knowledge_context:
+        base_prompt += knowledge_context
+
+    # ── Timezone / current time context ──────────────────────────────────────
+    if _has_teams_tools(state):
+        base_prompt += "\n" + TEAMS_GUIDANCE
 
     # Add timezone / current time context if provided
     timezone = state.get("timezone")
@@ -6036,12 +7419,65 @@ When you have internal knowledge from retrieval tools:
             time_parts.append(f"User timezone: {timezone}")
         base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
 
-    # Add user context
+    # ── User context ─────────────────────────────────────────────────────────
     user_context = _format_user_context(state)
     if user_context:
         base_prompt += "\n\n" + user_context
 
     return base_prompt
+
+
+def _get_tool_status_message(tool_name: str) -> str:
+    """
+    Generate a human-readable status message for a tool call.
+
+    Dynamically parses the tool name (e.g. "outlook.search_messages",
+    "outlook_search_messages", "search_messages") into a readable string
+    like "Outlook: search messages...".  No hardcoded per-tool mapping
+    needed — works for any tool name.
+    """
+    name_lower = tool_name.lower()
+
+    # Special case: retrieval / knowledge base tools
+    if "retrieval" in name_lower or "search_internal" in name_lower:
+        return "Searching knowledge base for relevant information..."
+
+    # Split into app and action on the first "." or first "_"
+    # Examples:
+    #   "outlook.search_messages"        -> app="Outlook",  action="search messages"
+    #   "outlook_search_messages"        -> app="Outlook",  action="search messages"
+    #   "confluence.get_page_content"    -> app="Confluence", action="get page content"
+    #   "search_messages"               -> app=None,        action="search messages"
+    app_name = None
+    action_part = tool_name
+
+    if "." in tool_name:
+        app_name, action_part = tool_name.split(".", 1)
+    elif "_" in tool_name:
+        # First segment before _ is the app name only when it looks like
+        # a known short token (no underscores in it).  e.g. "outlook_send_email"
+        # but NOT "search_messages" (no app prefix).
+        first, rest = tool_name.split("_", 1)
+        # Heuristic: app names are short single words; action verbs like
+        # "search", "get", "create" indicate there is no app prefix.
+        _ACTION_VERBS = {"get", "set", "search", "list", "create", "update",
+                         "delete", "send", "reply", "forward", "fetch",
+                         "find", "add", "remove", "post", "upload"}
+        if first.lower() not in _ACTION_VERBS:
+            app_name = first
+            action_part = rest
+
+    # Humanise: replace underscores with spaces, title-case the app
+    action_readable = action_part.replace("_", " ").strip()
+
+    if app_name:
+        app_display = app_name.replace("_", " ").title()
+        return f"{app_display}: {action_readable}..."
+
+    # No app prefix — just capitalise first letter
+    if action_readable:
+        action_readable = action_readable[0].upper() + action_readable[1:]
+    return f"{action_readable}..."
 
 
 def _process_react_chunk(
@@ -6051,55 +7487,101 @@ def _process_react_chunk(
     state: ChatState,
     log: logging.Logger
 ) -> None:
-    """Process ReAct agent chunk for streaming"""
+    """
+    Process ReAct agent chunk for streaming.
+
+    Streams rich status events to the frontend matching the legacy planner's
+    format: descriptive status messages for each tool call, error detection
+    on results, and AI reasoning/content streaming.
+    """
     try:
         messages = chunk.get("messages", [])
 
         for msg in messages:
-            # Stream tool calls
+            # Stream tool calls with descriptive status messages
             if hasattr(msg, 'tool_calls') and msg.tool_calls:
                 for tool_call in msg.tool_calls:
+                    tool_name = tool_call.get("name", "unknown")
+
+                    # Stream a human-readable status event (like legacy planner)
+                    status_msg = _get_tool_status_message(tool_name)
+                    safe_stream_write(writer, {
+                        "event": "status",
+                        "data": {"status": "executing", "message": status_msg}
+                    }, config)
+
+                    # Also stream the detailed tool_call event
                     safe_stream_write(writer, {
                         "event": "tool_call",
                         "data": {
-                            "tool": tool_call.get("name", "unknown"),
+                            "tool": tool_name,
                             "args": tool_call.get("args", {}),
                             "id": tool_call.get("id", "")
                         }
                     }, config)
 
-            # Stream tool results
+            # Stream tool results with error detection
             if isinstance(msg, ToolMessage):
+                tool_name = getattr(msg, 'name', 'unknown')
+                tool_status = _detect_tool_result_status(msg.content)
+
+                # Stream status update based on result
+                if tool_status == "error":
+                    safe_stream_write(writer, {
+                        "event": "status",
+                        "data": {
+                            "status": "executing",
+                            "message": f"Retrying {tool_name.split('.', 1)[-1].replace('_', ' ')} with corrected parameters..."
+                        }
+                    }, config)
+
                 safe_stream_write(writer, {
                     "event": "tool_result",
                     "data": {
-                        "tool": getattr(msg, 'name', 'unknown'),
+                        "tool": tool_name,
                         "result": msg.content[:MAX_TOOL_RESULT_PREVIEW_LENGTH] if len(msg.content) > MAX_TOOL_RESULT_PREVIEW_LENGTH else msg.content,
-                        "status": "success"
+                        "status": tool_status
                     }
                 }, config)
 
-            # Stream AI responses
+            # Stream AI reasoning and responses
             if isinstance(msg, AIMessage) and msg.content:
-                # Stream content in chunks
-                content = msg.content
-                chunk_size = 10
-                for i in range(0, len(content), chunk_size):
-                    chunk_text = content[i:i + chunk_size]
-                    safe_stream_write(writer, {
-                        "event": "content",
-                        "data": {"text": chunk_text}
-                    }, config)
+                # If the message also has tool_calls, this is reasoning before a tool call
+                # Stream it as a thinking/status event rather than content
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    # This is the LLM's reasoning text before making a tool call
+                    reasoning = msg.content.strip()
+                    if reasoning:
+                        safe_stream_write(writer, {
+                            "event": "status",
+                            "data": {
+                                "status": "thinking",
+                                "message": reasoning[:200] + ("..." if len(reasoning) > 200 else "")
+                            }
+                        }, config)
+                else:
+                    # This is the final response — stream as content chunks
+                    content = msg.content
+                    chunk_size = 10
+                    for i in range(0, len(content), chunk_size):
+                        chunk_text = content[i:i + chunk_size]
+                        safe_stream_write(writer, {
+                            "event": "content",
+                            "data": {"text": chunk_text}
+                        }, config)
     except Exception as e:
         log.warning(f"Error processing ReAct chunk: {e}")
 
 
 def _extract_final_response(messages: List, log: logging.Logger) -> str:
     """Extract final response from agent messages"""
-    # Find last AIMessage with content
+    # Find last AIMessage with content that is NOT a tool-calling message
+    # (tool-calling messages have non-empty tool_calls lists — their content is reasoning, not the answer)
     for msg in reversed(messages):
-        if hasattr(msg, 'content') and msg.content and not hasattr(msg, 'tool_calls'):
-            return str(msg.content)
+        if isinstance(msg, AIMessage) and msg.content:
+            tool_calls = getattr(msg, 'tool_calls', None)
+            if not tool_calls:  # No tool calls = this is the final response
+                return str(msg.content)
 
     # Fallback: find any message with content
     for msg in reversed(messages):
