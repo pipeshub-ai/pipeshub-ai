@@ -1,32 +1,42 @@
-from typing import Optional, Tuple
-from urllib.parse import urlparse, unquote
-import os
 import asyncio
 import base64
+import os
+from typing import Optional, Tuple
+from urllib.parse import unquote, urlparse
 
-from app.utils.url_fetcher import FetchError, fetch_url
 from app.utils.logger import create_logger
+from app.utils.url_fetcher import FetchError, fetch_url
 
 logger = create_logger(__name__)
+
+HTTP_STATUS_OK = 200
+
 
 def get_mime_type_from_base64(b64: str) -> str | None:
     # Decode only the first few bytes
     header = base64.b64decode(b64[:20])
 
-    if header[:4] == b'\x89PNG':           return 'image/png'
-    if header[:3] == b'\xff\xd8\xff':      return 'image/jpeg'
-    if header[:6] in (b'GIF87a', b'GIF89a'): return 'image/gif'
-    if header[:4] == b'RIFF' and header[8:12] == b'WEBP': return 'image/webp'
-    if header[:2] == b'BM':               return 'image/bmp'
-    if header[:4] in (b'II*\x00', b'MM\x00*'): return 'image/tiff'
-    if header[:4] == b'\x00\x00\x01\x00': return 'image/x-icon'
+    if header[:4] == b'\x89PNG':
+        return 'image/png'
+    if header[:3] == b'\xff\xd8\xff':
+        return 'image/jpeg'
+    if header[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    if header[:4] == b'RIFF' and header[8:12] == b'WEBP':
+        return 'image/webp'
+    if header[:2] == b'BM':
+        return 'image/bmp'
+    if header[:4] in (b'II*\x00', b'MM\x00*'):
+        return 'image/tiff'
+    if header[:4] == b'\x00\x00\x01\x00':
+        return 'image/x-icon'
 
     return None
 
 def get_extension_from_mimetype(mime_type) -> str | None:
     return mime_to_extension.get(mime_type)
 
-def get_image_info_from_url(url: str):
+def get_image_info_from_url(url: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Extract image extension and guessed MIME type from URL only.
     Does NOT make any network request.
@@ -68,7 +78,7 @@ async def _fetch_image_as_base64(img_url: str) -> Optional[Tuple[str, str]]:
         if mime_type and mime_type not in supported_mime_types:
             logger.warning("Image mime type not supported, skipping fetch: %s", mime_type)
             return None
-        
+
         result = await asyncio.to_thread(
             fetch_url,
             img_url,
@@ -76,15 +86,15 @@ async def _fetch_image_as_base64(img_url: str) -> Optional[Tuple[str, str]]:
             strategy="curl_cffi_h2",
             profile="chrome120",
         )
-        if result.status_code != 200 or not result.content:
+        if result.status_code != HTTP_STATUS_OK or not result.content:
             logger.warning("Failed to fetch image as base64 from %s: %s", img_url, f"status_code: {result.status_code}, content: {result.content}")
             return None
         b64 = base64.b64encode(result.content).decode("utf-8")
-        
+
         mime_type = None
         if b64.startswith("data:image/"):
             mime_type = b64.split(";")[0].split(":")[1]
-        
+
         if not mime_type:
             mime_type = get_mime_type_from_base64(b64)
 

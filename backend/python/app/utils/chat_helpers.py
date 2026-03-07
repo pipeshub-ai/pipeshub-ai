@@ -32,8 +32,8 @@ from app.modules.qna.prompt_templates import (
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
-from app.utils.logger import create_logger
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.logger import create_logger
 
 group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value,GroupType.TEXT_SECTION.value]
 
@@ -1121,7 +1121,6 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                     data = corresponding_block_group.get("data", {})
 
                     if block_type == GroupType.TABLE.value:
-                        table_summary = data.get("table_summary", "") if isinstance(data, dict) else str(data)
 
                         # Get block indices from children (handle both old and new formats)
                         children = corresponding_block_group.get("children")
@@ -1203,7 +1202,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str, logger, mode: str = "json"):
+def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str, logger, mode: str = "json") -> List[Dict[str, Any]]:
     content = []
 
     # Use simple prompt for quick mode
@@ -1461,7 +1460,7 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
                 })
         else:
             continue
-    
+
     content.append({
         "type": "text",
         "text": "</record>"

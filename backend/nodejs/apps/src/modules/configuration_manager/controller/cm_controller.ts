@@ -3561,42 +3561,73 @@ export const updateWebSearchSettings =
     try {
       const { includeImages, maxImages } = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
-        configPaths.webSearch,
-      );
 
-      let webSearchConfig: WebSearchConfig = { providers: [] };
-      if (encryptedWebSearchConfig) {
-        webSearchConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedWebSearchConfig),
-        ) as WebSearchConfig;
+      // Use Compare-and-Set (CAS) pattern with retries to prevent race conditions
+      const MAX_RETRIES = 5;
+      let success = false;
+      let normalizedSettings: ReturnType<typeof normalizeWebSearchSettings> | null =
+        null;
+
+      for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        const encryptedWebSearchConfig = await keyValueStoreService.get<string>(
+          configPaths.webSearch,
+        );
+
+        let webSearchConfig: WebSearchConfig = { providers: [] };
+        if (encryptedWebSearchConfig) {
+          webSearchConfig = JSON.parse(
+            EncryptionService.getInstance(
+              configManagerConfig.algorithm,
+              configManagerConfig.secretKey,
+            ).decrypt(encryptedWebSearchConfig),
+          ) as WebSearchConfig;
+        }
+
+        if (!Array.isArray(webSearchConfig.providers)) {
+          webSearchConfig.providers = [];
+        }
+
+        const existingSettings = normalizeWebSearchSettings(
+          webSearchConfig.settings,
+        );
+        normalizedSettings = normalizeWebSearchSettings({
+          includeImages,
+          maxImages:
+            typeof maxImages === 'number'
+              ? maxImages
+              : existingSettings.maxImages,
+        });
+
+        webSearchConfig.settings = normalizedSettings;
+
+        const encryptedUpdatedConfig = EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).encrypt(JSON.stringify(webSearchConfig));
+
+        const casSuccess = await keyValueStoreService.compareAndSet<string>(
+          configPaths.webSearch,
+          encryptedWebSearchConfig ?? null,
+          encryptedUpdatedConfig,
+        );
+
+        if (casSuccess) {
+          success = true;
+          break;
+        } else if (attempt === MAX_RETRIES - 1) {
+          throw new Error(
+            'Failed to update web search settings due to persistent concurrent modification. Please try again.',
+          );
+        }
+        // If CAS failed, retry with exponential backoff
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
       }
 
-      if (!Array.isArray(webSearchConfig.providers)) {
-        webSearchConfig.providers = [];
+      if (!success || normalizedSettings === null) {
+        throw new Error(
+          'Failed to update web search settings after maximum retries.',
+        );
       }
-
-      const existingSettings = normalizeWebSearchSettings(webSearchConfig.settings);
-      const normalizedSettings = normalizeWebSearchSettings({
-        includeImages,
-        maxImages:
-          typeof maxImages === 'number' ? maxImages : existingSettings.maxImages,
-      });
-
-      webSearchConfig.settings = normalizedSettings;
-
-      const encryptedUpdatedConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(webSearchConfig));
-
-      await keyValueStoreService.set<string>(
-        configPaths.webSearch,
-        encryptedUpdatedConfig,
-      );
 
       res.status(200).json({
         status: 'success',
@@ -3629,7 +3660,7 @@ export const addWebSearchProvider =
         configPaths.webSearch,
       );
 
-      let webSearchConfig: { providers: any[] } = { providers: [] };
+      let webSearchConfig: WebSearchConfig = { providers: [] };
       if (encryptedWebSearchConfig) {
         webSearchConfig = JSON.parse(
           EncryptionService.getInstance(

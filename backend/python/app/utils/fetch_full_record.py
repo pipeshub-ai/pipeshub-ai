@@ -68,32 +68,32 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
     async def fetch_full_record_tool(record_ids: List[str], reason: str = "Fetching full record content for comprehensive answer") -> Dict[str, Any]:
         """
         Retrieve the complete content of multiple records for comprehensive answering.
-        
+
         WHEN TO USE:
         - Provided blocks contain partial information with gaps in understanding
         - Need more context from specific records for a complete answer
         - Blocks suggest important information exists but isn't fully captured
         - User asks for "full details", "complete overview", or "comprehensive summary"
         - Encounter references to content that should be in records but isn't in blocks
-        
+
         WHEN NOT TO USE:
         - Provided blocks have sufficient information to answer completely
         - Query is about user information (use User Information section instead)
         - Simple factual queries already answered in blocks
-        
+
         HOW TO USE:
         - Pass ALL record IDs needed in a SINGLE call (not multiple separate calls)
         - Provide clear reason explaining why full records are needed
         - After receiving results, integrate seamlessly with existing blocks
         - Continue citing sources appropriately
-        
+
         Args:
             record_ids: List of recordIds (e.g., ["b541abcc-0bc9-42aa-8fc7-22ecfa12ef11"])
             reason: Clear explanation of information gaps requiring full records
-        
+
         Returns:
             List of blocks for the records or {"ok": false, "error": "..."}
-        
+
         Example:
             fetch_full_record(
                 record_ids=["80b50ab4-b775-46bf-b061-f0241c0dfa19","3c5357e0-1838-4b16-bbf4-9fb1f606bf4a"],

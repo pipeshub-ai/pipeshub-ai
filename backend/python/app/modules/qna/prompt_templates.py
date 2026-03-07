@@ -140,7 +140,7 @@ qna_prompt_instructions_2 = """
   - Example - CORRECT: "The system is secure [R1-1]. It processes data quickly [R1-2]. Users report high satisfaction [R2-3]."
   - When a code block ends, put citations on the next line after ```, not on the same line
   - Ensure cited block numbers appear in the `blockNumbers` field
-  
+
   3. Improvements Focus:
   - When suggesting improvements, focus only on those that directly address the query
   - If there are No 'SIGNIFICANT' improvements that can be done, return an empty improvements array. Do not hallucinate trivial improvements.

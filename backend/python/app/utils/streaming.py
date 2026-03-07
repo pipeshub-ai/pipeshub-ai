@@ -542,13 +542,13 @@ async def execute_tool_calls(
 
             if tool_result.get("ok", False):
                 tool_results.append(tool_result)
-                
+
                 # Get handler for this result type
                 handler = ToolHandlerRegistry.get_handler(tool_result)
-                
+
                 call_id_short = call_id[:8] if call_id else "N/A"
                 logger.info(f"Tool succeeded: {tool_name} (id={call_id_short}")
-                
+
                 yield {
                     "event": "tool_success",
                     "data": {
@@ -558,7 +558,7 @@ async def execute_tool_calls(
                         "record_info": tool_result.get("record_info", {})
                     }
                 }
-                
+
                 # Use handler to extract records and check token management needs
                 extracted_records = handler.extract_records(tool_result,org_id)
                 if extracted_records:
@@ -584,7 +584,7 @@ async def execute_tool_calls(
         messages.append(ai)
 
         message_contents = []
-        
+
         # Process records if any tool returned them and needs token management
         if records:
             for record in records:
@@ -1482,7 +1482,7 @@ async def call_aiter_llm_stream(
                     }
 
             continue
-        
+
         state.full_json_buf += token
         # Look for the start of the "answer" field
         if not state.answer_buf:

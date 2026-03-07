@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -11,6 +10,8 @@ from app.utils.chat_helpers import get_enhanced_metadata
 # Initialize logger
 logger = logging.getLogger(__name__)
 
+CITATION_WORD_LIMIT = 8
+
 
 @dataclass
 class ChatDocCitation:
@@ -18,9 +19,9 @@ class ChatDocCitation:
     metadata: Dict[str, Any]
     chunkindex: int
 
-import re
 
-def extract_start_end_text(snippet):
+
+def extract_start_end_text(snippet: Optional[str]) -> Tuple[str, str]:
     if not snippet:
         return "", ""
 
@@ -36,7 +37,7 @@ def extract_start_end_text(snippet):
         return "", ""
 
     words = first_text.split()
-    start_text = " ".join(words[:8])
+    start_text = " ".join(words[:CITATION_WORD_LIMIT])
     start_text_end = first_match.start() + len(first_text.split()[0])  # not needed yet
 
     # Compute exact end position of start_text in snippet
@@ -59,11 +60,11 @@ def extract_start_end_text(snippet):
 
     if last_text:
         words = last_text.split()
-        end_text = " ".join(words[-8:])
-    elif len(first_text.split()) > 8:
+        end_text = " ".join(words[-CITATION_WORD_LIMIT:])
+    elif len(first_text.split()) > CITATION_WORD_LIMIT:
         word_count = len(first_text.split())
-        diff = word_count - 8
-        diff = min(8, diff)
+        diff = word_count - CITATION_WORD_LIMIT
+        diff = min(CITATION_WORD_LIMIT, diff)
         # Fall back to last 4 words of the first segment
         end_text = " ".join(first_text.split()[-diff:])
     else:
@@ -74,39 +75,39 @@ def extract_start_end_text(snippet):
 def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
     """
     Generate a URL with text fragment for direct navigation to specific text.
-    
+
     Format: url#:~:text=start_text,end_text
-    
+
     Args:
         base_url: The base URL of the page
         text_snippet: The text to highlight/navigate to
-    
+
     Returns:
         URL with text fragment, or base_url if encoding fails
     """
     if not base_url or not text_snippet:
         return base_url
-    
+
     try:
         snippet = text_snippet.strip()
         if not snippet:
             return base_url
-        
+
         start_text, end_text = extract_start_end_text(snippet)
 
         if not start_text:
             return base_url
-       
+
         encoded_start = quote(start_text, safe='')
-        
+
         if end_text:
             encoded_end = quote(end_text, safe='')
-        
+
         if '#' in base_url:
             base_url = base_url.split('#')[0]
-        
+
         return f"{base_url}#:~:text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
-        
+
     except Exception:
         return base_url
 
@@ -167,7 +168,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
         records = []
     if web_records is None:
         web_records = []
-    
+
     # Extract all citation numbers from the answer text
     # Match both regular square brackets [R1-2] and Chinese brackets 【R1-2】
     # Also match multiple citations within a single pair of brackets [R1-2, R1-3]
@@ -190,7 +191,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
                 unique_citations.append(citation_key)
                 seen.add(citation_key)
 
-    
+
     if not unique_citations:
         return answer_text, []
 
@@ -260,27 +261,24 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             except (TypeError, ValueError) as e:
                 logger.debug(f"[WEB_CITATIONS] FILTERED: {old_citation_key} - failed to parse numbers: {e}")
                 continue
-            
+
             # Find the web record by url_number and block_index
             web_record = next(
-                (r for r in web_records 
+                (r for r in web_records
                 if r.get("url_number") == url_number and r.get("block_index") == block_index),
                 None
             )
 
             if web_record is None:
-                logger.debug(f"[WEB_CITATIONS] FILTERED: {old_citation_key} - no matching web_record found for url_number={url_number}, block_index={block_index}")
-                logger.debug(f"[WEB_CITATIONS] Available web_records: {[(r.get('url_number'), r.get('block_index')) for r in web_records]}")
                 continue
-            
+
             content = web_record.get("content", "")
             url = web_record.get("url", "")
-            
-            logger.debug(f"[WEB_CITATIONS] Found web_record for {old_citation_key}: url={url[:50]}..., content_length={len(content)}")
-            
+
+
             # Generate text fragment URL for direct navigation
             citation_url = generate_text_fragment_url(url, content)
-            
+
             new_citations.append({
                 "content": content,
                 "chunkIndex": new_citation_num,
@@ -346,7 +344,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             citation_mapping[old_citation_key] = new_citation_num
             new_citation_num += 1
 
-    
+
     # Replace citation numbers in answer text - always use regular brackets for output
     def replace_citation(match) -> str:
         # Check which group matched to get the citation keys
@@ -356,7 +354,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
         citation_keys = [c.strip() for c in citations_str.split(',') if c.strip()]
 
         new_nums = [str(citation_mapping[old_key]) for old_key in citation_keys if old_key in citation_mapping]
-        
+
         if new_nums:
             # Always output regular brackets for consistency
             return ''.join(f"[{num}]" for num in new_nums)
@@ -366,131 +364,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
     return normalized_answer, new_citations
 
 
-# def process_citations(
-#     llm_response,
-#     documents: List[Dict[str, Any]],
-#     records: List[Dict[str, Any]] = None,
-#     from_agent: bool = False,
-#     virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]] = None,
-#     web_records: List[Dict[str, Any]] = None
-# ) -> Dict[str, Any]:
-#     """
-#     Process the LLM response and extract citations from relevant documents with normalization.
 
-#     Args:
-#         llm_response: The LLM response (string, dict, or AIMessage)
-#         documents: List of retrieved documents/chunks
-#         records: Full record data from tool calls (optional)
-#         from_agent: Whether this is from agent (vs chatbot) workflow
-#         virtual_record_id_to_result: Mapping of virtual record IDs to full records (for agents)
-#         web_records: Web search results for web citations (optional)
-#     """
-#     if records is None:
-#         records = []
-#     if virtual_record_id_to_result is None:
-#         virtual_record_id_to_result = {}
-#     if web_records is None:
-#         web_records = []
-    
-#     # Debug: Log input web_records to process_citations
-#     logger.debug(f"[WEB_CITATIONS] process_citations called with {len(web_records)} web_records")
-#     try:
-#         # Handle the case where llm_response might be an object with a content field
-#         if hasattr(llm_response, "content"):
-#             response_content = llm_response.content
-#         elif isinstance(llm_response, dict) and "content" in llm_response:
-#             response_content = llm_response["content"]
-#         else:
-#             response_content = llm_response
-
-#         # Parse the LLM response if it's a string
-#         if isinstance(response_content, str):
-#             try:
-#                 # Clean the JSON string before parsing
-#                 cleaned_content = response_content.strip()
-#                 # Handle nested JSON (sometimes response is JSON within JSON)
-#                 if cleaned_content.startswith('"') and cleaned_content.endswith('"'):
-#                     cleaned_content = cleaned_content[1:-1].replace('\\"', '"')
-
-#                 # Handle escaped newlines and other special characters
-#                 cleaned_content = cleaned_content.replace("\\n", "\n").replace("\\t", "\t")
-
-#                 # Apply our fix for control characters in JSON string values
-#                 cleaned_content = fix_json_string(cleaned_content)
-
-#                 # Try to parse the cleaned content
-#                 response_data = json.loads(cleaned_content)
-#             except json.JSONDecodeError as e:
-#                 # If regular parsing fails, try a more lenient approach
-#                 try:
-#                     start_idx = cleaned_content.find("{")
-#                     end_idx = cleaned_content.rfind("}")
-
-#                     if start_idx >= 0 and end_idx > start_idx:
-#                         potential_json = cleaned_content[start_idx : end_idx + 1]
-#                         potential_json = fix_json_string(potential_json)
-#                         response_data = json.loads(potential_json)
-#                     else:
-#                         return {
-#                             "error": f"Failed to parse LLM response: {str(e)}",
-#                             "raw_response": response_content,
-#                         }
-#                 except Exception as nested_e:
-#                     return {
-#                         "error": f"Failed to parse LLM response: {str(e)}, Nested error: {str(nested_e)}",
-#                         "raw_response": response_content,
-#                     }
-#         else:
-#             response_data = response_content
-
-#         # Create a result object (either use existing or create new)
-#         if isinstance(response_data, dict):
-#             result = response_data.copy()
-#         else:
-#             result = {"answer": str(response_data)}
-
-#         # Normalize citations in the answer if it exists
-#         if "answer" in result:
-#             if from_agent:
-#                 # CRITICAL: Pass virtual_record_id_to_result and records for proper metadata
-#                 normalized_answer, citations = normalize_citations_and_chunks_for_agent(
-#                     result["answer"],
-#                     documents,
-#                     virtual_record_id_to_result=virtual_record_id_to_result,
-#                     records=records
-#                 )
-#             else:
-#                 normalized_answer, citations = normalize_citations_and_chunks(result["answer"], documents, records, web_records)
-#                 logger.debug(f"[WEB_CITATIONS] process_citations normalized answer, got {len(citations)} citations")
-#             result["answer"] = normalized_answer
-#             result["citations"] = citations
-#         else:
-#             # Fallback for cases where answer is not in a structured format
-#             if from_agent:
-#                 # CRITICAL: Pass virtual_record_id_to_result and records for proper metadata
-#                 normalized_answer, citations = normalize_citations_and_chunks_for_agent(
-#                     str(response_data),
-#                     documents,
-#                     virtual_record_id_to_result=virtual_record_id_to_result,
-#                     records=records
-#                 )
-#             else:
-#                 normalized_answer, citations = normalize_citations_and_chunks(str(response_data), documents, records, web_records)
-#                 logger.debug(f"[WEB_CITATIONS] process_citations normalized fallback, got {len(citations)} citations")
-#             result = {
-#                 "answer": normalized_answer,
-#                 "citations": citations
-#             }
-
-#         return result
-
-#     except Exception as e:
-#         import traceback
-#         return {
-#             "error": f"Citation processing failed: {str(e)}",
-#             "traceback": traceback.format_exc(),
-#             "raw_response": llm_response,
-#         }
 
 def normalize_citations_and_chunks_for_agent(
     answer_text: str,
