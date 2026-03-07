@@ -108,7 +108,7 @@ async function fetchAvailableSlackBots(): Promise<SlackBotConfig[]> {
   const bots = extractBotList(response.data)
     .map(normalizeBotEntry)
     .filter((bot): bot is SlackBotConfig => Boolean(bot));
-
+  
   return bots;
 }
 
@@ -126,13 +126,8 @@ export async function refreshSlackBotRegistry(
   inFlightRefresh = (async () => {
     try {
       const bots = await fetchAvailableSlackBots();
-      if (bots.length > 0) {
-        slackBotsCache = bots;
-        return slackBotsCache;
-      }
-
-
-      throw new Error("No Slack bots are configured.");
+      slackBotsCache = bots;
+      return slackBotsCache;
     } catch (error) {
       throw error;
     } finally {

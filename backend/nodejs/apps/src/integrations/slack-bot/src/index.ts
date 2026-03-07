@@ -18,7 +18,6 @@ import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
 import {
   type SlackBotConfig,
   getCurrentMatchedSlackBot,
-  refreshSlackBotRegistry,
 } from "./botRegistry";
 
 
@@ -2320,12 +2319,6 @@ app.event("app_mention", async ({ event, client, context }) => {
   // Drop legacy threadId + botId index if it exists
   await dropLegacyThreadBotIndex();
 
-  try {
-    await refreshSlackBotRegistry({ force: true });
-  } catch (error) {
-    console.error("Initial Slack bot registry refresh failed:", error);
-    throw error;
-  }
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");
 })();
