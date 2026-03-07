@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import hashlib
-import random
 import re
 import uuid
 from dataclasses import dataclass
@@ -11,8 +10,8 @@ from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
-import pillow_avif  # noqa: F401
-from bs4 import BeautifulSoup
+import pillow_avif  # noqa: F401  # pyright: ignore[reportUnusedImport]
+from bs4 import BeautifulSoup, Tag
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from PIL import Image
@@ -61,6 +60,11 @@ from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
+async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
+    """Wrap raw bytes as an async generator for StreamingResponse."""
+    yield data
+
+
 @dataclass
 class RecordUpdate:
     """Track updates to a record"""
@@ -74,6 +78,7 @@ class RecordUpdate:
     old_permissions: Optional[List[Permission]] = None
     new_permissions: Optional[List[Permission]] = None
     external_record_id: Optional[str] = None
+    html_bytes: Optional[bytes] = None
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
@@ -113,16 +118,6 @@ FILE_MIME_TYPES = {
     '.mdx': MimeTypes.MDX,
 }
 
-RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
-
-RETRYABLE_EXCEPTIONS = (
-    aiohttp.ClientConnectorError,
-    aiohttp.ServerDisconnectedError,
-    aiohttp.ServerTimeoutError,
-    asyncio.TimeoutError,
-)
-
-
 DOCUMENT_MIME_TYPES = {
     MimeTypes.PDF.value,
     MimeTypes.DOC.value,
@@ -149,7 +144,7 @@ class WebApp(App):
     .with_supported_auth_types("NONE")\
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.PERSONAL, ConnectorScope.TEAM])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/web.svg")
         .with_realtime_support(False)
@@ -194,6 +189,16 @@ class WebApp(App):
             min_length=1,
             max_length=1000,
             description="Maximum number of pages to crawl (1-1000)"
+        ))
+        .add_sync_custom_field(CustomField(
+            name="max_size_mb",
+            display_name="Maximum Size in MB (default 10MB)",
+            field_type="NUMBER",
+            required=False,
+            default_value="10",
+            min_length=1,
+            max_length=100,
+            description="Maximum size in MB of the response (1-100)"
         ))
         .add_sync_custom_field(CustomField(
             name="follow_external",
@@ -304,6 +309,7 @@ class WebConnector(BaseConnector):
             self.crawl_type = config_values["crawl_type"]
             self.max_depth = config_values["max_depth"]
             self.max_pages = config_values["max_pages"]
+            self.max_size_mb = config_values["max_size_mb"]
             self.follow_external = config_values["follow_external"]
             self.base_domain = config_values["base_domain"]
 
@@ -339,8 +345,8 @@ class WebConnector(BaseConnector):
             )
 
             self.logger.info(
-                f"✅ Web connector initialized: url={self.url}, type={self.crawl_type}, "
-                f"depth={self.max_depth}, max_pages={self.max_pages}"
+                f"✅ Web connector initialized: url={self.url}, type={self.crawl_type},"
+                + f" depth={self.max_depth}, max_pages={self.max_pages}"
             )
             return True
 
@@ -373,7 +379,7 @@ class WebConnector(BaseConnector):
                 use_cache=use_cache
             )
 
-            if not config:
+            if not config or not isinstance(config, dict):
                 self.logger.error("❌ WebPage config not found")
                 raise ValueError("Web connector configuration not found")
 
@@ -391,7 +397,28 @@ class WebConnector(BaseConnector):
             crawl_type = sync_config.get("type", "single")
             max_depth = int(sync_config.get("depth") or 3)
             max_pages = int(sync_config.get("max_pages") or 1000)
+            max_size_mb = int(sync_config.get("max_size_mb") or 10)
             follow_external = sync_config.get("follow_external", False)
+
+            # Validate max_pages and max_depth
+            if max_pages > 1000:
+                self.logger.warning("⚠️ WebPage max_pages is greater than 1000, setting to 1000")
+                max_pages = 1000
+            if max_pages < 1:
+                self.logger.warning("⚠️ WebPage max_pages is less than 1, setting to 1")
+                max_pages = 1
+            if max_depth > 10:
+                self.logger.warning("⚠️ WebPage max_depth is greater than 10, setting to 10")
+                max_depth = 10
+            if max_depth < 1:
+                self.logger.warning("⚠️ WebPage max_depth is less than 1, setting to 1")
+                max_depth = 1
+            if max_size_mb > 100:
+                self.logger.warning("⚠️ WebPage max_size_mb is greater than 100, setting to 100")
+                max_size_mb = 100
+            if max_size_mb < 1:
+                self.logger.warning("⚠️ WebPage max_size_mb is less than 1, setting to 1")
+                max_size_mb = 1
 
             # Parse base domain
             parsed_url = urlparse(url)
@@ -402,6 +429,7 @@ class WebConnector(BaseConnector):
                 "crawl_type": crawl_type,
                 "max_depth": max_depth,
                 "max_pages": max_pages,
+                "max_size_mb": max_size_mb,
                 "follow_external": follow_external,
                 "base_domain": base_domain,
             }
@@ -409,7 +437,7 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch and parse config: {e}")
             raise
 
-    async def test_connection_and_access(self) -> bool:
+    async def test_connection_and_access(self) -> bool:  # type: ignore[override]
         """Test if the website is accessible using the multi-strategy fallback."""
         if not self.url or not self.session:
             return False
@@ -429,7 +457,7 @@ class WebConnector(BaseConnector):
             if result.status_code < HttpStatusCode.BAD_REQUEST.value:
                 self.logger.info(
                     f"✅ Website accessible: {self.url} "
-                    f"(status: {result.status_code}, via {result.strategy})"
+                    + f"(status: {result.status_code}, via {result.strategy})"
                 )
                 return True
             else:
@@ -520,6 +548,7 @@ class WebConnector(BaseConnector):
             new_crawl_type = config_values["crawl_type"]
             new_max_depth = config_values["max_depth"]
             new_max_pages = config_values["max_pages"]
+            new_max_size_mb = config_values["max_size_mb"]
             new_follow_external = config_values["follow_external"]
             new_base_domain = config_values["base_domain"]
 
@@ -536,6 +565,9 @@ class WebConnector(BaseConnector):
             if new_max_pages != self.max_pages:
                 self.logger.info(f"🔄 Max pages changed from {self.max_pages} to {new_max_pages}")
                 self.max_pages = new_max_pages
+            if new_max_size_mb != self.max_size_mb:
+                self.logger.info(f"🔄 Max size bytes changed from {self.max_size_mb} to {new_max_size_mb}")
+                self.max_size_mb = new_max_size_mb
             if new_follow_external != self.follow_external:
                 self.logger.info(f"🔄 Follow external changed from {self.follow_external} to {new_follow_external}")
                 self.follow_external = new_follow_external
@@ -545,7 +577,7 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to reload config: {e}", exc_info=True)
             raise
 
-    async def run_sync(self) -> None:
+    async def run_sync(self) -> None:  # type: ignore[override]
         """Main sync method to crawl and index web pages."""
         try:
             await self.reload_config()
@@ -570,6 +602,7 @@ class WebConnector(BaseConnector):
             self.visited_urls.clear()
 
             # Start crawling
+            assert self.url is not None, "URL not set — init() must be called first"
             if self.crawl_type == "recursive":
                 await self._crawl_recursive(self.url, depth=0)
             else:
@@ -600,8 +633,9 @@ class WebConnector(BaseConnector):
 
                 if record_update.is_updated:
                     await self._handle_record_updates(record_update)
-                elif record_update.is_new:
-                    await self.data_entities_processor.on_new_records([(record_update.record, record_update.new_permissions)])
+                elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
+                    pair: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
+                    await self.data_entities_processor.on_new_records([pair])
                 self.logger.info(f"✅ Indexed single page: {url}")
 
         except Exception as e:
@@ -610,15 +644,16 @@ class WebConnector(BaseConnector):
     async def _crawl_recursive(self, start_url: str, depth: int) -> None:
         """Recursively crawl pages starting from start_url."""
         try:
-            batch_records: List[Tuple[FileRecord, List[Permission]]] = []
+            batch_records: List[Tuple[Record, List[Permission]]] = []
 
             async for record_update in self._crawl_recursive_generator(start_url, depth):
 
                 if record_update.is_updated:
                     await self._handle_record_updates(record_update)
                     continue
-                elif record_update.is_new:
-                    batch_records.append((record_update.record, record_update.new_permissions))
+                elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
+                    entry: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
+                    batch_records.append(entry)
 
                     # Process batch when it reaches the size limit
                     if len(batch_records) >= self.batch_size:
@@ -637,7 +672,7 @@ class WebConnector(BaseConnector):
 
     async def _crawl_recursive_generator(
         self, start_url: str, depth: int
-    ) -> AsyncGenerator[Tuple[FileRecord, List[Permission]], None]:
+    ) -> AsyncGenerator[RecordUpdate, None]:
         """
         BFS crawl generator; yields (FileRecord, permissions) for each successfully
         fetched page. Allows non-blocking processing of large site crawls.
@@ -662,7 +697,7 @@ class WebConnector(BaseConnector):
 
             self.logger.info(
                 f"📄 Crawling [{len(self.visited_urls) + 1}/{self.max_pages}] "
-                f"(depth {current_depth}): {current_url}"
+                + f"(depth {current_depth}): {current_url}"
             )
 
             try:
@@ -687,7 +722,7 @@ class WebConnector(BaseConnector):
                     # Extract links if we haven't reached max depth
                     if current_depth < self.max_depth and file_record.mime_type == MimeTypes.HTML.value:
                         links = await self._extract_links_from_content(
-                            current_url, file_record, referer=referer
+                            current_url, record_update.html_bytes, file_record, referer=referer
                         )
 
                         # Add new links to queue with current URL as referer
@@ -714,6 +749,9 @@ class WebConnector(BaseConnector):
     ) -> Optional[RecordUpdate]:
         """Fetch URL content using multi-strategy fallback and create a RecordUpdate."""
         try:
+            if self.session is None:
+                self.logger.error("❌ Session not initialized")
+                return None
 
             result = await fetch_url_with_fallback(
                 url=url,
@@ -721,6 +759,7 @@ class WebConnector(BaseConnector):
                 logger=self.logger,
                 referer=referer,
                 timeout=15,
+                max_size_mb=self.max_size_mb,
             )
 
             if result is None:
@@ -740,10 +779,19 @@ class WebConnector(BaseConnector):
             final_url = result.final_url
             content_bytes = result.content_bytes
 
+            if len(content_bytes) > self.max_size_mb * 1024 * 1024:
+                size_mb = len(content_bytes) / (1024 * 1024)
+                self.logger.warning(
+                    f"⚠️ Skipping {url}: downloaded size {size_mb:.1f}MB "
+                    + f"exceeds limit of {self.max_size_mb:.0f}MB"
+                )
+                return None
+
             # Determine MIME type and file extension
             mime_type, extension = self._determine_mime_type(url, content_type)
             if not self._pass_extension_filter(extension):
                 return None
+            html_bytes = content_bytes if mime_type == MimeTypes.HTML else None
 
             # Generate unique ID
             record_id = str(uuid.uuid4())
@@ -754,10 +802,7 @@ class WebConnector(BaseConnector):
             external_id = final_url
 
             existing_record = await self.data_entities_processor.get_record_by_external_id(connector_id=self.connector_id, external_record_id=external_id)
-            if existing_record:
-                record_id = existing_record.id
-            else:
-                record_id = str(uuid.uuid4())
+            record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
             # Get title and clean content for HTML
             title = self._extract_title_from_url(final_url)
@@ -779,7 +824,7 @@ class WebConnector(BaseConnector):
 
                     # Store cleaned HTML for indexing
                     content_bytes = text_content.encode("utf-8")
-                    size_in_bytes = len(content_bytes)
+                    # size_in_bytes = len(content_bytes)
 
                 except Exception as e:
                     self.logger.warning(f"⚠️ Failed to parse HTML for {url}: {e}")
@@ -815,7 +860,7 @@ class WebConnector(BaseConnector):
                 external_revision_id=content_md5_hash,
                 external_record_group_id=self.url,
                 version=0,
-                origin=OriginTypes.CONNECTOR.value,
+                origin=OriginTypes.CONNECTOR,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 created_at=timestamp,
@@ -850,6 +895,7 @@ class WebConnector(BaseConnector):
                 content_changed=content_changed,
                 permissions_changed=False,
                 new_permissions=permissions,
+                html_bytes=html_bytes,
             )
 
             self.logger.debug(
@@ -868,6 +914,8 @@ class WebConnector(BaseConnector):
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """Handle record updates."""
+        if not record_update.record:
+            return
         if record_update.is_deleted:
             await self.data_entities_processor.on_record_deleted(record_update.record.id)
         if record_update.metadata_changed:
@@ -876,35 +924,42 @@ class WebConnector(BaseConnector):
             await self.data_entities_processor.on_record_content_update(record_update.record)
 
     async def _extract_links_from_content(
-        self, base_url: str, file_record: FileRecord, referer: Optional[str] = None
+        self, base_url: str, html_bytes: Optional[bytes], file_record: FileRecord, referer: Optional[str] = None
     ) -> List[str]:
         """Extract valid links from HTML content."""
         links = []
 
         try:
-            # Add referer header if provided
-            headers = {}
-            if referer:
-                headers["Referer"] = referer
 
-            # Re-fetch and parse the page to extract links
-            async with self.session.get(file_record.weburl, headers=headers) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
+            if not html_bytes:
+                self.logger.debug(f"no HTML content, fetching from {file_record.weburl}")
+                if not self.session or not file_record.weburl:
                     return links
+                # Add referer header if provided
+                headers = {}
+                if referer:
+                    headers["Referer"] = referer
 
-                html_content = await response.text()
-                soup = BeautifulSoup(html_content, 'html.parser')
+                # Re-fetch and parse the page to extract links
+                async with self.session.get(file_record.weburl, headers=headers) as response:
+                    if response.status >= HttpStatusCode.BAD_REQUEST.value:
+                        return links
 
-                # Find all anchor tags
-                for anchor in soup.find_all('a', href=True):
-                    href = anchor['href']
+                    html_content = await response.text()
+            else:
+                html_content = html_bytes
 
-                    # Convert relative URLs to absolute
-                    absolute_url = urljoin(base_url, href)
+            soup = BeautifulSoup(html_content, 'html.parser')
+            # Find all anchor tags
+            for anchor in soup.find_all('a', href=True):
+                href = anchor['href']
 
-                    # Validate and filter URLs
-                    if self._is_valid_url(absolute_url, base_url):
-                        links.append(absolute_url)
+                # Convert relative URLs to absolute
+                absolute_url = urljoin(base_url, href)
+
+                # Validate and filter URLs
+                if self._is_valid_url(absolute_url, base_url):
+                    links.append(absolute_url)
 
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to extract links from {base_url}: {e}")
@@ -959,7 +1014,7 @@ class WebConnector(BaseConnector):
         try:
             parsed = urlparse(url)
             # Remove fragment and normalize
-            normalized = urlunparse((
+            return urlunparse((
                 parsed.scheme,
                 parsed.netloc.lower(),
                 parsed.path.rstrip('/') or '/',
@@ -967,7 +1022,6 @@ class WebConnector(BaseConnector):
                 parsed.query,
                 ''  # Remove fragment
             ))
-            return normalized
         except Exception:
             return url
 
@@ -1037,7 +1091,7 @@ class WebConnector(BaseConnector):
         # Default to HTML
         return MimeTypes.HTML, 'html'
 
-    def _pass_extension_filter(self, extension: str) -> bool:
+    def _pass_extension_filter(self, extension: Optional[str]) -> bool:
         """
         Checks if the file extension passes the configured file extensions filter.
 
@@ -1106,10 +1160,12 @@ class WebConnector(BaseConnector):
 
         # Try og:title meta tag
         og_title = soup.find('meta', property='og:title')
-        if og_title and og_title.get('content'):
-            title = og_title['content'].strip()
-            if title:
-                return title
+        if og_title and isinstance(og_title, Tag):
+            content = og_title.get('content')
+            if isinstance(content, str):
+                title = content.strip()
+                if title:
+                    return title
 
         # Fallback to URL
         return self._extract_title_from_url(url)
@@ -1185,11 +1241,11 @@ class WebConnector(BaseConnector):
         """Web connector does not support dynamic filter options."""
         raise NotImplementedError("Web connector does not support dynamic filter options")
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: Dict) -> None:  # type: ignore[override]
         """Web connector doesn't support webhooks."""
         pass
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> Optional[str]:  # type: ignore[override]
         """Return the web URL as the signed URL."""
         return record.weburl if record.weburl else None
 
@@ -1234,7 +1290,7 @@ class WebConnector(BaseConnector):
 
         # Validate by attempting to decode
         try:
-            base64.b64decode(cleaned, validate=True)
+            _ = base64.b64decode(cleaned, validate=True)
         except Exception as e:
             self.logger.warning(f"⚠️ Invalid base64 string (decode failed): {str(e)[:100]}")
             return ""
@@ -1285,7 +1341,7 @@ class WebConnector(BaseConnector):
 
                 # Validate by attempting to decode
                 try:
-                    base64.b64decode(cleaned_b64, validate=True)
+                    _ = base64.b64decode(cleaned_b64, validate=True)
                     is_valid = True
                 except Exception as e:
                     self.logger.warning(f"⚠️ Invalid base64 in data URI (decode failed): {str(e)[:50]}")
@@ -1369,7 +1425,7 @@ class WebConnector(BaseConnector):
     def _process_svg_tags(self, soup: BeautifulSoup) -> None:
         """Convert all SVG tags to PNG img tags."""
         for svg in soup.find_all('svg'):
-            self._convert_svg_tag_to_png(soup, svg)
+            _ = self._convert_svg_tag_to_png(soup, svg)
 
     # Image formats supported by OpenAI vision API
     OPENAI_SUPPORTED_IMAGE_TYPES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
@@ -1381,7 +1437,8 @@ class WebConnector(BaseConnector):
         img,
         soup: BeautifulSoup,
         base_url: str,
-        headers: dict
+        headers: dict,
+        preferred_strategy: Optional[str] = None
     ) -> None:
         """
         Process a single image tag: download if needed and convert to base64.
@@ -1465,65 +1522,81 @@ class WebConnector(BaseConnector):
         try:
             absolute_url = src if src.startswith(('http:', 'https:')) else urljoin(base_url, src)
 
-            # Override Accept header so servers don't return unsupported image types
-            img_headers = {**headers, "Accept": self._IMAGE_ACCEPT_HEADER}
+            if self.session is None:
+                self.logger.warning("⚠️ Session not initialized, skipping image download")
+                return
 
-            async with self.session.get(absolute_url, headers=img_headers) as img_response:
-                if img_response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    self.logger.warning(f"⚠️ Failed to download image: {absolute_url} (status: {img_response.status})")
-                    return
+            img_result = await fetch_url_with_fallback(
+                url=absolute_url,
+                session=self.session,
+                logger=self.logger,
+                referer=base_url,
+                # Override Accept so servers don't return unsupported image types
+                extra_headers={"Accept": self._IMAGE_ACCEPT_HEADER},
+                preferred_strategy=preferred_strategy,
+            )
 
-                img_bytes = await img_response.read()
-                if not img_bytes:
-                    return
+            if img_result is None or img_result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                self.logger.warning(
+                    f"⚠️ Failed to download image: {absolute_url} "
+                    + f"(status: {img_result.status_code if img_result else 'N/A'})"
+                )
+                return
 
-                content_type = self._determine_image_content_type(img_response, absolute_url)
+            img_bytes = img_result.content_bytes     # was: await img_response.read()
+            if not img_bytes:
+                return
 
-                # Convert to base64 (handle SVG and AVIF specially)
-                if content_type == 'image/svg+xml':
-                    b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
-                    if not b64_str:
-                        img.decompose()
-                        return
-                    content_type = 'image/png'
-                elif content_type == 'image/avif':
-                    self.logger.debug("Converting external AVIF to PNG base64")
-                    b64_str = self._convert_avif_bytes_to_png_base64(img_bytes, absolute_url)
-                    if not b64_str:
-                        img.decompose()
-                        return
-                    content_type = 'image/png'
-                elif content_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
-                    # Server returned an unsupported format — log full metadata then skip.
-                    raw_ct = img_response.headers.get('Content-Type', '<none>')
-                    self.logger.debug(
-                        f"⚠️ Unsupported downloaded image — "
-                        f"resolved_content_type='{content_type}' | "
-                        f"raw_Content-Type='{raw_ct}' | "
-                        f"url='{absolute_url}' | "
-                        f"response_status={img_response.status} | "
-                        f"content_length={len(img_bytes)} bytes | "
-                        f"response_headers={dict(img_response.headers)} — skipping"
-                    )
+            content_type = self._determine_image_content_type(img_result, absolute_url)
+
+            # Convert to base64 (handle SVG and AVIF specially)
+            if content_type == 'image/svg+xml':
+                b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
+                if not b64_str:
                     img.decompose()
                     return
-                else:
-                    b64_str = base64.b64encode(img_bytes).decode('utf-8')
-                    b64_str = self._clean_base64_string(b64_str)
-                    if not b64_str:
-                        self.logger.warning(f"⚠️ Failed to clean/validate base64 for image: {absolute_url}. Removing.")
-                        img.decompose()
-                        return
-                    self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
+                content_type = 'image/png'
+            elif content_type == 'image/avif':
+                self.logger.debug("Converting external AVIF to PNG base64")
+                b64_str = self._convert_avif_bytes_to_png_base64(img_bytes, absolute_url)
+                if not b64_str:
+                    img.decompose()
+                    return
+                content_type = 'image/png'
+            elif content_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
+                # Server returned an unsupported format — log full metadata then skip.
+                raw_ct = img_result.headers.get('Content-Type') or img_result.headers.get('content-type', '<none>')
+                self.logger.debug(
+                    "⚠️ Unsupported downloaded image — "
+                    + f"resolved_content_type='{content_type}' | "
+                    + f"raw_Content-Type='{raw_ct}' | "
+                    + f"url='{absolute_url}' | "
+                    + f"response_status={img_result.status_code} | "
+                    + f"content_length={len(img_bytes)} bytes | "
+                    + f"response_headers={dict(img_result.headers)} — skipping"
+                )
+                img.decompose()
+                return
+            else:
+                b64_str = base64.b64encode(img_bytes).decode('utf-8')
+                b64_str = self._clean_base64_string(b64_str)
+                if not b64_str:
+                    self.logger.warning(f"⚠️ Failed to clean/validate base64 for image: {absolute_url}. Removing.")
+                    img.decompose()
+                    return
+                self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
 
-                img['src'] = f"data:{content_type};base64,{b64_str}"
+            img['src'] = f"data:{content_type};base64,{b64_str}"
 
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to process image {src}: {e}")
 
     def _determine_image_content_type(self, response, url: str) -> str:
         """Determine the content type of an image from response headers or URL."""
-        content_type = response.headers.get('Content-Type', 'image/jpeg')
+        # FetchResponse.headers is a plain dict; header casing varies by strategy
+        # (aiohttp → title-case, curl_cffi/cloudscraper → may be lowercase).
+        h = response.headers
+        content_type = h.get('Content-Type') or h.get('content-type', 'image/jpeg')
 
         if not content_type or content_type == 'application/octet-stream':
             parsed_url = urlparse(url)
@@ -1590,17 +1663,19 @@ class WebConnector(BaseConnector):
         self,
         soup: BeautifulSoup,
         base_url: str,
-        headers: dict
+        headers: dict,
+        preferred_strategy: Optional[str] = None
     ) -> None:
         """Process all image tags in the soup."""
         for img in soup.find_all('img'):
-            await self._process_single_image(img, soup, base_url, headers)
+            await self._process_single_image(img, soup, base_url, headers, preferred_strategy)
 
     async def _process_html_content(
         self,
         content_bytes: bytes,
         record: Record,
-        headers: dict
+        headers: dict,
+        preferred_strategy: Optional[str] = None
     ) -> Optional[str]:
         """
         Process HTML content: parse, clean, and convert images to base64.
@@ -1614,21 +1689,19 @@ class WebConnector(BaseConnector):
             Cleaned HTML string with embedded base64 images, or None on failure
         """
         try:
-            html_content = content_bytes.decode('utf-8')
-            soup = BeautifulSoup(html_content, 'html.parser')
+            soup = BeautifulSoup(content_bytes, 'html.parser')
 
             # Remove unwanted tags
             self._remove_unwanted_tags(soup)
 
             # Check if image indexing is enabled
-            images_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
-
+            images_enabled = self.indexing_filters.get_value(IndexingFilterKey.IMAGES, default=True)
             if images_enabled:
                 # Convert SVG tags to PNG img tags
                 self._process_svg_tags(soup)
 
                 # Process all images: download and convert to base64
-                await self._process_all_images(soup, record.weburl, headers)
+                await self._process_all_images(soup, record.weburl or "", headers, preferred_strategy)
             else:
                 self.logger.debug("Removing all image tags: image indexing is disabled")
                 # Remove all image and SVG tags when image indexing is disabled
@@ -1636,122 +1709,16 @@ class WebConnector(BaseConnector):
 
             # Serialize and clean data URIs
             cleaned_html = str(soup)
-            cleaned_html = self._clean_data_uris_in_html(cleaned_html)
+            return self._clean_data_uris_in_html(cleaned_html)
 
-            return cleaned_html
 
         except Exception as e:
             self.logger.error(f"⚠️ Failed to parse/clean HTML: {e}")
             raise
 
-    # ==================== Retryable Fetch Method ====================
-
-    async def _fetch_with_retry(
-        self,
-        url: str,
-        headers: dict,
-        max_retries: int = 3,
-        base_delay: float = 1.0,
-        max_delay: float = 10.0,
-    ) -> bytes:
-        """
-        Fetch a URL with exponential backoff retry for transient errors.
-
-        Args:
-            url: The URL to fetch
-            headers: Request headers
-            max_retries: Maximum number of retry attempts
-            base_delay: Initial delay in seconds before first retry
-            max_delay: Maximum delay cap in seconds
-
-        Returns:
-            The response content as bytes
-
-        Raises:
-            HTTPException: On non-retryable HTTP errors or after exhausting retries
-        """
-
-        for attempt in range(max_retries + 1):
-            try:
-                async with self.session.get(url, headers=headers) as response:
-                    # Non-retryable client errors — fail immediately
-                    if (
-                        response.status >= HttpStatusCode.BAD_REQUEST.value
-                        and response.status not in RETRYABLE_STATUS_CODES
-                    ):
-                        raise HTTPException(
-                            status_code=response.status,
-                            detail=f"HTTP {response.status} for {url}",
-                        )
-
-                    # Retryable status codes
-                    if response.status in RETRYABLE_STATUS_CODES:
-                        if attempt == max_retries:
-                            raise HTTPException(
-                                status_code=response.status,
-                                detail=f"HTTP {response.status} for {url} after {max_retries} retries",
-                            )
-
-                        delay = self._calculate_retry_delay(
-                            attempt, base_delay, max_delay,
-                            retry_after=response.headers.get("Retry-After"),
-                        )
-                        self.logger.warning(
-                            f"\n\n\n⚠️ Retryable HTTP {response.status} for {url}. "
-                            f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-
-                    # Success
-                    return await response.read()
-
-            except RETRYABLE_EXCEPTIONS as e:
-                if attempt == max_retries:
-                    self.logger.error(
-                        f"❌ Failed to fetch {url} after {max_retries} retries: {e}"
-                    )
-                    raise HTTPException(
-                        status_code=HttpStatusCode.BAD_GATEWAY.value,
-                        detail=f"Failed to fetch {url} after {max_retries} retries: {e}",
-                    )
-
-                delay = self._calculate_retry_delay(attempt, base_delay, max_delay)
-                self.logger.warning(
-                    f"⚠️ Connection error for {url}: {e}. "
-                    f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
-                )
-                await asyncio.sleep(delay)
-
-        # Should not be reached, but just in case
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value,
-            detail=f"Failed to fetch {url} after {max_retries} retries",
-        )
-
-    @staticmethod
-    def _calculate_retry_delay(
-        attempt: int,
-        base_delay: float,
-        max_delay: float,
-        retry_after: Optional[str] = None,
-    ) -> float:
-        """
-        Calculate delay using exponential backoff with jitter,
-        respecting Retry-After header if present.
-        """
-        if retry_after:
-            try:
-                return min(float(retry_after), max_delay)
-            except (ValueError, TypeError):
-                pass
-
-        delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-        return min(delay, max_delay)
-
     # ==================== Main Stream Record Method ====================
 
-    async def stream_record(self, record: Record) -> Optional[StreamingResponse]:
+    async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> Optional[StreamingResponse]:  # type: ignore[override]
         """
         Stream the web page content with proper content extraction.
         """
@@ -1762,17 +1729,36 @@ class WebConnector(BaseConnector):
             )
 
         try:
+            referer = self.url if self.url else None
+
+            if self.session is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Session not initialized",
+                )
+
+            result = await fetch_url_with_fallback(
+                url=record.weburl,
+                session=self.session,
+                logger=self.logger,
+                referer=referer,
+            )
+
+            if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                raise HTTPException(
+                    status_code=result.status_code if result else 502,
+                    detail=f"Failed to fetch {record.weburl}",
+                )
+
+            content_bytes = result.content_bytes
             headers = {"Referer": self.url} if self.url else {}
-
-            content_bytes = await self._fetch_with_retry(record.weburl, headers)
-
             mime_type = record.mime_type or "text/html"
 
             # Process HTML content
             cleaned_html_content = None
             if "html" in mime_type.lower():
                 cleaned_html_content = await self._process_html_content(
-                    content_bytes, record, headers
+                    content_bytes, record, headers, result.strategy
                 )
 
             # Prepare response content
@@ -1783,7 +1769,7 @@ class WebConnector(BaseConnector):
             )
 
             return create_stream_record_response(
-                BytesIO(response_content),
+                _bytes_async_gen(response_content),
                 filename=record.record_name,
                 mime_type=mime_type,
                 fallback_filename=f"record_{record.id}",
@@ -1797,6 +1783,6 @@ class WebConnector(BaseConnector):
             )
             raise
 
-    async def run_incremental_sync(self) -> None:
+    async def run_incremental_sync(self) -> None:  # type: ignore[override]
         """Run incremental sync (same as full sync for web pages)."""
         await self.run_sync()
