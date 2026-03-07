@@ -8,7 +8,7 @@ def get_epoch_timestamp_in_ms() -> int:
 
 def parse_timestamp(timestamp_str: str) -> int:
     # Remove the 'Z' and add '+00:00' for UTC
-    if timestamp_str.endswith("Z") or timestamp_str.endswith("z"):
+    if timestamp_str.endswith(("Z", "z")):
         timestamp_str = timestamp_str[:-1] + "+00:00"
 
     dt = datetime.fromisoformat(timestamp_str)

@@ -114,6 +114,8 @@ services:
       - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
+
+      - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python 
     depends_on:
       qdrant:
         condition: service_healthy
