@@ -12,6 +12,7 @@ Enterprise-grade agent system with:
 
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -137,7 +138,7 @@ def clean_tool_result(result: object) -> object:
         for key, value in result.items():
             if key in REMOVE_FIELDS or key.lower() in REMOVE_FIELDS:
                 continue
-            if key.startswith("_") or key.startswith("$"):
+            if key.startswith(("_", "$")):
                 continue
 
             if isinstance(value, dict):
@@ -242,8 +243,7 @@ class ToolResultExtractor:
         # Handle JSON strings
         if isinstance(result, str):
             try:
-                parsed = json.loads(result)
-                return parsed
+                return json.loads(result)
             except (json.JSONDecodeError, TypeError):
                 # ✅ NEW: Return the string directly (for retrieval tool)
                 # Retrieval returns formatted string, not JSON
@@ -1306,6 +1306,13 @@ JIRA_GUIDANCE = r"""
 - Last month: `updated >= -30d`
 - Last 3 months: `updated >= -90d`
 - This year: `updated >= startOfYear()`
+- Tomorrow onward: `updated >= startOfDay("+1d")` (MUST quote args containing `+`)
+
+### ⚠️ JQL Reserved Characters in Function Arguments
+The `+` character is reserved in JQL. When using it inside function arguments like `startOfDay()`, `startOfWeek()`, etc., you MUST wrap the argument in double quotes:
+- ✅ `startOfDay("+1d")`, `startOfWeek("+1w")`
+- ❌ `startOfDay(+1d)`, `startOfWeek(+1w)` ← will fail with 400 error
+Note: Negative offsets do NOT need quoting: `startOfDay(-1d)` is fine.
 
 ### Pagination Handling
 - When `jira.search_issues` or `jira.get_issues` returns results with `nextPageToken` or `isLast: false`, there are MORE results available
@@ -2208,6 +2215,7 @@ Time filter reference:
 - Empty fields: use `IS EMPTY` or `IS NULL`
 - Text values: always quote: `status = "In Progress"`
 - Project: use KEY (e.g., `"PA"`), not name or numeric ID
+- **Reserved `+` in function args**: Always quote arguments containing `+` in JQL functions: `startOfDay("+1d")`, NOT `startOfDay(+1d)`
 
 **R-JIRA-4: User lookup before assignment.**
 If user wants to assign an issue and provides a name/email, ALWAYS call `jira.search_users` first, then use the returned `accountId` in `jira.assign_issue`. Never skip the lookup step.
@@ -3240,7 +3248,7 @@ async def _plan_with_validation_retry(
     while validation_retry_count <= max_retries:
         try:
             # Build message list: SystemMessage + conversation history + current query
-            llm_messages = [SystemMessage(content=system_prompt)] + messages
+            llm_messages = [SystemMessage(content=system_prompt), *messages]
 
             # Start periodic status updates task if writer is available
             update_task = None
@@ -3273,10 +3281,8 @@ async def _plan_with_validation_retry(
                 # Cancel update task if it's still running
                 if update_task and not update_task.done():
                     update_task.cancel()
-                    try:
+                    with contextlib.suppress(asyncio.CancelledError):
                         await update_task
-                    except asyncio.CancelledError:
-                        pass
 
             # Parse response
             plan = _parse_planner_response(
@@ -3861,19 +3867,14 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
     """Get tool descriptions with caching"""
     org_id = state.get("org_id", "default")
     agent_toolsets = state.get("agent_toolsets", [])
-    llm = state.get("llm")
+    state.get("llm")
 
     has_knowledge = bool(state.get("kb") or state.get("apps") or state.get("agent_knowledge"))
 
-    from app.modules.agents.qna.tool_system import (
-        _requires_sanitized_tool_names,
-        get_agent_tools_with_schemas,
-    )
+    from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
 
-    llm_type = "anthropic" if llm and _requires_sanitized_tool_names(llm) else "other"
     toolset_names = sorted([ts.get("name", "") for ts in agent_toolsets if isinstance(ts, dict)])
-    # Include has_knowledge in cache key — a change in knowledge config must bust the cache
-    cache_key = f"{org_id}_{hash(tuple(toolset_names))}_{llm_type}_{has_knowledge}"
+    cache_key = f"{org_id}_{hash(tuple(toolset_names))}_{has_knowledge}"
 
     if cache_key in _tool_description_cache:
         return _tool_description_cache[cache_key]
@@ -3881,8 +3882,7 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
     try:
         tools = get_agent_tools_with_schemas(state)
         if not tools:
-            fallback_name = "retrieval_search_internal_knowledge" if llm_type == "anthropic" else "retrieval.search_internal_knowledge"
-            return f"### {fallback_name}\n  ✅ Use: Questions about company info, policies\n  ❌ Don't: External API calls"
+            return "### retrieval_search_internal_knowledge\n  ✅ Use: Questions about company info, policies\n  ❌ Don't: External API calls"
 
         result = _format_tool_descriptions(tools, log)
         _tool_description_cache[cache_key] = result
@@ -3913,8 +3913,7 @@ def _get_field_type_name(field_info) -> str:
         else:
             type_str = str(annotation).lower()
             # Clean up common type representations
-            type_str = type_str.replace('<class ', '').replace('>', '').replace("'", "")
-            return type_str
+            return type_str.replace('<class ', '').replace('>', '').replace("'", "")
     except Exception:
         return "any"
 
@@ -5262,7 +5261,7 @@ async def respond_node(
                 if _raw_answer:
                     try:
                         from app.utils.citations import (
-                            normalize_citations_and_chunks_for_agent as _ncc_agent,  # noqa: PLC0415
+                            normalize_citations_and_chunks_for_agent as _ncc_agent,
                         )
                         _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [])
                         if _enriched:
@@ -5537,7 +5536,7 @@ def _build_tool_results_context(
 
             parts.append(f"### {tool_name}\n")
             parts.append(f"```json\n{content_str}\n```\n\n")
-    
+
 
 
     parts.append("\n---\n## 📝 RESPONSE INSTRUCTIONS\n\n")
@@ -6211,7 +6210,7 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
 
         # Unwrap tuple format (success, data)
         # Tools return (bool, str) tuple - extract the data part
-        if isinstance(result, tuple) and len(result) == 2:  # noqa: PLR2004
+        if isinstance(result, tuple) and len(result) == 2:
             result = result[1]
             if isinstance(result, str):
                 try:

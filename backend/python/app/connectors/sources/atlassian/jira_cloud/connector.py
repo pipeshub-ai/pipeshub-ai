@@ -436,10 +436,7 @@ def adf_to_text(
         elif node_type == "emoji":
             attrs = node.get("attrs", {})
             short_name = attrs.get("shortName", "")
-            if short_name:
-                text = f":{short_name}:"
-            else:
-                text = attrs.get("text", "")
+            text = f":{short_name}:" if short_name else attrs.get("text", "")
 
         elif node_type == "table":
             content = node.get("content", [])
@@ -1079,8 +1076,7 @@ class JiraConnector(BaseConnector):
         """
         try:
             sync_point_data = await self.issues_sync_point.read_sync_point("issues_global")
-            last_sync_time = sync_point_data.get("last_sync_time") if sync_point_data else None
-            return last_sync_time
+            return sync_point_data.get("last_sync_time") if sync_point_data else None
         except Exception:
             return None
 
@@ -2403,7 +2399,7 @@ class JiraConnector(BaseConnector):
         last_issue_updated_in_batch = None
         stats = {"new_count": 0, "updated_count": 0}
 
-        async for issues_batch, has_more, last_issue_timestamp in self._fetch_issues_batched(
+        async for issues_batch, _has_more, last_issue_timestamp in self._fetch_issues_batched(
             project_key,
             project_id,
             jira_users,
@@ -3137,12 +3133,11 @@ class JiraConnector(BaseConnector):
         external_id = f"attachment_{attachment_id}"
 
         # First try new-style external ID (attachment_<id>)
-        record = await tx_store.get_record_by_external_id(
+        return await tx_store.get_record_by_external_id(
             connector_id=self.connector_id,
             external_id=external_id,
         )
 
-        return record
 
     async def _handle_attachment_deletions_from_changelog(
         self,
@@ -3345,12 +3340,11 @@ class JiraConnector(BaseConnector):
             )
 
         # Sort threads by first comment's created timestamp (oldest thread first)
-        sorted_threads = sorted(
+        return sorted(
             threads.values(),
             key=lambda t: self._parse_jira_timestamp(t[0].get("created", "")) or 0 if t else 0
         )
 
-        return sorted_threads
 
     async def _parse_issue_to_blocks(
         self,

@@ -186,7 +186,8 @@ class JiraClient(IClient):
                 for resource in response_data
             ]
         except Exception as e:
-            raise Exception(f"Failed to fetch accessible resources: {str(e)}") from e
+            error_detail = str(e) or f"{type(e).__name__}"
+            raise Exception(f"Failed to fetch accessible resources: {error_detail}") from e
         finally:
             # Close HTTP client to prevent connection leaks on Windows
             await http_client.close()

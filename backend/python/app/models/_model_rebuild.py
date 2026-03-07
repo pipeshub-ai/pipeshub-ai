@@ -41,7 +41,7 @@ def rebuild_all_models() -> None:
     from app.models.entities import Record
 
     # Automatically discover all Record subclasses (including nested subclasses)
-    record_models = [Record] + get_all_subclasses(Record)
+    record_models = [Record, *get_all_subclasses(Record)]
 
     # Collect blocks models that have forward references
     # These are explicitly listed since they're imported from blocks.py
