@@ -2947,6 +2947,28 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def check_toolset_instance_in_use(
+        self,
+        instance_id: str,
+        transaction: Optional[str] = None
+    ) -> List[str]:
+        """
+        Check if a toolset instance is currently in use by any active agents.
+
+        This method finds all toolset nodes with the given instanceId and checks
+        if any non-deleted agents are using them.
+
+        Args:
+            instance_id (str): Toolset instance ID to check
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of agent names that are using the toolset instance.
+                      Empty list if not in use.
+        """
+        pass
+
     # ==================== Knowledge Hub Operations ====================
 
     @abstractmethod
