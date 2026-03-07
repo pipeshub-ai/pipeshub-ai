@@ -9,6 +9,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 
 
@@ -42,7 +43,7 @@ from app.connectors.core.registry.connector_builder import (
             'https://docs.pipeshub.com/connectors/slack/slack',
             'pipeshub'
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(False)
         .with_agent_support(True)
@@ -112,7 +113,7 @@ class SlackConnector:
             'pipeshub'
         ))
         .with_webhook_config(True, ["event.created", "event.modified", "event.deleted"])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(False)
         .with_agent_support(True)
@@ -187,7 +188,7 @@ class CalendarConnector:
             'pipeshub'
         ))
         .with_webhook_config(True, ["space.created", "space.modified", "space.deleted"])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(False)
         .with_agent_support(True)
@@ -262,7 +263,7 @@ class MeetConnector:
             'pipeshub'
         ))
         .with_webhook_config(True, ["document.created", "document.modified", "document.deleted"])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(False)
         .with_agent_support(True)
@@ -328,7 +329,7 @@ class DocsConnector:
             'pipeshub'
         ))
         .with_webhook_config(True, ["sheet.created", "sheet.modified", "sheet.deleted"])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(False)
         .with_agent_support(True)
@@ -404,7 +405,7 @@ class SheetsConnector:
             'pipeshub'
         ))
         .with_webhook_config(True, ["form.created", "form.modified", "form.deleted"])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(False)
         .with_agent_support(True)
@@ -476,7 +477,7 @@ class FormsConnector:
             'pipeshub'
         ))
         .with_webhook_config(True, ["slide.created", "slide.modified", "slide.deleted"])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(False)
         .with_agent_support(True)
@@ -524,7 +525,7 @@ class SlidesConnector:
             'https://docs.pipeshub.com/connectors/airtable/airtable',
             'pipeshub'
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(False)
         .with_agent_support(True)
@@ -572,7 +573,7 @@ class AirtableConnector:
             'https://docs.pipeshub.com/connectors/linear/linear',
             'pipeshub'
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(False)
         .with_agent_support(True)
@@ -635,7 +636,7 @@ class LinearConnector:
             'https://docs.pipeshub.com/connectors/zendesk/zendesk',
             'pipeshub'
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(False)
         .with_agent_support(True)
