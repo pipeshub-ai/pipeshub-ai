@@ -9,6 +9,7 @@
  *
  * This exposes:
  *   GET /.well-known/openid-configuration
+ *   GET /.well-known/oauth-authorization-server
  *   GET /.well-known/oauth-protected-resource/mcp
  *   GET /.well-known/jwks.json
  */
@@ -41,6 +42,22 @@ export function createOIDCDiscoveryRouter(container: Container): Router {
    */
   router.get(
     '/openid-configuration',
+    (req: Request, res: Response, next: NextFunction) =>
+      controller.openidConfiguration(req, res, next),
+  )
+
+  /**
+   * GET /.well-known/oauth-authorization-server
+   * OAuth 2.0 Authorization Server Metadata endpoint
+   *
+   * Returns the same metadata as openid-configuration but at the
+   * RFC 8414 standard path. MCP clients like Claude Code use this
+   * endpoint for discovery instead of openid-configuration.
+   *
+   * @see RFC 8414 - OAuth 2.0 Authorization Server Metadata
+   */
+  router.get(
+    '/oauth-authorization-server',
     (req: Request, res: Response, next: NextFunction) =>
       controller.openidConfiguration(req, res, next),
   )
