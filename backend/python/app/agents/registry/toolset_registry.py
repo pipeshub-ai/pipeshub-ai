@@ -376,6 +376,7 @@ class ToolsetRegistry:
             # Internal toolsets (always available, no auth)
             'app.agents.actions.retrieval.retrieval',
             'app.agents.actions.calculator.calculator',
+            'app.agents.actions.calculator.date_calculator',
             # Google toolsets
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',
@@ -395,8 +396,8 @@ class ToolsetRegistry:
             # 'app.agents.actions.notion.notion',
             # 'app.agents.actions.microsoft.one_drive.one_drive',
             # 'app.agents.actions.microsoft.sharepoint.sharepoint',
-            # 'app.agents.actions.microsoft.teams.teams',
-            # 'app.agents.actions.microsoft.outlook.outlook',
+            'app.agents.actions.microsoft.teams.teams',
+            'app.agents.actions.microsoft.outlook.outlook',
             # 'app.agents.actions.airtable.airtable',
             # 'app.agents.actions.dropbox.dropbox',
             # 'app.agents.actions.box.box',
