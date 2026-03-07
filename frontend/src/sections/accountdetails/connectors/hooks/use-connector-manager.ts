@@ -385,22 +385,18 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
       setLoading(true);
       await ConnectorApiService.deleteConnectorInstance(connectorId);
       setLoading(false);
-      setSuccessMessage('Connector instance deleted successfully');
+      setSuccessMessage('Connector deletion started successfully');
       setSuccess(true);
 
-      // Navigate back to connectors list after a short delay
-      setTimeout(() => {
-        window.location.href = isBusiness
-          ? '/account/company-settings/settings/connector'
-          : '/account/individual/settings/connector';
-      }, 1500);
+      // Reload connector data so the status badge reflects the DELETING state
+      fetchConnectorData(true);
     } catch (err) {
       console.error('Error deleting connector instance:', err);
       setError('Failed to delete connector instance');
     } finally {
       setLoading(false);
     }
-  }, [connectorId, isBusiness]);
+  }, [connectorId, fetchConnectorData]);
 
   // Handle rename instance
   const handleRenameInstance = useCallback(
