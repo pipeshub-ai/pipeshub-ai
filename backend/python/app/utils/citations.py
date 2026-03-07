@@ -13,6 +13,8 @@ logger = create_logger(__name__)
 # Regex that matches both tiny refs (ref1, ref2, ...) and legacy full block web URLs
 _MD_LINK_PATTERN = r'\[([^\]]*?)\]\((ref\d+|[^)]*?/record/[^)]*?preview[^)]*?block(?:Group)?Index=\d+[^)]*?)\)'
 
+CITATION_WORD_LIMIT = 8
+
 
 @dataclass
 class ChatDocCitation:
@@ -20,9 +22,9 @@ class ChatDocCitation:
     metadata: dict[str, Any]
     chunkindex: int
 
-import re
 
-def extract_start_end_text(snippet):
+
+def extract_start_end_text(snippet: Optional[str]) -> Tuple[str, str]:
     if not snippet:
         return "", ""
 
@@ -38,7 +40,7 @@ def extract_start_end_text(snippet):
         return "", ""
 
     words = first_text.split()
-    start_text = " ".join(words[:8])
+    start_text = " ".join(words[:CITATION_WORD_LIMIT])
     start_text_end = first_match.start() + len(first_text.split()[0])  # not needed yet
 
     # Compute exact end position of start_text in snippet
@@ -61,11 +63,11 @@ def extract_start_end_text(snippet):
 
     if last_text:
         words = last_text.split()
-        end_text = " ".join(words[-8:])
-    elif len(first_text.split()) > 8:
+        end_text = " ".join(words[-CITATION_WORD_LIMIT:])
+    elif len(first_text.split()) > CITATION_WORD_LIMIT:
         word_count = len(first_text.split())
-        diff = word_count - 8
-        diff = min(8, diff)
+        diff = word_count - CITATION_WORD_LIMIT
+        diff = min(CITATION_WORD_LIMIT, diff)
         # Fall back to last 4 words of the first segment
         end_text = " ".join(first_text.split()[-diff:])
     else:
@@ -76,39 +78,39 @@ def extract_start_end_text(snippet):
 def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
     """
     Generate a URL with text fragment for direct navigation to specific text.
-    
+
     Format: url#:~:text=start_text,end_text
-    
+
     Args:
         base_url: The base URL of the page
         text_snippet: The text to highlight/navigate to
-    
+
     Returns:
         URL with text fragment, or base_url if encoding fails
     """
     if not base_url or not text_snippet:
         return base_url
-    
+
     try:
         snippet = text_snippet.strip()
         if not snippet:
             return base_url
-        
+
         start_text, end_text = extract_start_end_text(snippet)
 
         if not start_text:
             return base_url
-       
+
         encoded_start = quote(start_text, safe='')
-        
+
         if end_text:
             encoded_end = quote(end_text, safe='')
-        
+
         if '#' in base_url:
             base_url = base_url.split('#')[0]
-        
+
         return f"{base_url}#:~:text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
-        
+
     except Exception:
         return base_url
 

@@ -1,11 +1,9 @@
-from collections.abc import AsyncGenerator
-from typing import Any
-
-from jinja2 import Template
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from jinja2 import Template
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel
 
@@ -13,6 +11,10 @@ from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.containers.query import QueryAppContainer
+from app.modules.qna.prompt_templates import (
+    web_search_system_prompt,
+    web_search_user_prompt,
+)
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -28,21 +30,18 @@ from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.execute_query import create_execute_query_tool, has_sql_connector_configured
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.fetch_url_tool import create_fetch_url_tool
-from app.utils.web_search_tool import create_web_search_tool
 from app.utils.query_transform import setup_followup_query_transformation
-from app.modules.qna.prompt_templates import (
-    web_search_system_prompt,
-    web_search_user_prompt,
-)
 from app.utils.streaming import (
     create_sse_event,
     stream_llm_response_with_tools,
 )
 from app.utils.time_conversion import build_llm_time_context
+from app.utils.web_search_tool import create_web_search_tool
 
 DEFAULT_CONTEXT_LENGTH = 128000
 DEFAULT_WEB_SEARCH_INCLUDE_IMAGES = False
 DEFAULT_WEB_SEARCH_MAX_IMAGES = 3
+MAX_WEB_SEARCH_IMAGES = 500
 
 router = APIRouter()
 
@@ -64,7 +63,9 @@ class ChatQuery(BaseModel):
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
 
 
-def normalize_web_search_image_settings(settings: Any) -> Tuple[bool, int]:
+def normalize_web_search_image_settings(
+    settings: Optional[Dict[str, Any]],
+) -> Tuple[bool, int]:
     include_images = DEFAULT_WEB_SEARCH_INCLUDE_IMAGES
     max_images = DEFAULT_WEB_SEARCH_MAX_IMAGES
 
@@ -83,7 +84,7 @@ def normalize_web_search_image_settings(settings: Any) -> Tuple[bool, int]:
             except ValueError:
                 parsed_max_images = None
 
-        if parsed_max_images is not None and 1 <= parsed_max_images <= 500:
+        if parsed_max_images is not None and 1 <= parsed_max_images <= MAX_WEB_SEARCH_IMAGES:
             max_images = parsed_max_images
 
     return include_images, max_images
@@ -432,7 +433,7 @@ async def askAIStream(
                 # Execute search
                 org_id = request.state.user.get('orgId')
                 user_id = request.state.user.get('userId')
-                
+
 
                 # ── Shared setup ─────────────────────────────────────────────
                 blob_store = BlobStorage(
