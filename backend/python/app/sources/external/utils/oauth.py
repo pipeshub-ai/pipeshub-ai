@@ -7,10 +7,10 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import requests  # type: ignore
+import requests
 
 # --- 1. The Generic Client (Reusable Library Code) ---
 
@@ -42,6 +42,9 @@ class GenericOAuth2Client:
         self.scope_delimiter = scope_delimiter
         self.auth_method = auth_method
         self._code_verifier: Optional[str] = None
+
+        if self.auth_method in ('header', 'body') and not self.client_secret:
+            raise ValueError(f"client_secret is required for auth_method '{self.auth_method}'")
 
     @staticmethod
     def _generate_pkce() -> tuple:
@@ -181,7 +184,7 @@ class OAuthHTTPServer(HTTPServer):
     def __init__(self, server_address, RequestHandlerClass) -> None:
         super().__init__(server_address, RequestHandlerClass)
         # Initialize state for this server instance
-        self.auth_result = {"code": None, "state": None, "error": None}
+        self.auth_result: Dict[str, Optional[str]] = {"code": None, "state": None, "error": None}
 
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
@@ -190,7 +193,7 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         """Handle GET requests from OAuth provider redirect."""
         # Access state from the server instance
-        auth_result = self.server.auth_result
+        auth_result = cast("OAuthHTTPServer", self.server).auth_result
         query = parse_qs(urlparse(self.path).query)
 
         if "code" in query:
@@ -208,7 +211,7 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(f"<h1 style='color:{color}'>{message}</h1>".encode())
+        _ = self.wfile.write(f"<h1 style='color:{color}'>{message}</h1>".encode())
 
     def log_message(self, format, *args) -> None:
         """Silence logging to reduce noise."""
@@ -297,7 +300,7 @@ def perform_oauth_flow(
         auth_url = client.get_authorization_url(state=state, scopes=scopes)
 
         print("Opening Browser")
-        webbrowser.open(auth_url)
+        _ = webbrowser.open(auth_url)
 
         # Wait for callback
         # Access state from the server instance (thread-safe)
@@ -320,8 +323,7 @@ def perform_oauth_flow(
         else:
             print("✅ Authorization Code Received. Exchanging for Token...")
             try:
-                token_response = client.exchange_code_for_token(code=server.auth_result["code"])
-                return token_response
+                return client.exchange_code_for_token(code=server.auth_result["code"])
             except requests.exceptions.RequestException as e:
                 raise requests.exceptions.RequestException(
                     f"Token Exchange Failed: {e}"

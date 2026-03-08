@@ -14,7 +14,7 @@ DO NOT EDIT — regenerate with:
 """
 
 import logging
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from app.sources.client.databricks.databricks import DatabricksClient, DatabricksResponse
 
@@ -3830,8 +3830,8 @@ class DatabricksDataSource:
         kwargs['data'] = data
         try:
             result = self._ws.dbfs.add_block(**kwargs)
-            data = _serialize(result)
-            return DatabricksResponse(success=True, data=data)
+            serialized = _serialize(result)
+            return DatabricksResponse(success=True, data=serialized)
         except Exception as e:
             return DatabricksResponse(
                 success=False, error=type(e).__name__, message=str(e)

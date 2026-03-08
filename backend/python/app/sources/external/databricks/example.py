@@ -51,7 +51,14 @@ Run from backend/python with the project venv (required for databricks-sdk):
 import asyncio
 import json
 import os
+import sys
+from pathlib import Path
 from typing import Dict
+
+# Prevent this directory (named "databricks") from shadowing the installed
+# databricks-sdk package when the client module does "from databricks.sdk ...".
+_script_dir = str(Path(__file__).resolve().parent)
+sys.path = [p for p in sys.path if str(Path(p).resolve()) != _script_dir]
 
 from app.sources.client.databricks.databricks import (
     DatabricksClient,

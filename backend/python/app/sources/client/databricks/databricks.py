@@ -18,7 +18,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from databricks.sdk.config import Config as _Config  # type: ignore
-from pydantic import BaseModel, Field, ValidationError  # type: ignore
+from pydantic import BaseModel, Field, ValidationError
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
@@ -78,10 +78,7 @@ class DatabricksSDKClient:
         """
         if not databricks_sdk_available:
             raise ImportError(
-                "databricks-sdk is required for the SDK client. "
-                "Install with: pip install databricks-sdk. "
-                "If using this repo, run from backend/python with the project venv: "
-                "source venv/bin/activate then python, or ./venv/bin/python <script>"
+                "databricks-sdk is required for the SDK client."
             )
         self.host = self._normalize_host(host)
         self.timeout = timeout
@@ -131,6 +128,8 @@ class DatabricksSDKClient:
                 config_kwargs["client_secret"] = self._client_secret
 
             cfg = _Config(**config_kwargs)
+            if _WorkspaceClient is None:
+                raise ImportError("databricks-sdk is not installed")
             self._workspace_client = _WorkspaceClient(config=cfg)
             return self
 
@@ -169,7 +168,7 @@ class DatabricksSDKClient:
             ConnectionError: If not connected
         """
         if not self.is_connected():
-            self.connect()
+            _ = self.connect()
         assert self._workspace_client is not None
         return self._workspace_client
 
@@ -184,17 +183,15 @@ class DatabricksSDKClient:
         """
         client = self.get_workspace_client()
         try:
-            clusters = []
-            for c in client.clusters.list():
-                clusters.append(
-                    {
-                        "cluster_id": c.cluster_id,
-                        "cluster_name": c.cluster_name,
-                        "state": str(c.state) if c.state else None,
-                        "creator_user_name": c.creator_user_name,
-                    }
-                )
-            return clusters
+            return [
+                {
+                    "cluster_id": c.cluster_id,
+                    "cluster_name": c.cluster_name,
+                    "state": str(c.state) if c.state else None,
+                    "creator_user_name": c.creator_user_name,
+                }
+                for c in client.clusters.list()
+            ]
         except Exception as e:
             raise RuntimeError(f"Failed to list clusters: {e}") from e
 
@@ -209,17 +206,15 @@ class DatabricksSDKClient:
         """
         client = self.get_workspace_client()
         try:
-            warehouses = []
-            for w in client.warehouses.list():
-                warehouses.append(
-                    {
-                        "id": w.id,
-                        "name": w.name,
-                        "state": str(w.state) if w.state else None,
-                        "cluster_size": w.cluster_size,
-                    }
-                )
-            return warehouses
+            return [
+                {
+                    "id": w.id,
+                    "name": w.name,
+                    "state": str(w.state) if w.state else None,
+                    "cluster_size": w.cluster_size,
+                }
+                for w in client.warehouses.list()
+            ]
         except Exception as e:
             raise RuntimeError(f"Failed to list SQL warehouses: {e}") from e
 
@@ -275,7 +270,7 @@ class DatabricksSDKClient:
 
     def __enter__(self) -> "DatabricksSDKClient":
         """Context manager entry."""
-        self.connect()
+        _ = self.connect()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
