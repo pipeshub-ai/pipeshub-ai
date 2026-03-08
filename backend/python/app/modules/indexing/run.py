@@ -109,7 +109,7 @@ class CustomChunker(SemanticChunker):
                             else:
                                 block_nums.append(nums)
                         merged_metadata["blockNum"] = sorted(
-                            list(set(block_nums))
+                            set(block_nums)
                         )  # Remove duplicates and sort
 
                     # Merge bounding boxes and add to metadata
@@ -151,7 +151,7 @@ class CustomChunker(SemanticChunker):
                                 else:
                                     block_nums.append(nums)
                             merged_metadata["blockNum"] = sorted(
-                                list(set(block_nums))
+                                set(block_nums)
                             )  # Remove duplicates and sort
 
                         # Merge bounding boxes and add to metadata

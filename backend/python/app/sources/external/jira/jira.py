@@ -40,8 +40,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_banner(
         self,
@@ -77,8 +76,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_custom_fields_configurations(
         self,
@@ -125,8 +123,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_multiple_custom_field_values(
         self,
@@ -156,8 +153,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_custom_field_configuration(
         self,
@@ -204,8 +200,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_custom_field_configuration(
         self,
@@ -234,8 +229,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_custom_field_value(
         self,
@@ -268,8 +262,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_application_property(
         self,
@@ -301,8 +294,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_advanced_settings(
         self,
@@ -325,8 +317,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_application_property(
         self,
@@ -359,8 +350,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_application_roles(
         self,
@@ -383,8 +373,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_application_role(
         self,
@@ -410,8 +399,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_attachment_content(
         self,
@@ -440,8 +428,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_attachment_meta(
         self,
@@ -464,8 +451,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_attachment_thumbnail(
         self,
@@ -503,8 +489,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_attachment(
         self,
@@ -530,8 +515,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_attachment(
         self,
@@ -557,8 +541,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def expand_attachment_for_humans(
         self,
@@ -584,8 +567,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def expand_attachment_for_machines(
         self,
@@ -611,8 +593,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_audit_records(
         self,
@@ -650,8 +631,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_system_avatars(
         self,
@@ -677,8 +657,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def submit_bulk_delete(
         self,
@@ -707,8 +686,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_bulk_editable_fields(
         self,
@@ -742,8 +720,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def submit_bulk_edit(
         self,
@@ -776,8 +753,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def submit_bulk_move(
         self,
@@ -807,8 +783,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_available_transitions(
         self,
@@ -839,8 +814,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def submit_bulk_transition(
         self,
@@ -869,8 +843,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def submit_bulk_unwatch(
         self,
@@ -896,8 +869,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def submit_bulk_watch(
         self,
@@ -923,8 +895,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_bulk_operation_progress(
         self,
@@ -950,8 +921,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_bulk_changelogs(
         self,
@@ -986,8 +956,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_user_data_classification_levels(
         self,
@@ -1016,8 +985,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_comments_by_ids(
         self,
@@ -1046,8 +1014,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_comment_property_keys(
         self,
@@ -1073,8 +1040,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_comment_property(
         self,
@@ -1102,8 +1068,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_comment_property(
         self,
@@ -1131,8 +1096,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_comment_property(
         self,
@@ -1162,8 +1126,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_components_for_projects(
         self,
@@ -1201,8 +1164,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_component(
         self,
@@ -1274,8 +1236,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_component(
         self,
@@ -1304,8 +1265,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_component(
         self,
@@ -1331,8 +1291,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_component(
         self,
@@ -1407,8 +1366,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_component_related_issues(
         self,
@@ -1434,8 +1392,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_configuration(
         self,
@@ -1458,8 +1415,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_selected_time_tracking_implementation(
         self,
@@ -1482,8 +1438,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def select_time_tracking_implementation(
         self,
@@ -1515,8 +1470,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_available_time_tracking_implementations(
         self,
@@ -1539,8 +1493,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_shared_time_tracking_configuration(
         self,
@@ -1563,8 +1516,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_shared_time_tracking_configuration(
         self,
@@ -1596,8 +1548,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_custom_field_option(
         self,
@@ -1623,8 +1574,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_dashboards(
         self,
@@ -1656,8 +1606,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_dashboard(
         self,
@@ -1693,8 +1642,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_edit_dashboards(
         self,
@@ -1731,8 +1679,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_available_dashboard_gadgets(
         self,
@@ -1755,8 +1702,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_dashboards_paginated(
         self,
@@ -1812,8 +1758,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_gadgets(
         self,
@@ -1848,8 +1793,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_gadget(
         self,
@@ -1894,8 +1838,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_gadget(
         self,
@@ -1923,8 +1866,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_gadget(
         self,
@@ -1962,8 +1904,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_dashboard_item_property_keys(
         self,
@@ -1991,8 +1932,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_dashboard_item_property(
         self,
@@ -2022,8 +1962,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_dashboard_item_property(
         self,
@@ -2053,8 +1992,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_dashboard_item_property(
         self,
@@ -2086,8 +2024,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_dashboard(
         self,
@@ -2113,8 +2050,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_dashboard(
         self,
@@ -2140,8 +2076,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_dashboard(
         self,
@@ -2180,8 +2115,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def copy_dashboard(
         self,
@@ -2220,8 +2154,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_policy(
         self,
@@ -2244,8 +2177,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_policies(
         self,
@@ -2271,8 +2203,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_events(
         self,
@@ -2295,8 +2226,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def analyse_expression(
         self,
@@ -2328,8 +2258,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def evaluate_jira_expression(
         self,
@@ -2361,8 +2290,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def evaluate_jsis_jira_expression(
         self,
@@ -2394,8 +2322,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_fields(
         self,
@@ -2418,8 +2345,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_custom_field(
         self,
@@ -2453,8 +2379,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_associations(
         self,
@@ -2482,8 +2407,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_associations(
         self,
@@ -2511,8 +2435,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_fields_paginated(
         self,
@@ -2559,8 +2482,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_trashed_fields_paginated(
         self,
@@ -2601,8 +2523,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_custom_field(
         self,
@@ -2638,8 +2559,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_contexts_for_field(
         self,
@@ -2680,8 +2600,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_custom_field_context(
         self,
@@ -2722,8 +2641,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_default_values(
         self,
@@ -2758,8 +2676,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_default_values(
         self,
@@ -2789,8 +2706,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_type_mappings_for_contexts(
         self,
@@ -2825,8 +2741,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_custom_field_contexts_for_projects_and_issue_types(
         self,
@@ -2861,8 +2776,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_context_mapping(
         self,
@@ -2897,8 +2811,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_custom_field_context(
         self,
@@ -2926,8 +2839,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_custom_field_context(
         self,
@@ -2962,8 +2874,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_issue_types_to_context(
         self,
@@ -2994,8 +2905,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_issue_types_from_context(
         self,
@@ -3026,8 +2936,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_options_for_context(
         self,
@@ -3067,8 +2976,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_custom_field_option(
         self,
@@ -3100,8 +3008,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_custom_field_option(
         self,
@@ -3133,8 +3040,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def reorder_custom_field_options(
         self,
@@ -3171,8 +3077,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_custom_field_option(
         self,
@@ -3202,8 +3107,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def replace_custom_field_option(
         self,
@@ -3239,8 +3143,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def assign_projects_to_custom_field_context(
         self,
@@ -3271,8 +3174,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_custom_field_context_from_projects(
         self,
@@ -3303,8 +3205,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_contexts_for_field_deprecated(
         self,
@@ -3336,8 +3237,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_screens_for_field(
         self,
@@ -3372,8 +3272,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_issue_field_options(
         self,
@@ -3405,8 +3304,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_issue_field_option(
         self,
@@ -3444,8 +3342,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_selectable_issue_field_options(
         self,
@@ -3480,8 +3377,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_visible_issue_field_options(
         self,
@@ -3516,8 +3412,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_issue_field_option(
         self,
@@ -3545,8 +3440,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_field_option(
         self,
@@ -3574,8 +3468,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_issue_field_option(
         self,
@@ -3614,8 +3507,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def replace_issue_field_option(
         self,
@@ -3655,8 +3547,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_custom_field(
         self,
@@ -3682,8 +3573,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def restore_custom_field(
         self,
@@ -3709,8 +3599,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def trash_custom_field(
         self,
@@ -3736,8 +3625,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_field_configurations(
         self,
@@ -3775,8 +3663,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_field_configuration(
         self,
@@ -3805,8 +3692,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_field_configuration(
         self,
@@ -3832,8 +3718,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_field_configuration(
         self,
@@ -3865,8 +3750,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_field_configuration_items(
         self,
@@ -3898,8 +3782,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_field_configuration_items(
         self,
@@ -3928,8 +3811,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_field_configuration_schemes(
         self,
@@ -3961,8 +3843,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_field_configuration_scheme(
         self,
@@ -3991,8 +3872,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_field_configuration_scheme_mappings(
         self,
@@ -4024,8 +3904,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_field_configuration_scheme_project_mapping(
         self,
@@ -4056,8 +3935,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def assign_field_configuration_scheme_to_project(
         self,
@@ -4086,8 +3964,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_field_configuration_scheme(
         self,
@@ -4113,8 +3990,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_field_configuration_scheme(
         self,
@@ -4146,8 +4022,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_field_configuration_scheme_mapping(
         self,
@@ -4176,8 +4051,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_issue_types_from_global_field_configuration_scheme(
         self,
@@ -4206,8 +4080,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_filter(
         self,
@@ -4281,8 +4154,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_default_share_scope(
         self,
@@ -4305,8 +4177,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_default_share_scope(
         self,
@@ -4332,8 +4203,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_favourite_filters(
         self,
@@ -4359,8 +4229,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_my_filters(
         self,
@@ -4389,8 +4258,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_filters_paginated(
         self,
@@ -4452,8 +4320,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_filter(
         self,
@@ -4479,8 +4346,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_filter(
         self,
@@ -4512,8 +4378,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_filter(
         self,
@@ -4590,8 +4455,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def reset_columns(
         self,
@@ -4617,8 +4481,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_columns(
         self,
@@ -4644,8 +4507,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_columns(
         self,
@@ -4675,8 +4537,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_favourite_for_filter(
         self,
@@ -4705,8 +4566,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_favourite_for_filter(
         self,
@@ -4735,8 +4595,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def change_filter_owner(
         self,
@@ -4765,8 +4624,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_share_permissions(
         self,
@@ -4792,8 +4650,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_share_permission(
         self,
@@ -4840,8 +4697,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_share_permission(
         self,
@@ -4869,8 +4725,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_share_permission(
         self,
@@ -4898,8 +4753,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_group(
         self,
@@ -4934,8 +4788,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_group(
         self,
@@ -4967,8 +4820,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_group(
         self,
@@ -4997,8 +4849,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_get_groups(
         self,
@@ -5039,8 +4890,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_users_from_group(
         self,
@@ -5078,8 +4928,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_user_from_group(
         self,
@@ -5113,8 +4962,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_user_to_group(
         self,
@@ -5153,8 +5001,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_groups(
         self,
@@ -5201,8 +5048,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_users_and_groups(
         self,
@@ -5251,8 +5097,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_license(
         self,
@@ -5275,8 +5120,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_issue(
         self,
@@ -5321,8 +5165,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def archive_issues_async(
         self,
@@ -5349,8 +5192,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def archive_issues(
         self,
@@ -5377,8 +5219,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_issues(
         self,
@@ -5408,8 +5249,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_fetch_issues(
         self,
@@ -5447,8 +5287,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_create_issue_meta(
         self,
@@ -5486,8 +5325,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_create_issue_meta_issue_types(
         self,
@@ -5519,8 +5357,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_create_issue_meta_issue_type_id(
         self,
@@ -5554,8 +5391,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_limit_report(
         self,
@@ -5581,8 +5417,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_picker_resource(
         self,
@@ -5623,8 +5458,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_set_issues_properties_list(
         self,
@@ -5654,8 +5488,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_set_issue_properties_by_issue(
         self,
@@ -5682,8 +5515,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_delete_issue_property(
         self,
@@ -5716,8 +5548,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_set_issue_property(
         self,
@@ -5753,8 +5584,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def unarchive_issues(
         self,
@@ -5781,8 +5611,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_is_watching_issue_bulk(
         self,
@@ -5808,8 +5637,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_issue(
         self,
@@ -5838,8 +5666,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue(
         self,
@@ -5883,8 +5710,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def edit_issue(
         self,
@@ -5944,8 +5770,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def assign_issue(
         self,
@@ -6014,8 +5839,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_attachment(
         self,
@@ -6043,8 +5867,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_change_logs(
         self,
@@ -6076,8 +5899,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_change_logs_by_ids(
         self,
@@ -6106,8 +5928,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_comments(
         self,
@@ -6145,8 +5966,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_comment(
         self,
@@ -6215,8 +6035,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_comment(
         self,
@@ -6244,8 +6063,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_comment(
         self,
@@ -6276,8 +6094,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_comment(
         self,
@@ -6354,8 +6171,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_edit_issue_meta(
         self,
@@ -6387,8 +6203,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def notify(
         self,
@@ -6433,8 +6248,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_property_keys(
         self,
@@ -6460,8 +6274,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_issue_property(
         self,
@@ -6489,8 +6302,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_property(
         self,
@@ -6518,8 +6330,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_issue_property(
         self,
@@ -6549,8 +6360,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_remote_issue_link_by_global_id(
         self,
@@ -6578,8 +6388,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_remote_issue_links(
         self,
@@ -6608,8 +6417,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_or_update_remote_issue_link(
         self,
@@ -6650,8 +6458,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_remote_issue_link_by_id(
         self,
@@ -6679,8 +6486,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_remote_issue_link_by_id(
         self,
@@ -6708,8 +6514,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_remote_issue_link(
         self,
@@ -6752,8 +6557,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_transitions(
         self,
@@ -6794,8 +6598,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def do_transition(
         self,
@@ -6840,8 +6643,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_vote(
         self,
@@ -6867,8 +6669,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_votes(
         self,
@@ -6894,8 +6695,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_vote(
         self,
@@ -6921,8 +6721,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_watcher(
         self,
@@ -6954,8 +6753,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_watchers(
         self,
@@ -6981,8 +6779,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_watcher(
         self,
@@ -7010,8 +6807,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_delete_worklogs(
         self,
@@ -7046,8 +6842,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_worklog(
         self,
@@ -7088,8 +6883,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_worklog(
         self,
@@ -7176,8 +6970,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_move_worklogs(
         self,
@@ -7216,8 +7009,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_worklog(
         self,
@@ -7260,8 +7052,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_worklog(
         self,
@@ -7292,8 +7083,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_worklog(
         self,
@@ -7379,8 +7169,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_worklog_property_keys(
         self,
@@ -7408,8 +7197,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_worklog_property(
         self,
@@ -7439,8 +7227,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_worklog_property(
         self,
@@ -7470,8 +7257,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_worklog_property(
         self,
@@ -7503,8 +7289,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def link_issues(
         self,
@@ -7537,8 +7322,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_issue_link(
         self,
@@ -7564,8 +7348,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_link(
         self,
@@ -7591,8 +7374,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_link_types(
         self,
@@ -7615,8 +7397,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_issue_link_type(
         self,
@@ -7655,8 +7436,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_issue_link_type(
         self,
@@ -7682,8 +7462,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_link_type(
         self,
@@ -7709,8 +7488,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_issue_link_type(
         self,
@@ -7752,8 +7530,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def export_archived_issues(
         self,
@@ -7795,8 +7572,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_security_schemes(
         self,
@@ -7819,8 +7595,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_issue_security_scheme(
         self,
@@ -7855,8 +7630,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_security_levels(
         self,
@@ -7894,8 +7668,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_default_levels(
         self,
@@ -7924,8 +7697,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_security_level_members(
         self,
@@ -7966,8 +7738,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search_projects_using_security_schemes(
         self,
@@ -8002,8 +7773,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def associate_schemes_to_projects(
         self,
@@ -8034,8 +7804,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search_security_schemes(
         self,
@@ -8070,8 +7839,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_security_scheme(
         self,
@@ -8097,8 +7865,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_issue_security_scheme(
         self,
@@ -8131,8 +7898,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_security_level_members(
         self,
@@ -8170,8 +7936,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_security_scheme(
         self,
@@ -8197,8 +7962,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_security_level(
         self,
@@ -8228,8 +7992,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_level(
         self,
@@ -8260,8 +8023,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_security_level(
         self,
@@ -8299,8 +8061,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_security_level_members(
         self,
@@ -8332,8 +8093,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_member_from_security_level(
         self,
@@ -8363,8 +8123,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_all_types(
         self,
@@ -8387,8 +8146,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_issue_type(
         self,
@@ -8423,8 +8181,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_types_for_project(
         self,
@@ -8452,8 +8209,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_issue_type(
         self,
@@ -8482,8 +8238,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_type(
         self,
@@ -8509,8 +8264,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_issue_type(
         self,
@@ -8546,8 +8300,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_alternative_issue_types(
         self,
@@ -8573,8 +8326,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_issue_type_avatar(
         self,
@@ -8610,8 +8362,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_type_property_keys(
         self,
@@ -8637,8 +8388,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_issue_type_property(
         self,
@@ -8666,8 +8416,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_type_property(
         self,
@@ -8695,8 +8444,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_issue_type_property(
         self,
@@ -8726,8 +8474,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_issue_type_schemes(
         self,
@@ -8768,8 +8515,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_issue_type_scheme(
         self,
@@ -8803,8 +8549,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_type_schemes_mapping(
         self,
@@ -8836,8 +8581,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_type_scheme_for_projects(
         self,
@@ -8868,8 +8612,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def assign_issue_type_scheme_to_project(
         self,
@@ -8897,8 +8640,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_issue_type_scheme(
         self,
@@ -8924,8 +8666,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_issue_type_scheme(
         self,
@@ -8961,8 +8702,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_issue_types_to_issue_type_scheme(
         self,
@@ -8991,8 +8731,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def reorder_issue_types_in_issue_type_scheme(
         self,
@@ -9027,8 +8766,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_issue_type_from_issue_type_scheme(
         self,
@@ -9056,8 +8794,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_type_screen_schemes(
         self,
@@ -9098,8 +8835,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_issue_type_screen_scheme(
         self,
@@ -9130,8 +8866,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_type_screen_scheme_mappings(
         self,
@@ -9163,8 +8898,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_type_screen_scheme_project_associations(
         self,
@@ -9195,8 +8929,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def assign_issue_type_screen_scheme_to_project(
         self,
@@ -9226,8 +8959,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_issue_type_screen_scheme(
         self,
@@ -9253,8 +8985,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_issue_type_screen_scheme(
         self,
@@ -9287,8 +9018,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def append_mappings_for_issue_type_screen_scheme(
         self,
@@ -9317,8 +9047,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_default_screen_scheme(
         self,
@@ -9347,8 +9076,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_mappings_from_issue_type_screen_scheme(
         self,
@@ -9377,8 +9105,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_projects_for_issue_type_screen_scheme(
         self,
@@ -9413,8 +9140,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_auto_complete(
         self,
@@ -9437,8 +9163,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_auto_complete_post(
         self,
@@ -9468,8 +9193,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_field_auto_complete_for_query_string(
         self,
@@ -9504,8 +9228,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_precomputations(
         self,
@@ -9540,8 +9263,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_precomputations(
         self,
@@ -9571,8 +9293,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_precomputations_by_id(
         self,
@@ -9602,8 +9323,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def match_issues(
         self,
@@ -9631,8 +9351,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def parse_jql_queries(
         self,
@@ -9660,8 +9379,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def migrate_queries(
         self,
@@ -9688,8 +9406,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def sanitise_jql_queries(
         self,
@@ -9715,8 +9432,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_labels(
         self,
@@ -9745,8 +9461,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_approximate_license_count(
         self,
@@ -9769,8 +9484,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_approximate_application_license_count(
         self,
@@ -9796,8 +9510,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_my_permissions(
         self,
@@ -9844,8 +9557,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_preference(
         self,
@@ -9870,8 +9582,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_preference(
         self,
@@ -9896,8 +9607,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_preference(
         self,
@@ -9924,8 +9634,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_locale(
         self,
@@ -9948,8 +9657,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_locale(
         self,
@@ -9976,8 +9684,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_current_user(
         self,
@@ -10003,8 +9710,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_notification_schemes(
         self,
@@ -10045,8 +9751,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_notification_scheme(
         self,
@@ -10081,8 +9786,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_notification_scheme_to_project_mappings(
         self,
@@ -10117,8 +9821,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_notification_scheme(
         self,
@@ -10147,8 +9850,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_notification_scheme(
         self,
@@ -10184,8 +9886,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_notifications(
         self,
@@ -10217,8 +9918,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_notification_scheme(
         self,
@@ -10244,8 +9944,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_notification_from_notification_scheme(
         self,
@@ -10273,8 +9972,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_permissions(
         self,
@@ -10297,8 +9995,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_bulk_permissions(
         self,
@@ -10331,8 +10028,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_permitted_projects(
         self,
@@ -10358,8 +10054,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_permission_schemes(
         self,
@@ -10385,8 +10080,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_permission_scheme(
         self,
@@ -10436,8 +10130,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_permission_scheme(
         self,
@@ -10463,8 +10156,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_permission_scheme(
         self,
@@ -10493,8 +10185,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_permission_scheme(
         self,
@@ -10547,8 +10238,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_permission_scheme_grants(
         self,
@@ -10577,8 +10267,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_permission_grant(
         self,
@@ -10623,8 +10312,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_permission_scheme_entity(
         self,
@@ -10652,8 +10340,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_permission_scheme_grant(
         self,
@@ -10684,8 +10371,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_plans(
         self,
@@ -10720,8 +10406,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_plan(
         self,
@@ -10769,8 +10454,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_plan(
         self,
@@ -10799,8 +10483,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_plan(
         self,
@@ -10831,8 +10514,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def archive_plan(
         self,
@@ -10858,8 +10540,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def duplicate_plan(
         self,
@@ -10888,8 +10569,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_teams(
         self,
@@ -10921,8 +10601,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_atlassian_team(
         self,
@@ -10962,8 +10641,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_atlassian_team(
         self,
@@ -10991,8 +10669,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_atlassian_team(
         self,
@@ -11020,8 +10697,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_atlassian_team(
         self,
@@ -11051,8 +10727,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_plan_only_team(
         self,
@@ -11095,8 +10770,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_plan_only_team(
         self,
@@ -11124,8 +10798,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_plan_only_team(
         self,
@@ -11153,8 +10826,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_plan_only_team(
         self,
@@ -11184,8 +10856,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def trash_plan(
         self,
@@ -11211,8 +10882,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_priorities(
         self,
@@ -11235,8 +10905,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_priority(
         self,
@@ -11276,8 +10945,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_default_priority(
         self,
@@ -11303,8 +10971,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def move_priorities(
         self,
@@ -11336,8 +11003,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search_priorities(
         self,
@@ -11381,8 +11047,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_priority(
         self,
@@ -11408,8 +11073,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_priority(
         self,
@@ -11435,8 +11099,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_priority(
         self,
@@ -11481,8 +11144,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_priority_schemes(
         self,
@@ -11529,8 +11191,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_priority_scheme(
         self,
@@ -11569,8 +11230,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def suggested_priorities_for_mappings(
         self,
@@ -11609,8 +11269,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_available_priorities_by_priority_scheme(
         self,
@@ -11647,8 +11306,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_priority_scheme(
         self,
@@ -11674,8 +11332,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_priority_scheme(
         self,
@@ -11720,8 +11377,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_priorities_by_priority_scheme(
         self,
@@ -11753,8 +11409,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_projects_by_priority_scheme(
         self,
@@ -11792,8 +11447,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_projects(
         self,
@@ -11825,8 +11479,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_project(
         self,
@@ -11902,8 +11555,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_project_with_custom_template(
         self,
@@ -11933,8 +11585,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def edit_template(
         self,
@@ -11970,8 +11621,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def live_template(
         self,
@@ -12000,8 +11650,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_template(
         self,
@@ -12026,8 +11675,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def save_template(
         self,
@@ -12060,8 +11708,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_recent(
         self,
@@ -12090,8 +11737,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search_projects(
         self,
@@ -12175,8 +11821,7 @@ class JiraDataSource:
             query=query_params,
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_project_types(
         self,
@@ -12199,8 +11844,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_accessible_project_types(
         self,
@@ -12223,8 +11867,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_type_by_key(
         self,
@@ -12250,8 +11893,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_accessible_project_type_by_key(
         self,
@@ -12277,8 +11919,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_project(
         self,
@@ -12307,8 +11948,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project(
         self,
@@ -12340,8 +11980,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_project(
         self,
@@ -12410,8 +12049,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def archive_project(
         self,
@@ -12437,8 +12075,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_project_avatar(
         self,
@@ -12488,8 +12125,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_project_avatar(
         self,
@@ -12517,8 +12153,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_project_avatar(
         self,
@@ -12555,8 +12190,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_project_avatars(
         self,
@@ -12582,8 +12216,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_default_project_classification(
         self,
@@ -12609,8 +12242,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_default_project_classification(
         self,
@@ -12636,8 +12268,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_default_project_classification(
         self,
@@ -12666,8 +12297,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_components_paginated(
         self,
@@ -12708,8 +12338,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_components(
         self,
@@ -12738,8 +12367,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_project_asynchronously(
         self,
@@ -12765,8 +12393,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_features_for_project(
         self,
@@ -12792,8 +12419,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def toggle_feature_for_project(
         self,
@@ -12825,8 +12451,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_property_keys(
         self,
@@ -12852,8 +12477,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_project_property(
         self,
@@ -12881,8 +12505,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_property(
         self,
@@ -12910,8 +12533,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_project_property(
         self,
@@ -12941,8 +12563,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def restore(
         self,
@@ -12968,8 +12589,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_roles(
         self,
@@ -12995,8 +12615,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_actor(
         self,
@@ -13033,8 +12652,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_role(
         self,
@@ -13065,8 +12683,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_actor_users(
         self,
@@ -13104,8 +12721,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_actors(
         self,
@@ -13140,8 +12756,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_role_details(
         self,
@@ -13173,8 +12788,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_statuses(
         self,
@@ -13200,8 +12814,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_versions_paginated(
         self,
@@ -13245,8 +12858,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_versions(
         self,
@@ -13275,8 +12887,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_email(
         self,
@@ -13302,8 +12913,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_project_email(
         self,
@@ -13336,8 +12946,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_hierarchy(
         self,
@@ -13363,8 +12972,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_issue_security_scheme(
         self,
@@ -13390,8 +12998,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_notification_scheme_for_project(
         self,
@@ -13420,8 +13027,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_assigned_permission_scheme(
         self,
@@ -13450,8 +13056,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def assign_permission_scheme(
         self,
@@ -13483,8 +13088,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_security_levels_for_project(
         self,
@@ -13510,8 +13114,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_project_categories(
         self,
@@ -13534,8 +13137,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_project_category(
         self,
@@ -13571,8 +13173,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_project_category(
         self,
@@ -13598,8 +13199,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_category_by_id(
         self,
@@ -13625,8 +13225,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_project_category(
         self,
@@ -13665,8 +13264,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def validate_project_key(
         self,
@@ -13692,8 +13290,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_valid_project_key(
         self,
@@ -13719,8 +13316,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_valid_project_name(
         self,
@@ -13745,8 +13341,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def redact(
         self,
@@ -13773,8 +13368,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_redaction_status(
         self,
@@ -13800,8 +13394,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_resolutions(
         self,
@@ -13824,8 +13417,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_resolution(
         self,
@@ -13857,8 +13449,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_default_resolution(
         self,
@@ -13884,8 +13475,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def move_resolutions(
         self,
@@ -13917,8 +13507,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search_resolutions(
         self,
@@ -13953,8 +13542,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_resolution(
         self,
@@ -13982,8 +13570,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_resolution(
         self,
@@ -14009,8 +13596,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_resolution(
         self,
@@ -14045,8 +13631,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_project_roles(
         self,
@@ -14069,8 +13654,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_project_role(
         self,
@@ -14100,8 +13684,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_project_role(
         self,
@@ -14130,8 +13713,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_role_by_id(
         self,
@@ -14157,8 +13739,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def partial_update_project_role(
         self,
@@ -14191,8 +13772,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def fully_update_project_role(
         self,
@@ -14225,8 +13805,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_project_role_actors_from_role(
         self,
@@ -14261,8 +13840,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_role_actors_for_role(
         self,
@@ -14288,8 +13866,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_project_role_actors_to_role(
         self,
@@ -14325,8 +13902,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_screens(
         self,
@@ -14367,8 +13943,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_screen(
         self,
@@ -14397,8 +13972,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_field_to_default_screen(
         self,
@@ -14424,8 +13998,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_bulk_screen_tabs(
         self,
@@ -14460,8 +14033,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_screen(
         self,
@@ -14487,8 +14059,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_screen(
         self,
@@ -14521,8 +14092,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_available_screen_fields(
         self,
@@ -14548,8 +14118,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_screen_tabs(
         self,
@@ -14578,8 +14147,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_screen_tab(
         self,
@@ -14611,8 +14179,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_screen_tab(
         self,
@@ -14640,8 +14207,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def rename_screen_tab(
         self,
@@ -14675,8 +14241,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_screen_tab_fields(
         self,
@@ -14707,8 +14272,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def add_screen_tab_field(
         self,
@@ -14739,8 +14303,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_screen_tab_field(
         self,
@@ -14770,8 +14333,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def move_screen_tab_field(
         self,
@@ -14808,8 +14370,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def move_screen_tab(
         self,
@@ -14839,8 +14400,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_screen_schemes(
         self,
@@ -14881,8 +14441,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_screen_scheme(
         self,
@@ -14913,8 +14472,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_screen_scheme(
         self,
@@ -14940,8 +14498,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_screen_scheme(
         self,
@@ -14977,8 +14534,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search_for_issues_using_jql(
         self,
@@ -15028,8 +14584,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search_for_issues_using_jql_post(
         self,
@@ -15077,8 +14632,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def count_issues(
         self,
@@ -15105,8 +14659,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search_and_reconsile_issues_using_jql(
         self,
@@ -15156,8 +14709,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search_and_reconsile_issues_using_jql_post(
         self,
@@ -15205,8 +14757,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_security_level(
         self,
@@ -15232,8 +14783,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_server_info(
         self,
@@ -15256,8 +14806,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_issue_navigator_default_columns(
         self,
@@ -15280,8 +14829,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_issue_navigator_default_columns(
         self,
@@ -15308,8 +14856,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_statuses(
         self,
@@ -15332,8 +14879,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_status(
         self,
@@ -15359,8 +14905,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_status_categories(
         self,
@@ -15383,8 +14928,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_status_category(
         self,
@@ -15410,8 +14954,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_statuses_by_id(
         self,
@@ -15436,8 +14979,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_statuses_by_id(
         self,
@@ -15462,8 +15004,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_statuses(
         self,
@@ -15491,8 +15032,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_statuses(
         self,
@@ -15518,8 +15058,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search(
         self,
@@ -15557,8 +15096,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_issue_type_usages_for_status(
         self,
@@ -15592,8 +15130,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_usages_for_status(
         self,
@@ -15625,8 +15162,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow_usages_for_status(
         self,
@@ -15658,8 +15194,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_task(
         self,
@@ -15685,8 +15220,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def cancel_task(
         self,
@@ -15712,8 +15246,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_ui_modifications(
         self,
@@ -15745,8 +15278,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_ui_modification(
         self,
@@ -15781,8 +15313,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_ui_modification(
         self,
@@ -15808,8 +15339,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_ui_modification(
         self,
@@ -15848,8 +15378,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_avatars(
         self,
@@ -15877,8 +15406,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def store_avatar(
         self,
@@ -15916,8 +15444,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_avatar(
         self,
@@ -15947,8 +15474,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_avatar_image_by_type(
         self,
@@ -15980,8 +15506,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_avatar_image_by_id(
         self,
@@ -16015,8 +15540,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_avatar_image_by_owner(
         self,
@@ -16050,8 +15574,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def remove_user(
         self,
@@ -16082,8 +15605,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_user(
         self,
@@ -16118,8 +15640,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_user(
         self,
@@ -16168,8 +15689,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_bulk_assignable_users(
         self,
@@ -16209,8 +15729,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_assignable_users(
         self,
@@ -16267,8 +15786,7 @@ class JiraDataSource:
             query=query_params,
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_get_users(
         self,
@@ -16305,8 +15823,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def bulk_get_users_migration(
         self,
@@ -16341,8 +15858,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def reset_user_columns(
         self,
@@ -16371,8 +15887,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_user_default_columns(
         self,
@@ -16401,8 +15916,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_user_columns(
         self,
@@ -16432,8 +15946,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_user_email(
         self,
@@ -16458,8 +15971,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_user_email_bulk(
         self,
@@ -16484,8 +15996,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_user_groups(
         self,
@@ -16516,8 +16027,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_user_nav_property(
         self,
@@ -16546,8 +16056,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_user_nav_property(
         self,
@@ -16578,8 +16087,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_users_with_all_permissions(
         self,
@@ -16625,8 +16133,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_users_for_picker(
         self,
@@ -16670,8 +16177,7 @@ class JiraDataSource:
             query=query_params_dict,  # Use alias 'query' instead of 'query_params' (Pydantic alias requirement)
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_user_property_keys(
         self,
@@ -16703,8 +16209,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_user_property(
         self,
@@ -16739,8 +16244,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_user_property(
         self,
@@ -16775,8 +16279,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_user_property(
         self,
@@ -16813,8 +16316,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_users(
         self,
@@ -16855,8 +16357,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_users_by_query(
         self,
@@ -16887,8 +16388,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_user_keys_by_query(
         self,
@@ -16919,8 +16419,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def find_users_with_browse_permission(
         self,
@@ -16964,8 +16463,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_users_default(
         self,
@@ -16994,8 +16492,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_users(
         self,
@@ -17027,8 +16524,7 @@ class JiraDataSource:
             query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_version(
         self,
@@ -17109,8 +16605,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_version(
         self,
@@ -17142,8 +16637,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_version(
         self,
@@ -17172,8 +16666,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_version(
         self,
@@ -17257,8 +16750,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def merge_versions(
         self,
@@ -17286,8 +16778,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def move_version(
         self,
@@ -17320,8 +16811,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_version_related_issues(
         self,
@@ -17347,8 +16837,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_related_work(
         self,
@@ -17374,8 +16863,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_related_work(
         self,
@@ -17416,8 +16904,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_related_work(
         self,
@@ -17458,8 +16945,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_and_replace_version(
         self,
@@ -17495,8 +16981,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_version_unresolved_issues(
         self,
@@ -17522,8 +17007,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_related_work(
         self,
@@ -17551,8 +17035,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_webhook_by_id(
         self,
@@ -17578,8 +17061,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_dynamic_webhooks_for_app(
         self,
@@ -17608,8 +17090,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def register_dynamic_webhooks(
         self,
@@ -17637,8 +17118,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_failed_webhooks(
         self,
@@ -17667,8 +17147,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def refresh_webhooks(
         self,
@@ -17694,8 +17173,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_workflows(
         self,
@@ -17721,8 +17199,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_workflow(
         self,
@@ -17755,8 +17232,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow_transition_rule_configurations(
         self,
@@ -17802,8 +17278,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_workflow_transition_rule_configurations(
         self,
@@ -17829,8 +17304,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_workflow_transition_rule_configurations(
         self,
@@ -17856,8 +17330,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflows_paginated(
         self,
@@ -17901,8 +17374,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_workflow_transition_property(
         self,
@@ -17935,8 +17407,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow_transition_properties(
         self,
@@ -17973,8 +17444,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_workflow_transition_property(
         self,
@@ -18019,8 +17489,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_workflow_transition_property(
         self,
@@ -18065,8 +17534,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_inactive_workflow(
         self,
@@ -18092,8 +17560,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow_project_issue_type_usages(
         self,
@@ -18127,8 +17594,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_usages_for_workflow(
         self,
@@ -18160,8 +17626,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow_scheme_usages_for_workflow(
         self,
@@ -18193,8 +17658,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def read_workflows(
         self,
@@ -18230,8 +17694,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def workflow_capabilities(
         self,
@@ -18263,8 +17726,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_workflows(
         self,
@@ -18297,8 +17759,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def validate_create_workflows(
         self,
@@ -18327,8 +17788,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_default_editor(
         self,
@@ -18351,8 +17811,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def search_workflows(
         self,
@@ -18396,8 +17855,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_workflows(
         self,
@@ -18427,8 +17885,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def validate_update_workflows(
         self,
@@ -18457,8 +17914,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_all_workflow_schemes(
         self,
@@ -18487,8 +17943,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_workflow_scheme(
         self,
@@ -18551,8 +18006,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow_scheme_project_associations(
         self,
@@ -18577,8 +18031,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def assign_scheme_to_project(
         self,
@@ -18607,8 +18060,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def read_workflow_schemes(
         self,
@@ -18638,8 +18090,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_schemes(
         self,
@@ -18686,8 +18137,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_workflow_scheme_mappings(
         self,
@@ -18718,8 +18168,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_workflow_scheme(
         self,
@@ -18745,8 +18194,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow_scheme(
         self,
@@ -18775,8 +18223,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_workflow_scheme(
         self,
@@ -18842,8 +18289,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def create_workflow_scheme_draft_from_parent(
         self,
@@ -18869,8 +18315,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_default_workflow(
         self,
@@ -18899,8 +18344,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_default_workflow(
         self,
@@ -18929,8 +18373,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_default_workflow(
         self,
@@ -18962,8 +18405,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_workflow_scheme_draft(
         self,
@@ -18989,8 +18431,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow_scheme_draft(
         self,
@@ -19016,8 +18457,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_workflow_scheme_draft(
         self,
@@ -19083,8 +18523,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_draft_default_workflow(
         self,
@@ -19110,8 +18549,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_draft_default_workflow(
         self,
@@ -19137,8 +18575,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_draft_default_workflow(
         self,
@@ -19170,8 +18607,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_workflow_scheme_draft_issue_type(
         self,
@@ -19199,8 +18635,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow_scheme_draft_issue_type(
         self,
@@ -19228,8 +18663,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_workflow_scheme_draft_issue_type(
         self,
@@ -19267,8 +18701,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def publish_draft_workflow_scheme(
         self,
@@ -19301,8 +18734,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_draft_workflow_mapping(
         self,
@@ -19330,8 +18762,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_draft_workflow(
         self,
@@ -19360,8 +18791,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_draft_workflow_mapping(
         self,
@@ -19402,8 +18832,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_workflow_scheme_issue_type(
         self,
@@ -19434,8 +18863,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow_scheme_issue_type(
         self,
@@ -19466,8 +18894,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def set_workflow_scheme_issue_type(
         self,
@@ -19505,8 +18932,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_workflow_mapping(
         self,
@@ -19537,8 +18963,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_workflow(
         self,
@@ -19570,8 +18995,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def update_workflow_mapping(
         self,
@@ -19612,8 +19036,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_project_usages_for_workflow_scheme(
         self,
@@ -19645,8 +19068,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_ids_of_worklogs_deleted_since(
         self,
@@ -19672,8 +19094,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_worklogs_for_ids(
         self,
@@ -19702,8 +19123,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def get_ids_of_worklogs_modified_since(
         self,
@@ -19732,8 +19152,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def addon_properties_resource_get_addon_properties_get(
         self,
@@ -19759,8 +19178,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def addon_properties_resource_delete_addon_property_delete(
         self,
@@ -19788,8 +19206,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def addon_properties_resource_get_addon_property_get(
         self,
@@ -19817,8 +19234,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def addon_properties_resource_put_addon_property_put(
         self,
@@ -19848,8 +19264,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def dynamic_modules_resource_remove_modules_delete(
         self,
@@ -19875,8 +19290,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def dynamic_modules_resource_get_modules_get(
         self,
@@ -19899,8 +19313,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def dynamic_modules_resource_register_modules_post(
         self,
@@ -19926,8 +19339,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def app_issue_field_value_update_resource_update_issue_fields_put(
         self,
@@ -19956,8 +19368,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def migration_resource_update_entity_properties_value_put(
         self,
@@ -19987,8 +19398,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def migration_resource_workflow_rule_search_post(
         self,
@@ -20021,8 +19431,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def service_registry_resource_services_get(
         self,
@@ -20047,8 +19456,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def delete_forge_app_property(
         self,
@@ -20074,8 +19482,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
     async def put_forge_app_property(
         self,
@@ -20103,8 +19510,7 @@ class JiraDataSource:
             query_params=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self._client.execute(req)
-        return resp
+        return await self._client.execute(req)
 
 # ---- Helpers used by generated methods ----
 def _safe_format_url(template: str, params: Dict[str, object]) -> str:

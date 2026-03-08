@@ -20,7 +20,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
-from app.modules.agents.qna.graph import agent_graph
+from app.modules.agents.qna.graph import agent_graph, deep_agent_graph
 from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
     check_memory_health,
@@ -50,7 +50,7 @@ class ChatQuery(BaseModel):
     systemPrompt: Optional[str] = None
     instructions: Optional[str] = None
     tools: Optional[List[str]] = None
-    chatMode: Optional[str] = "quick"
+    chatMode: Optional[str] = "deep_research"
     modelKey: Optional[str] = None
     modelName: Optional[str] = None
     timezone: Optional[str] = None
@@ -115,6 +115,14 @@ class LLMInitializationError(AgentError):
 # ============================================================================
 # Helper Functions
 # ============================================================================
+
+def _select_graph(chat_mode: Optional[str]):
+    """Select the appropriate agent graph based on chat mode."""
+    if chat_mode == "deep_research":
+        return deep_agent_graph
+    print("Using deep agent graph")
+    return deep_agent_graph
+
 
 async def get_services(request: Request) -> Dict[str, Any]:
     """Get all required services from container"""
@@ -691,7 +699,8 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         )
 
         config = {"recursion_limit": 30}
-        final_state = await agent_graph.ainvoke(initial_state, config=config)
+        selected_graph = _select_graph(query_info.chatMode)
+        final_state = await selected_graph.ainvoke(initial_state, config=config)
         final_state = auto_optimize_state(final_state, logger)
 
         # Check memory health
@@ -752,33 +761,40 @@ async def stream_response(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: Dict[str, Any] = None,
+    graph=None,
 ) -> AsyncGenerator[str, None]:
-    """Stream agent response"""
-    initial_state = build_initial_state(
-        query_info,
-        user_info,
-        llm,
-        logger,
-        retrieval_service,
-        graph_provider,
-        reranker_service,
-        config_service,
-        org_info,
-    )
+    """Stream agent response using the selected graph."""
+    try:
+        initial_state = build_initial_state(
+            query_info,
+            user_info,
+            llm,
+            logger,
+            retrieval_service,
+            graph_provider,
+            reranker_service,
+            config_service,
+            org_info,
+        )
 
-    config = {"recursion_limit": 30}
-    chunk_count = 0
+        selected_graph = graph or agent_graph
+        config = {"recursion_limit": 30}
+        chunk_count = 0
 
-    async for chunk in agent_graph.astream(initial_state, config=config, stream_mode="custom"):
-        chunk_count += 1
-        if isinstance(chunk, dict) and "event" in chunk:
-            event_type = chunk.get('event', 'unknown')
-            data = chunk.get('data', {})
-            yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-        else:
-            logger.warning(f"Unexpected chunk format: {type(chunk)}")
+        async for chunk in selected_graph.astream(initial_state, config=config, stream_mode="custom"):
+            chunk_count += 1
+            if isinstance(chunk, dict) and "event" in chunk:
+                event_type = chunk.get('event', 'unknown')
+                data = chunk.get('data', {})
+                yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+            else:
+                logger.warning(f"Unexpected chunk format: {type(chunk)}")
 
-    logger.info(f"Streaming completed. Total chunks: {chunk_count}")
+        logger.info(f"Streaming completed. Total chunks: {chunk_count}")
+    except Exception as e:
+        logger.error(f"Error during streaming: {e}", exc_info=True)
+        error_data = json.dumps({"message": f"An error occurred while processing your request: {e}"})
+        yield f"event: error\ndata: {error_data}\n\n"
 
 
 @router.post("/agent-chat-stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
@@ -798,9 +814,11 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         enriched_user_info = await _enrich_user_info(user_context, user_doc)
         org_info = await _get_org_info(user_context, services["graph_provider"], services["logger"])
 
+        selected_graph = _select_graph(query_info.chatMode)
         return StreamingResponse(
             stream_response(
-                query_info.model_dump(), enriched_user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info
+                query_info.model_dump(), enriched_user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info,
+                graph=selected_graph,
             ),
             media_type="text/event-stream",
         )
@@ -2127,7 +2145,8 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         )
 
         config = {"recursion_limit": 50}
-        final_state = await agent_graph.ainvoke(initial_state, config=config)
+        selected_graph = _select_graph(chat_query.chatMode)
+        final_state = await selected_graph.ainvoke(initial_state, config=config)
 
         # Handle errors
         if final_state.get("error"):
@@ -2421,9 +2440,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "toolsetConfigs": toolset_configs,
         }
 
+        selected_graph = _select_graph(chat_query.chatMode)
         return StreamingResponse(
             stream_response(
-                query_info, enriched_user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info
+                query_info, enriched_user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info,
+                graph=selected_graph,
             ),
             media_type="text/event-stream",
         )

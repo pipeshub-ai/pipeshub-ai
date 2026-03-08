@@ -259,9 +259,8 @@ class QueryDecompositionExpansionService:
                 }
 
             # Validate and clean the result
-            result = self._validate_and_clean_result(result, query)
+            return self._validate_and_clean_result(result, query)
 
-            return result
 
         except Exception as e:
             self.logger.error(f"Query processing exception: {str(e)}")

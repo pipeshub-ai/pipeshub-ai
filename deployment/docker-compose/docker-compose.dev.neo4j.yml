@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile
       args:
         BUILDKIT_INLINE_CACHE: "1"
-        RUNTIME_BASE: ${RUNTIME_BASE:-python:3.10-slim}
+        RUNTIME_BASE: ${RUNTIME_BASE:-python:3.12-slim}
       shm_size: 4gb
       ulimits:
         memlock:

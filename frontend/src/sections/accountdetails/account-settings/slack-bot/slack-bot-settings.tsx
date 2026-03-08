@@ -499,7 +499,7 @@ export default function SlackBotSettings() {
                               const chipConfig = getAgentChipConfig(isAgentLinked);
                               const chipLabel = isAgentLinked
                                 ? `Agent: ${linkedAgentName}`
-                                : 'Agent not linked';
+                                : 'Bot connected to default assistant';
 
                               return (
                                 <Chip

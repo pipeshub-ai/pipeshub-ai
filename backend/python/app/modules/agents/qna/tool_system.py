@@ -37,46 +37,24 @@ FAILURE_THRESHOLD = 3
 # LLM-Aware Tool Name Sanitization
 # ============================================================================
 
-def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
+_TOOL_NAME_SAFE_RE = None
+
+def _get_tool_name_safe_re():
+    global _TOOL_NAME_SAFE_RE
+    if _TOOL_NAME_SAFE_RE is None:
+        import re
+        _TOOL_NAME_SAFE_RE = re.compile(r'[^a-zA-Z0-9_-]')
+    return _TOOL_NAME_SAFE_RE
+
+
+def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel'] = None) -> str:
     """
-    Check if the LLM requires sanitized tool names (dots replaced with underscores).
-    Only Anthropic models require sanitized names due to their tool name format restrictions.
-    Other LLMs (OpenAI, Gemini, etc.) support dots in tool names.
+    Sanitize tool name to match the pattern ``^[a-zA-Z0-9_-]+$`` required by
+    OpenAI, Anthropic, and most other LLM providers.
 
-    Args:
-        llm: The LLM instance to check (can be None)
-
-    Returns:
-        True if tool names should be sanitized, False otherwise
+    All characters outside that set are replaced with underscores.
     """
-    if not llm:
-        return False
-
-    try:
-        from langchain_anthropic import ChatAnthropic
-        return isinstance(llm, ChatAnthropic)
-    except ImportError:
-        # If langchain_anthropic is not available, assume no sanitization needed
-        return False
-    except Exception:
-        # If any error occurs, default to no sanitization (safer for other LLMs)
-        return False
-
-
-def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel']) -> str:
-    """
-    Sanitize tool name only if the LLM requires it.
-
-    Args:
-        tool_name: Original tool name (may contain dots)
-        llm: LLM instance to check requirements (can be None)
-
-    Returns:
-        Sanitized name (dots replaced with underscores) if needed, original name otherwise
-    """
-    if _requires_sanitized_tool_names(llm):
-        return tool_name.replace('.', '_')
-    return tool_name
+    return _get_tool_name_safe_re().sub('_', tool_name)
 
 
 # ============================================================================
@@ -509,8 +487,8 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
     This function is used by the ReAct agent to get tools with proper
     schema validation for function calling.
 
-    Tool names are sanitized (dots -> underscores) only for LLMs that require it
-    (e.g., Anthropic). Other LLMs (OpenAI, Gemini, etc.) keep original names with dots.
+    Tool names are sanitized so they match ``^[a-zA-Z0-9_-]+$`` as required
+    by OpenAI, Anthropic, and most LLM providers.
 
     Args:
         state: Chat state containing tool configuration and LLM instance
@@ -540,7 +518,7 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
                 # Get Pydantic schema from Tool object (stored during registration from @tool decorator)
                 args_schema = getattr(registry_tool, 'args_schema', None)
 
-                # Sanitize tool name only if LLM requires it (e.g., Anthropic)
+                # Sanitize tool name for LLM compatibility (OpenAI, Anthropic, etc.)
                 original_tool_name = tool_wrapper.name
                 sanitized_tool_name = _sanitize_tool_name_if_needed(original_tool_name, llm)
 
@@ -550,10 +528,9 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
                     async def async_tool_func(**kwargs) -> Union[Tuple[bool, str], str, Dict[str, Any], List[Any]]:
                         """Async tool function that wraps RegistryToolWrapper.arun()"""
                         # Call arun with kwargs as a dict (arun handles both formats)
-                        result = await wrapper.arun(kwargs)
+                        return await wrapper.arun(kwargs)
                         # Return result as-is to preserve tuple format (bool, str) if present
                         # The tool executor in nodes.py will handle both tuple and string formats
-                        return result
                     return async_tool_func
 
                 async_tool_func = make_async_tool_func(tool_wrapper)

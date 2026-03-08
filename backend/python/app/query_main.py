@@ -211,8 +211,7 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         # Apply authentication
         authenticated_request = await authMiddleware(request)
         # Continue with the request
-        response = await call_next(authenticated_request)
-        return response
+        return await call_next(authenticated_request)
 
     except HTTPException as exc:
         # Handle authentication errors

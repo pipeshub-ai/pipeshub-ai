@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING
 from langgraph.graph import END, StateGraph
 
 from app.modules.agents.qna.chat_state import ChatState
+from app.modules.agents.qna.deep_agent import deep_agent_node
 from app.modules.agents.qna.nodes import (
     execute_node,
     planner_node,
@@ -207,12 +208,50 @@ modern_agent_graph = create_modern_agent_graph()
 
 
 # =============================================================================
+# Deep Agent Graph (LangChain Deep Agents)
+# =============================================================================
+
+def create_deep_agent_graph() -> "CompiledStateGraph":
+    """
+    Create a Deep Agent graph for complex multi-step tasks.
+
+    Uses LangChain Deep Agents (deepagents) under the hood, providing:
+    - Planning and task decomposition (built-in write_todos)
+    - Subagent spawning for context isolation
+    - Context management via virtual filesystem
+    - PipesHub tools (retrieval, Slack, Jira, etc.)
+
+    Architecture:
+        Entry → Deep Agent Node → End
+
+    The deep_agent_node internally creates and runs a Deep Agent,
+    bridging PipesHub's state/tools with the Deep Agents framework.
+
+    Returns:
+        Compiled StateGraph ready for execution
+    """
+    workflow = StateGraph(ChatState)
+
+    workflow.add_node("deep_agent", deep_agent_node)
+    workflow.set_entry_point("deep_agent")
+    workflow.add_edge("deep_agent", END)
+
+    return workflow.compile()
+
+
+# Create the compiled deep agent graph instance
+deep_agent_graph = create_deep_agent_graph()
+
+
+# =============================================================================
 # EXPORTS
 # =============================================================================
 
 __all__ = [
     "agent_graph",
     "create_agent_graph",
-    "modern_agent_graph",  # NEW: Modern ReAct agent graph
-    "create_modern_agent_graph",  # NEW: Factory function
+    "modern_agent_graph",
+    "create_modern_agent_graph",
+    "deep_agent_graph",
+    "create_deep_agent_graph",
 ]

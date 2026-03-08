@@ -3,6 +3,7 @@ Enhanced wrapper to adapt registry tools to LangChain format with proper client 
 """
 
 import asyncio
+import contextlib
 import inspect
 import json
 from typing import Callable, Dict, List, Optional, Union
@@ -12,6 +13,21 @@ from pydantic import ConfigDict, Field
 
 from app.agents.tools.factories.registry import ClientFactoryRegistry
 from app.modules.agents.qna.chat_state import ChatState
+
+_NETWORK_ERROR_KEYWORDS = ("connecttimeout", "connectionerror", "connect timeout", "dns", "network")
+
+
+def _is_network_error(exc: Exception) -> bool:
+    """Return True if the exception chain indicates a network/connectivity failure."""
+    current: BaseException | None = exc
+    while current is not None:
+        type_name = type(current).__name__.lower()
+        msg = str(current).lower()
+        if any(kw in type_name or kw in msg for kw in _NETWORK_ERROR_KEYWORDS):
+            return True
+        current = current.__cause__
+    return False
+
 
 # Constants
 TOOL_RESULT_TUPLE_LENGTH = 2
@@ -138,6 +154,12 @@ class ToolInstanceCreator:
                     f"{toolset_name} toolset is not authenticated. Please complete the OAuth flow first. "
                     f"Go to Settings > Toolsets to authenticate your {toolset_name} account."
                 ) from e
+            if _is_network_error(e):
+                toolset_name = app_name.capitalize() if app_name else "Service"
+                raise ConnectionError(
+                    f"Could not connect to {toolset_name} service (network timeout or DNS failure). "
+                    f"Please check your network connection and try again."
+                ) from e
             return self._fallback_creation(action_class)
 
     def _create_with_factory(
@@ -201,6 +223,12 @@ class ToolInstanceCreator:
                 raise ValueError(
                     f"{toolset_name} toolset is not authenticated. Please complete the OAuth flow first. "
                     f"Go to Settings > Toolsets to authenticate your {toolset_name} account."
+                ) from e
+            if _is_network_error(e):
+                toolset_name = app_name.capitalize() if app_name else "Service"
+                raise ConnectionError(
+                    f"Could not connect to {toolset_name} service (network timeout or DNS failure). "
+                    f"Please check your network connection and try again."
                 ) from e
             # For other errors, fall back to legacy creation
             return self._fallback_creation(action_class)
@@ -589,10 +617,8 @@ class RegistryToolWrapper(BaseTool):
                 # Teardown background resources if the action provides shutdown()
                 shutdown = getattr(instance, 'shutdown', None)
                 if callable(shutdown):
-                    try:
+                    with contextlib.suppress(Exception):
                         shutdown()
-                    except Exception:
-                        pass
 
         except Exception as e:
             raise RuntimeError(

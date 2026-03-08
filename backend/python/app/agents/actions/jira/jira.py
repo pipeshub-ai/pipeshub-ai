@@ -1003,6 +1003,22 @@ class Jira:
             fixed_jql = current_user_pattern.sub('assignee = currentUser()', fixed_jql)
             warnings.append("Fixed 'currentUser' to 'currentUser()'")
 
+        # 4. Fix unquoted '+' in JQL function arguments (e.g. startOfDay(+1d) -> startOfDay("+1d"))
+        # The '+' character is reserved in JQL and must be quoted inside function args.
+        jql_func_unquoted_plus = re.compile(
+            r'(\b(?:startOf|endOf)(?:Day|Week|Month|Year|Quarter)\s*\(\s*)(\+[^)]*?)(\s*\))',
+            re.IGNORECASE
+        )
+        def _quote_func_arg(match: re.Match[str]) -> str:
+            prefix, arg, suffix = match.group(1), match.group(2).strip(), match.group(3)
+            if arg.startswith('"') or arg.startswith("'"):
+                return match.group(0)
+            return f'{prefix}"{arg}"{suffix}'
+
+        if jql_func_unquoted_plus.search(fixed_jql):
+            fixed_jql = jql_func_unquoted_plus.sub(_quote_func_arg, fixed_jql)
+            warnings.append("Quoted '+' inside JQL function arguments (reserved character)")
+
         warning_msg = "; ".join(warnings) if warnings else None
 
         if fixed_jql != original_jql:
