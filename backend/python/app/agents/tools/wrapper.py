@@ -44,6 +44,10 @@ class ToolInstanceCreator:
         if "_client_cache" not in state:
             state["_client_cache"] = {}
         self._client_cache: Dict[tuple, object] = state["_client_cache"]
+        # Lock to prevent parallel tool calls from creating duplicate clients
+        if "_client_cache_locks" not in state:
+            state["_client_cache_locks"] = {}
+        self._cache_locks: Dict[tuple, asyncio.Lock] = state["_client_cache_locks"]
 
     def _get_config_service(self) -> object:
         """Get configuration service from state.
@@ -122,40 +126,54 @@ class ToolInstanceCreator:
 
             config = toolset_config if toolset_config else {}
 
-            # Build cache key from app_name + toolset_id (same toolset = same client)
+            # Build cache key from app_name + toolset_id + user_id
+            # Client is per-toolset per-user (different users have different OAuth tokens)
             toolset_id = None
             if tool_full_name:
                 tool_to_toolset_map = self.state.get("tool_to_toolset_map", {})
                 toolset_id = tool_to_toolset_map.get(tool_full_name)
-            cache_key = (app_name, toolset_id or "default")
+            user_id = self.state.get("user_id", "default")
+            cache_key = (app_name, toolset_id or "default", user_id)
 
-            # Check cache first
+            # Check cache first (fast path, no lock needed)
             client = self._client_cache.get(cache_key)
             if client is not None:
                 if self.logger:
                     self.logger.debug(f"Reusing cached client for {app_name} (toolset: {toolset_id})")
                 return action_class(client)
 
-            if self.logger:
-                if toolset_config:
-                    self.logger.debug(f"Using toolset auth for {app_name} (ID: {tool_full_name})")
-                else:
-                    self.logger.warning(
-                        f"No toolset config for {app_name} (tool: {tool_full_name}), "
-                        f"falling back to legacy auth"
-                    )
+            # Acquire per-key lock to prevent parallel tool calls from
+            # each creating their own client for the same cache key
+            if cache_key not in self._cache_locks:
+                self._cache_locks[cache_key] = asyncio.Lock()
+            async with self._cache_locks[cache_key]:
+                # Double-check after acquiring lock
+                client = self._client_cache.get(cache_key)
+                if client is not None:
+                    if self.logger:
+                        self.logger.debug(f"Reusing cached client for {app_name} (toolset: {toolset_id})")
+                    return action_class(client)
 
-            client = await factory.create_client(
-                self.config_service,
-                self.logger,
-                config,
-                self.state
-            )
+                if self.logger:
+                    if toolset_config:
+                        self.logger.debug(f"Using toolset auth for {app_name} (ID: {tool_full_name})")
+                    else:
+                        self.logger.warning(
+                            f"No toolset config for {app_name} (tool: {tool_full_name}), "
+                            f"falling back to legacy auth"
+                        )
 
-            # Cache the client for subsequent calls
-            self._client_cache[cache_key] = client
-            if self.logger:
-                self.logger.debug(f"Cached client for {app_name} (toolset: {toolset_id})")
+                client = await factory.create_client(
+                    self.config_service,
+                    self.logger,
+                    config,
+                    self.state
+                )
+
+                # Cache the client for subsequent calls
+                self._client_cache[cache_key] = client
+                if self.logger:
+                    self.logger.debug(f"Cached client for {app_name} (toolset: {toolset_id})")
 
             return action_class(client)
         except Exception as e:

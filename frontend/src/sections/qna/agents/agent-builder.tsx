@@ -87,9 +87,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   // Share with org state - initialized from loaded agent data
   const [shareWithOrg, setShareWithOrg] = useState<boolean>(false);
 
-  // Deep agent state - initialized from loaded agent data
-  const [useDeepAgent, setUseDeepAgent] = useState<boolean>(false);
-
   // Existing agent can be opened in view-only mode based on permissions.
   const isReadOnly = useMemo(() => {
     const sourceAgent = loadedAgent || editingAgent;
@@ -97,11 +94,10 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     return sourceAgent.can_edit === false;
   }, [loadedAgent, editingAgent]);
 
-  // Sync shareWithOrg and useDeepAgent from loaded agent
+  // Sync shareWithOrg from loaded agent
   useEffect(() => {
     if (loadedAgent) {
       setShareWithOrg(loadedAgent.shareWithOrg ?? false);
-      setUseDeepAgent(loadedAgent.useDeepAgent ?? false);
     }
   }, [loadedAgent]);
 
@@ -259,7 +255,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
               startMessage,
               routing: 'auto',
               allowMultipleLLMs: true,
-              useDeepAgent,
             },
             inputs: ['input', 'actions', 'knowledge', 'llms'],
             outputs: ['response'],
@@ -344,7 +339,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     loadedAgent,
     editingAgent,
     reconstructFlowFromAgent,
-    useDeepAgent,
   ]);
 
   // Handle connections
@@ -656,8 +650,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         nodes,
         edges,
         currentAgent,
-        shareWithOrg,
-        useDeepAgent
+        shareWithOrg
       );
 
       const agent = currentAgent
@@ -682,7 +675,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     loadedAgent,
     editingAgent,
     shareWithOrg,
-    useDeepAgent,
     onSuccess,
     setSaving,
     setError,

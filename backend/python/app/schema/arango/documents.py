@@ -631,7 +631,6 @@ agent_schema = {
             "deletedAtTimestamp": {"type": "number"},
             "deletedByUserId": {"type": ["string", "null"]},
             "isDeleted": {"type": "boolean", "default": False},
-            "useDeepAgent": {"type": "boolean", "default": False},
         },
         "required": ["name", "description", "startMessage", "systemPrompt", "models", "createdBy", "createdAtTimestamp"],
         "additionalProperties": False,

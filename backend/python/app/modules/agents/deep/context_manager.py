@@ -13,7 +13,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -138,8 +138,10 @@ async def _summarize_conversations_async(
         return ""
 
     try:
+        from app.modules.agents.deep.state import get_opik_config
+
         prompt = SUMMARY_PROMPT.format(conversation=conv_text)
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        response = await llm.ainvoke([HumanMessage(content=prompt)], config=get_opik_config())
         summary = response.content if hasattr(response, "content") else str(response)
         log.debug(f"Conversation summary: {len(summary)} chars from {len(conversations)} messages")
         return summary.strip()
@@ -326,3 +328,150 @@ def build_sub_agent_context(
                 )
 
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Batch Summarization Helpers (for complex sub-agent execution)
+# ---------------------------------------------------------------------------
+
+_MAX_BATCH_CHARS = 20000  # Max chars per batch for summarization
+
+
+def group_tool_results_into_batches(
+    messages: List,
+    max_chars_per_batch: int = _MAX_BATCH_CHARS,
+) -> List[str]:
+    """
+    Extract tool result messages and group them into text batches for summarization.
+
+    Each batch is a string containing one or more tool results,
+    capped at max_chars_per_batch to fit in the summarization prompt.
+    """
+    # Import here to avoid circular imports at module level
+    from langchain_core.messages import ToolMessage as LCToolMessage
+
+    tool_texts: List[str] = []
+    for msg in messages:
+        if not isinstance(msg, LCToolMessage):
+            continue
+        tool_name = msg.name if hasattr(msg, "name") else "unknown"
+        content = msg.content
+        if isinstance(content, dict):
+            try:
+                content = json.dumps(content, default=str, ensure_ascii=False)
+            except (TypeError, ValueError):
+                content = str(content)
+        elif isinstance(content, list):
+            try:
+                content = json.dumps(content, default=str, ensure_ascii=False)
+            except (TypeError, ValueError):
+                content = str(content)
+        elif not isinstance(content, str):
+            content = str(content)
+
+        tool_texts.append(f"[Tool: {tool_name}]\n{content}")
+
+    if not tool_texts:
+        return []
+
+    # Group into batches by character budget
+    batches: List[str] = []
+    current_batch: List[str] = []
+    current_size = 0
+
+    for text in tool_texts:
+        text_size = len(text)
+        if current_size + text_size > max_chars_per_batch and current_batch:
+            batches.append("\n\n---\n\n".join(current_batch))
+            current_batch = []
+            current_size = 0
+        current_batch.append(text)
+        current_size += text_size
+
+    if current_batch:
+        batches.append("\n\n---\n\n".join(current_batch))
+
+    return batches
+
+
+async def summarize_batch(
+    batch_text: str,
+    batch_number: int,
+    total_batches: int,
+    data_type: str,
+    llm: "BaseChatModel",
+    log: logging.Logger,
+) -> str:
+    """
+    Summarize a single batch of tool results using the LLM.
+
+    Returns a JSON string with structured summary, or a fallback
+    text summary on error.
+    """
+    from app.modules.agents.deep.prompts import BATCH_SUMMARIZATION_PROMPT
+    from app.modules.agents.deep.state import get_opik_config
+
+    prompt = BATCH_SUMMARIZATION_PROMPT.format(
+        data_type=data_type,
+        batch_number=batch_number,
+        total_batches=total_batches,
+        raw_data=batch_text[:25000],  # Safety cap per batch — keep generous for detail preservation
+    )
+
+    try:
+        response = await llm.ainvoke([HumanMessage(content=prompt)], config=get_opik_config())
+        content = response.content if hasattr(response, "content") else str(response)
+        return content.strip()
+    except Exception as e:
+        log.warning("Batch %d/%d summarization failed: %s", batch_number, total_batches, e)
+        # Fallback: return a compact version of the raw data
+        return json.dumps({
+            "item_count": 0,
+            "error": f"Summarization failed: {str(e)[:200]}",
+            "raw_preview": batch_text[:1000],
+        })
+
+
+async def consolidate_batch_summaries(
+    batch_summaries: List[str],
+    domain: str,
+    task_description: str,
+    time_context: str,
+    llm: "BaseChatModel",
+    log: logging.Logger,
+) -> str:
+    """
+    Consolidate multiple batch summaries into a single domain-level summary.
+
+    Returns a markdown string with the consolidated domain report.
+    """
+    from app.modules.agents.deep.prompts import DOMAIN_CONSOLIDATION_PROMPT
+    from app.modules.agents.deep.state import get_opik_config
+
+    # Build batch summaries text with labels
+    summaries_parts = []
+    for i, summary in enumerate(batch_summaries, 1):
+        summaries_parts.append(f"### Batch {i}\n{summary}")
+    summaries_text = "\n\n".join(summaries_parts)
+
+    # Cap total input to prevent context overflow
+    if len(summaries_text) > 50000:
+        summaries_text = summaries_text[:50000] + "\n\n[... additional batches truncated]"
+
+    prompt = DOMAIN_CONSOLIDATION_PROMPT.format(
+        domain=domain,
+        task_description=task_description,
+        time_context=time_context or "Not specified",
+        batch_summaries=summaries_text,
+    )
+
+    try:
+        response = await llm.ainvoke([HumanMessage(content=prompt)], config=get_opik_config())
+        content = response.content if hasattr(response, "content") else str(response)
+        return content.strip()
+    except Exception as e:
+        log.warning("Domain consolidation for %s failed: %s", domain, e)
+        # Fallback: concatenate batch summaries without aggressive truncation
+        return f"## {domain.title()} Summary\n\n" + "\n\n".join(
+            f"**Batch {i}**:\n{s}" for i, s in enumerate(batch_summaries, 1)
+        )

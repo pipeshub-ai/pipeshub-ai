@@ -18,7 +18,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
 
 from app.modules.agents.deep.prompts import EVALUATOR_PROMPT
-from app.modules.agents.deep.state import DeepAgentState, SubAgentTask
+from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, get_opik_config
 from app.modules.agents.qna.stream_utils import safe_stream_write
 
 logger = logging.getLogger(__name__)
@@ -326,7 +326,7 @@ async def _evaluate_with_llm(
         agent_instructions=agent_instructions,
     )
 
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    response = await llm.ainvoke([HumanMessage(content=prompt)], config=get_opik_config())
     content = response.content if hasattr(response, "content") else str(response)
 
     return _parse_evaluation_response(content, log)

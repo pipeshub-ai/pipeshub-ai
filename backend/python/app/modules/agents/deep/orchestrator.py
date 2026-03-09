@@ -20,7 +20,7 @@ from app.modules.agents.deep.context_manager import (
     compact_conversation_history_async,
 )
 from app.modules.agents.deep.prompts import ORCHESTRATOR_SYSTEM_PROMPT
-from app.modules.agents.deep.state import DeepAgentState, SubAgentTask
+from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, get_opik_config
 from app.modules.agents.deep.tool_router import (
     build_domain_description,
     group_tools_by_domain,
@@ -114,7 +114,7 @@ async def orchestrator_node(
 
         # Step 4: Get plan from LLM
         log.info("Requesting task plan from LLM...")
-        response = await llm.ainvoke(messages)
+        response = await llm.ainvoke(messages, config=get_opik_config())
         plan = _parse_orchestrator_response(
             response.content if hasattr(response, "content") else str(response),
             log,
@@ -162,6 +162,10 @@ async def orchestrator_node(
                 "result": None,
                 "error": None,
                 "duration_ms": None,
+                "complexity": task_spec.get("complexity", "simple"),
+                "batch_strategy": task_spec.get("batch_strategy"),
+                "multi_step": bool(task_spec.get("multi_step", False)),
+                "sub_steps": task_spec.get("sub_steps"),
             }
             tasks.append(task)
 
@@ -282,6 +286,8 @@ def _normalize_tasks(
                 "description": f"[{domain} part] {description}",
                 "domains": [domain],
                 "depends_on": list(original_deps),
+                "complexity": task_spec.get("complexity", "simple"),
+                "batch_strategy": task_spec.get("batch_strategy"),
             })
 
         # Update any later tasks that depend on the original task_id
@@ -379,61 +385,45 @@ def _build_knowledge_context(state: DeepAgentState, log: logging.Logger) -> str:
 
 
 def _build_tool_guidance(state: DeepAgentState) -> str:
-    """Build tool-specific guidance based on active toolsets."""
-    parts = []
+    """
+    Build tool guidance dynamically from the available tools.
+
+    This is app-agnostic — it groups tools by domain and lists them
+    so the orchestrator knows what's available without hardcoding per-app logic.
+    """
     tools = state.get("tools", []) or []
-    tools_lower = {t.lower() for t in tools if isinstance(t, str)}
+    if not tools:
+        return ""
 
-    # Check which domains are active
-    domains = set()
-    for tool_name in tools_lower:
+    # Group tools by domain
+    domain_tools: Dict[str, List[str]] = {}
+    for tool_name in tools:
+        if not isinstance(tool_name, str):
+            continue
         if "." in tool_name:
-            domains.add(tool_name.split(".", 1)[0])
+            domain, name = tool_name.split(".", 1)
+            domain_tools.setdefault(domain, []).append(name)
+        else:
+            domain_tools.setdefault("other", []).append(tool_name)
 
-    # Add concise guidance for each active domain
-    if "jira" in domains:
-        parts.append(
-            "**Jira**: Use JQL with time filters (e.g., `updated >= -30d`). "
-            "Get accountIds via `jira.search_users` before using in JQL."
-        )
-    if "confluence" in domains:
-        parts.append(
-            "**Confluence**: Use `confluence.search_pages` to find pages and "
-            "`confluence.get_page_content` for full page content via API. "
-            "If knowledge base is also configured, BOTH retrieval and Confluence API "
-            "can be used in parallel for comprehensive results."
-        )
-    if "slack" in domains:
-        parts.append(
-            "**Slack**: Never use retrieval for Slack queries. "
-            "Use `slack.set_user_status` with `duration_seconds`, not timestamps."
-        )
-    if "outlook" in domains:
-        parts.append(
-            "**Outlook**: Use `outlook.search_calendar_events_in_range` for finding events. "
-            "Use `seriesMasterId` for recurring event operations."
-        )
-    if "teams" in domains:
-        parts.append(
-            "**Teams**: Use `teams.get_meetings` for meetings, "
-            "`teams.get_meeting_transcript` for transcripts."
-        )
-    if "gmail" in domains:
-        parts.append(
-            "**Gmail**: Use `gmail.search_emails` with `max_results=50` for efficient fetching. "
-            "Search results include subject, from, to, date, snippet — do NOT call "
-            "`get_email_details` for every email. Only fetch details for specific emails "
-            "that need full body content."
-        )
-    if "calendar" in domains:
-        parts.append(
-            "**Google Calendar**: Use time range filters. "
-            "Prefer `get_calendar_events` with date bounds over unbounded queries."
-        )
+    if not domain_tools:
+        return ""
 
-    if parts:
-        return "## Domain-Specific Guidance\n" + "\n".join(parts)
-    return ""
+    parts = ["## Available Tool Domains"]
+    parts.append(
+        "Below are the tool domains available to sub-agents. "
+        "Use the tool names to understand what each domain can do. "
+        "Sub-agents should prefer bulk search/list tools with large page sizes "
+        "over individual item lookups."
+    )
+
+    for domain, tool_list in sorted(domain_tools.items()):
+        tool_names = ", ".join(f"`{domain}.{t}`" for t in tool_list[:10])
+        if len(tool_list) > 10:
+            tool_names += f", ... ({len(tool_list) - 10} more)"
+        parts.append(f"- **{domain}**: {tool_names}")
+
+    return "\n".join(parts)
 
 
 def _build_agent_instructions(state: DeepAgentState) -> str:

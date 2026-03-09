@@ -9,6 +9,11 @@ Each sub-agent runs with an isolated context window:
 
 Independent tasks run in parallel via asyncio.gather.
 Dependent tasks run sequentially after their dependencies complete.
+
+Complex tasks use a phased execution model:
+  Phase 1: FETCH  — ReAct agent fetches paginated data (generous budget)
+  Phase 2: SUMMARIZE — Per-batch LLM summarization (parallel, no tools)
+  Phase 3: CONSOLIDATE — Merge batch summaries into domain summary
 """
 
 from __future__ import annotations
@@ -27,17 +32,18 @@ from langgraph.types import StreamWriter
 
 from app.modules.agents.deep.context_manager import build_sub_agent_context
 from app.modules.agents.deep.prompts import SUB_AGENT_SYSTEM_PROMPT
-from app.modules.agents.deep.state import DeepAgentState, SubAgentTask
+from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, _opik_tracer
 from app.modules.agents.deep.tool_router import get_tools_for_sub_agent
 from app.modules.agents.qna.stream_utils import safe_stream_write
 
 logger = logging.getLogger(__name__)
 
-# Constants
-SUB_AGENT_TIMEOUT_SECONDS = 120.0
+# Constants — simple tasks
 MAX_SUB_AGENT_RECURSION = 25
-_MAX_TOOL_RESULT_CHARS = 8000   # Max chars per tool result within sub-agent
-_MAX_TOOL_CALLS_PER_AGENT = 15  # Max tool calls before budget exhaustion
+_MAX_TOOL_CALLS_PER_AGENT = 20  # Max tool calls before budget exhaustion
+
+# Constants — complex tasks (higher budgets for data-heavy work)
+_MAX_TOOL_CALLS_COMPLEX = 35
 
 
 async def execute_sub_agents_node(
@@ -48,10 +54,11 @@ async def execute_sub_agents_node(
     """
     Execute all sub-agent tasks respecting dependencies.
 
-    1. Group tasks by dependency level
-    2. Execute independent tasks in parallel (asyncio.gather)
-    3. Execute dependent tasks sequentially (after dependencies complete)
-    4. Collect results into state for the aggregator
+    Uses event-based dependency resolution: ALL tasks launch immediately,
+    each waits only for its specific dependencies to complete.
+    This is faster than level-based scheduling when tasks at different
+    levels have varied completion times (task C depends only on A,
+    so it starts as soon as A finishes — doesn't wait for B).
     """
     start_time = time.perf_counter()
     log = state.get("logger", logger)
@@ -69,46 +76,66 @@ async def execute_sub_agents_node(
         },
     }, config)
 
-    # Organize tasks into execution levels by dependencies
-    levels = _build_execution_levels(tasks, log)
     completed: List[SubAgentTask] = list(state.get("completed_tasks", []))
 
-    for level_idx, level_tasks in enumerate(levels):
-        log.info(
-            "Executing level %d: %d task(s) [%s]",
-            level_idx,
-            len(level_tasks),
-            ", ".join(t["task_id"] for t in level_tasks),
-        )
+    # ------------------------------------------------------------------
+    # Pre-warm API clients for all domains in parallel.
+    # Without this, the first tool call for each domain blocks while
+    # creating the OAuth/MSAL client. Pre-warming moves that latency
+    # out of the critical path.
+    # ------------------------------------------------------------------
+    await _prewarm_clients(tasks, state, log)
 
-        if len(level_tasks) == 1:
-            # Single task - execute directly
+    # ------------------------------------------------------------------
+    # Event-based dependency resolution.
+    # Each task gets an asyncio.Event that is set when the task finishes.
+    # Dependent tasks await their dependencies' events, then execute.
+    # ------------------------------------------------------------------
+    task_events: Dict[str, asyncio.Event] = {}
+
+    # Already-completed tasks (from prior aggregator iterations) are done
+    for t in completed:
+        tid = t.get("task_id", "")
+        if tid:
+            evt = asyncio.Event()
+            evt.set()
+            task_events[tid] = evt
+
+    # Create events for new tasks
+    for t in tasks:
+        task_events[t["task_id"]] = asyncio.Event()
+
+    async def _run_when_ready(task: SubAgentTask) -> None:
+        task_id = task.get("task_id", "unknown")
+        try:
+            # Wait for this task's specific dependencies only
+            dep_ids = task.get("depends_on", [])
+            if dep_ids:
+                await asyncio.gather(
+                    *[task_events[d].wait() for d in dep_ids if d in task_events]
+                )
+
             result = await _execute_single_sub_agent(
-                level_tasks[0], state, completed, config, writer, log,
+                task, state, completed, config, writer, log,
             )
             completed.append(result)
-        else:
-            # Multiple independent tasks - execute in parallel
-            coros = [
-                _execute_single_sub_agent(
-                    task, state, completed, config, writer, log,
-                )
-                for task in level_tasks
-            ]
-            results = await asyncio.gather(*coros, return_exceptions=True)
+        except Exception as exc:
+            log.error("Sub-agent %s raised exception: %s", task_id, exc)
+            completed.append({**task, "status": "error", "error": str(exc)})
+        finally:
+            # Always signal completion so dependents don't hang
+            task_events[task_id].set()
 
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    log.error("Sub-agent %s raised exception: %s", level_tasks[i]["task_id"], result)
-                    failed_task = {**level_tasks[i], "status": "error", "error": str(result)}
-                    completed.append(failed_task)
-                else:
-                    completed.append(result)
+    log.info(
+        "Launching %d task(s) in parallel: [%s]",
+        len(tasks), ", ".join(t["task_id"] for t in tasks),
+    )
+
+    await asyncio.gather(*[_run_when_ready(t) for t in tasks])
 
     state["completed_tasks"] = completed
 
     # Collect all tool results from ALL completed tasks across iterations
-    # (for respond_node compatibility)
     all_tool_results = []
     for task in completed:
         task_result = task.get("result", {})
@@ -120,27 +147,54 @@ async def execute_sub_agents_node(
     state["tool_results"] = all_tool_results
 
     # Collect sub-agent response analyses for respond_node
-    # This gives the respond_node LLM a pre-analyzed summary alongside raw data
+    # Prefer domain_summary for complex tasks (already consolidated and concise)
     sub_agent_analyses = []
     for task in completed:
-        if task.get("status") == "success":
-            task_result = task.get("result", {})
-            if isinstance(task_result, dict):
-                response_text = task_result.get("response", "")
-                if response_text:
-                    task_id = task.get("task_id", "unknown")
-                    domains = ", ".join(task.get("domains", []))
-                    sub_agent_analyses.append(
-                        f"[{task_id} ({domains})]: {response_text}"
-                    )
+        if task.get("status") != "success":
+            continue
+
+        task_id = task.get("task_id", "unknown")
+        domains = ", ".join(task.get("domains", []))
+
+        # Complex tasks: use the consolidated domain summary
+        domain_summary = task.get("domain_summary")
+        if domain_summary:
+            log.debug(
+                "Task %s: using domain_summary (%d chars) for analysis",
+                task_id, len(domain_summary),
+            )
+            sub_agent_analyses.append(
+                f"[{task_id} ({domains})]: {domain_summary}"
+            )
+            continue
+
+        # Simple tasks: use the response text
+        task_result = task.get("result", {})
+        if isinstance(task_result, dict):
+            response_text = task_result.get("response", "")
+            if response_text:
+                log.debug(
+                    "Task %s: using response text (%d chars) for analysis",
+                    task_id, len(response_text),
+                )
+                sub_agent_analyses.append(
+                    f"[{task_id} ({domains})]: {response_text}"
+                )
+            else:
+                log.warning(
+                    "Task %s: success but empty response (domain_summary=%s, result keys=%s)",
+                    task_id, repr(domain_summary), list(task_result.keys()),
+                )
+
     state["sub_agent_analyses"] = sub_agent_analyses
 
     duration_ms = (time.perf_counter() - start_time) * 1000
     success_count = sum(1 for t in completed if t.get("status") == "success")
     error_count = sum(1 for t in completed if t.get("status") == "error")
+    complex_count = sum(1 for t in completed if t.get("complexity") == "complex")
     log.info(
-        "Sub-agents completed: %d success, %d errors in %.0fms",
-        success_count, error_count, duration_ms,
+        "Sub-agents completed: %d success, %d errors, %d complex, %d analyses in %.0fms",
+        success_count, error_count, complex_count, len(sub_agent_analyses), duration_ms,
     )
 
     return state
@@ -157,10 +211,8 @@ async def _execute_single_sub_agent(
     """
     Execute a single sub-agent with isolated context.
 
-    Uses LangChain's create_agent() with:
-    - Only the tools assigned to this task
-    - A focused system prompt for the specific task
-    - Isolated message history (just the task + dependencies)
+    Routes to complex execution for tasks marked with complexity="complex",
+    otherwise uses the standard ReAct agent execution.
     """
     task_id = task.get("task_id", "unknown")
     task_desc = task.get("description", "")
@@ -185,6 +237,60 @@ async def _execute_single_sub_agent(
                 "duration_ms": (time.perf_counter() - start_time) * 1000,
             }
 
+    # Route by complexity / multi-step
+    complexity = task.get("complexity", "simple")
+
+    if complexity == "complex":
+        log.info("Sub-agent %s: using complex phased execution", task_id)
+        try:
+            return await _execute_complex_sub_agent(
+                task, state, completed_tasks, config, writer, log,
+            )
+        except Exception as e:
+            log.warning(
+                "Complex execution failed for %s: %s — falling back to simple mode",
+                task_id, e,
+            )
+            # Fall through to simple execution
+
+    if task.get("multi_step") and task.get("sub_steps"):
+        log.info("Sub-agent %s: using multi-step execution (%d steps)", task_id, len(task["sub_steps"]))
+        try:
+            return await _execute_multi_step_sub_agent(
+                task, state, completed_tasks, config, writer, log,
+            )
+        except Exception as e:
+            log.warning(
+                "Multi-step execution failed for %s: %s — falling back to simple mode",
+                task_id, e,
+            )
+            # Fall through to simple execution
+
+    return await _execute_simple_sub_agent(
+        task, state, completed_tasks, config, writer, log,
+    )
+
+
+async def _execute_simple_sub_agent(
+    task: SubAgentTask,
+    state: DeepAgentState,
+    completed_tasks: List[SubAgentTask],
+    config: RunnableConfig,
+    writer: StreamWriter,
+    log: logging.Logger,
+) -> SubAgentTask:
+    """
+    Execute a simple sub-agent with standard ReAct agent.
+
+    Uses LangChain's create_agent() with:
+    - Only the tools assigned to this task
+    - A focused system prompt for the specific task
+    - Isolated message history (just the task + dependencies)
+    """
+    task_id = task.get("task_id", "unknown")
+    task_desc = task.get("description", "")
+    start_time = time.perf_counter()
+
     # Stream status
     task_display = task_desc[:80] + "..." if len(task_desc) > 80 else task_desc
     safe_stream_write(writer, {
@@ -205,9 +311,9 @@ async def _execute_single_sub_agent(
         # Get filtered tools for this sub-agent (StructuredTools with args_schema)
         tools = get_tools_for_sub_agent(task.get("tools", []), state)
 
-        # Wrap tools with output truncation and call budget to prevent context overflow
+        # Wrap tools with call budget to prevent runaway tool loops
         budget = _ToolCallBudget(_MAX_TOOL_CALLS_PER_AGENT)
-        tools = _wrap_tools_with_truncation(tools, budget, _MAX_TOOL_RESULT_CHARS, log)
+        tools = _wrap_tools_with_budget(tools, budget, log)
 
         # Build tool schemas description for the system prompt
         tool_schemas_text = _format_tools_for_prompt(tools, log)
@@ -265,16 +371,17 @@ async def _execute_single_sub_agent(
             writer, config, log, task_id,
         )
 
+        callbacks = [streaming_cb]
+        if _opik_tracer:
+            callbacks.append(_opik_tracer)
         agent_config = {
             "recursion_limit": MAX_SUB_AGENT_RECURSION,
-            "callbacks": [streaming_cb],
+            "callbacks": callbacks,
         }
 
-        # Execute with timeout
-        result = await asyncio.wait_for(
-            agent.ainvoke({"messages": messages}, config=agent_config),
-            timeout=SUB_AGENT_TIMEOUT_SECONDS,
-        )
+        # Execute — no wall-clock timeout for deep agent; tool call budget
+        # (_ToolCallBudget) stops the agent after _MAX_TOOL_CALLS_PER_AGENT calls
+        result = await agent.ainvoke({"messages": messages}, config=agent_config)
 
         # Extract results
         final_messages = result.get("messages", [])
@@ -307,16 +414,6 @@ async def _execute_single_sub_agent(
             "duration_ms": duration_ms,
         }
 
-    except asyncio.TimeoutError:
-        duration_ms = (time.perf_counter() - start_time) * 1000
-        log.error("Sub-agent %s timed out after %.0fms", task_id, duration_ms)
-        return {
-            **task,
-            "status": "error",
-            "error": f"Task timed out after {SUB_AGENT_TIMEOUT_SECONDS}s",
-            "duration_ms": duration_ms,
-        }
-
     except Exception as e:
         duration_ms = (time.perf_counter() - start_time) * 1000
         log.error("Sub-agent %s failed: %s", task_id, e, exc_info=True)
@@ -329,26 +426,541 @@ async def _execute_single_sub_agent(
 
 
 # ---------------------------------------------------------------------------
+# Complex sub-agent execution (phased: fetch → summarize → consolidate)
+# ---------------------------------------------------------------------------
+
+async def _execute_complex_sub_agent(
+    task: SubAgentTask,
+    state: DeepAgentState,
+    completed_tasks: List[SubAgentTask],
+    config: RunnableConfig,
+    writer: StreamWriter,
+    log: logging.Logger,
+) -> SubAgentTask:
+    """
+    Execute a complex sub-agent with phased execution for high-volume data tasks.
+
+    Phase 1: FETCH — ReAct agent fetches paginated data with generous budget
+    Phase 2: SUMMARIZE — Per-batch LLM summarization (parallel, no tools)
+    Phase 3: CONSOLIDATE — Merge batch summaries into domain summary
+
+    This produces a concise domain_summary instead of raw tool results,
+    dramatically reducing context for the respond node.
+    """
+    from app.modules.agents.deep.context_manager import (
+        consolidate_batch_summaries,
+        group_tool_results_into_batches,
+        summarize_batch,
+    )
+
+    task_id = task.get("task_id", "unknown")
+    task_desc = task.get("description", "")
+    domains = task.get("domains", [])
+    domain_name = domains[0] if domains else "unknown"
+    start_time = time.perf_counter()
+
+    # Stream status
+    safe_stream_write(writer, {
+        "event": "status",
+        "data": {
+            "status": "executing",
+            "message": f"Fetching {domain_name} data...",
+        },
+    }, config)
+
+    # =========================================================================
+    # Phase 1: FETCH — Run ReAct agent with generous budget to gather raw data
+    # =========================================================================
+    log.info("Phase 1 (FETCH): sub-agent %s starting data collection", task_id)
+
+    context_text = build_sub_agent_context(
+        task=task,
+        completed_tasks=completed_tasks,
+        conversation_summary=state.get("conversation_summary"),
+        query=state.get("query", ""),
+        log=log,
+    )
+
+    tools = get_tools_for_sub_agent(task.get("tools", []), state)
+
+    # Higher budgets for complex tasks
+    budget = _ToolCallBudget(_MAX_TOOL_CALLS_COMPLEX)
+    tools = _wrap_tools_with_budget(tools, budget, log)
+
+    tool_schemas_text = _format_tools_for_prompt(tools, log)
+    tool_guidance = _build_sub_agent_tool_guidance(task, state)
+
+    # Build time context
+    time_ctx = ""
+    current_time = state.get("current_time")
+    timezone = state.get("timezone")
+    if current_time:
+        time_ctx += f"Current time: {current_time}"
+    if timezone:
+        time_ctx += f"\nTimezone: {timezone}"
+
+    agent_instructions = _build_sub_agent_instructions(state)
+
+    # Augment task description with batch strategy hints
+    augmented_desc = task_desc
+    batch_strategy = task.get("batch_strategy")
+    if batch_strategy:
+        hints = []
+        if batch_strategy.get("page_size"):
+            hints.append(f"Use page_size/max_results={batch_strategy['page_size']}")
+        if batch_strategy.get("max_pages"):
+            hints.append(f"Fetch up to {batch_strategy['max_pages']} pages")
+        if batch_strategy.get("scope_query"):
+            hints.append(f"Search/filter query: {batch_strategy['scope_query']}")
+        if hints:
+            augmented_desc += "\n\nExecution hints: " + ". ".join(hints) + "."
+
+    system_prompt = SUB_AGENT_SYSTEM_PROMPT.format(
+        task_description=augmented_desc,
+        task_context=context_text,
+        tool_schemas=tool_schemas_text or "No tool schemas available.",
+        tool_guidance=tool_guidance,
+        time_context=time_ctx or "Not provided",
+        agent_instructions=agent_instructions,
+    )
+
+    if not tools:
+        log.warning("No tools loaded for complex sub-agent %s", task_id)
+        return {
+            **task,
+            "status": "error",
+            "error": "No tools available for this task",
+            "duration_ms": (time.perf_counter() - start_time) * 1000,
+        }
+
+    log.info("Complex sub-agent %s: %d tools loaded (budget=%d)", task_id, len(tools), _MAX_TOOL_CALLS_COMPLEX)
+
+    # Create and run the ReAct agent for data fetching
+    from langchain.agents import create_agent
+
+    agent = create_agent(
+        state["llm"],
+        tools,
+        system_prompt=system_prompt,
+    )
+
+    messages = [HumanMessage(content=augmented_desc)]
+
+    streaming_cb = _SubAgentStreamingCallback(writer, config, log, task_id)
+
+    complex_callbacks = [streaming_cb]
+    if _opik_tracer:
+        complex_callbacks.append(_opik_tracer)
+    agent_config = {
+        "recursion_limit": MAX_SUB_AGENT_RECURSION,
+        "callbacks": complex_callbacks,
+    }
+
+    # Execute — no wall-clock timeout for deep agent; tool call budget
+    # (_ToolCallBudget) stops the agent after _MAX_TOOL_CALLS_COMPLEX calls
+    result = await agent.ainvoke({"messages": messages}, config=agent_config)
+    final_messages = result.get("messages", [])
+    tool_results = _extract_tool_results(final_messages, state, log)
+
+    success_count = sum(1 for r in tool_results if r.get("status") == "success")
+    if success_count == 0:
+        # No successful tool calls — return as error
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        error_count = sum(1 for r in tool_results if r.get("status") == "error")
+        log.warning("Complex sub-agent %s: all %d tool calls failed", task_id, error_count)
+        return {
+            **task,
+            "status": "error",
+            "result": {
+                "response": _extract_response(final_messages, log),
+                "tool_results": tool_results,
+                "tool_count": len(tool_results),
+                "success_count": 0,
+                "error_count": error_count,
+            },
+            "error": f"All {error_count} tool call(s) failed",
+            "duration_ms": duration_ms,
+        }
+
+    fetch_duration = (time.perf_counter() - start_time) * 1000
+    log.info(
+        "Phase 1 (FETCH) complete for %s: %d tool calls (%d ok) in %.0fms",
+        task_id, len(tool_results), success_count, fetch_duration,
+    )
+
+    # =========================================================================
+    # Phase 2: SUMMARIZE — Batch-summarize tool results in parallel
+    # =========================================================================
+    safe_stream_write(writer, {
+        "event": "status",
+        "data": {
+            "status": "executing",
+            "message": f"Summarizing {domain_name} data...",
+        },
+    }, config)
+
+    log.info("Phase 2 (SUMMARIZE): batching and summarizing results for %s", task_id)
+
+    batches = group_tool_results_into_batches(final_messages)
+
+    if not batches:
+        # No tool results to summarize — use the agent's response directly
+        response_text = _extract_response(final_messages, log)
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log.info("Complex sub-agent %s: no batches to summarize, using agent response", task_id)
+        return {
+            **task,
+            "status": "success",
+            "result": {
+                "response": response_text,
+                "tool_results": tool_results,
+                "tool_count": len(tool_results),
+                "success_count": success_count,
+                "error_count": len(tool_results) - success_count,
+            },
+            "error": None,
+            "duration_ms": duration_ms,
+        }
+
+    # Infer data type from domain for the summarization prompt
+    # Use the domain name directly — no hardcoded mapping needed.
+    # The LLM understands domain names (gmail, jira, outlook, etc.) without translation.
+    data_type = domain_name
+
+    llm = state.get("llm")
+    total_batches = len(batches)
+
+    # Summarize all batches in parallel
+    summarize_coros = [
+        summarize_batch(
+            batch_text=batch,
+            batch_number=i + 1,
+            total_batches=total_batches,
+            data_type=data_type,
+            llm=llm,
+            log=log,
+        )
+        for i, batch in enumerate(batches)
+    ]
+
+    batch_summaries = await asyncio.gather(*summarize_coros, return_exceptions=True)
+
+    # Filter out failures
+    valid_summaries = []
+    for i, summary in enumerate(batch_summaries):
+        if isinstance(summary, Exception):
+            log.warning("Batch %d/%d summarization raised exception: %s", i + 1, total_batches, summary)
+            valid_summaries.append(json.dumps({
+                "item_count": 0,
+                "error": str(summary)[:200],
+            }))
+        else:
+            valid_summaries.append(summary)
+
+    summarize_duration = (time.perf_counter() - start_time) * 1000 - fetch_duration
+    log.info(
+        "Phase 2 (SUMMARIZE) complete for %s: %d/%d batches in %.0fms",
+        task_id, len(valid_summaries), total_batches, summarize_duration,
+    )
+
+    # =========================================================================
+    # Phase 3: CONSOLIDATE — Merge batch summaries into domain summary
+    # =========================================================================
+    safe_stream_write(writer, {
+        "event": "status",
+        "data": {
+            "status": "executing",
+            "message": f"Consolidating {domain_name} summary...",
+        },
+    }, config)
+
+    log.info("Phase 3 (CONSOLIDATE): merging batch summaries for %s", task_id)
+
+    domain_summary = await consolidate_batch_summaries(
+        batch_summaries=valid_summaries,
+        domain=domain_name,
+        task_description=task_desc,
+        time_context=time_ctx,
+        llm=llm,
+        log=log,
+    )
+
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    consolidate_duration = duration_ms - fetch_duration - summarize_duration
+
+    log.info(
+        "Complex sub-agent %s: completed in %.0fms (fetch=%.0fms, summarize=%.0fms, consolidate=%.0fms)",
+        task_id, duration_ms, fetch_duration, summarize_duration, consolidate_duration,
+    )
+
+    return {
+        **task,
+        "status": "success",
+        "result": {
+            "response": domain_summary,
+            "tool_results": tool_results,  # Keep raw results for link extraction in respond node
+            "tool_count": len(tool_results),
+            "success_count": success_count,
+            "error_count": len(tool_results) - success_count,
+        },
+        "domain_summary": domain_summary,
+        "batch_summaries": valid_summaries,
+        "error": None,
+        "duration_ms": duration_ms,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Multi-step sub-agent execution (3-level hierarchy)
+# ---------------------------------------------------------------------------
+
+_MAX_TOOL_CALLS_PER_STEP = 10  # per sub-sub-agent step
+
+
+async def _execute_multi_step_sub_agent(
+    task: SubAgentTask,
+    state: DeepAgentState,
+    completed_tasks: List[SubAgentTask],
+    config: RunnableConfig,
+    writer: StreamWriter,
+    log: logging.Logger,
+) -> SubAgentTask:
+    """
+    Execute a multi-step sub-agent (3-level hierarchy).
+
+    Acts as a mini-orchestrator: executes each step sequentially,
+    passing results from earlier steps as context to later ones.
+    Each step is a sub-sub-agent with the same tools.
+
+    Level 1: Orchestrator (created the task plan)
+    Level 2: This function (mini-orchestrator for the task)
+    Level 3: Individual step executors (sub-sub-agents)
+    """
+    from app.modules.agents.deep.prompts import MINI_ORCHESTRATOR_PROMPT
+
+    task_id = task.get("task_id", "unknown")
+    task_desc = task.get("description", "")
+    sub_steps = task.get("sub_steps", [])
+    start_time = time.perf_counter()
+
+    log.info("Multi-step sub-agent %s: %d steps planned", task_id, len(sub_steps))
+
+    # Build context and tools (shared across all steps)
+    context_text = build_sub_agent_context(
+        task=task,
+        completed_tasks=completed_tasks,
+        conversation_summary=state.get("conversation_summary"),
+        query=state.get("query", ""),
+        log=log,
+    )
+
+    tools = get_tools_for_sub_agent(task.get("tools", []), state)
+    if not tools:
+        log.warning("No tools for multi-step sub-agent %s", task_id)
+        return {
+            **task,
+            "status": "error",
+            "error": "No tools available for this task",
+            "duration_ms": (time.perf_counter() - start_time) * 1000,
+        }
+
+    tool_schemas_text = _format_tools_for_prompt(tools, log)
+    tool_guidance = _build_sub_agent_tool_guidance(task, state)
+    agent_instructions = _build_sub_agent_instructions(state)
+
+    time_ctx = ""
+    current_time = state.get("current_time")
+    timezone = state.get("timezone")
+    if current_time:
+        time_ctx += f"Current time: {current_time}"
+    if timezone:
+        time_ctx += f"\nTimezone: {timezone}"
+
+    # Execute each step sequentially, accumulating results
+    all_tool_results = []
+    step_results = []  # collected step response texts
+
+    for step_idx, step_desc in enumerate(sub_steps):
+        step_num = step_idx + 1
+        step_label = f"{task_id}/step_{step_num}"
+
+        safe_stream_write(writer, {
+            "event": "status",
+            "data": {
+                "status": "executing",
+                "message": f"Step {step_num}/{len(sub_steps)}: {step_desc[:80]}",
+            },
+        }, config)
+
+        log.info("Multi-step %s: executing step %d/%d — %s",
+                 task_id, step_num, len(sub_steps), step_desc[:100])
+
+        # Build step context including results from previous steps
+        step_context = context_text
+        if step_results:
+            prev_results_text = "\n\n".join(
+                f"### Step {i+1} Result\n{r}" for i, r in enumerate(step_results)
+            )
+            step_context += f"\n\n## Results from Previous Steps\n{prev_results_text}"
+
+        # Build system prompt for this step
+        steps_text = "\n".join(
+            f"{'→ ' if i == step_idx else '  '}{i+1}. {s}"
+            for i, s in enumerate(sub_steps)
+        )
+
+        system_prompt = MINI_ORCHESTRATOR_PROMPT.format(
+            task_description=task_desc,
+            sub_steps=steps_text,
+            tool_schemas=tool_schemas_text or "No tool schemas available.",
+            task_context=step_context,
+            time_context=time_ctx or "Not provided",
+            tool_guidance=tool_guidance,
+            agent_instructions=agent_instructions,
+        )
+
+        # Wrap tools with budget for this step
+        budget = _ToolCallBudget(_MAX_TOOL_CALLS_PER_STEP)
+        step_tools = _wrap_tools_with_budget(tools, budget, log)
+
+        try:
+            from langchain.agents import create_agent
+
+            agent = create_agent(
+                state["llm"],
+                step_tools,
+                system_prompt=system_prompt,
+            )
+
+            step_message = f"Execute step {step_num}: {step_desc}"
+            messages = [HumanMessage(content=step_message)]
+
+            streaming_cb = _SubAgentStreamingCallback(
+                writer, config, log, step_label,
+            )
+            callbacks = [streaming_cb]
+            if _opik_tracer:
+                callbacks.append(_opik_tracer)
+
+            agent_config = {
+                "recursion_limit": MAX_SUB_AGENT_RECURSION,
+                "callbacks": callbacks,
+            }
+
+            # No wall-clock timeout — budget per step limits tool calls
+            result = await agent.ainvoke({"messages": messages}, config=agent_config)
+
+            final_messages = result.get("messages", [])
+            response_text = _extract_response(final_messages, log)
+            step_tool_results = _extract_tool_results(final_messages, state, log)
+
+            step_results.append(response_text)
+            all_tool_results.extend(step_tool_results)
+
+            step_ok = sum(1 for r in step_tool_results if r.get("status") == "success")
+            step_err = sum(1 for r in step_tool_results if r.get("status") == "error")
+            log.info(
+                "Multi-step %s step %d: done (%d tools: %d ok, %d err)",
+                task_id, step_num, len(step_tool_results), step_ok, step_err,
+            )
+
+        except Exception as e:
+            log.error("Multi-step %s step %d failed: %s", task_id, step_num, e, exc_info=True)
+            step_results.append(f"Step {step_num} failed: {e}")
+
+    # Combine all step results into the final response
+    combined_response = "\n\n---\n\n".join(
+        f"**Step {i+1}**: {sub_steps[i]}\n\n{r}"
+        for i, r in enumerate(step_results)
+    )
+
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    success_count = sum(1 for r in all_tool_results if r.get("status") == "success")
+    error_count = sum(1 for r in all_tool_results if r.get("status") == "error")
+    task_status = "success" if success_count > 0 or not all_tool_results else "error"
+
+    log.info(
+        "Multi-step sub-agent %s: %s in %.0fms (%d steps, %d tools: %d ok, %d err)",
+        task_id, task_status, duration_ms, len(sub_steps),
+        len(all_tool_results), success_count, error_count,
+    )
+
+    return {
+        **task,
+        "status": task_status,
+        "result": {
+            "response": combined_response,
+            "tool_results": all_tool_results,
+            "tool_count": len(all_tool_results),
+            "success_count": success_count,
+            "error_count": error_count,
+        },
+        "error": None if task_status == "success" else f"{error_count} tool(s) failed across steps",
+        "duration_ms": duration_ms,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Result extraction helpers
 # ---------------------------------------------------------------------------
 
 def _extract_response(messages: List, log: logging.Logger) -> str:
-    """Extract the final text response from agent messages."""
-    # Walk backwards to find the last AIMessage
+    """Extract the final text response from agent messages.
+
+    Falls back to summarizing tool results if no final text AIMessage exists,
+    which happens when the ReAct agent stops after tool calls without
+    producing a concluding message.
+    """
+    # Walk backwards to find the last AIMessage with text content
     for msg in reversed(messages):
-        if hasattr(msg, "content") and not isinstance(msg, ToolMessage):
-            content = msg.content
-            if isinstance(content, str) and content.strip():
-                return content.strip()
-            if isinstance(content, list):
-                text_parts = []
-                for part in content:
-                    if isinstance(part, str):
-                        text_parts.append(part)
-                    elif isinstance(part, dict) and part.get("type") == "text":
-                        text_parts.append(part.get("text", ""))
-                if text_parts:
-                    return " ".join(text_parts).strip()
+        if isinstance(msg, ToolMessage):
+            continue
+        if not hasattr(msg, "content"):
+            continue
+        # Skip HumanMessage (the task prompt) — only want AIMessage responses
+        if isinstance(msg, HumanMessage):
+            continue
+
+        content = msg.content
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, str):
+                    text_parts.append(part)
+                elif isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+            if text_parts:
+                joined = " ".join(text_parts).strip()
+                if joined:
+                    return joined
+
+    # Fallback: no final text AIMessage found (agent ended after tool calls).
+    # Build a summary from tool results so sub_agent_analyses isn't empty.
+    # Include ALL data — the sub-agent analysis is the primary data source
+    # for the respond node, so nothing should be truncated here.
+    tool_summaries = []
+    for msg in messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        tool_name = msg.name if hasattr(msg, "name") else "unknown"
+        content = msg.content
+        if isinstance(content, str):
+            result_text = content
+        elif isinstance(content, (dict, list)):
+            try:
+                result_text = json.dumps(content, default=str, ensure_ascii=False)
+            except (TypeError, ValueError):
+                result_text = str(content)
+        else:
+            result_text = str(content)
+        tool_summaries.append(f"[{tool_name}]: {result_text}")
+
+    if tool_summaries:
+        log.warning("No final AI response found, building from %d tool results", len(tool_summaries))
+        return "\n\n".join(tool_summaries)
+
     return ""
 
 
@@ -407,7 +1019,7 @@ def _detect_status(result_content: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool call budget and output truncation
+# Tool call budget
 # ---------------------------------------------------------------------------
 
 class _ToolCallBudget:
@@ -423,18 +1035,19 @@ class _ToolCallBudget:
         return self.count <= self.max_calls
 
 
-def _wrap_tools_with_truncation(
+def _wrap_tools_with_budget(
     tools: List,
     budget: _ToolCallBudget,
-    max_chars: int = _MAX_TOOL_RESULT_CHARS,
     log: logging.Logger = logger,
 ) -> List:
     """
-    Wrap tools with output truncation and call budget to prevent context overflow.
+    Wrap tools with a call budget to prevent runaway tool loops.
 
-    Each tool result is truncated to max_chars, and the total number of tool
-    calls is capped by the budget. When the budget is exhausted, tools return
-    a stop message instructing the LLM to produce its final answer.
+    The total number of tool calls is capped by the budget. When the budget
+    is exhausted, tools return a stop message instructing the LLM to produce
+    its final answer. Tool results are returned in full — no truncation.
+    Sub-agents already summarize data, so truncation at the tool level loses
+    critical data (items, URLs, IDs).
     """
     from langchain_core.tools import StructuredTool as LCStructuredTool
 
@@ -444,14 +1057,14 @@ def _wrap_tools_with_truncation(
         orig_func = getattr(tool, "func", None)
         tool_name = getattr(tool, "name", "unknown")
 
-        truncated = _make_truncated_coro(
-            orig_coro, orig_func, budget, max_chars, tool_name, log,
+        budgeted = _make_budgeted_coro(
+            orig_coro, orig_func, budget, tool_name, log,
         )
 
         try:
             new_tool = LCStructuredTool.from_function(
-                func=truncated,
-                coroutine=truncated,
+                func=budgeted,
+                coroutine=budgeted,
                 name=tool_name,
                 description=getattr(tool, "description", ""),
                 args_schema=getattr(tool, "args_schema", None),
@@ -467,8 +1080,8 @@ def _wrap_tools_with_truncation(
     return wrapped
 
 
-def _make_truncated_coro(orig_coro, orig_func, budget, max_chars, tool_name, log):
-    """Factory: create a truncated async wrapper for a tool coroutine."""
+def _make_budgeted_coro(orig_coro, orig_func, budget, tool_name, log):
+    """Factory: create a budget-enforced async wrapper for a tool coroutine."""
 
     async def _coro(**kwargs):
         if not budget.consume():
@@ -483,177 +1096,85 @@ def _make_truncated_coro(orig_coro, orig_func, budget, max_chars, tool_name, log
             )
 
         result = await orig_coro(**kwargs) if orig_coro else orig_func(**kwargs)
-        return _truncate_tool_output(result, max_chars)
+        return result
 
     return _coro
 
 
-def _truncate_tool_output(result: Any, max_chars: int) -> Any:
-    """
-    Truncate tool output while preserving complete items and URL fields.
-
-    For lists/dicts, truncates at item boundaries so each kept item is
-    intact (with all its URL fields). Falls back to character truncation
-    for plain strings.
-    """
-    if result is None:
-        return result
-
-    # --- Plain strings ---
-    if isinstance(result, str):
-        if len(result) <= max_chars:
-            return result
-        # Try to parse as JSON for smarter truncation
-        try:
-            parsed = json.loads(result)
-            if isinstance(parsed, (list, dict)):
-                truncated = _smart_truncate_structured(parsed, max_chars)
-                return json.dumps(truncated, default=str, ensure_ascii=False)
-        except (json.JSONDecodeError, ValueError):
-            pass
-        return result[:max_chars] + (
-            f"\n\n[Output truncated: {len(result):,} -> {max_chars:,} chars.]"
-        )
-
-    # --- Structured data (dict / list) ---
-    if isinstance(result, (list, dict)):
-        try:
-            text = json.dumps(result, default=str, ensure_ascii=False)
-        except (TypeError, ValueError):
-            text = str(result)
-        if len(text) <= max_chars:
-            return result
-        return _smart_truncate_structured(result, max_chars)
-
-    text = str(result)
-    if len(text) <= max_chars:
-        return result
-    return text[:max_chars] + (
-        f"\n\n[Output truncated: {len(text):,} -> {max_chars:,} chars.]"
-    )
-
-
-def _smart_truncate_structured(data: Any, max_chars: int) -> Any:
-    """Truncate dicts/lists at item boundaries, keeping complete items."""
-    if isinstance(data, list):
-        return _truncate_list_items(data, max_chars)
-
-    if isinstance(data, dict):
-        # Find the largest list value (the main payload) and truncate it
-        # while preserving all scalar/metadata fields (counts, tokens, etc.)
-        list_key = None
-        list_len = 0
-        for key, value in data.items():
-            if isinstance(value, list) and len(value) > list_len:
-                list_key = key
-                list_len = len(value)
-
-        if list_key and list_len > 2:
-            # Budget: reserve space for non-list fields, give rest to list
-            non_list_size = 0
-            for key, value in data.items():
-                if key != list_key:
-                    try:
-                        non_list_size += len(
-                            json.dumps({key: value}, default=str, ensure_ascii=False)
-                        )
-                    except (TypeError, ValueError):
-                        non_list_size += len(str(value)) + len(key) + 10
-            list_budget = max(max_chars - non_list_size - 100, max_chars // 2)
-            result = dict(data)
-            result[list_key] = _truncate_list_items(data[list_key], list_budget)
-            return result
-
-        # No large lists — fall back to char truncation of serialized form
-        try:
-            text = json.dumps(data, default=str, ensure_ascii=False)
-        except (TypeError, ValueError):
-            text = str(data)
-        return text[:max_chars] + "\n[Truncated]"
-
-    return data
-
-
-def _truncate_list_items(items: list, max_chars: int) -> list:
-    """Keep complete items from a list up to the char budget."""
-    if not items:
-        return items
-
-    kept: List = []
-    used = 2  # opening/closing brackets
-    for item in items:
-        try:
-            item_json = json.dumps(item, default=str, ensure_ascii=False)
-        except (TypeError, ValueError):
-            item_json = str(item)
-        cost = len(item_json) + (2 if kept else 0)  # comma + space
-        if used + cost > max_chars and kept:
-            break
-        kept.append(item)
-        used += cost
-
-    if len(kept) < len(items):
-        kept.append(
-            f"[... {len(items) - len(kept)} more items not shown. "
-            f"Total: {len(items)} items. Use the items above to complete your task.]"
-        )
-
-    return kept
-
-
 # ---------------------------------------------------------------------------
-# Execution level builder
+# Client pre-warming
 # ---------------------------------------------------------------------------
 
-def _build_execution_levels(
+async def _prewarm_clients(
     tasks: List[SubAgentTask],
+    state: DeepAgentState,
     log: logging.Logger,
-) -> List[List[SubAgentTask]]:
+) -> None:
     """
-    Organize tasks into execution levels based on dependencies.
+    Pre-create and cache API clients for all domains before sub-agents start.
 
-    Level 0: Tasks with no dependencies (run in parallel)
-    Level 1: Tasks depending on Level 0 tasks (run after Level 0)
-    etc.
-
-    Returns list of levels, each containing tasks that can run in parallel.
+    Without this, the first tool call in each domain blocks while creating
+    the OAuth/MSAL client (ETCD lookup + token refresh + API discovery).
+    Pre-warming moves that latency out of the critical path so sub-agents
+    start with warm caches and hit zero client-creation delays.
     """
-    task_map = {t["task_id"]: t for t in tasks}
-    resolved: set = set()
-    levels: List[List[SubAgentTask]] = []
+    from app.agents.tools.factories.registry import ClientFactoryRegistry
+    from app.agents.tools.wrapper import ToolInstanceCreator
 
-    remaining = list(tasks)
-    max_depth = len(tasks) + 1  # Prevent infinite loops
+    # Collect one representative tool per (domain, toolset_id) pair
+    tool_to_toolset_map = state.get("tool_to_toolset_map", {})
+    seen: Dict[tuple, str] = {}  # (app_name, toolset_id) -> tool_full_name
+    for task in tasks:
+        for tool_name in task.get("tools", []):
+            app_name = tool_name.split(".")[0] if "." in tool_name else tool_name.split("_")[0]
+            toolset_id = tool_to_toolset_map.get(tool_name, "default")
+            key = (app_name, toolset_id)
+            if key not in seen:
+                seen[key] = tool_name
 
-    for _ in range(max_depth):
-        if not remaining:
-            break
+    if not seen:
+        return
 
-        # Find tasks whose dependencies are all resolved
-        current_level = []
-        still_remaining = []
+    creator = ToolInstanceCreator(state)
 
-        for task in remaining:
-            deps = set(task.get("depends_on", []))
-            if deps.issubset(resolved):
-                current_level.append(task)
-            else:
-                still_remaining.append(task)
+    async def _warm_one(app_name: str, tool_full_name: str) -> None:
+        try:
+            factory = ClientFactoryRegistry.get_factory(app_name)
+            if not factory:
+                return
 
-        if not current_level:
-            # Deadlock: remaining tasks have unresolvable dependencies
-            log.warning(
-                "Dependency deadlock: %s have unresolvable deps, forcing execution",
-                [t["task_id"] for t in still_remaining],
-            )
-            current_level = still_remaining
-            still_remaining = []
+            toolset_config = creator._get_toolset_config(tool_full_name)
+            config = toolset_config if toolset_config else {}
 
-        levels.append(current_level)
-        resolved.update(t["task_id"] for t in current_level)
-        remaining = still_remaining
+            toolset_id = tool_to_toolset_map.get(tool_full_name)
+            user_id = state.get("user_id", "default")
+            cache_key = (app_name, toolset_id or "default", user_id)
 
-    return levels
+            if creator._client_cache.get(cache_key) is not None:
+                return
+
+            # Use the same lock as _create_with_factory_async
+            if cache_key not in creator._cache_locks:
+                creator._cache_locks[cache_key] = asyncio.Lock()
+            async with creator._cache_locks[cache_key]:
+                if creator._client_cache.get(cache_key) is not None:
+                    return
+                client = await factory.create_client(
+                    creator.config_service, log, config, state,
+                )
+                creator._client_cache[cache_key] = client
+                log.debug("Pre-warmed client for %s (toolset: %s)", app_name, toolset_id)
+        except Exception as e:
+            log.debug("Client pre-warm skipped for %s: %s", app_name, e)
+
+    warm_start = time.perf_counter()
+    await asyncio.gather(
+        *[_warm_one(app, tool) for (app, _), tool in seen.items()],
+        return_exceptions=True,
+    )
+    warm_ms = (time.perf_counter() - warm_start) * 1000
+    if warm_ms > 50:
+        log.info("Pre-warmed %d API client(s) in %.0fms", len(seen), warm_ms)
 
 
 # ---------------------------------------------------------------------------
@@ -687,59 +1208,50 @@ def _build_sub_agent_tool_guidance(
     task: SubAgentTask,
     state: DeepAgentState,
 ) -> str:
-    """Build concise tool guidance for a sub-agent based on its domains."""
+    """
+    Build generic tool guidance for a sub-agent from its assigned tools.
+
+    This is app-agnostic — it reads tool names and descriptions dynamically
+    rather than hardcoding per-domain guidance. Works for any app/service.
+    """
     domains = {d.lower() for d in task.get("domains", [])}
+    tool_names = task.get("tools", [])
+
     parts = []
 
-    if "jira" in domains:
-        parts.append(
-            "JIRA: Add time filters to JQL (e.g., `updated >= -7d`). "
-            "Use `jira.search_users` to get accountIds before JQL assignee queries. "
-            "Use `maxResults=50` to get more results per call. "
-            "**Links**: Each issue in search results has a `url` field with the browse link — "
-            "use it as `[ISSUE-KEY: Summary](url)` for EVERY issue."
-        )
-    if "confluence" in domains:
-        parts.append(
-            "CONFLUENCE: Use `confluence.search_pages(title=...)` to find pages. "
-            "Use `confluence.get_page_content(page_id=...)` for full page content. "
-            "**Links**: Each page has a `url` or `_links.webui` field — "
-            "use it as `[Page Title](url)` for EVERY page."
-        )
-    if "slack" in domains:
-        parts.append(
-            "SLACK: Write messages in Slack mrkdwn format (*bold*, _italic_, bullets). "
-            "NEVER pass raw HTML or JSON as message content. "
-            "`set_user_status` uses `duration_seconds`, not timestamps."
-        )
-    if "gmail" in domains:
-        parts.append(
-            "GMAIL: Use `max_results=50` to get more results and reduce pagination. "
-            "Search results already contain subject, from, to, date, snippet — "
-            "do NOT call `get_email_details` for every email. "
-            "**Links**: Each email has an `id` field. Construct Gmail links as "
-            "`https://mail.google.com/mail/u/0/#inbox/<id>` and include as "
-            "`[Subject](https://mail.google.com/mail/u/0/#inbox/<id>)` for EVERY email."
-        )
-    if "outlook" in domains:
-        parts.append(
-            "OUTLOOK: Use `seriesMasterId` for recurring event operations. "
-            "Preserve existing recurrence pattern when updating. "
-            "**Links**: Each event has a `webLink` field — use it as "
-            "`[Event Subject](webLink)` for EVERY event/meeting."
-        )
-    if "teams" in domains:
-        parts.append(
-            "TEAMS: Use `teams.get_meeting_transcript(event_id=..., joinUrl=...)` "
-            "for transcripts. Write your own summary, never pass raw transcript."
-        )
-    if "calendar" in domains:
-        parts.append(
-            "GOOGLE CALENDAR: Use time range filters to limit results. "
-            "Use `max_results` parameter to control page size."
-        )
+    # Generic guidance for all sub-agents
+    parts.append(
+        "## Tool Usage Guidance\n"
+        "- Use the LARGEST supported page size (e.g., `max_results=50`, `maxResults=100`, `limit=50`) "
+        "to minimize API calls.\n"
+        "- Prefer bulk search/list operations over individual item lookups. "
+        "Search results usually contain enough fields (subject, from, date, status, snippet) "
+        "— avoid fetching individual item details unless the full body/content is specifically needed.\n"
+        "- Use time-range filters, status filters, and search queries to scope results precisely.\n"
+        "- If results include a `nextPageToken` or pagination indicator, fetch additional pages "
+        "only if the task requires comprehensive data (reports, summaries)."
+    )
 
-    return "\n".join(parts) if parts else ""
+    # Generic link extraction guidance
+    parts.append(
+        "\n## Link Extraction (MANDATORY)\n"
+        "For EVERY item in your results, you MUST include a clickable link.\n"
+        "1. **Scan ALL result fields** for URLs — common field names: "
+        "`url`, `webLink`, `webViewLink`, `htmlUrl`, `permalink`, `link`, `href`, "
+        "`self`, `joinUrl`, `joinWebUrl`, `htmlLink`, `alternateLink`.\n"
+        "2. **If a direct URL field exists**, use it: `[Item Title](url_value)`\n"
+        "3. **If only an ID is available**, check if the tool description mentions "
+        "a URL pattern. Many services follow `https://<service-domain>/<path>/<id>`.\n"
+        "4. **If no URL can be determined**, include the item ID prominently so "
+        "the user can find it manually."
+    )
+
+    # List available tools for reference
+    if tool_names:
+        tool_list = ", ".join(f"`{t}`" for t in tool_names[:15])
+        parts.append(f"\n## Available Tools\n{tool_list}")
+
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -811,6 +1323,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
         self.log = log
         self.task_id = task_id
         self._tool_names: Dict[str, str] = {}
+        self.collected_results: List[Dict[str, Any]] = []
 
     def _write(self, event_data: Dict[str, Any]) -> None:
         token = var_child_runnable_config.set(self.config)
@@ -833,6 +1346,12 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
     async def on_tool_end(self, output, *, run_id, **kwargs):
         tool_name = self._tool_names.pop(str(run_id), "unknown")
         status = _detect_status(output)
+        # Collect tool results for partial recovery on timeout
+        self.collected_results.append({
+            "tool_name": tool_name,
+            "output": output,
+            "status": status,
+        })
         self._write({
             "event": "tool_result",
             "data": {"tool": tool_name, "status": status},

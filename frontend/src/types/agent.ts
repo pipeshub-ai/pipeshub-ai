@@ -65,7 +65,6 @@ export interface Agent {
   isActive?: boolean;
   isDeleted?: boolean;
   shareWithOrg?: boolean; // Whether agent is shared with the whole organization
-  useDeepAgent?: boolean; // Whether to use the deep agent (orchestrator + sub-agents) for this agent
   can_view?: boolean;
   can_share?: boolean;
   can_edit?: boolean;
@@ -316,7 +315,6 @@ export interface AgentFormData {
   tags: string[];
   templateId?: string;
   shareWithOrg?: boolean; // Whether to share this agent with the whole organization
-  useDeepAgent?: boolean; // Whether to use the deep agent (orchestrator + sub-agents)
   flow?: {
     nodes: any[];
     edges: any[];

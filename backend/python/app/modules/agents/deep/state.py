@@ -7,6 +7,8 @@ fully compatible with respond_node for final response generation.
 
 from __future__ import annotations
 
+import logging
+import os
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +20,29 @@ from app.modules.agents.qna.chat_state import ChatState, build_initial_state
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+_logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Opik tracer for deep agent LLM calls (shared across all deep agent modules)
+# ---------------------------------------------------------------------------
+_opik_tracer = None
+_opik_api_key = os.getenv("OPIK_API_KEY")
+_opik_workspace = os.getenv("OPIK_WORKSPACE")
+if _opik_api_key and _opik_workspace:
+    try:
+        from opik.integrations.langchain import OpikTracer
+        _opik_tracer = OpikTracer()
+        _logger.info("Deep agent Opik tracer initialized")
+    except Exception as e:
+        _logger.warning("Failed to initialize deep agent Opik tracer: %s", e)
+
+
+def get_opik_config() -> Dict[str, Any]:
+    """Return LLM invoke config with Opik callback, or empty dict if not configured."""
+    if _opik_tracer:
+        return {"callbacks": [_opik_tracer]}
+    return {}
 
 
 class SubAgentTask(TypedDict, total=False):
@@ -31,6 +56,19 @@ class SubAgentTask(TypedDict, total=False):
     error: Optional[str]
     duration_ms: Optional[float]
     domains: List[str]
+
+    # Complexity-aware execution hints (set by orchestrator)
+    complexity: str  # "simple" | "complex" — controls sub-agent execution mode
+    batch_strategy: Optional[Dict[str, Any]]
+    # Example: {"page_size": 50, "max_pages": 4, "scope_query": "after:2026/03/02"}
+
+    # Multi-step execution (3-level hierarchy)
+    multi_step: bool  # If True, sub-agent acts as mini-orchestrator spawning sub-sub-agents
+    sub_steps: Optional[List[str]]  # Ordered list of step descriptions (set by orchestrator or LLM)
+
+    # Progressive summarization output (set by complex sub-agent)
+    domain_summary: Optional[str]  # Consolidated domain-level summary (markdown)
+    batch_summaries: Optional[List[str]]  # Intermediate batch summaries
 
 
 class DeepAgentState(ChatState, total=False):
@@ -61,6 +99,9 @@ class DeepAgentState(ChatState, total=False):
     # Sub-agent analyses for respond_node
     sub_agent_analyses: Optional[List[str]]
 
+    # Domain summaries from complex tasks (structured, concise)
+    domain_summaries: Optional[List[Dict[str, Any]]]
+
 
 # ---------------------------------------------------------------------------
 # Defaults for deep-agent-specific fields
@@ -74,6 +115,8 @@ _DEEP_DEFAULTS: Dict[str, Any] = {
     "evaluation": None,
     "deep_iteration_count": 0,
     "deep_max_iterations": 3,
+    "domain_summaries": [],
+    "sub_agent_analyses": [],
 }
 
 

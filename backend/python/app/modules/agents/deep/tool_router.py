@@ -423,29 +423,43 @@ def _filter_tools_by_relevance(
     to reduce the number of tools sent to the sub-agent. This prevents the LLM
     from making erroneous calls to irrelevant tools.
 
-    Always returns at least _MAX_TOOLS_PER_TASK tools (top-scored).
+    Always returns exactly _MAX_TOOLS_PER_TASK tools (top-scored), capped
+    to prevent tool overload in the sub-agent's context.
     """
     desc_lower = (task.get("description") or "").lower()
+    # Extract multi-word phrases for bonus scoring (e.g., "recurring events")
+    desc_words = [w for w in desc_lower.split() if len(w) > 2]
 
     # Score each tool by relevance to the task description
     scored: List[tuple] = []
     for tool_name in domain_tools:
         score = 0
-        # Extract the action part (e.g., "get_calendar_events" from "outlook.get_calendar_events")
+        # Extract the action part (e.g., "get_recurring_events_ending" from "outlook.get_recurring_events_ending")
         action = tool_name.split(".", 1)[1] if "." in tool_name else tool_name
         action_words = set(action.lower().replace("_", " ").split())
+        # Also keep the full action as a phrase for multi-word matching
+        action_phrase = action.lower().replace("_", " ")
 
         # Score based on action name keywords in task description
+        # Higher weight for specific/uncommon words (length > 5)
         for word in action_words:
-            if len(word) > 2 and word in desc_lower:
-                score += 2
+            if len(word) <= 2:
+                continue
+            if word in desc_lower:
+                # Specific words (longer) get higher scores
+                score += 4 if len(word) > 5 else 2
+
+        # Bonus: consecutive word matches (e.g., "recurring events" matches tool "get_recurring_events_ending")
+        for i in range(len(desc_words) - 1):
+            bigram = f"{desc_words[i]} {desc_words[i + 1]}"
+            if bigram in action_phrase:
+                score += 6  # Strong signal — multi-word match
 
         # Score based on tool description keywords
         schema_tool = schema_tool_map.get(tool_name)
         if schema_tool:
             tool_desc = (getattr(schema_tool, "description", "") or "").lower()
-            # Check if task description words appear in tool description
-            for word in desc_lower.split():
+            for word in desc_words:
                 if len(word) > 3 and word in tool_desc:
                     score += 1
 
@@ -454,21 +468,23 @@ def _filter_tools_by_relevance(
     # Sort by score descending, then take top tools
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    # Always include tools with score > 0, plus fill up to _MAX_TOOLS_PER_TASK
-    relevant = [name for name, s in scored if s > 0]
+    # Take top _MAX_TOOLS_PER_TASK tools — always cap to prevent tool overload
+    relevant = [name for name, s in scored[:_MAX_TOOLS_PER_TASK]]
 
-    if len(relevant) < _MAX_TOOLS_PER_TASK:
-        # Add remaining tools up to the limit (for tools with no keyword match)
-        remaining = [name for name, s in scored if s == 0]
-        relevant.extend(remaining[: _MAX_TOOLS_PER_TASK - len(relevant)])
+    # If we have fewer than _MAX_TOOLS_PER_TASK with score > 0,
+    # still fill up to the limit from remaining tools
+    if len([s for _, s in scored[:_MAX_TOOLS_PER_TASK] if s > 0]) == 0:
+        # No keyword matches at all — just return top N by original order
+        relevant = domain_tools[:_MAX_TOOLS_PER_TASK]
 
     if len(relevant) < len(domain_tools):
+        top_scores = [(n.split(".")[-1], s) for n, s in scored[:5]]
         log.info(
-            "Task %s: filtered %d → %d tools (top matches: %s)",
+            "Task %s: filtered %d → %d tools (top: %s)",
             task.get("task_id"),
             len(domain_tools),
             len(relevant),
-            [n.split(".")[-1] for n in relevant[:5]],
+            top_scores,
         )
 
     return relevant

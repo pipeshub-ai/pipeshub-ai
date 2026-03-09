@@ -22,9 +22,9 @@ from langgraph.graph import END, StateGraph
 
 from app.modules.agents.deep.aggregator import aggregator_node, route_after_evaluation
 from app.modules.agents.deep.orchestrator import orchestrator_node, should_dispatch
+from app.modules.agents.deep.respond import deep_respond_node
 from app.modules.agents.deep.state import DeepAgentState
 from app.modules.agents.deep.sub_agent import execute_sub_agents_node
-from app.modules.agents.qna.nodes import respond_node
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -38,7 +38,7 @@ def create_deep_agent_graph() -> "CompiledStateGraph":
         orchestrator: Decomposes query into sub-tasks
         execute_sub_agents: Runs sub-agents with isolated contexts
         aggregator: Evaluates results, decides next action
-        respond: Generates final response with citations (reused from nodes.py)
+        respond: Generates final response from domain summaries (dedicated deep agent node)
 
     Edges:
         orchestrator → should_dispatch → dispatch | respond
@@ -56,7 +56,7 @@ def create_deep_agent_graph() -> "CompiledStateGraph":
     workflow.add_node("orchestrator", orchestrator_node)
     workflow.add_node("execute_sub_agents", execute_sub_agents_node)
     workflow.add_node("aggregator", aggregator_node)
-    workflow.add_node("respond", respond_node)
+    workflow.add_node("respond", deep_respond_node)
 
     # Entry point
     workflow.set_entry_point("orchestrator")
