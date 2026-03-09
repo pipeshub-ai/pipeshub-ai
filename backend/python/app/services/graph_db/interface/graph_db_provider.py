@@ -2980,6 +2980,7 @@ class IGraphDBProvider(ABC):
         include_kbs: bool,
         include_apps: bool,
         only_containers: bool,
+        search_query: Optional[str] = None,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -2996,6 +2997,7 @@ class IGraphDBProvider(ABC):
             include_kbs: Whether to include Knowledge Bases
             include_apps: Whether to include Apps
             only_containers: Only return nodes with children
+            search_query: Optional search string; filter KB/app names when set
             transaction: Optional transaction context
 
         Returns:
@@ -3063,6 +3065,7 @@ class IGraphDBProvider(ABC):
         only_containers: bool = False,
         parent_id: Optional[str] = None,
         parent_type: Optional[str] = None,
+        flattened: bool = False,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -3071,6 +3074,10 @@ class IGraphDBProvider(ABC):
         Supports both:
         - Global search (parent_id=None): Search across all accessible nodes
         - Scoped search (parent_id set): Search within a specific parent's hierarchy
+
+        When parent_id is set, flattened controls scope:
+        - False (default): return only direct children of the parent (browse mode)
+        - True: return all descendants under the parent (flattened)
 
         Includes:
         - RecordGroups with direct permissions
@@ -3100,6 +3107,7 @@ class IGraphDBProvider(ABC):
             only_containers: If True, only return nodes that can have children
             parent_id: Optional parent node ID for scoped search
             parent_type: Optional type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'
+            flattened: If True and parent_id set, return all descendants; if False, return only direct children
             transaction: Optional transaction ID
 
         Returns:
