@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Sequence
-from typing import List
+from typing import List, Optional
 
 from github import (
     Github,  # type: ignore
@@ -28,6 +28,7 @@ from github.NamedUser import NamedUser  # type: ignore
 from github.Organization import Organization  # type: ignore
 from github.PullRequest import PullRequest  # type: ignore
 from github.PullRequestComment import PullRequestComment  # type: ignore
+from github.PullRequestReview import PullRequestReview  # type: ignore
 from github.RateLimit import RateLimit  # type: ignore
 from github.Repository import Repository  # type: ignore
 from github.Tag import Tag  # type: ignore
@@ -66,6 +67,11 @@ class GitHubDataSource:
     def _not_none(**params: object) -> dict[str, object]:
         return {k: v for k, v in params.items() if v is not None}
 
+    @staticmethod
+    def _issues_only(items: list) -> list:
+        """Filter to items that are issues (pull_request is None), excluding PRs."""
+        return [i for i in items if getattr(i, "pull_request", None) is None]
+
 
     def get_authenticated(self) -> GitHubResponse[AuthenticatedUser]:
         """Return the authenticated user."""
@@ -93,12 +99,38 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_user_repos(self, user: str, type: str = "owner") -> GitHubResponse[list[Repository]]:
-        """List repositories for a given user. `type` in {'all','owner','member'}."""
+    def get_owner(self, login: str, kind: str = "user") -> GitHubResponse[NamedUser | Organization]:
+        """Get a user or organization by login (the 'owner' of repos). Use login='me' for the authenticated user."""
         try:
-            u = self._sdk.get_user()
-            repos = list(u.get_repos(type=type))
+            if kind == "organization":
+                obj = self._sdk.get_organization(login)
+            else:
+                obj = self._sdk.get_user() if (login or "").strip().lower() == "me" else self._sdk.get_user(login)
+            return GitHubResponse(success=True, data=obj)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def list_user_repos(
+        self,
+        user: str,
+        type: str = "owner",
+        per_page: Optional[int] = None,
+        page: Optional[int] = None,
+    ) -> GitHubResponse[list[Repository]]:
+        """List repositories for a given user. When both per_page and page are omitted, returns all repos. When either is passed, returns one page (default 10 per page, max 50). Pass the login from get_owner(owner='me') result; do not pass 'me' here."""
+        try:
+            u = self._sdk.get_user(user)
+            paginated = u.get_repos(type=type)
+            if per_page is None and page is None:
+                repos = list(paginated)
+                return GitHubResponse(success=True, data=repos)
+            _per_page = 10 if per_page is None else min(50, max(1, per_page))
+            _page = 1 if page is None else max(1, page)
+            if hasattr(paginated, "get_page"):
+                page_items = paginated.get_page(_page - 1)
+            else:
+                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
+            repos = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
             return GitHubResponse(success=True, data=repos)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
@@ -133,16 +165,79 @@ class GitHubDataSource:
             return GitHubResponse(success=False, error=str(e))
 
 
-    def list_issues(self, owner: str, repo: str, state: str = "open", labels: Sequence[str] | None = None, assignee: str | None = None,since:str |None = None) -> GitHubResponse[list[Issue]]:
-        """List issues with filters."""
+    def list_issues(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        labels: Sequence[str] | None = None,
+        assignee: str | None = None,
+        since: str | None = None,
+        per_page: Optional[int] = None,
+        page: Optional[int] = None,
+    ) -> GitHubResponse[list[Issue]]:
+        """List issues with filters. When both per_page and page are None (e.g. from connector), returns all issues. Otherwise returns one page (default 10 per page, max 50)."""
         try:
             r = self._repo(owner, repo)
             params = self._not_none(labels=labels, assignee=assignee, since=since)
-            issues = list(r.get_issues(state=state, **params))
+            paginated = r.get_issues(state=state, **params)
+            if per_page is None and page is None:
+                issues = list(paginated)
+                return GitHubResponse(success=True, data=issues)
+            _per_page = 10 if per_page is None else min(50, max(1, per_page))
+            _page = 1 if page is None else max(1, page)
+            if hasattr(paginated, "get_page"):
+                page_items = paginated.get_page(_page - 1)
+            else:
+                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
+            issues = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
             return GitHubResponse(success=True, data=issues)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
+    def list_issues_only(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        labels: Sequence[str] | None = None,
+        assignee: str | None = None,
+        since: str | None = None,
+        per_page: int = 10,
+        page: int = 1,
+    ) -> GitHubResponse[list[Issue]]:
+        """List only issues (exclude PRs). Always returns one page (default 10 per page, max 50) by over-fetching API pages and filtering out PRs."""
+        try:
+            r = self._repo(owner, repo)
+            params = self._not_none(labels=labels, assignee=assignee, since=since)
+            paginated = r.get_issues(state=state, **params)
+
+            _per_page = min(50, max(1, per_page))
+            _page = max(1, page)
+            skip = (_page - 1) * _per_page
+            needed = skip + _per_page
+            accumulator: list = []
+            api_page_index = 0
+            api_page_size = 30
+            while len(accumulator) < needed:
+                if hasattr(paginated, "get_page"):
+                    raw = paginated.get_page(api_page_index)
+                else:
+                    all_items = list(paginated)
+                    filtered_all = self._issues_only(all_items)
+                    result = filtered_all[skip : skip + _per_page]
+                    return GitHubResponse(success=True, data=result)
+                if not raw:
+                    break
+                batch = raw if isinstance(raw, list) else list(raw)
+                accumulator.extend(self._issues_only(batch))
+                if len(batch) < api_page_size:
+                    break
+                api_page_index += 1
+            result = accumulator[skip : skip + _per_page]
+            return GitHubResponse(success=True, data=result)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
 
     def get_issue(self, owner: str, repo: str, number: int) -> GitHubResponse[Issue]:
         """Get a single issue."""
@@ -160,6 +255,30 @@ class GitHubDataSource:
             r = self._repo(owner, repo)
             params = self._not_none(body=body, assignees=assignees, labels=labels)
             issue = r.create_issue(title=title, **params)
+            return GitHubResponse(success=True, data=issue)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+
+    def update_issue(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        title: str | None = None,
+        body: str | None = None,
+        state: str | None = None,
+        assignees: Sequence[str] | None = None,
+        labels: Sequence[str] | None = None,
+    ) -> GitHubResponse[Issue]:
+        """Update an existing issue. Only pass fields to change (title, body, state, assignees, labels)."""
+        try:
+            r = self._repo(owner, repo)
+            issue = r.get_issue(number)
+            params = self._not_none(title=title, body=body, state=state, assignees=assignees, labels=labels)
+            if not params:
+                return GitHubResponse(success=True, data=issue)
+            issue.edit(**params)
             return GitHubResponse(success=True, data=issue)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
@@ -200,7 +319,7 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-    def get_issue_comment(self, owner: str, repo: str,number:int, comment_id: int) -> GitHubResponse[IssueComment]:
+    def get_issue_comment(self, owner: str, repo: str, number: int, comment_id: int) -> GitHubResponse[IssueComment]:
         """Get a single issue comment by ID."""
         try:
             r = self._repo(owner, repo)
@@ -210,12 +329,52 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-    def list_pulls(self, owner: str, repo: str, state: str = "open", head: str | None = None, base: str | None = None) -> GitHubResponse[list[PullRequest]]:
-        """List PRs."""
+    def create_issue_comment(self, owner: str, repo: str, number: int, body: str) -> GitHubResponse[IssueComment]:
+        """Create a comment on an issue."""
+        try:
+            r = self._repo(owner, repo)
+            issue = r.get_issue(number)
+            comment = issue.create_comment(body)
+            return GitHubResponse(success=True, data=comment)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def edit_issue_comment(self, owner: str, repo: str, number: int, comment_id: int, body: str) -> GitHubResponse[IssueComment]:
+        """Edit an existing issue comment."""
+        try:
+            r = self._repo(owner, repo)
+            issue = r.get_issue(number)
+            comment = issue.get_comment(id=comment_id)
+            comment.edit(body)
+            return GitHubResponse(success=True, data=comment)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def list_pulls(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        head: str | None = None,
+        base: str | None = None,
+        per_page: Optional[int] = None,
+        page: Optional[int] = None,
+    ) -> GitHubResponse[list[PullRequest]]:
+        """List PRs. When both per_page and page are None (e.g. from connector), returns all PRs. Otherwise returns one page (default 10 per page, max 50)."""
         try:
             r = self._repo(owner, repo)
             params = self._not_none(head=head, base=base)
-            pulls = list(r.get_pulls(state=state, **params))
+            paginated = r.get_pulls(state=state, **params)
+            if per_page is None and page is None:
+                pulls = list(paginated)
+                return GitHubResponse(success=True, data=pulls)
+            _per_page = 10 if per_page is None else min(50, max(1, per_page))
+            _page = 1 if page is None else max(1, page)
+            if hasattr(paginated, "get_page"):
+                page_items = paginated.get_page(_page - 1)
+            else:
+                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
+            pulls = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
             return GitHubResponse(success=True, data=pulls)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
@@ -251,6 +410,33 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
+    def get_pull_reviews(self, owner: str, repo: str, number: int) -> GitHubResponse[list[PullRequestReview]]:
+        """Get reviews of a PR (approve, request changes, comment with body)."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            reviews = list(pr.get_reviews())
+            return GitHubResponse(success=True, data=reviews)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def create_pull_request_review(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        event: str,
+        body: Optional[str] = None,
+    ) -> GitHubResponse[PullRequestReview]:
+        """Submit a PR review: APPROVE, REQUEST_CHANGES, or COMMENT. Optional body for the review summary."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            review = pr.create_review(event=event, body=body or "")
+            return GitHubResponse(success=True, data=review)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
     def get_pull_review_comments(self, owner: str, repo: str, number: int) -> GitHubResponse[list[PullRequestComment]]:
         """Get review comments of a PR."""
         try:
@@ -258,6 +444,59 @@ class GitHubDataSource:
             pr = r.get_pull(number)
             comments = list(pr.get_review_comments())
             return GitHubResponse(success=True, data=comments)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def create_pull_request_review_comment(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        body: str,
+        commit_id: str,
+        path: str,
+        line: int | None = None,
+        side: str | None = None,
+        in_reply_to: int | None = None,
+    ) -> GitHubResponse[PullRequestComment]:
+        """Create a review comment on a PR (line comment) or reply to a comment."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            params: dict[str, object] = {"body": body, "commit": commit_id, "path": path}
+            if line is not None:
+                params["line"] = line
+            if side is not None:
+                params["side"] = side
+            if in_reply_to is not None:
+                params["in_reply_to"] = in_reply_to
+            comment = pr.create_review_comment(**params)
+            return GitHubResponse(success=True, data=comment)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def create_pull_request_review_comment_reply(
+        self, owner: str, repo: str, number: int, comment_id: int, body: str
+    ) -> GitHubResponse[PullRequestComment]:
+        """Reply to an existing PR review comment."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            comment = pr.create_review_comment_reply(comment_id=comment_id, body=body)
+            return GitHubResponse(success=True, data=comment)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def edit_pull_request_review_comment(
+        self, owner: str, repo: str, number: int, comment_id: int, body: str
+    ) -> GitHubResponse[PullRequestComment]:
+        """Edit a PR review comment."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            comment = pr.get_review_comment(comment_id)
+            comment.edit(body)
+            return GitHubResponse(success=True, data=comment)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
@@ -841,10 +1080,22 @@ class GitHubDataSource:
             return GitHubResponse(success=False, error=str(e))
 
 
-    def search_repositories(self, query: str) -> GitHubResponse[list[Repository]]:
-        """Search repositories."""
+    def search_repositories(
+        self,
+        query: str,
+        per_page: Optional[int] = None,
+        page: Optional[int] = None,
+    ) -> GitHubResponse[list[Repository]]:
+        """Search repositories. Default 10 per page, max 50."""
         try:
-            res = list(self._sdk.search_repositories(query))
+            paginated = self._sdk.search_repositories(query)
+            _per_page = 10 if per_page is None else min(50, max(1, per_page))
+            _page = 1 if page is None else max(1, page)
+            if hasattr(paginated, "get_page"):
+                page_items = paginated.get_page(_page - 1)
+            else:
+                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
+            res = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
             return GitHubResponse(success=True, data=res)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))

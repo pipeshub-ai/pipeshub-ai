@@ -2008,6 +2008,112 @@ When the user asks about multiple meetings ("yesterday's meetings", "this week's
 4. Send to Slack: `slack.send_message(channel="...", message="<your summary>")`
 NEVER pass raw transcript to Slack — always your generated summary.
 """
+GITHUB_GUIDANCE = r"""
+## GitHub-Specific Guidance
+
+### CRITICAL: Owner context first — never pass "me" to list_repositories or repo-scoped tools
+- **Only** `github.get_owner` accepts **owner=`me`** (to get the authenticated user's profile). The response includes **login** (the actual username).
+- **All other tools** (list_repositories, list_issues, get_repository, get_issue, list_pull_requests, etc.) require the **actual GitHub login** (username or org name). **Never** pass the literal "me" to these tools — the API will fail with 404.
+- When the user says "my repos", "my issues", "my repo X", etc.: **first** call **`github.get_owner`(owner=`me`)** to get the authenticated user; then use the **`login`** from that response as **user** or **owner** in every subsequent tool call.
+- Do NOT ask the user "What is your GitHub username?" when they said "my" — resolve it by calling get_owner(owner="me").
+
+### Parameter rules
+- **get_owner(owner, owner_type):** Use **owner=`me`** only here to get the authenticated user; response has **login**. For another user use owner=username; for an org use owner=orgname and owner_type="organization".
+- **list_repositories(user, type, per_page, page):** **user** must be a real login (from get_owner result or message). **type**: "owner", "all", "member". Never pass "me". **per_page**: default 10 when omitted, max 50. **page**: default 1. For "give all repos" / "my repos" plan only **one** list_repositories call (returns first 10 by default); do not plan multiple pages.
+- **Repo-scoped tools** (get_repository, list_issues, get_issue, create_issue, update_issue, close_issue, list_issue_comments, get_issue_comment, create_issue_comment, get_pull_request, get_pull_request_commits, get_pull_request_file_changes, get_pull_request_reviews, create_pull_request_review, list_pull_requests, create_pull_request, merge_pull_request, list_pull_request_comments, create_pull_request_review_comment, edit_pull_request_review_comment): **owner** and **repo** must be real values. Never pass "me" as owner.
+- **list_issues(owner, repo, state, labels, assignee, per_page, page):** Returns **only issues** (pull requests are excluded). state = "open" | "closed" | "all". Use labels/assignee when user filters. per_page (default 10, max 50), page (default 1) for pagination.
+- **list_pull_requests(owner, repo, state, head, base):** state = "open" | "closed" | "all". head/base filter by branch when needed.
+- **search_repositories(query):** Use for "find repos about X", "search for Python repos". Query examples: "machine learning", "language:python stars:>100", "react in:name".
+- **create_repository(name, private, description, auto_init):** Creates a repo under the authenticated user. Do NOT call get_owner before create_repository. **name** is the only required param (take from the user query). For anything not said: **private** = true, **description** = omit, **auto_init** = true. Never ask the user for private/public, description, or README — use defaults and run the tool.
+
+### Tool Selection — Use the Right GitHub Tool for Every Task
+
+| User intent | Correct GitHub tool | Key parameters |
+|---|---|---|
+| Who am I? / My profile / Get my login for later steps | `github.get_owner` | owner=`me`, owner_type=user |
+| Another user's or org's profile | `github.get_owner` | owner=username or orgname, owner_type=user or organization |
+| List my repos / Give all my repositories | First get_owner(me), then `github.list_repositories` | user=<login from get_owner>, type=owner |
+| List repos for user X (e.g. darshangodase) | `github.list_repositories` | user=darshangodase (no get_owner needed) |
+| Get one repo details (owner/repo known or from list) | `github.get_repository` | owner, repo |
+| Create a new repository | `github.create_repository` | name only (from query). No get_owner. Defaults: private=true, description=omit, auto_init=true. Never ask for optional fields. |
+| List issues in a repo (open/closed/all) | `github.list_issues` | owner, repo, state (open/closed/all), optional labels, assignee |
+| Get issue
+| List / Get / Create **issue comments** | `list_issue_comments` / `get_issue_comment` / `create_issue_comment` | owner, repo, number (issue); comment_id for get |
+| List PRs in a repo / Get PR
+| **Review this PR** / **What changes in this PR** / What files changed | `github.get_pull_request_file_changes` | owner, repo, number (PR). Returns list of changed files with path, status, additions, deletions. |
+| PRs on repo X / Give PR on repo <name> (user gave repo name) | get_owner(me) then `github.list_pull_requests` | owner=<login>, repo=<name user said>. Do NOT use search_repositories. |
+| **Reviews on a PR** (who approved / requested changes) | `github.get_pull_request_reviews` | owner, repo, number. Returns who approved, requested changes, or left a review comment. |
+| **Submit a PR review** (approve / request changes / comment) | `github.create_pull_request_review` | owner, repo, number; event (APPROVE | REQUEST_CHANGES | COMMENT; default COMMENT — omit for general comment); optional body. Use to approve a PR (event=APPROVE), request changes (event=REQUEST_CHANGES, body recommended), or leave a general review comment (event=COMMENT or omit). |
+| List / Create / Edit **PR review comments** (line-level) | `list_pull_request_comments` / `create_pull_request_review_comment` (new comment) / `edit_pull_request_review_comment` | New comment: call **get_pull_request_commits**, then set commit_id to **{{github.get_pull_request_commits.last_commit_sha}}** (do not use data[-1].sha). Then create_pull_request_review_comment(owner, repo, number, body, commit_id, path, line). |
+| Search GitHub for repos by keyword | `github.search_repositories` | query (e.g. "python web framework") |
+
+### Query → Tool flow (examples)
+
+**"My repos" / "Give all repos" / "List my repositories":** get_owner(owner="me") → **one** list_repositories(user=<login>, type="owner"). Default is 10 repos per page (max 50). Omit per_page/page for default 10; do not plan multiple list_repositories calls.
+**"My issues in repo X" / "Open issues in my repo portfolio_new":** get_owner(owner="me") → list_issues(owner=<login>, repo="X" or "portfolio_new", state="open" or "all").
+**"List my PRs" (no repo named):** get_owner(owner="me") → list_repositories(user=<login>) → for each repo (or first): list_pull_requests(owner=<from full_name>, repo=<from full_name>, state="open").
+**"Give PR on repo X" / "PRs on repo <name>" / "pull requests in repo <name>" (user names the repo):** get_owner(owner="me") → list_pull_requests(owner=<login from get_owner>, repo=<name user said>, state="open" or "all"). Do NOT use search_repositories — the user already gave the repo name; use it as **repo** and **owner** = login from get_owner. Only two tools: get_owner, then list_pull_requests.
+**"Summarize my open issues" (no repo):** get_owner(owner="me") → list_repositories(user=<login>) → list_issues(owner, repo, state="open") for relevant repo(s); then summarize from results.
+**"Create a repo" / "Create repository X" / "New GitHub repo":** Plan exactly one tool: `github.create_repository` with name from the query. Do NOT call get_owner. Do NOT set needs_clarification. Use defaults for private, description, auto_init. Never ask the user for private/public, description, or README.
+**"Get repo darshangodase/portfolio_new" (explicit owner/repo):** get_repository(owner="darshangodase", repo="portfolio_new"). No get_owner needed.
+**"Issues in darshangodase/portfolio_new" (explicit):** list_issues(owner="darshangodase", repo="portfolio_new", state="open" or "all"). No get_owner needed.
+**"Find repos about machine learning" / "Search for Python repos":** search_repositories(query="machine learning" or "language:python"). Optionally then get_repository(owner, repo) for a chosen result using full_name.
+**"Who is pipeshub-ai on GitHub?" (org or user):** get_owner(owner="pipeshub-ai", owner_type="organization" or "user").
+**"Comments on issue
+**"Add a comment to issue
+**"Reviews on PR
+**"Reviews on my PRs" / "Reviews on repo X PRs" (no "every"/"all"):** get_owner → list_pull_requests → **one** get_pull_request_reviews(owner, repo, number=**list_pull_requests.data[0].number**).
+
+**"Give repo details then all PR details and every PR reviews" / "Every PR reviews" / "All PRs and every PR reviews":** get_owner(owner="me") → get_repository(owner, repo) → list_pull_requests(owner, repo, state="all") → then **one get_pull_request_reviews per PR**: plan get_pull_request_reviews(owner, repo, number=**list_pull_requests.data[0].number**), get_pull_request_reviews(owner, repo, number=**list_pull_requests.data[1].number**), … up to **list_pull_requests.data[9].number** (indices 0–9). Executor skips steps where the index does not exist.
+**"Review comments on PR 
+**"Comment on this PR" / "Add a review comment on PR
+**"Review this PR" / "What changes in this PR?" / "What files changed in PR
+**"Approve this PR" / "Approve PR
+**"Request changes on this PR" / "Request changes on PR
+**"Leave a review on this PR" / "Submit a review" / "Add a general review comment" (no specific line):** create_pull_request_review(owner, repo, number, body="...") — event defaults to COMMENT; omit event for a general comment.
+
+### Rules (R-GITHUB)
+
+**R-GITHUB-1: For "my" (authenticated user) — always get owner context first.**
+- "My repos" / "Give all my repos" / "List my repositories" → Step 1: get_owner(owner="me"). Step 2: **exactly one** list_repositories(user=<login>, type="owner"). Do NOT pass user="me". Default 10 repos (max 50); omit per_page/page for default. Do NOT plan multiple list_repositories for different pages.
+- "My issues" / "issues in my repo X" / "list issues in my repo portfolio_new" → Step 1: get_owner(owner="me"). Step 2: list_issues(owner=<login>, repo="X" or "portfolio_new", state=...). Do NOT pass owner="me".
+- "My PRs" / "pull requests in my repo Y" → Same: get_owner(owner="me") first, then list_pull_requests(owner=<login>, repo=Y). Never owner="me".
+
+**R-GITHUB-2: Never pass "me" to list_repositories, list_issues, get_repository, or any repo-scoped tool.** The API expects a real login. Use the **login** from get_owner(owner="me") result.
+
+**R-GITHUB-3: When repo is not specified (e.g. "list my issues" without naming a repo).**
+- Step 1: get_owner(owner="me") → **login**.
+- Step 2: list_repositories(user=<login>) → list of repos; each has **full_name** (owner/repo_name) and **name**.
+- Step 3: For each repo (or first/few): owner = first part of full_name, repo = second part; call list_issues(owner, repo, ...) or list_pull_requests(owner, repo, ...). Do not ask the user which repo — use the list.
+
+**R-GITHUB-4: Chaining — use previous tool results.**
+- **From get_owner(owner=me):** Use the **login** field as **user** in list_repositories and as **owner** in all repo-scoped tools.
+- **From list_repositories:** Each item has **full_name** (e.g. "alice/my-repo"). owner = part before "/", repo = part after "/". Use these in list_issues, get_issue, list_pull_requests, get_repository, etc.
+
+**R-GITHUB-5: Parse owner and repo from the user message when given.**
+- "username/repo_name" or "repo repo_name by username" → owner=username, repo=repo_name.
+- "issue
+- "open issues" / "closed PRs" → state="open" or state="closed"; default to state="open" when user says "issues" or "PRs" without specifying.
+
+**R-GITHUB-6: When user provides an explicit owner/repo or username,** pass them directly. For "my" always resolve via get_owner(owner="me") first. For "repos of X" use list_repositories(user=X) directly if X is a known username.
+
+**R-GITHUB-7: Do not ask for clarification** when the user said "my" and you can resolve it with get_owner(owner="me"). Plan get_owner(owner="me") as the first tool.
+
+**R-GITHUB-8: Search vs list vs repo name given.** Use **search_repositories(query)** only when the user wants to find repos by keyword/topic (e.g. "find Python repos", "repos about ML"). Use **list_repositories(user=X)** when the user wants to list repos belonging to a user (e.g. "my repos", "darshangodase's repos"). When the user **names a specific repo** (e.g. "PRs on repo X", "give PR on repo <name>", "issues in repo my-app") — use that name as **repo** and get **owner** from get_owner(owner="me"); then call list_pull_requests(owner=<login>, repo=<name>) or list_issues(owner=<login>, repo=<name>). Do NOT use search_repositories when the user already gave the repo name.
+
+**R-GITHUB-9: No pagination for list_repositories for "all my repos".** When the user asks for "all my repos", "give all repos", "list my repositories": plan only **two tools** — get_owner(owner="me") and **one** list_repositories(user=<login>, type="owner"). Default is 10 repos per page (max 50). Do NOT plan multiple list_repositories calls (e.g. page 1, 2, 3...) for this query.
+
+**R-GITHUB-10: When the user asks to comment on a PR (add a review comment):** Resolve owner, repo, and PR number. Call **get_pull_request_commits**(owner, repo, number), then set **commit_id** to **{{github.get_pull_request_commits.last_commit_sha}}** for **create_pull_request_review_comment**. Do NOT use data[-1].sha. Do not ask the user for a commit SHA — obtain it via get_pull_request_commits.
+
+**R-GITHUB-11: When the user says "review this PR" or "what changes in this PR" or "what files changed":** Call **get_pull_request_file_changes**(owner, repo, number). Do not use get_pull_request (metadata only) or get_pull_request_commits (commits list) for this — use the file changes tool.
+
+**R-GITHUB-12: "Every PR reviews" vs "reviews on my PRs".** When the user wants **"every PR reviews"** or **"all PR details and every PR reviews"** (or similar): plan **one get_pull_request_reviews per PR** — get_pull_request_reviews(owner, repo, number=**list_pull_requests.data[0].number**), get_pull_request_reviews(owner, repo, number=**list_pull_requests.data[1].number**), … up to **list_pull_requests.data[9].number**. The executor skips steps for non-existent indices. When the user asks only **"reviews on my PRs"** (no "every"/"all"), plan **one** get_pull_request_reviews with number=**list_pull_requests.data[0].number**. For get_pull_request_file_changes, get_pull_request_commits, list_pull_request_comments (when user did not say "every"): use a single PR (e.g. data[0].number) unless a PR number was specified.
+
+**R-GITHUB-13: Submit PR review (approve / request changes / general comment).** Use **create_pull_request_review** for an **overall** review: event=APPROVE to approve, event=REQUEST_CHANGES to request changes (include body), or omit event (default COMMENT) for a general review comment. For a **line-level** or **file-level** comment on specific code, use **create_pull_request_review_comment** (requires get_pull_request_commits → commit_id, path, line).
+
+**R-GITHUB-14: Next-page pagination.** For paginated GitHub tools (**list_repositories**, **list_issues**, **list_pull_requests**, **search_repositories**), when the user asks for the next page or more of the same list in the context of a paginated result they were just shown, call the **same tool** again with the **same parameters** except **page** incremented (e.g. if they saw page 1, use page=2). Infer which tool and which parameters from conversation context.
+
+"""
 
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
 
@@ -2064,7 +2170,7 @@ Examples of retrieval queries:
 - **Action requests:** "create/update/delete [resource]" → Use service tools
 - **DUAL-SOURCE:** If the query references a service that is BOTH indexed AND has live API → use BOTH retrieval + service search API in parallel
 
-**⚠️ SERVICE NOUN OVERRIDE:** When the query contains a service-specific resource noun (tickets, issues, bugs, epics, stories, pages, spaces, emails, messages), it ALWAYS triggers the matching service tool — even if the query otherwise seems ambiguous or like a general information request. The "retrieval DEFAULT" rule does NOT apply when a service noun is present.
+**⚠️ SERVICE NOUN OVERRIDE:** When the query contains a service-specific resource noun (tickets, issues, bugs, epics, stories, pages, spaces, emails, messages; or in GitHub context: repos, repositories, issue, PR, pull request), it ALWAYS triggers the matching service tool — even if the query otherwise seems ambiguous or like a general information request. The "retrieval DEFAULT" rule does NOT apply when a service noun is present.
 
 **Important:** Service data might also be indexed in the knowledge base. When it is:
 - User uses a service resource noun ("[topic] tickets", "[topic] pages") → BOTH retrieval + service search tool (parallel)
@@ -2345,6 +2451,7 @@ Generate:
 {onedrive_guidance}
 {outlook_guidance}
 {teams_guidance}
+{github_guidance}
 
 ## Planning Best Practices
 
@@ -3394,6 +3501,7 @@ async def planner_node(
     onedrive_guidance = ONEDRIVE_GUIDANCE if _has_onedrive_tools(state) else ""
     outlook_guidance = OUTLOOK_GUIDANCE if _has_outlook_tools(state) else ""
     teams_guidance = TEAMS_GUIDANCE if _has_teams_tools(state) else ""
+    github_guidance = GITHUB_GUIDANCE if _has_github_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
@@ -3403,6 +3511,7 @@ async def planner_node(
         onedrive_guidance=onedrive_guidance,
         outlook_guidance=outlook_guidance,
         teams_guidance=teams_guidance,
+        github_guidance=github_guidance
     )
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
@@ -4510,6 +4619,12 @@ def _has_teams_tools(state: ChatState) -> bool:
     """Check if Microsoft Teams tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "teams" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+def _has_github_tools(state: ChatState) -> bool:
+    """Check if GitHub tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "github" in ts.get("name", "").lower() for ts in agent_toolsets)
+
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     """

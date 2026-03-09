@@ -166,10 +166,10 @@ class ToolDiscoveryConfig:
             app_name="dropbox",
             client_builder="DropboxClient",
         ),
-        # "github": AppConfiguration(
-        #     app_name="github",
-        #     client_builder="GitHubClient",
-        # ),
+        "github": AppConfiguration(
+            app_name="github",
+            client_builder="GitHubClient",
+        ),
         # "gitlab": AppConfiguration(
         #     app_name="gitlab",
         #     client_builder="GitLabClient",
