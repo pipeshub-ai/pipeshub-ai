@@ -175,7 +175,6 @@ class TestAzureBlobFullLifecycle:
         parts = old_key.rsplit("/", 1)
         new_key = f"{parts[0]}/{new_name}" if len(parts) == 2 else new_name
 
-        count_before = count_records(neo4j_driver, connector_id)
         azure_blob_storage.rename_object(_CONTAINER_NAME, old_key, new_key)
 
         pipeshub_client.toggle_sync(connector_id, enable=False)
@@ -209,7 +208,6 @@ class TestAzureBlobFullLifecycle:
         move_name = _state["move_source_name"]
         new_key = f"moved-folder/{move_name}"
 
-        count_before = count_records(neo4j_driver, connector_id)
         azure_blob_storage.move_object(_CONTAINER_NAME, old_key, new_key)
 
         pipeshub_client.toggle_sync(connector_id, enable=False)

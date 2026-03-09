@@ -243,7 +243,6 @@ class TestS3FullLifecycle:
         else:
             new_key = new_name
 
-        count_before = count_records(neo4j_driver, connector_id)
         logger.info("Renaming s3://%s/%s → %s", _BUCKET_NAME, old_key, new_key)
 
         # Rename in S3
@@ -290,7 +289,6 @@ class TestS3FullLifecycle:
         move_name = _state["move_source_name"]
         new_key = f"moved-folder/{move_name}"
 
-        count_before = count_records(neo4j_driver, connector_id)
         logger.info("Moving s3://%s/%s → %s", _BUCKET_NAME, old_key, new_key)
 
         # Move in S3

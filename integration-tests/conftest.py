@@ -194,10 +194,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         for nodeid, err_snippet in failed_items:
             lines.append(f"- `{nodeid}`")
             if err_snippet:
-                lines.append(f"  ```")
+                lines.append("  ```")
                 for line in (err_snippet or "").strip().split("\n")[:10]:
                     lines.append(f"  {line}")
-                lines.append(f"  ```")
+                lines.append("  ```")
         lines.append("")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
