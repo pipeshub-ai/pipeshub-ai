@@ -42,6 +42,7 @@ from graph_assertions import (  # type: ignore[import-not-found]  # noqa: E402
     count_records,
     count_record_groups,
     graph_summary,
+    record_paths_or_names_contain,
 )
 from pipeshub_client import (  # type: ignore[import-not-found]  # noqa: E402
     PipeshubClient,
@@ -183,7 +184,9 @@ class TestAzureBlobFullLifecycle:
 
         pipeshub_client.wait_for_sync(
             connector_id,
-            check_fn=lambda: count_records(neo4j_driver, connector_id) >= count_before,
+            check_fn=lambda: record_paths_or_names_contain(
+                neo4j_driver, connector_id, [new_name]
+            ),
             timeout=120,
             poll_interval=10,
             description="rename sync",
