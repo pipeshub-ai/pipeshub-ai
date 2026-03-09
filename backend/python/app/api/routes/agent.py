@@ -227,19 +227,21 @@ def _extract_tool_names_for_routing(query_info: Dict[str, Any]) -> List[str]:
     return deduped
 
 
-def _select_agent_graph_for_query(query_info: Dict[str, Any], logger: Logger):
+def _select_agent_graph_for_query(query_info: Dict[str, Any], logger: Logger, agent: Dict[str, Any] = None):
     """
-    Hybrid graph selection:
-    - chatMode="deep" -> deep agent graph (orchestrator + sub-agents)
-    - If global ReAct is disabled via env -> always legacy graph.
-    - If enabled: use ReAct only for Outlook-only or Outlook+Confluence tools.
-      Otherwise use legacy graph.
+    Graph selection based on agent's useDeepAgent flag:
+    - If agent has useDeepAgent=True -> deep agent graph (orchestrator + sub-agents)
+    - Otherwise -> modern ReAct agent graph
     """
-    # chat_mode = query_info.get("chatMode", "quick")
-    # if chat_mode == "deep":
-    #     logger.info("Agent graph route: deep | chatMode=deep")
-    #     return deep_agent_graph
-    return deep_agent_graph
+    # Check the agent's useDeepAgent flag (stored in agent document)
+    use_deep = False
+    if agent and isinstance(agent, dict):
+        use_deep = bool(agent.get("useDeepAgent", False))
+
+    if use_deep:
+        logger.info("Agent graph route: deep | useDeepAgent=True")
+        return deep_agent_graph
+
     
     tool_names = _extract_tool_names_for_routing(query_info)
     apps = {name.split(".", 1)[0] for name in tool_names if isinstance(name, str) and "." in name}
@@ -249,7 +251,6 @@ def _select_agent_graph_for_query(query_info: Dict[str, Any], logger: Logger):
     # - outlook + confluence
     use_react = bool(apps) and ("outlook" in apps) and apps.issubset({"outlook", "confluence"})
     use_react = use_react or bool(apps) and ("teams" in apps) and apps.issubset({"teams", "slack"})
-    use_react = True
 
     selected = modern_agent_graph if use_react else agent_graph
     logger.info(
@@ -869,10 +870,11 @@ async def stream_response(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: Dict[str, Any] = None,
+    agent: Dict[str, Any] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
 
-    selected_graph = _select_agent_graph_for_query(query_info, logger)
+    selected_graph = _select_agent_graph_for_query(query_info, logger, agent=agent)
 
     if selected_graph == deep_agent_graph:
         graph_type = "deep"
@@ -1241,6 +1243,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "createdAtTimestamp": time,
             "updatedAtTimestamp": time,
             "isDeleted": False,
+            "useDeepAgent": bool(body.get("useDeepAgent", False)),
         }
 
         # Wrap ALL creation operations in a single transaction
@@ -2203,7 +2206,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
         }
-        selected_graph = _select_agent_graph_for_query(query_info, logger)
+        selected_graph = _select_agent_graph_for_query(query_info, logger, agent=agent)
 
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
@@ -2539,6 +2542,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 reranker_service,
                 config_service,
                 org_info,
+                agent=agent,
             ),
             media_type="text/event-stream",
         )

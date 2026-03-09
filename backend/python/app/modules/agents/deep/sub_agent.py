@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 # Constants
 SUB_AGENT_TIMEOUT_SECONDS = 120.0
 MAX_SUB_AGENT_RECURSION = 25
+_MAX_TOOL_RESULT_CHARS = 8000   # Max chars per tool result within sub-agent
+_MAX_TOOL_CALLS_PER_AGENT = 15  # Max tool calls before budget exhaustion
 
 
 async def execute_sub_agents_node(
@@ -203,6 +205,10 @@ async def _execute_single_sub_agent(
         # Get filtered tools for this sub-agent (StructuredTools with args_schema)
         tools = get_tools_for_sub_agent(task.get("tools", []), state)
 
+        # Wrap tools with output truncation and call budget to prevent context overflow
+        budget = _ToolCallBudget(_MAX_TOOL_CALLS_PER_AGENT)
+        tools = _wrap_tools_with_truncation(tools, budget, _MAX_TOOL_RESULT_CHARS, log)
+
         # Build tool schemas description for the system prompt
         tool_schemas_text = _format_tools_for_prompt(tools, log)
 
@@ -218,6 +224,9 @@ async def _execute_single_sub_agent(
         if timezone:
             time_ctx += f"\nTimezone: {timezone}"
 
+        # Build agent instructions prefix
+        agent_instructions = _build_sub_agent_instructions(state)
+
         # Build system prompt
         system_prompt = SUB_AGENT_SYSTEM_PROMPT.format(
             task_description=task_desc,
@@ -225,6 +234,7 @@ async def _execute_single_sub_agent(
             tool_schemas=tool_schemas_text or "No tool schemas available.",
             tool_guidance=tool_guidance,
             time_context=time_ctx or "Not provided",
+            agent_instructions=agent_instructions,
         )
 
         if not tools:
@@ -397,6 +407,201 @@ def _detect_status(result_content: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tool call budget and output truncation
+# ---------------------------------------------------------------------------
+
+class _ToolCallBudget:
+    """Shared counter that limits tool calls within a single sub-agent."""
+
+    def __init__(self, max_calls: int):
+        self.max_calls = max_calls
+        self.count = 0
+
+    def consume(self) -> bool:
+        """Increment counter. Returns True if within budget."""
+        self.count += 1
+        return self.count <= self.max_calls
+
+
+def _wrap_tools_with_truncation(
+    tools: List,
+    budget: _ToolCallBudget,
+    max_chars: int = _MAX_TOOL_RESULT_CHARS,
+    log: logging.Logger = logger,
+) -> List:
+    """
+    Wrap tools with output truncation and call budget to prevent context overflow.
+
+    Each tool result is truncated to max_chars, and the total number of tool
+    calls is capped by the budget. When the budget is exhausted, tools return
+    a stop message instructing the LLM to produce its final answer.
+    """
+    from langchain_core.tools import StructuredTool as LCStructuredTool
+
+    wrapped = []
+    for tool in tools:
+        orig_coro = getattr(tool, "coroutine", None)
+        orig_func = getattr(tool, "func", None)
+        tool_name = getattr(tool, "name", "unknown")
+
+        truncated = _make_truncated_coro(
+            orig_coro, orig_func, budget, max_chars, tool_name, log,
+        )
+
+        try:
+            new_tool = LCStructuredTool.from_function(
+                func=truncated,
+                coroutine=truncated,
+                name=tool_name,
+                description=getattr(tool, "description", ""),
+                args_schema=getattr(tool, "args_schema", None),
+                return_direct=getattr(tool, "return_direct", False),
+            )
+            if hasattr(tool, "_original_name"):
+                new_tool._original_name = tool._original_name
+            wrapped.append(new_tool)
+        except Exception as e:
+            log.warning("Failed to wrap tool %s: %s, using original", tool_name, e)
+            wrapped.append(tool)
+
+    return wrapped
+
+
+def _make_truncated_coro(orig_coro, orig_func, budget, max_chars, tool_name, log):
+    """Factory: create a truncated async wrapper for a tool coroutine."""
+
+    async def _coro(**kwargs):
+        if not budget.consume():
+            log.warning(
+                "Tool call budget exhausted (%d/%d) for %s",
+                budget.count, budget.max_calls, tool_name,
+            )
+            return (
+                f"TOOL CALL BUDGET EXHAUSTED ({budget.max_calls} calls reached). "
+                "You have already collected sufficient data. Provide your FINAL ANSWER "
+                "now using the data from previous tool calls. Do NOT call any more tools."
+            )
+
+        result = await orig_coro(**kwargs) if orig_coro else orig_func(**kwargs)
+        return _truncate_tool_output(result, max_chars)
+
+    return _coro
+
+
+def _truncate_tool_output(result: Any, max_chars: int) -> Any:
+    """
+    Truncate tool output while preserving complete items and URL fields.
+
+    For lists/dicts, truncates at item boundaries so each kept item is
+    intact (with all its URL fields). Falls back to character truncation
+    for plain strings.
+    """
+    if result is None:
+        return result
+
+    # --- Plain strings ---
+    if isinstance(result, str):
+        if len(result) <= max_chars:
+            return result
+        # Try to parse as JSON for smarter truncation
+        try:
+            parsed = json.loads(result)
+            if isinstance(parsed, (list, dict)):
+                truncated = _smart_truncate_structured(parsed, max_chars)
+                return json.dumps(truncated, default=str, ensure_ascii=False)
+        except (json.JSONDecodeError, ValueError):
+            pass
+        return result[:max_chars] + (
+            f"\n\n[Output truncated: {len(result):,} -> {max_chars:,} chars.]"
+        )
+
+    # --- Structured data (dict / list) ---
+    if isinstance(result, (list, dict)):
+        try:
+            text = json.dumps(result, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(result)
+        if len(text) <= max_chars:
+            return result
+        return _smart_truncate_structured(result, max_chars)
+
+    text = str(result)
+    if len(text) <= max_chars:
+        return result
+    return text[:max_chars] + (
+        f"\n\n[Output truncated: {len(text):,} -> {max_chars:,} chars.]"
+    )
+
+
+def _smart_truncate_structured(data: Any, max_chars: int) -> Any:
+    """Truncate dicts/lists at item boundaries, keeping complete items."""
+    if isinstance(data, list):
+        return _truncate_list_items(data, max_chars)
+
+    if isinstance(data, dict):
+        # Find the largest list value (the main payload) and truncate it
+        # while preserving all scalar/metadata fields (counts, tokens, etc.)
+        list_key = None
+        list_len = 0
+        for key, value in data.items():
+            if isinstance(value, list) and len(value) > list_len:
+                list_key = key
+                list_len = len(value)
+
+        if list_key and list_len > 2:
+            # Budget: reserve space for non-list fields, give rest to list
+            non_list_size = 0
+            for key, value in data.items():
+                if key != list_key:
+                    try:
+                        non_list_size += len(
+                            json.dumps({key: value}, default=str, ensure_ascii=False)
+                        )
+                    except (TypeError, ValueError):
+                        non_list_size += len(str(value)) + len(key) + 10
+            list_budget = max(max_chars - non_list_size - 100, max_chars // 2)
+            result = dict(data)
+            result[list_key] = _truncate_list_items(data[list_key], list_budget)
+            return result
+
+        # No large lists — fall back to char truncation of serialized form
+        try:
+            text = json.dumps(data, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            text = str(data)
+        return text[:max_chars] + "\n[Truncated]"
+
+    return data
+
+
+def _truncate_list_items(items: list, max_chars: int) -> list:
+    """Keep complete items from a list up to the char budget."""
+    if not items:
+        return items
+
+    kept: List = []
+    used = 2  # opening/closing brackets
+    for item in items:
+        try:
+            item_json = json.dumps(item, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            item_json = str(item)
+        cost = len(item_json) + (2 if kept else 0)  # comma + space
+        if used + cost > max_chars and kept:
+            break
+        kept.append(item)
+        used += cost
+
+    if len(kept) < len(items):
+        kept.append(
+            f"[... {len(items) - len(kept)} more items not shown. "
+            f"Total: {len(items)} items. Use the items above to complete your task.]"
+        )
+
+    return kept
+
+
+# ---------------------------------------------------------------------------
 # Execution level builder
 # ---------------------------------------------------------------------------
 
@@ -452,6 +657,29 @@ def _build_execution_levels(
 
 
 # ---------------------------------------------------------------------------
+# Agent instructions builder
+# ---------------------------------------------------------------------------
+
+def _build_sub_agent_instructions(state: DeepAgentState) -> str:
+    """Build agent instructions prefix for sub-agent prompts.
+
+    Includes the agent's configured instructions so sub-agents
+    follow the same behavioral constraints and workflow rules
+    as the overall agent.
+    """
+    parts = []
+
+    # Agent instructions (workflow-specific behavior)
+    instructions = state.get("instructions", "")
+    if instructions and instructions.strip():
+        parts.append(f"## Agent Instructions\n{instructions.strip()}")
+
+    if parts:
+        return "\n\n".join(parts) + "\n\n"
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Tool guidance builder
 # ---------------------------------------------------------------------------
 
@@ -465,13 +693,18 @@ def _build_sub_agent_tool_guidance(
 
     if "jira" in domains:
         parts.append(
-            "JIRA: Add time filters to JQL (e.g., `updated >= -30d`). "
-            "Use `jira.search_users` to get accountIds before JQL assignee queries."
+            "JIRA: Add time filters to JQL (e.g., `updated >= -7d`). "
+            "Use `jira.search_users` to get accountIds before JQL assignee queries. "
+            "Use `maxResults=50` to get more results per call. "
+            "**Links**: Each issue in search results has a `url` field with the browse link — "
+            "use it as `[ISSUE-KEY: Summary](url)` for EVERY issue."
         )
     if "confluence" in domains:
         parts.append(
             "CONFLUENCE: Use `confluence.search_pages(title=...)` to find pages. "
-            "Use `confluence.get_page_content(page_id=...)` for full page content."
+            "Use `confluence.get_page_content(page_id=...)` for full page content. "
+            "**Links**: Each page has a `url` or `_links.webui` field — "
+            "use it as `[Page Title](url)` for EVERY page."
         )
     if "slack" in domains:
         parts.append(
@@ -479,15 +712,31 @@ def _build_sub_agent_tool_guidance(
             "NEVER pass raw HTML or JSON as message content. "
             "`set_user_status` uses `duration_seconds`, not timestamps."
         )
+    if "gmail" in domains:
+        parts.append(
+            "GMAIL: Use `max_results=50` to get more results and reduce pagination. "
+            "Search results already contain subject, from, to, date, snippet — "
+            "do NOT call `get_email_details` for every email. "
+            "**Links**: Each email has an `id` field. Construct Gmail links as "
+            "`https://mail.google.com/mail/u/0/#inbox/<id>` and include as "
+            "`[Subject](https://mail.google.com/mail/u/0/#inbox/<id>)` for EVERY email."
+        )
     if "outlook" in domains:
         parts.append(
             "OUTLOOK: Use `seriesMasterId` for recurring event operations. "
-            "Preserve existing recurrence pattern when updating."
+            "Preserve existing recurrence pattern when updating. "
+            "**Links**: Each event has a `webLink` field — use it as "
+            "`[Event Subject](webLink)` for EVERY event/meeting."
         )
     if "teams" in domains:
         parts.append(
             "TEAMS: Use `teams.get_meeting_transcript(event_id=..., joinUrl=...)` "
             "for transcripts. Write your own summary, never pass raw transcript."
+        )
+    if "calendar" in domains:
+        parts.append(
+            "GOOGLE CALENDAR: Use time range filters to limit results. "
+            "Use `max_results` parameter to control page size."
         )
 
     return "\n".join(parts) if parts else ""

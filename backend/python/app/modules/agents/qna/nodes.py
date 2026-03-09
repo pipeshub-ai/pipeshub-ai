@@ -5923,6 +5923,10 @@ async def respond_node(
     # This typically saves 20-30 seconds by avoiding redundant processing.
     # ================================================================
     sub_agent_analyses = state.get("sub_agent_analyses", [])
+    log.info(
+        "Fast-path check: analyses=%d, final_results=%d, virtual_map=%d, tool_results=%d",
+        len(sub_agent_analyses), len(final_results), len(virtual_record_map), len(tool_results),
+    )
     if (
         sub_agent_analyses
         and not final_results
@@ -6283,10 +6287,22 @@ async def _generate_direct_response(
     # System message
     user_context = _format_user_context(state)
 
+    # Build instructions prefix if agent has configured instructions
+    instructions_prefix = ""
+    agent_instructions = state.get("instructions")
+    if agent_instructions and agent_instructions.strip():
+        instructions_prefix = f"## Agent Instructions\n{agent_instructions.strip()}\n\n"
+
+    base_system_prompt = state.get("system_prompt", "")
+    role_prefix = ""
+    if base_system_prompt and base_system_prompt.strip() and base_system_prompt != "You are an enterprise questions answering expert":
+        role_prefix = f"{base_system_prompt.strip()}\n\n"
+
     # If the agent has no knowledge and no tools, use a specialized system prompt that
     # always steers the LLM to guide the user to configure the agent for org-specific queries.
     if state.get("agent_not_configured_hint"):
         system_content = (
+            f"{instructions_prefix}{role_prefix}"
             "You are a helpful, friendly AI assistant.\n\n"
             "## ⚠️ IMPORTANT: This Agent Is Not Configured\n"
             "This agent has **no knowledge sources** and **no service tools** connected.\n\n"
@@ -6306,7 +6322,7 @@ async def _generate_direct_response(
         if user_context:
             system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
     else:
-        system_content = "You are a helpful, friendly AI assistant. Respond naturally and concisely."
+        system_content = f"{instructions_prefix}{role_prefix}You are a helpful, friendly AI assistant. Respond naturally and concisely."
         if user_context:
             system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
 
@@ -6414,7 +6430,19 @@ async def _generate_fast_api_response(
 
     raw_data_text = "\n\n".join(raw_data_parts) if raw_data_parts else ""
 
+    # Build instructions prefix if agent has configured instructions
+    instructions_prefix = ""
+    agent_instructions = state.get("instructions")
+    if agent_instructions and agent_instructions.strip():
+        instructions_prefix = f"## Agent Instructions\n{agent_instructions.strip()}\n\n"
+
+    base_system_prompt = state.get("system_prompt", "")
+    role_prefix = ""
+    if base_system_prompt and base_system_prompt.strip() and base_system_prompt != "You are an enterprise questions answering expert":
+        role_prefix = f"{base_system_prompt.strip()}\n\n"
+
     system_prompt = (
+        f"{instructions_prefix}{role_prefix}"
         "You are a helpful AI assistant. Format the provided analysis and data into a clear, "
         "professional markdown response for the user.\n\n"
         "Rules:\n"

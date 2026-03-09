@@ -263,29 +263,44 @@ async def _evaluate_with_llm(
     query = state.get("query", "")
     plan = state.get("task_plan", {})
 
-    # Build results summary (compacted)
+    # Build results summary with enough detail for complex workflows
     results_parts = []
     for task in completed_tasks:
         status = task.get("status", "unknown")
         task_id = task.get("task_id", "unknown")
+        domains = ", ".join(task.get("domains", []))
+        desc = task.get("description", "")[:200]
+        duration = task.get("duration_ms")
 
         if status == "success":
             result = task.get("result", {})
             if isinstance(result, dict):
-                response = result.get("response", "")[:500]
+                response = result.get("response", "")[:1500]
                 tool_count = result.get("tool_count", 0)
+                success_count = result.get("success_count", 0)
+                error_count = result.get("error_count", 0)
                 results_parts.append(
-                    f"- {task_id} (SUCCESS, {tool_count} tools): {response}"
+                    f"### {task_id} [{domains}] — SUCCESS ({tool_count} tools: {success_count} ok, {error_count} err)"
                 )
+                if desc:
+                    results_parts.append(f"  Task: {desc}")
+                if response:
+                    results_parts.append(f"  Response: {response}")
             else:
-                results_parts.append(f"- {task_id} (SUCCESS): {str(result)[:500]}")
+                results_parts.append(f"### {task_id} [{domains}] — SUCCESS")
+                results_parts.append(f"  {str(result)[:1000]}")
         elif status == "error":
+            error_text = task.get("error", "Unknown error")[:500]
+            duration_str = f" in {duration:.0f}ms" if duration else ""
             results_parts.append(
-                f"- {task_id} (FAILED): {task.get('error', 'Unknown error')[:200]}"
+                f"### {task_id} [{domains}] — FAILED{duration_str}"
             )
+            if desc:
+                results_parts.append(f"  Task: {desc}")
+            results_parts.append(f"  Error: {error_text}")
         elif status == "skipped":
             results_parts.append(
-                f"- {task_id} (SKIPPED): {task.get('error', 'Dependencies failed')[:200]}"
+                f"### {task_id} [{domains}] — SKIPPED: {task.get('error', 'Dependencies failed')[:300]}"
             )
 
     results_summary = "\n".join(results_parts)
@@ -297,20 +312,37 @@ async def _evaluate_with_llm(
             plan_summary = json.dumps(
                 {k: v for k, v in plan.items() if k != "can_answer_directly"},
                 default=str,
-            )[:1000]
+            )[:1500]
         except (TypeError, ValueError):
-            plan_summary = str(plan)[:1000]
+            plan_summary = str(plan)[:1500]
+
+    # Build agent instructions context for the evaluator
+    agent_instructions = _build_evaluator_instructions(state)
 
     prompt = EVALUATOR_PROMPT.format(
         query=query,
         task_plan=plan_summary,
         results_summary=results_summary,
+        agent_instructions=agent_instructions,
     )
 
     response = await llm.ainvoke([HumanMessage(content=prompt)])
     content = response.content if hasattr(response, "content") else str(response)
 
     return _parse_evaluation_response(content, log)
+
+
+def _build_evaluator_instructions(state: DeepAgentState) -> str:
+    """Build agent instructions context for the evaluator prompt."""
+    parts = []
+
+    instructions = state.get("instructions", "")
+    if instructions and instructions.strip():
+        parts.append(f"## Agent Instructions (consider when evaluating completeness)\n{instructions.strip()}")
+
+    if parts:
+        return "\n\n".join(parts) + "\n\n"
+    return ""
 
 
 def _parse_evaluation_response(content: str, log: logging.Logger) -> Dict[str, Any]:

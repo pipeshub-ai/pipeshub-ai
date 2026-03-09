@@ -82,11 +82,13 @@ async def orchestrator_node(
         # Step 3: Build orchestrator prompt
         knowledge_context = _build_knowledge_context(state, log)
         tool_guidance = _build_tool_guidance(state)
+        agent_instructions = _build_agent_instructions(state)
 
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(
             tool_domains=domain_desc,
             knowledge_context=knowledge_context,
             tool_guidance=tool_guidance,
+            agent_instructions=agent_instructions,
         )
 
         # Build messages
@@ -416,9 +418,40 @@ def _build_tool_guidance(state: DeepAgentState) -> str:
             "**Teams**: Use `teams.get_meetings` for meetings, "
             "`teams.get_meeting_transcript` for transcripts."
         )
+    if "gmail" in domains:
+        parts.append(
+            "**Gmail**: Use `gmail.search_emails` with `max_results=50` for efficient fetching. "
+            "Search results include subject, from, to, date, snippet — do NOT call "
+            "`get_email_details` for every email. Only fetch details for specific emails "
+            "that need full body content."
+        )
+    if "calendar" in domains:
+        parts.append(
+            "**Google Calendar**: Use time range filters. "
+            "Prefer `get_calendar_events` with date bounds over unbounded queries."
+        )
 
     if parts:
         return "## Domain-Specific Guidance\n" + "\n".join(parts)
+    return ""
+
+
+def _build_agent_instructions(state: DeepAgentState) -> str:
+    """Build agent instructions prefix from state for the orchestrator prompt."""
+    parts = []
+
+    # Agent's custom system prompt (persona / role)
+    base_prompt = state.get("system_prompt", "")
+    if base_prompt and base_prompt.strip() and base_prompt != "You are an enterprise questions answering expert":
+        parts.append(f"## Agent Role\n{base_prompt.strip()}")
+
+    # Agent instructions (workflow-specific behavior)
+    instructions = state.get("instructions", "")
+    if instructions and instructions.strip():
+        parts.append(f"## Agent Instructions\n{instructions.strip()}")
+
+    if parts:
+        return "\n\n".join(parts) + "\n\n"
     return ""
 
 
@@ -435,7 +468,11 @@ def _build_time_context(state: DeepAgentState) -> str:
 
 
 def _build_iteration_context(state: DeepAgentState, log: logging.Logger) -> str:
-    """Build context from previous iteration results."""
+    """Build context from previous iteration results for re-planning.
+
+    Provides rich context so the orchestrator can make informed decisions
+    about what to do next in retry/continue scenarios.
+    """
     completed = state.get("completed_tasks", [])
     evaluation = state.get("evaluation", {})
 
@@ -447,25 +484,49 @@ def _build_iteration_context(state: DeepAgentState, log: logging.Logger) -> str:
     for task in completed:
         status = task.get("status", "unknown")
         task_id = task.get("task_id", "unknown")
+        domains = ", ".join(task.get("domains", []))
+        desc = task.get("description", "")[:150]
+
         if status == "success":
             result = task.get("result", {})
             response_text = ""
+            tool_count = 0
             if isinstance(result, dict):
-                response_text = result.get("response", str(result))[:500]
+                response_text = result.get("response", "")[:1000]
+                tool_count = result.get("tool_count", 0)
+                success_count = result.get("success_count", 0)
+                error_count = result.get("error_count", 0)
             else:
-                response_text = str(result)[:500]
-            parts.append(f"- {task_id} (SUCCESS): {response_text}")
+                response_text = str(result)[:1000]
+
+            header = f"- {task_id} [{domains}] (SUCCESS"
+            if tool_count:
+                header += f", {tool_count} tools: {success_count} ok, {error_count} err"
+            header += f"): {desc}"
+            parts.append(header)
+            if response_text:
+                parts.append(f"  Result: {response_text}")
         elif status == "error":
-            parts.append(f"- {task_id} (FAILED): {task.get('error', 'Unknown error')[:200]}")
+            error_text = task.get("error", "Unknown error")[:300]
+            duration = task.get("duration_ms")
+            duration_str = f" ({duration:.0f}ms)" if duration else ""
+            parts.append(f"- {task_id} [{domains}] (FAILED{duration_str}): {error_text}")
+        elif status == "skipped":
+            parts.append(f"- {task_id} [{domains}] (SKIPPED): {task.get('error', 'Dependencies failed')[:200]}")
 
     if evaluation:
         decision = evaluation.get("decision", "")
         reasoning = evaluation.get("reasoning", "")
         if decision == "continue":
             continue_desc = evaluation.get("continue_description", "")
-            parts.append(f"\nNext step needed: {continue_desc or reasoning}")
+            parts.append(f"\n**Next step needed**: {continue_desc or reasoning}")
+            parts.append("Create NEW sub-agent tasks for the next step. Do NOT repeat tasks that already succeeded.")
         elif decision == "retry":
             retry_fix = evaluation.get("retry_fix", "")
-            parts.append(f"\nRetry needed: {retry_fix or reasoning}")
+            retry_task = evaluation.get("retry_task_id", "")
+            parts.append(f"\n**Retry needed**: {retry_fix or reasoning}")
+            if retry_task:
+                parts.append(f"Focus on fixing task: {retry_task}")
+            parts.append("Create corrected sub-agent tasks. Apply the suggested fix.")
 
     return "\n".join(parts)

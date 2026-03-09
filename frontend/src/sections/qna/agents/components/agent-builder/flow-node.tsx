@@ -14,6 +14,9 @@ import {
   DialogContent,
   DialogActions,
   Button,
+  Switch,
+  FormControlLabel,
+  Tooltip,
 } from '@mui/material';
 import { Icon } from '@iconify/react';
 import brainIcon from '@iconify-icons/mdi/brain';
@@ -27,6 +30,9 @@ import packageIcon from '@iconify-icons/mdi/package-variant';
 import cogIcon from '@iconify-icons/mdi/cog';
 import cloudIcon from '@iconify-icons/mdi/cloud-outline';
 import deleteIcon from '@iconify-icons/mdi/delete-outline';
+import chevronDownIcon from '@iconify-icons/mdi/chevron-down';
+import chevronUpIcon from '@iconify-icons/mdi/chevron-up';
+import checkIcon from '@iconify-icons/mdi/check';
 import { formattedProvider, normalizeDisplayName } from '../../utils/agent';
 import { NodeData } from '../../types/agent';
 import { NodeHandles, NodeIcon } from './nodes';
@@ -66,6 +72,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
   const [startMessageValue, setStartMessageValue] = useState(
     data.config?.startMessage || 'Hello! How can I help you today?'
   );
+  // Prompt field editing & expand state
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [expandedFields, setExpandedFields] = useState<Set<string>>(new Set());
 
   const nodeId = data.id;
 
@@ -73,6 +82,8 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
     setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
     setInstructionsValue(data.config?.instructions ?? '');
     setStartMessageValue(data.config?.startMessage || 'Hello! How can I help you today?');
+    setEditingField(null);
+    setExpandedFields(new Set());
     setPromptDialogOpen(true);
   };
 
@@ -96,6 +107,8 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
           : node
       )
     );
+    setEditingField(null);
+    setExpandedFields(new Set());
     setPromptDialogOpen(false);
   };
 
@@ -103,6 +116,8 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
     setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
     setInstructionsValue(data.config?.instructions ?? '');
     setStartMessageValue(data.config?.startMessage || 'Hello! How can I help you today?');
+    setEditingField(null);
+    setExpandedFields(new Set());
     setPromptDialogOpen(false);
   };
 
@@ -475,6 +490,77 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                 {data.config?.instructions?.trim() || 'No instructions set'}
               </Typography>
             </Box>
+          </Box>
+
+          {/* Deep Agent Toggle */}
+          <Box
+            className="nodrag nopan"
+            sx={{ mb: 0 }}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <Tooltip
+              title={
+                data.config?.useDeepAgent
+                  ? 'Deep agent uses an orchestrator with sub-agents for complex multi-step tasks. Click to disable.'
+                  : 'Enable deep agent mode for complex tasks that require planning and multi-step execution with sub-agents.'
+              }
+            >
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={data.config?.useDeepAgent || false}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      setNodes((currentNodes: any[]) =>
+                        currentNodes.map((node: any) =>
+                          node.id === nodeId
+                            ? {
+                                ...node,
+                                data: {
+                                  ...node.data,
+                                  config: {
+                                    ...node.data.config,
+                                    useDeepAgent: e.target.checked,
+                                  },
+                                },
+                              }
+                            : node
+                        )
+                      );
+                    }}
+                    size="small"
+                    color="primary"
+                  />
+                }
+                label={
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      fontWeight: 700,
+                      color: data.config?.useDeepAgent
+                        ? colors.primary
+                        : colors.text.secondary,
+                      fontSize: '0.75rem',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.05em',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 0.5,
+                    }}
+                  >
+                    <Icon
+                      icon={brainIcon}
+                      width={12}
+                      height={12}
+                      style={{ color: data.config?.useDeepAgent ? colors.primary : colors.text.secondary }}
+                    />
+                    Deep Agent
+                  </Typography>
+                }
+                sx={{ ml: 0 }}
+              />
+            </Tooltip>
           </Box>
         </Box>
 
@@ -1288,6 +1374,25 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                 px: 3,
                 pb: 0,
               },
+              '&::-webkit-scrollbar': {
+                width: 8,
+              },
+              '&::-webkit-scrollbar-track': {
+                bgcolor: 'transparent',
+              },
+              '&::-webkit-scrollbar-thumb': {
+                bgcolor: isDark ? alpha('#fff', 0.15) : alpha('#000', 0.15),
+                borderRadius: 4,
+                border: '2px solid transparent',
+                backgroundClip: 'content-box',
+                '&:hover': {
+                  bgcolor: isDark ? alpha('#fff', 0.25) : alpha('#000', 0.25),
+                },
+              },
+              scrollbarWidth: 'thin',
+              scrollbarColor: isDark
+                ? `${alpha('#fff', 0.15)} transparent`
+                : `${alpha('#000', 0.15)} transparent`,
             }}
           >
             <Box sx={{ mb: 3 }}>
@@ -1295,155 +1400,685 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                 Define the agent&apos;s behavior and initial greeting message for users.
               </Typography>
 
-              <Box sx={{ mb: 3 }}>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500 }}>
-                  System Prompt
-                </Typography>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={4}
-                  value={systemPromptValue}
-                  onChange={(e) => setSystemPromptValue(e.target.value)}
-                  placeholder="Define the agent's role, capabilities, and behavior instructions..."
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 1,
-                      backgroundColor: isDark 
-                        ? alpha('#2a2a2a', 0.5) 
-                        : alpha(theme.palette.background.paper, 0.9),
-                      color: colors.text.primary,
-                      '& fieldset': {
-                        borderColor: colors.border.subtle,
-                      },
-                      '&:hover': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                        },
-                      },
-                      '&.Mui-focused': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                          borderWidth: 1.5,
-                        },
-                      },
-                    },
-                    '& .MuiInputBase-input': {
-                      color: colors.text.primary,
-                      '&::placeholder': {
-                        color: colors.text.muted,
-                        opacity: 1,
-                      },
-                    },
-                  }}
-                />
-              </Box>
+              {/* System Prompt - Collapsible preview card */}
+              {(() => {
+                const fieldKey = 'systemPrompt';
+                const value = systemPromptValue;
+                const setValue = setSystemPromptValue;
+                const isEditing = editingField === fieldKey;
+                const isExpanded = expandedFields.has(fieldKey);
+                const hasContent = value.trim().length > 0;
+                const lineCount = value.split('\n').length;
+                const charCount = value.length;
+                const isLong = lineCount > 5 || charCount > 300;
+                const previewBg = isDark ? alpha('#1e1e2e', 0.7) : alpha(theme.palette.grey[100], 0.9);
 
-              <Box sx={{ mb: 3 }}>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500 }}>
-                  Instructions
-                </Typography>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={3}
-                  value={instructionsValue}
-                  onChange={(e) => setInstructionsValue(e.target.value)}
-                  placeholder="Optional additional instructions for the agent (e.g. always respond in French, use bullet points, focus on concise answers)..."
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 1,
-                      backgroundColor: isDark 
-                        ? alpha('#2a2a2a', 0.5) 
-                        : alpha(theme.palette.background.paper, 0.9),
-                      color: colors.text.primary,
-                      '& fieldset': {
-                        borderColor: colors.border.subtle,
-                      },
-                      '&:hover': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                        },
-                      },
-                      '&.Mui-focused': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                          borderWidth: 1.5,
-                        },
-                      },
-                    },
-                    '& .MuiInputBase-input': {
-                      color: colors.text.primary,
-                      '&::placeholder': {
-                        color: colors.text.muted,
-                        opacity: 1,
-                      },
-                    },
-                  }}
-                />
-              </Box>
+                return (
+                  <Box sx={{ mb: 3 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+                          System Prompt
+                        </Typography>
+                        {hasContent && (
+                          <Chip
+                            label={`${lineCount} ${lineCount === 1 ? 'line' : 'lines'} · ${charCount} chars`}
+                            size="small"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.65rem',
+                              bgcolor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.06),
+                              color: isDark ? alpha('#fff', 0.7) : alpha('#000', 0.55),
+                              '& .MuiChip-label': { px: 1 },
+                            }}
+                          />
+                        )}
+                      </Box>
+                      <Button
+                        size="small"
+                        onClick={() => setEditingField(isEditing ? null : fieldKey)}
+                        startIcon={<Icon icon={isEditing ? checkIcon : pencilIcon} width={13} height={13} />}
+                        sx={{
+                          fontSize: '0.7rem',
+                          textTransform: 'none',
+                          color: isEditing ? theme.palette.success.main : colors.text.muted,
+                          minWidth: 0,
+                          px: 1,
+                          '&:hover': { bgcolor: isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04) },
+                        }}
+                      >
+                        {isEditing ? 'Done' : 'Edit'}
+                      </Button>
+                    </Box>
 
-              <Box>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500 }}>
-                  Starting Message
-                </Typography>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={2}
-                  value={startMessageValue}
-                  onChange={(e) => setStartMessageValue(e.target.value)}
-                  placeholder="Enter the agent's greeting message to users..."
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 1,
-                      backgroundColor: isDark 
-                        ? alpha('#2a2a2a', 0.5) 
-                        : alpha(theme.palette.background.paper, 0.9),
-                      color: colors.text.primary,
-                      '& fieldset': {
-                        borderColor: colors.border.subtle,
-                      },
-                      '&:hover': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                        },
-                      },
-                      '&.Mui-focused': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                          borderWidth: 1.5,
-                        },
-                      },
-                    },
-                    '& .MuiInputBase-input': {
-                      color: colors.text.primary,
-                      '&::placeholder': {
-                        color: colors.text.muted,
-                        opacity: 1,
-                      },
-                    },
-                  }}
-                />
-              </Box>
+                    {isEditing ? (
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={4}
+                        maxRows={16}
+                        value={value}
+                        onChange={(e) => setValue(e.target.value)}
+                        autoFocus
+                        placeholder="Define the agent's role, capabilities, and behavior instructions..."
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            borderRadius: 1,
+                            backgroundColor: isDark
+                              ? alpha('#2a2a2a', 0.5)
+                              : alpha(theme.palette.background.paper, 0.9),
+                            color: colors.text.primary,
+                            fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                            fontSize: '0.8rem',
+                            lineHeight: 1.7,
+                            '& fieldset': { borderColor: colors.border.focus, borderWidth: 1.5 },
+                            '&:hover fieldset': { borderColor: colors.border.focus },
+                            '&.Mui-focused fieldset': { borderColor: theme.palette.primary.main, borderWidth: 1.5 },
+                          },
+                          '& .MuiInputBase-input': {
+                            color: colors.text.primary,
+                            '&::placeholder': { color: colors.text.muted, opacity: 1 },
+                          },
+                        }}
+                      />
+                    ) : hasContent ? (
+                      <Box
+                        sx={{
+                          position: 'relative',
+                          bgcolor: previewBg,
+                          borderRadius: 1.5,
+                          border: '1px solid',
+                          borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08),
+                          overflow: 'hidden',
+                          cursor: 'pointer',
+                          transition: 'border-color 0.2s',
+                          '&:hover': {
+                            borderColor: isDark ? alpha('#fff', 0.15) : alpha('#000', 0.15),
+                          },
+                        }}
+                        onClick={() => {
+                          if (isLong) {
+                            setExpandedFields((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(fieldKey)) next.delete(fieldKey);
+                              else next.add(fieldKey);
+                              return next;
+                            });
+                          }
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            p: 2,
+                            maxHeight: isExpanded ? 400 : 120,
+                            overflow: isExpanded ? 'auto' : 'hidden',
+                            transition: 'max-height 0.3s ease',
+                            '&::-webkit-scrollbar': { width: 6 },
+                            '&::-webkit-scrollbar-track': { bgcolor: 'transparent' },
+                            '&::-webkit-scrollbar-thumb': {
+                              bgcolor: isDark ? alpha('#fff', 0.18) : alpha('#000', 0.18),
+                              borderRadius: 3,
+                              '&:hover': {
+                                bgcolor: isDark ? alpha('#fff', 0.28) : alpha('#000', 0.28),
+                              },
+                            },
+                            scrollbarWidth: 'thin',
+                            scrollbarColor: isDark
+                              ? `${alpha('#fff', 0.18)} transparent`
+                              : `${alpha('#000', 0.18)} transparent`,
+                          }}
+                        >
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                              fontSize: '0.78rem',
+                              lineHeight: 1.7,
+                              color: colors.text.primary,
+                            }}
+                          >
+                            {value}
+                          </Typography>
+                        </Box>
+                        {/* Fade gradient for collapsed long content */}
+                        {!isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              position: 'absolute',
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              height: 48,
+                              background: `linear-gradient(transparent, ${isDark ? 'rgba(30,30,46,0.95)' : 'rgba(245,245,245,0.95)'})`,
+                              display: 'flex',
+                              alignItems: 'flex-end',
+                              justifyContent: 'center',
+                              pb: 1,
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronDownIcon} width={14} height={14} />
+                              Show all ({lineCount} lines)
+                            </Typography>
+                          </Box>
+                        )}
+                        {/* Collapse button when expanded */}
+                        {isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              justifyContent: 'center',
+                              py: 0.75,
+                              borderTop: '1px solid',
+                              borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.06),
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronUpIcon} width={14} height={14} />
+                              Show less
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    ) : (
+                      <Box
+                        onClick={() => setEditingField(fieldKey)}
+                        sx={{
+                          p: 2,
+                          bgcolor: isDark ? alpha('#1e1e2e', 0.4) : alpha(theme.palette.grey[100], 0.5),
+                          borderRadius: 1.5,
+                          border: '1px dashed',
+                          borderColor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.12),
+                          cursor: 'pointer',
+                          transition: 'all 0.2s',
+                          '&:hover': {
+                            borderColor: theme.palette.primary.main,
+                            bgcolor: isDark ? alpha('#1e1e2e', 0.6) : alpha(theme.palette.grey[100], 0.7),
+                          },
+                        }}
+                      >
+                        <Typography variant="body2" sx={{ color: colors.text.muted, fontStyle: 'italic', fontSize: '0.8rem' }}>
+                          Click to add a system prompt...
+                        </Typography>
+                      </Box>
+                    )}
+                  </Box>
+                );
+              })()}
+
+              {/* Instructions - Collapsible preview card */}
+              {(() => {
+                const fieldKey = 'instructions';
+                const value = instructionsValue;
+                const setValue = setInstructionsValue;
+                const isEditing = editingField === fieldKey;
+                const isExpanded = expandedFields.has(fieldKey);
+                const hasContent = value.trim().length > 0;
+                const lineCount = value.split('\n').length;
+                const charCount = value.length;
+                const isLong = lineCount > 5 || charCount > 300;
+                const previewBg = isDark ? alpha('#1e1e2e', 0.7) : alpha(theme.palette.grey[100], 0.9);
+
+                return (
+                  <Box sx={{ mb: 3 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+                          Instructions
+                        </Typography>
+                        {hasContent && (
+                          <Chip
+                            label={`${lineCount} ${lineCount === 1 ? 'line' : 'lines'} · ${charCount} chars`}
+                            size="small"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.65rem',
+                              bgcolor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.06),
+                              color: isDark ? alpha('#fff', 0.7) : alpha('#000', 0.55),
+                              '& .MuiChip-label': { px: 1 },
+                            }}
+                          />
+                        )}
+                      </Box>
+                      <Button
+                        size="small"
+                        onClick={() => setEditingField(isEditing ? null : fieldKey)}
+                        startIcon={<Icon icon={isEditing ? checkIcon : pencilIcon} width={13} height={13} />}
+                        sx={{
+                          fontSize: '0.7rem',
+                          textTransform: 'none',
+                          color: isEditing ? theme.palette.success.main : colors.text.muted,
+                          minWidth: 0,
+                          px: 1,
+                          '&:hover': { bgcolor: isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04) },
+                        }}
+                      >
+                        {isEditing ? 'Done' : 'Edit'}
+                      </Button>
+                    </Box>
+
+                    {isEditing ? (
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={3}
+                        maxRows={16}
+                        value={value}
+                        onChange={(e) => setValue(e.target.value)}
+                        autoFocus
+                        placeholder="Optional additional instructions for the agent (e.g. always respond in French, use bullet points, focus on concise answers)..."
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            borderRadius: 1,
+                            backgroundColor: isDark
+                              ? alpha('#2a2a2a', 0.5)
+                              : alpha(theme.palette.background.paper, 0.9),
+                            color: colors.text.primary,
+                            fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                            fontSize: '0.8rem',
+                            lineHeight: 1.7,
+                            '& fieldset': { borderColor: colors.border.focus, borderWidth: 1.5 },
+                            '&:hover fieldset': { borderColor: colors.border.focus },
+                            '&.Mui-focused fieldset': { borderColor: theme.palette.primary.main, borderWidth: 1.5 },
+                          },
+                          '& .MuiInputBase-input': {
+                            color: colors.text.primary,
+                            '&::placeholder': { color: colors.text.muted, opacity: 1 },
+                          },
+                        }}
+                      />
+                    ) : hasContent ? (
+                      <Box
+                        sx={{
+                          position: 'relative',
+                          bgcolor: previewBg,
+                          borderRadius: 1.5,
+                          border: '1px solid',
+                          borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08),
+                          overflow: 'hidden',
+                          cursor: 'pointer',
+                          transition: 'border-color 0.2s',
+                          '&:hover': {
+                            borderColor: isDark ? alpha('#fff', 0.15) : alpha('#000', 0.15),
+                          },
+                        }}
+                        onClick={() => {
+                          if (isLong) {
+                            setExpandedFields((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(fieldKey)) next.delete(fieldKey);
+                              else next.add(fieldKey);
+                              return next;
+                            });
+                          }
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            p: 2,
+                            maxHeight: isExpanded ? 400 : 120,
+                            overflow: isExpanded ? 'auto' : 'hidden',
+                            transition: 'max-height 0.3s ease',
+                            '&::-webkit-scrollbar': { width: 6 },
+                            '&::-webkit-scrollbar-track': { bgcolor: 'transparent' },
+                            '&::-webkit-scrollbar-thumb': {
+                              bgcolor: isDark ? alpha('#fff', 0.18) : alpha('#000', 0.18),
+                              borderRadius: 3,
+                              '&:hover': {
+                                bgcolor: isDark ? alpha('#fff', 0.28) : alpha('#000', 0.28),
+                              },
+                            },
+                            scrollbarWidth: 'thin',
+                            scrollbarColor: isDark
+                              ? `${alpha('#fff', 0.18)} transparent`
+                              : `${alpha('#000', 0.18)} transparent`,
+                          }}
+                        >
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                              fontSize: '0.78rem',
+                              lineHeight: 1.7,
+                              color: colors.text.primary,
+                            }}
+                          >
+                            {value}
+                          </Typography>
+                        </Box>
+                        {!isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              position: 'absolute',
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              height: 48,
+                              background: `linear-gradient(transparent, ${isDark ? 'rgba(30,30,46,0.95)' : 'rgba(245,245,245,0.95)'})`,
+                              display: 'flex',
+                              alignItems: 'flex-end',
+                              justifyContent: 'center',
+                              pb: 1,
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronDownIcon} width={14} height={14} />
+                              Show all ({lineCount} lines)
+                            </Typography>
+                          </Box>
+                        )}
+                        {isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              justifyContent: 'center',
+                              py: 0.75,
+                              borderTop: '1px solid',
+                              borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.06),
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronUpIcon} width={14} height={14} />
+                              Show less
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    ) : (
+                      <Box
+                        onClick={() => setEditingField(fieldKey)}
+                        sx={{
+                          p: 2,
+                          bgcolor: isDark ? alpha('#1e1e2e', 0.4) : alpha(theme.palette.grey[100], 0.5),
+                          borderRadius: 1.5,
+                          border: '1px dashed',
+                          borderColor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.12),
+                          cursor: 'pointer',
+                          transition: 'all 0.2s',
+                          '&:hover': {
+                            borderColor: theme.palette.primary.main,
+                            bgcolor: isDark ? alpha('#1e1e2e', 0.6) : alpha(theme.palette.grey[100], 0.7),
+                          },
+                        }}
+                      >
+                        <Typography variant="body2" sx={{ color: colors.text.muted, fontStyle: 'italic', fontSize: '0.8rem' }}>
+                          Click to add instructions...
+                        </Typography>
+                      </Box>
+                    )}
+                  </Box>
+                );
+              })()}
+
+              {/* Starting Message - Collapsible preview card */}
+              {(() => {
+                const fieldKey = 'startMessage';
+                const value = startMessageValue;
+                const setValue = setStartMessageValue;
+                const isEditing = editingField === fieldKey;
+                const isExpanded = expandedFields.has(fieldKey);
+                const hasContent = value.trim().length > 0;
+                const lineCount = value.split('\n').length;
+                const charCount = value.length;
+                const isLong = lineCount > 5 || charCount > 300;
+                const previewBg = isDark ? alpha('#1e1e2e', 0.7) : alpha(theme.palette.grey[100], 0.9);
+
+                return (
+                  <Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+                          Starting Message
+                        </Typography>
+                        {hasContent && (
+                          <Chip
+                            label={`${lineCount} ${lineCount === 1 ? 'line' : 'lines'} · ${charCount} chars`}
+                            size="small"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.65rem',
+                              bgcolor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.06),
+                              color: isDark ? alpha('#fff', 0.7) : alpha('#000', 0.55),
+                              '& .MuiChip-label': { px: 1 },
+                            }}
+                          />
+                        )}
+                      </Box>
+                      <Button
+                        size="small"
+                        onClick={() => setEditingField(isEditing ? null : fieldKey)}
+                        startIcon={<Icon icon={isEditing ? checkIcon : pencilIcon} width={13} height={13} />}
+                        sx={{
+                          fontSize: '0.7rem',
+                          textTransform: 'none',
+                          color: isEditing ? theme.palette.success.main : colors.text.muted,
+                          minWidth: 0,
+                          px: 1,
+                          '&:hover': { bgcolor: isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04) },
+                        }}
+                      >
+                        {isEditing ? 'Done' : 'Edit'}
+                      </Button>
+                    </Box>
+
+                    {isEditing ? (
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={2}
+                        maxRows={10}
+                        value={value}
+                        onChange={(e) => setValue(e.target.value)}
+                        autoFocus
+                        placeholder="Enter the agent's greeting message to users..."
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            borderRadius: 1,
+                            backgroundColor: isDark
+                              ? alpha('#2a2a2a', 0.5)
+                              : alpha(theme.palette.background.paper, 0.9),
+                            color: colors.text.primary,
+                            fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                            fontSize: '0.8rem',
+                            lineHeight: 1.7,
+                            '& fieldset': { borderColor: colors.border.focus, borderWidth: 1.5 },
+                            '&:hover fieldset': { borderColor: colors.border.focus },
+                            '&.Mui-focused fieldset': { borderColor: theme.palette.primary.main, borderWidth: 1.5 },
+                          },
+                          '& .MuiInputBase-input': {
+                            color: colors.text.primary,
+                            '&::placeholder': { color: colors.text.muted, opacity: 1 },
+                          },
+                        }}
+                      />
+                    ) : hasContent ? (
+                      <Box
+                        sx={{
+                          position: 'relative',
+                          bgcolor: previewBg,
+                          borderRadius: 1.5,
+                          border: '1px solid',
+                          borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08),
+                          overflow: 'hidden',
+                          cursor: 'pointer',
+                          transition: 'border-color 0.2s',
+                          '&:hover': {
+                            borderColor: isDark ? alpha('#fff', 0.15) : alpha('#000', 0.15),
+                          },
+                        }}
+                        onClick={() => {
+                          if (isLong) {
+                            setExpandedFields((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(fieldKey)) next.delete(fieldKey);
+                              else next.add(fieldKey);
+                              return next;
+                            });
+                          }
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            p: 2,
+                            maxHeight: isExpanded ? 400 : 120,
+                            overflow: isExpanded ? 'auto' : 'hidden',
+                            transition: 'max-height 0.3s ease',
+                            '&::-webkit-scrollbar': { width: 6 },
+                            '&::-webkit-scrollbar-track': { bgcolor: 'transparent' },
+                            '&::-webkit-scrollbar-thumb': {
+                              bgcolor: isDark ? alpha('#fff', 0.18) : alpha('#000', 0.18),
+                              borderRadius: 3,
+                              '&:hover': {
+                                bgcolor: isDark ? alpha('#fff', 0.28) : alpha('#000', 0.28),
+                              },
+                            },
+                            scrollbarWidth: 'thin',
+                            scrollbarColor: isDark
+                              ? `${alpha('#fff', 0.18)} transparent`
+                              : `${alpha('#000', 0.18)} transparent`,
+                          }}
+                        >
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                              fontSize: '0.78rem',
+                              lineHeight: 1.7,
+                              color: colors.text.primary,
+                            }}
+                          >
+                            {value}
+                          </Typography>
+                        </Box>
+                        {!isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              position: 'absolute',
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              height: 48,
+                              background: `linear-gradient(transparent, ${isDark ? 'rgba(30,30,46,0.95)' : 'rgba(245,245,245,0.95)'})`,
+                              display: 'flex',
+                              alignItems: 'flex-end',
+                              justifyContent: 'center',
+                              pb: 1,
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronDownIcon} width={14} height={14} />
+                              Show all ({lineCount} lines)
+                            </Typography>
+                          </Box>
+                        )}
+                        {isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              justifyContent: 'center',
+                              py: 0.75,
+                              borderTop: '1px solid',
+                              borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.06),
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronUpIcon} width={14} height={14} />
+                              Show less
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    ) : (
+                      <Box
+                        onClick={() => setEditingField(fieldKey)}
+                        sx={{
+                          p: 2,
+                          bgcolor: isDark ? alpha('#1e1e2e', 0.4) : alpha(theme.palette.grey[100], 0.5),
+                          borderRadius: 1.5,
+                          border: '1px dashed',
+                          borderColor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.12),
+                          cursor: 'pointer',
+                          transition: 'all 0.2s',
+                          '&:hover': {
+                            borderColor: theme.palette.primary.main,
+                            bgcolor: isDark ? alpha('#1e1e2e', 0.6) : alpha(theme.palette.grey[100], 0.7),
+                          },
+                        }}
+                      >
+                        <Typography variant="body2" sx={{ color: colors.text.muted, fontStyle: 'italic', fontSize: '0.8rem' }}>
+                          Click to add a starting message...
+                        </Typography>
+                      </Box>
+                    )}
+                  </Box>
+                );
+              })()}
             </Box>
           </DialogContent>
 
