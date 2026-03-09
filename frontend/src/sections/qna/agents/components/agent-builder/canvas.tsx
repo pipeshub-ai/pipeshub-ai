@@ -81,6 +81,7 @@ interface FlowBuilderCanvasProps {
   onNodeEdit?: (nodeId: string, data: any) => void;
   onNodeDelete?: (nodeId: string) => void;
   onError?: (error: string | import('../../types/agent').AgentBuilderError) => void;
+  readOnly?: boolean;
 }
 
 // Enhanced Controls Component that uses ReactFlow context
@@ -213,6 +214,7 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
   onNodeEdit,
   onNodeDelete,
   onError,
+  readOnly = false,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -256,6 +258,7 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
   const handleDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
+      if (readOnly) return;
 
       if (!reactFlowWrapper.current) return;
 
@@ -271,6 +274,8 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
       const toolCount = event.dataTransfer.getData('toolCount');
       
       // Extract toolset-specific drag data (check both 'type' key and other keys)
+      const toolsetInstanceId = event.dataTransfer.getData('instanceId'); // NEW: instance identifier
+      const toolsetInstanceName = event.dataTransfer.getData('instanceName'); // NEW
       const toolsetName = event.dataTransfer.getData('toolsetName');
       let toolsetDisplayName = event.dataTransfer.getData('displayName');
       // If displayName contains " - " (toolset - tool format), extract just the toolset name
@@ -377,12 +382,14 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
               type: `toolset-${toolsetName}`,
               label: normalizeDisplayName(toolsetDisplayName || toolsetName),
               description: `${toolsetDisplayName || toolsetName} with ${toolCount || normalizedTools.length} tools`,
-              icon: toolsetIconPath || '/assets/icons/toolsets/default.svg',
+              icon: toolsetIconPath || '/assets/icons/toolsets/collections-gray.svg',
               category: 'toolset',
               config: {
+                instanceId: toolsetInstanceId || undefined,   // NEW
+                instanceName: toolsetInstanceName || undefined, // NEW
                 toolsetName,
                 displayName: toolsetDisplayName || toolsetName,
-                iconPath: toolsetIconPath || '/assets/icons/toolsets/default.svg',
+                iconPath: toolsetIconPath || '/assets/icons/toolsets/collections-gray.svg',
                 category: toolsetCategory || 'app',
                 tools: normalizedTools,
                 availableTools: normalizedTools,
@@ -528,12 +535,14 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
             type: `toolset-${toolsetName}`,
             label: normalizeDisplayName(toolsetDisplayName || toolsetName),
             description: `${toolsetDisplayName || toolsetName} toolset`,
-            icon: toolsetIconPath || '/assets/icons/toolsets/default.svg',
+            icon: toolsetIconPath || '/assets/icons/toolsets/collections-gray.svg',
             category: 'toolset',
             config: {
+              instanceId: toolsetInstanceId || undefined,   // NEW
+              instanceName: toolsetInstanceName || undefined, // NEW
               toolsetName,
               displayName: toolsetDisplayName || toolsetName,
-              iconPath: toolsetIconPath || '/assets/icons/toolsets/default.svg',
+              iconPath: toolsetIconPath || '/assets/icons/toolsets/collections-gray.svg',
               category: toolsetCategory || 'app',
               // Only the dropped tool is initially selected
               tools: [droppedTool],
@@ -770,7 +779,7 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
 
       setNodes((nds) => [...nds, newNode]);
     },
-    [setNodes, nodeTemplates, nodes, onError, configuredConnectors, activeAgentConnectors]
+    [setNodes, nodeTemplates, nodes, onError, configuredConnectors, activeAgentConnectors, readOnly]
   );
 
   return (
@@ -834,13 +843,13 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
         <ReactFlow
           nodes={nodes}
           edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onDrop={handleDrop}
-          onDragOver={onDragOver}
+          onNodesChange={readOnly ? undefined : onNodesChange}
+          onEdgesChange={readOnly ? undefined : onEdgesChange}
+          onConnect={readOnly ? undefined : onConnect}
+          onDrop={readOnly ? undefined : handleDrop}
+          onDragOver={readOnly ? undefined : onDragOver}
           onNodeClick={onNodeClick}
-          onEdgeClick={onEdgeClick}
+          onEdgeClick={readOnly ? undefined : onEdgeClick}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           fitView
@@ -870,9 +879,11 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
             height: '100%',
           }}
           panOnScroll
-          selectionOnDrag
-          panOnDrag={[1, 2]}
+          selectionOnDrag={!readOnly}
+          panOnDrag={readOnly ? true : [1, 2]}
           selectNodesOnDrag={false}
+          nodesDraggable={!readOnly}
+          nodesConnectable={!readOnly}
           proOptions={{ hideAttribution: true }}
         >
           {/* Enhanced Controls */}

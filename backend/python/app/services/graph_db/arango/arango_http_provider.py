@@ -36,6 +36,7 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
+    IndexingStatus,
     LinkRecord,
     MailRecord,
     Person,
@@ -80,6 +81,7 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
+from app.services.graph_db.common.utils import build_connector_stats_response
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -469,7 +471,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 self.logger.info("Knowledge graph already exists, skipping creation")
 
-            # 3. Seed departments collection with predefined department types
+            # 3. Ensure persistent indexes for frequent query patterns
+            await self._ensure_indexes()
+
+            # 4. Seed departments collection with predefined department types
             await self._ensure_departments_seed()
 
             self.logger.info("✅ ArangoDB schema ensured successfully")
@@ -478,6 +483,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Error ensuring schema: {str(e)}")
             return False
+
+    async def _ensure_indexes(self) -> None:
+        """Create persistent indexes for frequent query patterns.
+
+        Indexes are built here: each call to ensure_persistent_index() creates (or ensures)
+        the index via the ArangoDB HTTP API (see arango_http_client.ensure_persistent_index).
+
+        Currently no custom indexes are required - edge collections have automatic
+        indexes on _from and _to fields which optimize graph traversals.
+        """
+        pass
 
     async def _ensure_departments_seed(self) -> None:
         """Initialize departments collection with predefined department types if missing."""
@@ -4104,6 +4120,32 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get all documents from collection: {collection}: {str(e)}")
             return []
 
+    async def get_app_creator_user(
+        self,
+        connector_id: str,
+        transaction:Optional[str]=None
+    ) -> Optional[User]:
+        try:
+            app_doc = await self.get_document(
+                document_key=connector_id,
+                collection = CollectionNames.APPS.value,
+                transaction=transaction
+            )
+            if not app_doc:
+                return None
+            created_by=app_doc.get("createdBy")
+            if not created_by:
+                return None
+            user_doc = await self.get_user_by_user_id(
+                user_id=created_by
+            )
+            if not user_doc:
+                return None
+            user_ = User.from_arango_user(user_doc)
+            return user_
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch user for {connector_id}: {str(e)}")
+            return None
 
     async def get_org_apps(
         self,
@@ -14340,134 +14382,65 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns:
             Dict: Statistics data with success status
         """
+        statuses = [s.value for s in IndexingStatus]
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
             query = f"""
-            LET org_id = @org_id
-            LET connector = FIRST(
-                FOR doc IN {CollectionNames.APPS.value}
-                    FILTER doc._key == @connector_id
-                    RETURN doc
+            LET app = DOCUMENT(CONCAT("apps/", @connector_id))
+
+            LET allRecordGroups = (
+                FOR rg IN 1..10 INBOUND app._id {CollectionNames.BELONGS_TO.value}
+                    OPTIONS {{ bfs: true, uniqueVertices: "global" }}
+                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", rg._id)
+                    RETURN rg._id
             )
 
-            LET records = (
-                FOR doc IN {CollectionNames.RECORDS.value}
-                    FILTER doc.orgId == org_id
-                    FILTER doc.origin == "CONNECTOR"
-                    FILTER doc.connectorId == @connector_id
-                    FILTER doc.recordType != @drive_record_type
-                    FILTER doc.isDeleted != true
+            LET allRecords = (
+                FOR rgId IN allRecordGroups
+                    FOR doc IN 1..1 INBOUND rgId {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", doc._id)
+                        FILTER doc.recordType != @drive_record_type
 
-                    LET targetDoc = FIRST(
-                        FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
-                            LIMIT 1
-                            RETURN v
-                    )
+                        LET targetDoc = FIRST(
+                            FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
+                                LIMIT 1
+                                RETURN v
+                        )
+                        FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
 
-                    FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
-                    RETURN doc
+                        RETURN {{ recordType: doc.recordType, indexingStatus: doc.indexingStatus }}
             )
 
-            LET total_stats = {{
-                total: LENGTH(records),
-                indexingStatus: {{
-                    NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                    IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                    COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                    FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                    FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                    AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                    ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                    EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                    QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                    PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
-                }}
-            }}
-
-            LET by_record_type = (
-                FOR record_type IN UNIQUE(records[*].recordType)
-                    FILTER record_type != null
-                    LET type_records = records[* FILTER CURRENT.recordType == record_type]
-                    RETURN {{
-                        recordType: record_type,
-                        total: LENGTH(type_records),
-                        indexingStatus: {{
-                            NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                            IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                            COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                            FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                            FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                            AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                            ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                            EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                            QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                            PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
-                        }}
-                    }}
-            )
-
-            RETURN {{
-                orgId: org_id,
-                connectorId: @connector_id,
-                origin: "CONNECTOR",
-                stats: total_stats,
-                byRecordType: by_record_type
-            }}
+            FOR r IN allRecords
+                COLLECT recordType = r.recordType, indexingStatus = r.indexingStatus WITH COUNT INTO cnt
+                RETURN {{ recordType, indexingStatus, cnt }}
             """
 
-            from app.config.constants.arangodb import RecordTypes
-
-            results = await self.http_client.execute_aql(
+            rows = await self.http_client.execute_aql(
                 query,
                 bind_vars={
-                    "org_id": org_id,
                     "connector_id": connector_id,
                     "drive_record_type": RecordTypes.DRIVE.value
                 },
                 txn_id=transaction
             )
 
-            if results and results[0]:
-                self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
-                return {
-                    "success": True,
-                    "data": results[0]
-                }
-            else:
-                self.logger.warning(f"⚠️ No data found for connector: {connector_id}")
-                return {
-                    "success": False,
-                    "message": "No data found for the specified connector",
-                    "data": {
-                        "org_id": org_id,
-                        "connector_id": connector_id,
-                        "origin": "CONNECTOR",
-                        "stats": {
-                            "total": 0,
-                            "indexingStatus": {
-                                "NOT_STARTED": 0,
-                                "IN_PROGRESS": 0,
-                                "COMPLETED": 0,
-                                "FAILED": 0,
-                                "FILE_TYPE_NOT_SUPPORTED": 0,
-                                "AUTO_INDEX_OFF": 0,
-                                "ENABLE_MULTIMODAL_MODELS": 0,
-                                "EMPTY": 0,
-                                "QUEUED": 0,
-                                "PAUSED": 0,
-                            }
-                        },
-                        "byRecordType": []
-                    }
-                }
+            rows = rows or []
+            result = build_connector_stats_response(rows, statuses, org_id, connector_id)
+
+            self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
+            return {
+                "success": True,
+                "data": result,
+            }
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get connector stats: {str(e)}")
             return {
                 "success": False,
                 "message": str(e),
-                "data": None
+                "data": None,
             }
 
     def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> Tuple[str, Dict[str, Any]]:
@@ -17663,43 +17636,47 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Error in get_organization_users: {str(e)}", exc_info=True)
             return [], 0
 
-    async def check_toolset_in_use(self, toolset_name: str, user_id: str, transaction: Optional[str] = None) -> List[str]:
+    async def check_toolset_instance_in_use(self, instance_id: str, transaction: Optional[str] = None) -> List[str]:
         """
-        Check if a toolset is currently in use by any active agents.
+        Check if a toolset instance is currently in use by any active agents.
+
+        This method finds all toolset nodes with the given instanceId and checks
+        if any non-deleted agents are using them.
 
         Args:
-            toolset_name: Normalized toolset name
-            user_id: User ID who owns the toolset
+            instance_id: Toolset instance ID to check
             transaction: Optional transaction ID
 
         Returns:
-            List of agent names that are using the toolset. Empty list if not in use.
+            List of agent names that are using the toolset instance. Empty list if not in use.
         """
         try:
-            # Find toolset nodes
+            # Find all toolset nodes with the given instanceId
             toolset_query = f"""
             FOR ts IN {CollectionNames.AGENT_TOOLSETS.value}
-                FILTER ts.name == @name AND ts.userId == @user_id
+                FILTER ts.instanceId == @instance_id
                 RETURN ts._id
             """
             toolset_ids = await self.http_client.execute_aql(toolset_query, bind_vars={
-                "name": toolset_name,
-                "user_id": user_id
+                "instance_id": instance_id
             }, txn_id=transaction)
 
             # Handle None or empty results
             if not toolset_ids:
                 return []
 
-            # Check for active agents using this toolset
+            # Check for active agents using these toolset nodes, filtering by org_id
             agent_query = f"""
             FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
                 FILTER edge._to IN @toolset_ids
                 LET agent = DOCUMENT(edge._from)
-                FILTER agent != null AND agent.isDeleted != true AND agent.deleted != true
+                FILTER agent != null 
+                    AND agent.isDeleted != true 
                 RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
             """
-            agents = await self.http_client.execute_aql(agent_query, bind_vars={"toolset_ids": toolset_ids}, txn_id=transaction)
+            agents = await self.http_client.execute_aql(agent_query, bind_vars={
+                "toolset_ids": toolset_ids,
+            }, txn_id=transaction)
 
             # Handle None or empty results, and filter out any None values
             if agents:
@@ -17709,10 +17686,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return []
 
         except Exception as e:
-            self.logger.error(f"Failed to check toolset usage: {str(e)}")
+            self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
-    async def get_agent(self, agent_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
+    async def get_agent(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
         """
         Get an agent by ID with user permissions and linked graph data.
 
@@ -17724,6 +17701,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             query = f"""
             LET user_key = @user_id
+            LET org_key = @org_id
             LET agent_path = CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
 
             // Get user's teams first
@@ -17773,10 +17751,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             ) : []
 
+            // Check org permissions on the agent (only if no individual or team access)
+            LET org_access = LENGTH(individual_access) == 0 && LENGTH(team_access) == 0 && org_key != null ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "ORG"
+                    LET agent = DOCUMENT(agent_path)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "ORG",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            ) : []
+
             // Get base agent with permissions
             LET base_agent = LENGTH(individual_access) > 0 ?
                 FIRST(individual_access) :
-                (LENGTH(team_access) > 0 ? FIRST(team_access) : null)
+                (LENGTH(team_access) > 0 ? FIRST(team_access) :
+                (LENGTH(org_access) > 0 ? FIRST(org_access) : null))
 
             // Get linked toolsets with their tools
             LET linked_toolsets = base_agent != null ? (
@@ -17805,7 +17803,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         name: toolset.name,
                         displayName: toolset.displayName,
                         type: toolset.type,
-                        userId: toolset.userId,
+                        instanceId: toolset.instanceId,
                         selectedTools: toolset.selectedTools,
                         tools: toolset_tools
                     }}
@@ -17872,23 +17870,37 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }}
             ) : []
 
+            // Check if the agent is shared with the org (edge-based, not stored in doc)
+            LET share_with_org = base_agent != null && org_key != null ? (
+                LENGTH(
+                    FOR perm IN {CollectionNames.PERMISSION.value}
+                        FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                        FILTER perm._to == agent_path
+                        FILTER perm.type == "ORG"
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+            ) : false
+
             // Return agent with linked data
             RETURN base_agent != null ? MERGE(base_agent, {{
                 toolsets: linked_toolsets,
-                knowledge: linked_knowledge
+                knowledge: linked_knowledge,
+                shareWithOrg: share_with_org
             }}) : null
             """
 
             bind_vars = {
                 "agent_id": agent_id,
                 "user_id": user_id,
+                "org_id": org_id,
                 "kb_type": Connectors.KNOWLEDGE_BASE.value,
             }
 
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
 
             if not result or len(result) == 0 or result[0] is None:
-                self.logger.warning(f"No permissions found for user {user_id} on agent {agent_id}")
+                self.logger.warning(f"No agent/permissions found for user {user_id} on agent {agent_id}")
                 return None
 
             agent = result[0]
@@ -17912,11 +17924,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get agent: {str(e)}")
             return None
 
-    async def get_all_agents(self, user_id: str, transaction: Optional[str] = None) -> List[Dict]:
-        """Get all agents accessible to a user via individual or team access - flattened response"""
+    async def get_all_agents(self, user_id: str, org_id: str, transaction: Optional[str] = None) -> List[Dict]:
+        """Get all agents accessible to a user via individual, team, or org access - flattened response with deduplication"""
         try:
             query = f"""
             LET user_key = @user_id
+            LET org_key = @org_id
 
             // Get user's teams
             LET user_teams = (
@@ -17927,8 +17940,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN perm._to
             )
 
-            // Get agents with individual access
-            LET individual_agents = (
+            // Get all agents with all permission types in a single optimized query
+            // Collect all permissions first, then deduplicate by agent ID with priority
+            LET all_permissions = (
+                // Individual user permissions
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
                     FILTER perm.type == "USER"
@@ -17936,45 +17951,86 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     LET agent = DOCUMENT(perm._to)
                     FILTER agent != null
                     FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
+                    RETURN {{
+                        agent_id: agent._id,
+                        agent: agent,
+                        role: perm.role,
                         access_type: "INDIVIDUAL",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
+                        priority: 1
+                    }}
             )
 
-            // Get agents with team access (excluding those already found via individual access)
-            LET individual_agent_ids = (FOR ind_agent IN individual_agents RETURN ind_agent._id)
-
-            LET team_agents = (
+            LET team_permissions = (
+                // Team permissions
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from IN user_teams
                     FILTER perm.type == "TEAM"
                     FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    FILTER perm._to NOT IN individual_agent_ids
                     LET agent = DOCUMENT(perm._to)
                     FILTER agent != null
                     FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
+                    RETURN {{
+                        agent_id: agent._id,
+                        agent: agent,
+                        role: perm.role,
                         access_type: "TEAM",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
+                        priority: 2
+                    }}
             )
 
-            // Flatten and return all agents
-            FOR agent_result IN APPEND(individual_agents, team_agents)
-                RETURN agent_result
+            LET org_permissions = org_key != null ? (
+                // Org permissions
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                    FILTER perm.type == "ORG"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    LET agent = DOCUMENT(perm._to)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN {{
+                        agent_id: agent._id,
+                        agent: agent,
+                        role: perm.role,
+                        access_type: "ORG",
+                        priority: 3
+                    }}
+            ) : []
+
+            // Pre-compute set of agent paths shared with the org (edge-based, not stored in doc)
+            LET org_shared_agent_paths = org_key != null ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                    FILTER perm.type == "ORG"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    RETURN perm._to
+            ) : []
+
+            // Combine all permissions and deduplicate by agent_id, keeping highest priority
+            LET combined = APPEND(APPEND(all_permissions, team_permissions), org_permissions)
+
+            // Deduplicate: group by agent_id and keep entry with lowest priority number
+            FOR perm_entry IN combined
+                COLLECT agent_id = perm_entry.agent_id INTO groups
+                LET best_entry = (
+                    FOR entry IN groups[*].perm_entry
+                        SORT entry.priority ASC
+                        LIMIT 1
+                        RETURN entry
+                )[0]
+                RETURN MERGE(best_entry.agent, {{
+                    access_type: best_entry.access_type,
+                    user_role: best_entry.role,
+                    can_edit: best_entry.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                    can_delete: best_entry.role == "OWNER",
+                    can_share: best_entry.role IN ["OWNER", "ORGANIZER"],
+                    can_view: true,
+                    shareWithOrg: best_entry.agent._id IN org_shared_agent_paths
+                }})
             """
 
             bind_vars = {
                 "user_id": user_id,
+                "org_id": org_id,
             }
 
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
@@ -17984,7 +18040,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get all agents: {str(e)}")
             return []
 
-    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[bool]:
         """
         Update an agent.
 
@@ -17993,7 +18049,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         try:
             # Check if user has permission to update the agent using the new method
-            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -18080,8 +18136,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to update agent: {str(e)}")
             return False
 
-    async def delete_agent(self, agent_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[bool]:
-        """Delete an agent"""
+    async def delete_agent(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+        """Delete an agent (soft delete)"""
         try:
             # Check if agent exists
             agent = await self.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value, transaction=transaction)
@@ -18090,7 +18146,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return False
 
             # Check if user has permission to delete the agent using the new method
-            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -18126,11 +18182,458 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to delete agent: {str(e)}")
             return False
 
-    async def share_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[bool]:
+    async def hard_delete_agent(self, agent_id: str, transaction: Optional[str] = None) -> Dict[str, int]:
+        """
+        Hard delete a single agent and all its related edges/nodes.
+
+        This deletes (in order):
+        1. Agent -> Knowledge edges (AGENT_HAS_KNOWLEDGE)
+        2. Knowledge nodes (AGENT_KNOWLEDGE)
+        3. Toolset -> Tool edges (TOOLSET_HAS_TOOL)
+        4. Tool nodes (AGENT_TOOLS)
+        5. Agent -> Toolset edges (AGENT_HAS_TOOLSET)
+        6. Toolset nodes (AGENT_TOOLSETS)
+        7. Permission edges (PERMISSION) - user, org, team permissions
+        8. The agent document itself (AGENT_INSTANCES)
+
+        Returns:
+            Dict with counts: {"agents_deleted": 1, "toolsets_deleted": X, "tools_deleted": Y, "knowledge_deleted": Z, "edges_deleted": W}
+        """
+        try:
+            toolsets_deleted = 0
+            tools_deleted = 0
+            knowledge_deleted = 0
+            edges_deleted = 0
+
+            agent_doc_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
+
+            # Step 1: Delete agent -> knowledge edges and collect the _to IDs
+            delete_knowledge_edges_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                FILTER edge._from == @agent_doc_id
+                REMOVE edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                RETURN OLD._to
+            """
+
+            knowledge_ids = await self.execute_query(
+                delete_knowledge_edges_query,
+                bind_vars={"agent_doc_id": agent_doc_id},
+                transaction=transaction
+            )
+
+            if knowledge_ids:
+                edges_deleted += len(knowledge_ids)
+
+                # Step 2: Delete orphaned knowledge nodes (no remaining edges pointing to them)
+                delete_orphaned_knowledge_query = f"""
+                FOR kid IN @knowledge_ids
+                    LET remaining = FIRST(
+                        FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                            FILTER edge._to == kid
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER remaining == null
+                    REMOVE PARSE_IDENTIFIER(kid).key IN {CollectionNames.AGENT_KNOWLEDGE.value}
+                    RETURN OLD
+                """
+
+                deleted_knowledge = await self.execute_query(
+                    delete_orphaned_knowledge_query,
+                    bind_vars={"knowledge_ids": knowledge_ids},
+                    transaction=transaction
+                )
+
+                if deleted_knowledge:
+                    knowledge_deleted = len(deleted_knowledge)
+
+                skipped = len(knowledge_ids) - knowledge_deleted
+                if skipped > 0:
+                    self.logger.warning(
+                        f"Skipped {skipped} knowledge node(s) still referenced by other agents for agent {agent_id}"
+                    )
+
+            # Step 3: Find toolsets connected to this agent
+            find_toolset_ids_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                FILTER edge._from == @agent_doc_id
+                RETURN edge._to
+            """
+
+            toolset_ids = await self.execute_query(
+                find_toolset_ids_query,
+                bind_vars={"agent_doc_id": agent_doc_id},
+                transaction=transaction
+            )
+
+            if toolset_ids:
+                # Step 4: Delete toolset -> tool edges and collect the _to IDs
+                delete_tool_edges_query = f"""
+                FOR tsid IN @toolset_ids
+                    FOR edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
+                        FILTER edge._from == tsid
+                        REMOVE edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
+                        RETURN OLD._to
+                """
+
+                tool_ids = await self.execute_query(
+                    delete_tool_edges_query,
+                    bind_vars={"toolset_ids": toolset_ids},
+                    transaction=transaction
+                )
+
+                if tool_ids:
+                    edges_deleted += len(tool_ids)
+
+                    # Step 5: Delete orphaned tool nodes
+                    delete_orphaned_tools_query = f"""
+                    FOR tid IN @tool_ids
+                        LET remaining = FIRST(
+                            FOR edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
+                                FILTER edge._to == tid
+                                LIMIT 1
+                                RETURN 1
+                        )
+                        FILTER remaining == null
+                        REMOVE PARSE_IDENTIFIER(tid).key IN {CollectionNames.AGENT_TOOLS.value}
+                        RETURN OLD
+                    """
+
+                    deleted_tools = await self.execute_query(
+                        delete_orphaned_tools_query,
+                        bind_vars={"tool_ids": tool_ids},
+                        transaction=transaction
+                    )
+
+                    if deleted_tools:
+                        tools_deleted = len(deleted_tools)
+
+                    skipped = len(tool_ids) - tools_deleted
+                    if skipped > 0:
+                        self.logger.warning(
+                            f"Skipped {skipped} tool node(s) still referenced by other toolsets for agent {agent_id}"
+                        )
+
+            # Step 6: Delete agent -> toolset edges
+            delete_toolset_edges_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                FILTER edge._from == @agent_doc_id
+                REMOVE edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                RETURN OLD
+            """
+
+            deleted_toolset_edges = await self.execute_query(
+                delete_toolset_edges_query,
+                bind_vars={"agent_doc_id": agent_doc_id},
+                transaction=transaction
+            )
+
+            if deleted_toolset_edges:
+                edges_deleted += len(deleted_toolset_edges)
+
+            # Step 7: Delete orphaned toolset nodes
+            if toolset_ids:
+                delete_orphaned_toolsets_query = f"""
+                FOR tsid IN @toolset_ids
+                    LET remaining = FIRST(
+                        FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                            FILTER edge._to == tsid
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER remaining == null
+                    REMOVE PARSE_IDENTIFIER(tsid).key IN {CollectionNames.AGENT_TOOLSETS.value}
+                    RETURN OLD
+                """
+
+                deleted_toolsets = await self.execute_query(
+                    delete_orphaned_toolsets_query,
+                    bind_vars={"toolset_ids": toolset_ids},
+                    transaction=transaction
+                )
+
+                if deleted_toolsets:
+                    toolsets_deleted = len(deleted_toolsets)
+
+                skipped = len(toolset_ids) - toolsets_deleted
+                if skipped > 0:
+                    self.logger.warning(
+                        f"Skipped {skipped} toolset node(s) still referenced by other agents for agent {agent_id}"
+                    )
+
+            # Step 8: Delete all permission edges pointing to this agent
+            delete_permissions_query = f"""
+            FOR edge IN {CollectionNames.PERMISSION.value}
+                FILTER edge._to == @agent_doc_id
+                REMOVE edge IN {CollectionNames.PERMISSION.value}
+                RETURN OLD
+            """
+
+            deleted_permissions = await self.execute_query(
+                delete_permissions_query,
+                bind_vars={"agent_doc_id": agent_doc_id},
+                transaction=transaction
+            )
+
+            if deleted_permissions:
+                edges_deleted += len(deleted_permissions)
+
+            # Step 9: Hard delete the agent document
+            delete_agent_query = f"""
+            FOR agent IN {CollectionNames.AGENT_INSTANCES.value}
+                FILTER agent._key == @agent_id
+                REMOVE agent IN {CollectionNames.AGENT_INSTANCES.value}
+                RETURN OLD
+            """
+
+            deleted_agents = await self.execute_query(
+                delete_agent_query,
+                bind_vars={"agent_id": agent_id},
+                transaction=transaction
+            )
+
+            agents_deleted = 1 if deleted_agents and len(deleted_agents) > 0 else 0
+
+            self.logger.info(
+                f"Hard deleted agent {agent_id}: {agents_deleted} agent, "
+                f"{toolsets_deleted} toolsets, {tools_deleted} tools, "
+                f"{knowledge_deleted} knowledge, {edges_deleted} edges"
+            )
+
+            return {
+                "agents_deleted": agents_deleted,
+                "toolsets_deleted": toolsets_deleted,
+                "tools_deleted": tools_deleted,
+                "knowledge_deleted": knowledge_deleted,
+                "edges_deleted": edges_deleted,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to hard delete agent {agent_id}: {e}")
+            return {
+                "agents_deleted": 0,
+                "toolsets_deleted": 0,
+                "tools_deleted": 0,
+                "knowledge_deleted": 0,
+                "edges_deleted": 0,
+            }
+
+    async def hard_delete_all_agents(self, transaction: Optional[str] = None) -> Dict[str, int]:
+        """
+        Hard delete ALL agents (including soft-deleted ones) and all their related edges/nodes.
+
+        This method is used for migrations and cleanup operations.
+        It deletes (in order):
+        1. Agent -> Knowledge edges (AGENT_HAS_KNOWLEDGE)
+        2. Knowledge nodes (AGENT_KNOWLEDGE)
+        3. Toolset -> Tool edges (TOOLSET_HAS_TOOL)
+        4. Tool nodes (AGENT_TOOLS)
+        5. Agent -> Toolset edges (AGENT_HAS_TOOLSET)
+        6. Toolset nodes (AGENT_TOOLSETS)
+        7. Permission edges (PERMISSION) - user, org, team permissions
+        8. All agent documents (AGENT_INSTANCES)
+
+        Returns:
+            Dict with counts: {"agents_deleted": X, "toolsets_deleted": Y, "tools_deleted": Z, "knowledge_deleted": W, "edges_deleted": V}
+        """
+        try:
+            agents_deleted = 0
+            toolsets_deleted = 0
+            tools_deleted = 0
+            knowledge_deleted = 0
+            edges_deleted = 0
+
+            # Step 1: Delete all agent -> knowledge edges (AGENT_HAS_KNOWLEDGE)
+            delete_knowledge_edges_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                FILTER STARTS_WITH(edge._from, '{CollectionNames.AGENT_INSTANCES.value}/')
+                REMOVE edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                RETURN OLD
+            """
+
+            deleted_knowledge_edges = await self.execute_query(
+                delete_knowledge_edges_query,
+                transaction=transaction
+            )
+
+            if deleted_knowledge_edges:
+                edges_deleted += len(deleted_knowledge_edges)
+                self.logger.debug(f"Deleted {len(deleted_knowledge_edges)} agent -> knowledge edges")
+
+                # Step 2: Delete all knowledge nodes (AGENT_KNOWLEDGE)
+                knowledge_ids = list(set([edge['_to'] for edge in deleted_knowledge_edges]))
+                if knowledge_ids:
+                    delete_knowledge_query = f"""
+                    FOR knowledge_id IN @knowledge_ids
+                        LET knowledge = DOCUMENT(knowledge_id)
+                        FILTER knowledge != null
+                        REMOVE knowledge IN {CollectionNames.AGENT_KNOWLEDGE.value}
+                        RETURN OLD
+                    """
+
+                    deleted_knowledge = await self.execute_query(
+                        delete_knowledge_query,
+                        bind_vars={"knowledge_ids": knowledge_ids},
+                        transaction=transaction
+                    )
+
+                    if deleted_knowledge:
+                        knowledge_deleted = len(deleted_knowledge)
+                        self.logger.debug(f"Deleted {knowledge_deleted} knowledge nodes")
+
+            # Step 3: Find all agent -> toolset edges and get toolset IDs
+            find_toolset_edges_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                FILTER STARTS_WITH(edge._from, '{CollectionNames.AGENT_INSTANCES.value}/')
+                RETURN edge._to
+            """
+
+            toolset_ids = await self.execute_query(
+                find_toolset_edges_query,
+                transaction=transaction
+            )
+
+            if toolset_ids:
+                toolset_ids = list(set(toolset_ids))
+                self.logger.debug(f"Found {len(toolset_ids)} toolsets connected to agents")
+
+                # Step 4: Delete all toolset -> tool edges (TOOLSET_HAS_TOOL)
+                delete_tool_edges_query = f"""
+                FOR toolset_id IN @toolset_ids
+                    FOR edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
+                        FILTER edge._from == toolset_id
+                        REMOVE edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
+                        RETURN OLD
+                """
+
+                deleted_tool_edges = await self.execute_query(
+                    delete_tool_edges_query,
+                    bind_vars={"toolset_ids": toolset_ids},
+                    transaction=transaction
+                )
+
+                if deleted_tool_edges:
+                    edges_deleted += len(deleted_tool_edges)
+                    self.logger.debug(f"Deleted {len(deleted_tool_edges)} toolset -> tool edges")
+
+                    # Step 5: Delete all tool nodes (AGENT_TOOLS)
+                    tool_ids = list(set([edge['_to'] for edge in deleted_tool_edges]))
+                    if tool_ids:
+                        delete_tools_query = f"""
+                        FOR tool_id IN @tool_ids
+                            LET tool = DOCUMENT(tool_id)
+                            FILTER tool != null
+                            REMOVE tool IN {CollectionNames.AGENT_TOOLS.value}
+                            RETURN OLD
+                        """
+
+                        deleted_tools = await self.execute_query(
+                            delete_tools_query,
+                            bind_vars={"tool_ids": tool_ids},
+                            transaction=transaction
+                        )
+
+                        if deleted_tools:
+                            tools_deleted = len(deleted_tools)
+                            self.logger.debug(f"Deleted {tools_deleted} tool nodes")
+
+            # Step 6: Delete all agent -> toolset edges (AGENT_HAS_TOOLSET)
+            delete_toolset_edges_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                FILTER STARTS_WITH(edge._from, '{CollectionNames.AGENT_INSTANCES.value}/')
+                REMOVE edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                RETURN OLD
+            """
+
+            deleted_toolset_edges = await self.execute_query(
+                delete_toolset_edges_query,
+                transaction=transaction
+            )
+
+            if deleted_toolset_edges:
+                edges_deleted += len(deleted_toolset_edges)
+                self.logger.debug(f"Deleted {len(deleted_toolset_edges)} agent -> toolset edges")
+
+            # Step 7: Delete all toolset nodes (AGENT_TOOLSETS)
+            if toolset_ids:
+                delete_toolsets_query = f"""
+                FOR toolset_id IN @toolset_ids
+                    LET toolset = DOCUMENT(toolset_id)
+                    FILTER toolset != null
+                    REMOVE toolset IN {CollectionNames.AGENT_TOOLSETS.value}
+                    RETURN OLD
+                """
+
+                deleted_toolsets = await self.execute_query(
+                    delete_toolsets_query,
+                    bind_vars={"toolset_ids": toolset_ids},
+                    transaction=transaction
+                )
+
+                if deleted_toolsets:
+                    toolsets_deleted = len(deleted_toolsets)
+                    self.logger.debug(f"Deleted {toolsets_deleted} toolset nodes")
+
+            # Step 8: Delete all permission edges (PERMISSION) pointing to agents
+            delete_permissions_query = f"""
+            FOR edge IN {CollectionNames.PERMISSION.value}
+                FILTER STARTS_WITH(edge._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                REMOVE edge IN {CollectionNames.PERMISSION.value}
+                RETURN OLD
+            """
+
+            deleted_permissions = await self.execute_query(
+                delete_permissions_query,
+                transaction=transaction
+            )
+
+            if deleted_permissions:
+                edges_deleted += len(deleted_permissions)
+                self.logger.debug(f"Deleted {len(deleted_permissions)} permission edges")
+
+            # Step 9: Hard delete all agent documents
+            delete_agents_query = f"""
+            FOR agent IN {CollectionNames.AGENT_INSTANCES.value}
+                REMOVE agent IN {CollectionNames.AGENT_INSTANCES.value}
+                RETURN OLD
+            """
+
+            deleted_agents = await self.execute_query(
+                delete_agents_query,
+                transaction=transaction
+            )
+
+            if deleted_agents:
+                agents_deleted = len(deleted_agents)
+
+            self.logger.info(
+                f"Hard deleted {agents_deleted} agents, {toolsets_deleted} toolsets, "
+                f"{tools_deleted} tools, {knowledge_deleted} knowledge, and {edges_deleted} edges"
+            )
+
+            return {
+                "agents_deleted": agents_deleted,
+                "toolsets_deleted": toolsets_deleted,
+                "tools_deleted": tools_deleted,
+                "knowledge_deleted": knowledge_deleted,
+                "edges_deleted": edges_deleted,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to hard delete all agents: {e}")
+            return {
+                "agents_deleted": 0,
+                "toolsets_deleted": 0,
+                "tools_deleted": 0,
+                "knowledge_deleted": 0,
+                "edges_deleted": 0,
+            }
+
+    async def share_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[bool]:
         """Share an agent to users and teams"""
         try:
             # Check if agent exists and user has permission to share it
-            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -18189,11 +18692,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to share agent: %s", str(e), exc_info=True)
             return False
 
-    async def unshare_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[Dict]:
+    async def unshare_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[Dict]:
         """Unshare an agent from users and teams - direct deletion without validation"""
         try:
             # Check if user has permission to unshare the agent
-            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
             if agent_with_permission is None or not agent_with_permission.get("can_share", False):
                 return {"success": False, "reason": "Insufficient permissions to unshare agent"}
 
@@ -18236,11 +18739,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("Failed to unshare agent: %s", str(e), exc_info=True)
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
-    async def update_agent_permission(self, agent_id: str, owner_user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str, transaction: Optional[str] = None) -> Optional[Dict]:
+    async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str, transaction: Optional[str] = None) -> Optional[Dict]:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
             # Check if the requesting user is the OWNER of the agent
-            agent_with_permission = await self.get_agent(agent_id, owner_user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, owner_user_id, org_id, transaction=transaction)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
                 return {"success": False, "reason": "Agent not found or no permission"}
@@ -18311,11 +18814,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to update agent permission: {str(e)}")
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
-    async def get_agent_permissions(self, agent_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[List[Dict]]:
+    async def get_agent_permissions(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[List[Dict]]:
         """Get all permissions for an agent (only OWNER can view all permissions)"""
         try:
             # Check if user has access to the agent
-            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return None

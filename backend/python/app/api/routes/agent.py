@@ -8,15 +8,16 @@ import uuid
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel
 
+from app.api.middlewares.auth import require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import agent_graph
@@ -70,7 +71,7 @@ class AgentNotFoundError(AgentError):
     """Agent not found"""
     def __init__(self, agent_id: str) -> None:
         super().__init__(
-            detail=f"Agent '{agent_id}' not found or you don't have access to it",
+            detail="Agent not found or you don't have access to it",
             status_code=404
         )
 
@@ -250,7 +251,11 @@ def _parse_models(raw_models: List[Any], logger: Logger) -> tuple[List[str], boo
 
 
 def _parse_toolsets(raw_toolsets: List[Any], logger: Logger) -> Dict[str, Dict[str, Any]]:
-    """Parse toolsets with their tools"""
+    """Parse toolsets with their tools.
+
+    The key of the returned dict is the toolset name (lowercase).
+    Each value carries the parsed fields including optional instanceId.
+    """
     toolsets_with_tools = {}
 
     if not raw_toolsets or not isinstance(raw_toolsets, list):
@@ -267,13 +272,22 @@ def _parse_toolsets(raw_toolsets: List[Any], logger: Logger) -> Dict[str, Dict[s
         display_name = toolset_data.get("displayName", toolset_name.replace("_", " ").title())
         toolset_type = toolset_data.get("type", "app")
         tools_list = toolset_data.get("tools", [])
+        # New field: admin-created instance UUID
+        instance_id = toolset_data.get("instanceId", None)
+        instance_name = toolset_data.get("instanceName", None)
 
         if toolset_name not in toolsets_with_tools:
             toolsets_with_tools[toolset_name] = {
                 "displayName": display_name,
                 "type": toolset_type,
-                "tools": []
+                "tools": [],
+                "instanceId": instance_id,
+                "instanceName": instance_name,
             }
+        elif instance_id and not toolsets_with_tools[toolset_name].get("instanceId"):
+            # Update instanceId if not yet set
+            toolsets_with_tools[toolset_name]["instanceId"] = instance_id
+            toolsets_with_tools[toolset_name]["instanceName"] = instance_name
 
         for tool in tools_list:
             if isinstance(tool, dict):
@@ -345,6 +359,8 @@ async def _create_toolset_edges(
         display_name = toolset_data["displayName"]
         toolset_type = toolset_data["type"]
         tools_list = toolset_data["tools"]
+        instance_id = toolset_data.get("instanceId")
+        instance_name = toolset_data.get("instanceName")
 
         toolset_node = {
             "_key": toolset_key,
@@ -356,6 +372,12 @@ async def _create_toolset_edges(
             "createdAtTimestamp": time,
             "updatedAtTimestamp": time
         }
+
+        # Store instanceId in ArangoDB when provided (admin-created instances)
+        if instance_id:
+            toolset_node["instanceId"] = instance_id
+        if instance_name:
+            toolset_node["instanceName"] = instance_name
 
         toolset_nodes.append(toolset_node)
         toolset_mapping[toolset_name] = {
@@ -624,7 +646,7 @@ def _parse_request_body(body: bytes) -> Dict[str, Any]:
 # Chat Endpoints
 # ============================================================================
 
-@router.post("/agent-chat")
+@router.post("/agent-chat", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
     """Process chat query using LangGraph agent with optimizations"""
     try:
@@ -759,7 +781,7 @@ async def stream_response(
     logger.info(f"Streaming completed. Total chunks: {chunk_count}")
 
 
-@router.post("/agent-chat-stream")
+@router.post("/agent-chat-stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingResponse:
     """Process chat query with streaming"""
     try:
@@ -793,7 +815,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
 # Agent Template Endpoints
 # ============================================================================
 
-@router.post("/template/create")
+@router.post("/template/create", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def create_agent_template(request: Request) -> JSONResponse:
     """Create a new agent template"""
     try:
@@ -857,7 +879,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/template/list")
+@router.get("/template/list", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent_templates(request: Request) -> JSONResponse:
     """Get all agent templates"""
     try:
@@ -882,7 +904,7 @@ async def get_agent_templates(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/template/{template_id}")
+@router.get("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Get an agent template by ID"""
     try:
@@ -910,7 +932,7 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/share-template/{template_id}")
+@router.post("/share-template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def share_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Share an agent template"""
     try:
@@ -942,7 +964,7 @@ async def share_agent_template(request: Request, template_id: str) -> JSONRespon
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/template/{template_id}/clone")
+@router.post("/template/{template_id}/clone", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def clone_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Clone an agent template"""
     try:
@@ -967,7 +989,7 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/template/{template_id}")
+@router.delete("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Delete an agent template"""
     try:
@@ -991,7 +1013,7 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.put("/template/{template_id}")
+@router.put("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def update_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Update an agent template"""
     try:
@@ -1020,7 +1042,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
 # Agent CRUD Endpoints
 # ============================================================================
 
-@router.post("/create")
+@router.post("/create", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def create_agent(request: Request) -> JSONResponse:
     """Create a new agent using graph-based architecture"""
     try:
@@ -1033,6 +1055,7 @@ async def create_agent(request: Request) -> JSONResponse:
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         user_key = user_doc["_key"]
+        org_key = user_context["orgId"]
         time = get_epoch_timestamp_in_ms()
 
         # Parse and validate models
@@ -1052,6 +1075,9 @@ async def create_agent(request: Request) -> JSONResponse:
         # Parse toolsets and knowledge BEFORE starting transaction
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []), logger)
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []), logger)
+
+        # Validate shareWithOrg + toolsets combination BEFORE starting transaction
+        share_with_org = body.get("shareWithOrg", False)
 
         # Create agent document
         agent_key = str(uuid.uuid4())
@@ -1099,8 +1125,9 @@ async def create_agent(request: Request) -> JSONResponse:
             await graph_provider.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value, transaction=transaction_id)
             logger.debug(f"Created agent node: {agent_key}")
 
-            # Step 2: Create permission edge
-            permission_edge = {
+            # Step 2: Create permission edge(s)
+            # share_with_org already validated above before starting transaction
+            user_permission_edge = {
                 "_from": f"{CollectionNames.USERS.value}/{user_key}",
                 "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
                 "role": "OWNER",
@@ -1108,8 +1135,22 @@ async def create_agent(request: Request) -> JSONResponse:
                 "createdAtTimestamp": time,
                 "updatedAtTimestamp": time,
             }
-            await graph_provider.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value, transaction=transaction_id)
-            logger.debug(f"Created permission edge for agent: {agent_key}")
+            permission_edges = [user_permission_edge]
+
+            # Only create org permission edge if shareWithOrg is explicitly set to True
+            if share_with_org:
+                org_permission_edge = {
+                    "_from": f"{CollectionNames.ORGS.value}/{org_key}",
+                    "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+                    "role": "READER",
+                    "type": "ORG",
+                    "createdAtTimestamp": time,
+                    "updatedAtTimestamp": time,
+                }
+                permission_edges.append(org_permission_edge)
+
+            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value, transaction=transaction_id)
+            logger.debug(f"Created permission edge(s) for agent: {agent_key} (shareWithOrg={share_with_org})")
 
             # Step 3: Create toolsets and tools (within same transaction)
             if toolsets_with_tools:
@@ -1126,6 +1167,8 @@ async def create_agent(request: Request) -> JSONResponse:
                     display_name = toolset_data["displayName"]
                     toolset_type = toolset_data["type"]
                     tools_list = toolset_data["tools"]
+                    instance_id = toolset_data.get("instanceId")
+                    instance_name = toolset_data.get("instanceName")
 
                     toolset_node = {
                         "_key": toolset_key,
@@ -1137,6 +1180,12 @@ async def create_agent(request: Request) -> JSONResponse:
                         "createdAtTimestamp": time,
                         "updatedAtTimestamp": time
                     }
+
+                    # Store instanceId in ArangoDB node when provided (admin-created instances)
+                    if instance_id:
+                        toolset_node["instanceId"] = instance_id
+                    if instance_name:
+                        toolset_node["instanceName"] = instance_name
 
                     toolset_nodes.append(toolset_node)
                     toolset_mapping[toolset_name] = {
@@ -1328,15 +1377,16 @@ async def create_agent(request: Request) -> JSONResponse:
         logger.error(f"Error creating agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/{agent_id}")
+@router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     """Get an agent by ID with enriched data"""
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1360,15 +1410,16 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/")
+@router.get("/", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agents(request: Request) -> JSONResponse:
     """Get all agents"""
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agents = await services["graph_provider"].get_all_agents(user_doc["_key"])
+        agents = await services["graph_provider"].get_all_agents(user_doc["_key"], org_key)
 
         if not agents:
             raise HTTPException(status_code=404, detail="No agents found")
@@ -1388,7 +1439,7 @@ async def get_agents(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.put("/{agent_id}")
+@router.put("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def update_agent(request: Request, agent_id: str) -> JSONResponse:
     """Update an agent using graph-based architecture"""
     try:
@@ -1399,6 +1450,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         body = _parse_request_body(await request.body())
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         user_key = user_doc["_key"]
+        org_key = user_context["orgId"]
 
         # Validate models if provided in update body
         if "models" in body:
@@ -1416,15 +1468,50 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 )
 
         # Check permissions
-        agent = await services["graph_provider"].get_agent(agent_id, user_key)
+        agent = await services["graph_provider"].get_agent(agent_id, user_key, org_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
 
         if not agent.get("can_edit", False):
             raise PermissionDeniedError("edit this agent (only owner can edit)")
 
+        # Handle shareWithOrg flag changes
+        if "shareWithOrg" in body:
+            new_share_with_org = bool(body.get("shareWithOrg", False))
+            current_share_with_org = bool(agent.get("shareWithOrg", False))
+
+            if new_share_with_org and not current_share_with_org:
+                # Turning ON org sharing: validate no toolsets exist or being added
+
+                # Create the org permission edge
+                time = get_epoch_timestamp_in_ms()
+                org_permission_edge = {
+                    "_from": f"{CollectionNames.ORGS.value}/{org_key}",
+                    "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
+                    "role": "READER",
+                    "type": "ORG",
+                    "createdAtTimestamp": time,
+                    "updatedAtTimestamp": time,
+                }
+                await services["graph_provider"].batch_create_edges(
+                    [org_permission_edge], CollectionNames.PERMISSION.value
+                )
+                logger.info(f"Created org permission edge for agent {agent_id}")
+
+            elif not new_share_with_org and current_share_with_org:
+                # Turning OFF org sharing: delete the org permission edge using the standard delete_edge method
+                await services["graph_provider"].delete_edge(
+                    from_id=org_key,
+                    from_collection=CollectionNames.ORGS.value,
+                    to_id=agent_id,
+                    to_collection=CollectionNames.AGENT_INSTANCES.value,
+                    collection=CollectionNames.PERMISSION.value
+                )
+                logger.info(f"Deleted org permission edge for agent {agent_id}")
+
+
         # Update agent document
-        result = await services["graph_provider"].update_agent(agent_id, body, user_key)
+        result = await services["graph_provider"].update_agent(agent_id, body, user_key, org_key)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to update agent")
 
@@ -1711,15 +1798,18 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         logger.error(f"Error updating agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.delete("/{agent_id}")
+@router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
-    """Delete an agent"""
+    """Delete an agent using a transaction to ensure atomicity"""
+    txn_id = None
+    services = None
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1727,18 +1817,70 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent.get("can_delete", False):
             raise PermissionDeniedError("delete this agent (only owner can delete)")
 
-        result = await services["graph_provider"].delete_agent(agent_id, user_doc["_key"])
-        if not result:
+        # Begin transaction for atomic deletion
+        txn_id = await services["graph_provider"].begin_transaction(
+            read=[
+                CollectionNames.AGENT_INSTANCES.value,
+                CollectionNames.AGENT_TOOLSETS.value,
+                CollectionNames.AGENT_TOOLS.value,
+                CollectionNames.AGENT_KNOWLEDGE.value,
+            ],
+            write=[
+                CollectionNames.AGENT_INSTANCES.value,
+                CollectionNames.AGENT_TOOLSETS.value,
+                CollectionNames.AGENT_TOOLS.value,
+                CollectionNames.AGENT_KNOWLEDGE.value,
+                CollectionNames.AGENT_HAS_TOOLSET.value,
+                CollectionNames.AGENT_HAS_KNOWLEDGE.value,
+                CollectionNames.TOOLSET_HAS_TOOL.value,
+                CollectionNames.PERMISSION.value,
+            ],
+        )
+        services["logger"].debug(f"🔄 Started transaction {txn_id} for agent deletion")
+
+        # Use hard delete to completely remove agent and all related nodes/edges
+        result = await services["graph_provider"].hard_delete_agent(agent_id, transaction=txn_id)
+        if not result or result.get("agents_deleted", 0) == 0:
+            if txn_id is not None:
+                await services["graph_provider"].rollback_transaction(txn_id)
             raise HTTPException(status_code=500, detail="Failed to delete agent")
+
+        # Commit transaction on success
+        await services["graph_provider"].commit_transaction(txn_id)
+        services["logger"].info(f"✅ Successfully deleted agent {agent_id} in transaction {txn_id}")
 
         return JSONResponse(
             status_code=200,
-            content={"status": "success", "message": "Agent deleted successfully"}
+            content={
+                "status": "success",
+                "message": "Agent deleted successfully",
+                "deleted": {
+                    "agents": result.get("agents_deleted", 0),
+                    "toolsets": result.get("toolsets_deleted", 0),
+                    "tools": result.get("tools_deleted", 0),
+                    "knowledge": result.get("knowledge_deleted", 0),
+                    "edges": result.get("edges_deleted", 0)
+                }
+            }
         )
     except HTTPException:
+        if txn_id is not None and services is not None:
+            try:
+                await services["graph_provider"].rollback_transaction(txn_id)
+                services["logger"].debug(f"🔄 Rolled back transaction {txn_id} due to HTTPException")
+            except Exception as rb_err:
+                if services is not None:
+                    services["logger"].warning(f"⚠️ Failed to rollback transaction {txn_id}: {rb_err}")
         raise
     except Exception as e:
-        services["logger"].error(f"Error deleting agent: {e}", exc_info=True)
+        if txn_id is not None and services is not None:
+            try:
+                await services["graph_provider"].rollback_transaction(txn_id)
+                services["logger"].debug(f"🔄 Rolled back transaction {txn_id} due to error")
+            except Exception as rb_err:
+                services["logger"].warning(f"⚠️ Failed to rollback transaction {txn_id}: {rb_err}")
+        if services is not None:
+            services["logger"].error(f"Error deleting agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -1746,19 +1888,20 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
 # Agent Sharing & Permissions
 # ============================================================================
 
-@router.post("/{agent_id}/share")
+@router.post("/{agent_id}/share", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def share_agent(request: Request, agent_id: str) -> JSONResponse:
     """Share an agent"""
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         body = _parse_request_body(await request.body())
         user_ids = body.get("userIds", [])
         team_ids = body.get("teamIds", [])
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1766,7 +1909,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent.get("can_share", False):
             raise PermissionDeniedError("share this agent")
 
-        result = await services["graph_provider"].share_agent(agent_id, user_doc["_key"], user_ids, team_ids)
+        result = await services["graph_provider"].share_agent(agent_id, user_doc["_key"], org_key, user_ids, team_ids)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to share agent")
 
@@ -1781,19 +1924,20 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/{agent_id}/unshare")
+@router.post("/{agent_id}/unshare", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
     """Unshare an agent"""
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         body = _parse_request_body(await request.body())
         user_ids = body.get("userIds", [])
         team_ids = body.get("teamIds", [])
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1801,7 +1945,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent.get("can_share", False):
             raise PermissionDeniedError("unshare this agent")
 
-        result = await services["graph_provider"].unshare_agent(agent_id, user_doc["_key"], user_ids, team_ids)
+        result = await services["graph_provider"].unshare_agent(agent_id, user_doc["_key"], org_key, user_ids, team_ids)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to unshare agent")
 
@@ -1816,18 +1960,19 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/{agent_id}/permissions")
+@router.get("/{agent_id}/permissions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse:
     """Get all permissions for an agent"""
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        permissions = await services["graph_provider"].get_agent_permissions(agent_id, user_doc["_key"])
+        permissions = await services["graph_provider"].get_agent_permissions(agent_id, user_doc["_key"], org_key)
 
-        if permissions is None:
-            raise PermissionDeniedError("view permissions for this agent")
+        # if permissions is None:
+            # raise PermissionDeniedError("view permissions for this agent")
 
         return JSONResponse(
             status_code=200,
@@ -1844,12 +1989,13 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.put("/{agent_id}/permissions")
+@router.put("/{agent_id}/permissions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def update_agent_permission(request: Request, agent_id: str) -> JSONResponse:
     """Update permission role for a user on an agent"""
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         body = _parse_request_body(await request.body())
         user_ids = body.get("userIds", [])
@@ -1860,7 +2006,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
             raise InvalidRequestError("Role is required")
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        result = await services["graph_provider"].update_agent_permission(agent_id, user_doc["_key"], user_ids, team_ids, role)
+        result = await services["graph_provider"].update_agent_permission(agent_id, user_doc["_key"], org_key, user_ids, team_ids, role)
 
         if not result:
             raise HTTPException(status_code=500, detail="Failed to update agent permission")
@@ -1880,7 +2026,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
 # Agent Chat Endpoints
 # ============================================================================
 
-@router.post("/{agent_id}/chat")
+@router.post("/{agent_id}/chat", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONResponse:
     """Chat with an agent"""
     try:
@@ -1892,6 +2038,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         reranker_service = services["reranker_service"]
         config_service = services["config_service"]
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
 
         # Get user and org info
@@ -1900,7 +2047,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Get agent
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
 
@@ -2004,7 +2151,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/{agent_id}/chat/stream")
+@router.post("/{agent_id}/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     """Chat with an agent using streaming response"""
     try:
@@ -2019,30 +2166,50 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         reranker_service = services["reranker_service"]
         config_service = services["config_service"]
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
 
+        # Get user and org info first (needed to fetch agent)
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
+        enriched_user_info = await _enrich_user_info(user_context, user_doc)
+        org_info = await _get_org_info(user_context, services["graph_provider"], logger)
+
+        # Get agent before LLM init so we can fall back to its model config
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
+        if not agent:
+            raise AgentNotFoundError(agent_id)
+
+        # Determine model key/name: prefer explicit query params, then agent's first model
+        model_key = chat_query.modelKey
+        model_name = chat_query.modelName
+        if not model_key and not model_name:
+            agent_models = agent.get("models", [])
+            if agent_models:
+                first_model = agent_models[0]
+                if isinstance(first_model, str) and "_" in first_model:
+                    parts = first_model.split("_", 1)
+                    model_key = parts[0]
+                    model_name = parts[1] if len(parts) > 1 else None
+                elif isinstance(first_model, str):
+                    model_key = first_model
+                elif isinstance(first_model, dict):
+                    model_key = first_model.get("modelKey")
+                    model_name = first_model.get("modelName")
+            if model_key:
+                logger.info(f"Using agent's first model for LLM: modelKey={model_key}, modelName={model_name}")
+
         # Get LLM for chat
         llm = (await get_llm_for_chat(
             services["config_service"],
-            chat_query.modelKey,
-            chat_query.modelName,
+            model_key,
+            model_name,
             chat_query.chatMode
         ))[0]
 
         if not llm:
             raise LLMInitializationError()
-
-        # Get user and org info
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
-        enriched_user_info = await _enrich_user_info(user_context, user_doc)
-        org_info = await _get_org_info(user_context, services["graph_provider"], logger)
-
-        # Get agent
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
-        if not agent:
-            raise AgentNotFoundError(agent_id)
 
         # Get and filter toolsets
         agent_toolsets = agent.get("toolsets", [])
@@ -2060,45 +2227,127 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     filtered_toolsets.append(toolset_copy)
             agent_toolsets = filtered_toolsets
 
-        # Load toolset configs from etcd
-        from app.agents.constants.toolset_constants import normalize_app_name
+        # ============================================================================
+        # LOAD TOOLSET CONFIGS FOR EXECUTING USER (SECURITY-CRITICAL)
+        # ============================================================================
+        # Load toolset configs from ETCD using the EXECUTING user's ID, not the owner's.
+        # This ensures that when a shared agent is executed, the credentials of the
+        # user making the request are used — not the agent creator's credentials.
+        #
+        # SECURITY MODEL:
+        # 1. Toolset nodes in graph DB contain ONLY: instanceId, name, displayName, tools
+        # 2. NO userId is stored in toolset nodes (prevents credential leakage)
+        # 3. User credentials fetched from: /services/toolsets/{instanceId}/{userId}
+        # 4. userId ALWAYS comes from authenticated request context (not stored in DB)
+        # 5. instanceId is the UUID of the admin-created toolset instance
+        # ============================================================================
 
-        toolset_configs = {}
-        for toolset in agent_toolsets:
-            toolset_name = toolset.get("name")
-            user_id = toolset.get("userId")
+        executing_user_id = user_context["userId"]
+        toolset_configs: dict = {}  # SENSITIVE: Contains user credentials
 
-            if toolset_name and user_id:
+        # Filter to toolsets that actually have a name or instanceId before the concurrent fetch
+        named_toolsets = [t for t in agent_toolsets if t.get("instanceId") or t.get("name")]
+
+        if named_toolsets:
+            import asyncio as _asyncio
+
+            async def _fetch_toolset_config(toolset: dict) -> tuple[dict, Any]:
+                """Return (toolset, config_or_None) without raising.
+
+                Uses instanceId (admin-created instance) if available, otherwise falls
+                back to the legacy toolset name for backward compatibility.
+                """
+                instance_id = toolset.get("instanceId")
+                toolset_name = toolset.get("name", "")
+                lookup_key = instance_id
                 try:
-                    # Normalize toolset name to match etcd path structure
-                    normalized_toolset_name = normalize_app_name(toolset_name)
-                    synthetic_id = f"{user_id}_{normalized_toolset_name}"
-                    etcd_path = get_toolset_config_path(user_id, toolset_name)
+                    etcd_path = get_toolset_config_path(lookup_key, executing_user_id)
                     config = await services["config_service"].get_config(etcd_path)
-                    if config:
-                        toolset_configs[synthetic_id] = config
-                except Exception as e:
-                    logger.warning(f"Failed to load config for {toolset_name}: {e}")
+                    return toolset, config
+                except Exception as exc:
+                    logger.warning(f"Failed to load config for toolset '{toolset_name}' (lookup_key='{lookup_key}'): {exc}")
+                    return toolset, None
 
-        # Get and filter knowledge
+            # Fetch ALL toolset configs in parallel
+            fetch_results = await _asyncio.gather(*[_fetch_toolset_config(t) for t in named_toolsets])
+
+            configured_toolsets = []
+            missing_toolset_display_names: list[str] = []        # no config found at all
+            unauthenticated_toolset_display_names: list[str] = []  # config exists but OAuth not completed
+
+            for toolset, config in fetch_results:
+                instance_id = toolset.get("instanceId")
+                toolset_name = toolset.get("name", "")
+                lookup_key = instance_id
+                display_name = toolset.get("instanceName") or toolset.get("displayName") or toolset_name.replace("_", " ").title()
+
+                if config and config.get("isAuthenticated", False):
+                    # Fully configured and authenticated — allow
+                    # Use instanceId as the toolset_configs key so downstream code
+                    # (_build_tool_to_toolset_map) can look it up correctly.
+                    toolset_configs[lookup_key] = config
+                    configured_toolsets.append(toolset)
+                elif config:
+                    # Config saved but authentication not completed (e.g. OAuth flow pending)
+                    unauthenticated_toolset_display_names.append(display_name)
+                    logger.warning(
+                        f"Toolset '{toolset_name}' (instance='{instance_id}') is configured but not "
+                        f"authenticated for user '{executing_user_id}'. User needs to complete the auth flow."
+                    )
+                else:
+                    # No config found at all
+                    missing_toolset_display_names.append(display_name)
+                    logger.warning(
+                        f"Toolset config not found for user '{executing_user_id}' / "
+                        f"toolset '{toolset_name}' (instance='{instance_id}'). "
+                        "User needs to configure this integration."
+                    )
+
+            # Hard-block if ANY toolset is either unconfigured or unauthenticated
+            if missing_toolset_display_names or unauthenticated_toolset_display_names:
+                problem_parts = []
+                if missing_toolset_display_names:
+                    missing_list = ", ".join(f"'{n}'" for n in missing_toolset_display_names)
+                    problem_parts.append(f"not configured: {missing_list}")
+                if unauthenticated_toolset_display_names:
+                    unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_toolset_display_names)
+                    problem_parts.append(f"not authenticated: {unauth_list}")
+
+                error_message = (
+                    f"This agent requires the following toolset(s) to be set up — "
+                    f"{'; '.join(problem_parts)}. "
+                    "Please connect your account(s) in Settings → Toolsets before using this agent."
+                )
+                logger.info(
+                    f"Blocking agent {agent_id} execution for user '{executing_user_id}': "
+                    f"toolset issue(s) — {'; '.join(problem_parts)}"
+                )
+
+                async def _toolset_config_error_stream() -> AsyncGenerator[str, None]:
+                    yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'toolset_config_missing'})}\n\n"
+
+                return StreamingResponse(_toolset_config_error_stream(), media_type="text/event-stream")
+
+            agent_toolsets = configured_toolsets
+
+        # Build filters and knowledge from agent's knowledge sources
         agent_knowledge = agent.get("knowledge", [])
-        if chat_query.filters and chat_query.filters.get("apps"):
-            enabled_apps_set = set(chat_query.filters["apps"])
-            agent_knowledge = [
-                k for k in agent_knowledge
-                if k.get("connectorId") in enabled_apps_set
-            ]
-
-        # Build filters from knowledge array (new format)
         filters = chat_query.filters.copy() if chat_query.filters else {}
 
-        # Extract KB record groups from agent's knowledge array if not in query filters
-        if not chat_query.filters or "kb" not in chat_query.filters:
-            agent_knowledge = agent.get("knowledge", [])
+        if not chat_query.filters:
+            # No explicit filters supplied — derive everything from the agent's knowledge config
+            knowledge_connector_ids = []
             kb_record_groups = []
 
             for k in agent_knowledge:
                 if isinstance(k, dict):
+                    connector_id = k.get("connectorId")
+                    # knowledgeBase_* connectors represent KB sources — they should NOT
+                    # go into apps; their record groups are collected into kb instead.
+                    if connector_id and not connector_id.startswith("knowledgeBase_"):
+                        knowledge_connector_ids.append(connector_id)
+
+                    # Parse nested filters (stored as JSON string or dict)
                     filters_data = k.get("filters", {})
                     if isinstance(filters_data, str):
                         try:
@@ -2110,7 +2359,48 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     if record_groups:
                         kb_record_groups.extend(record_groups)
 
-            filters["kb"] = kb_record_groups if kb_record_groups else (chat_query.filters.get("kb", []) if chat_query.filters else [])
+            filters = {
+                "apps": knowledge_connector_ids,
+                "kb": kb_record_groups,
+            }
+            logger.info(f"Filters: {filters}")
+        else:
+            # Explicit filters supplied — override individual keys where provided,
+            # but fall back to agent's knowledge for keys that are absent.
+            if "apps" not in chat_query.filters or chat_query.filters["apps"] is None:
+                knowledge_connector_ids = [
+                    k.get("connectorId") for k in agent_knowledge
+                    if isinstance(k, dict) and k.get("connectorId")
+                    and not k.get("connectorId", "").startswith("knowledgeBase_")
+                ]
+                filters["apps"] = knowledge_connector_ids
+
+            if "kb" not in chat_query.filters or chat_query.filters["kb"] is None:
+                kb_record_groups = []
+                for k in agent_knowledge:
+                    if isinstance(k, dict):
+                        filters_data = k.get("filters", {})
+                        if isinstance(filters_data, str):
+                            try:
+                                filters_data = json.loads(filters_data)
+                            except json.JSONDecodeError:
+                                filters_data = {}
+                        record_groups = filters_data.get("recordGroups", [])
+                        if record_groups:
+                            kb_record_groups.extend(record_groups)
+                filters["kb"] = kb_record_groups
+            logger.info(f"Filters: {filters}")
+
+        # Narrow agent_knowledge to only the connectors present in filters["apps"]
+        # so the query_info knowledge list stays consistent with the resolved filters.
+        enabled_apps_set = set(filters.get("apps", []))
+        if enabled_apps_set:
+            agent_knowledge = [
+                k for k in agent_knowledge
+                if isinstance(k, dict) and k.get("connectorId") in enabled_apps_set
+            ]
+
+        logger.info(f"Filters: {filters}")
 
         # Build query info
         query_info = {

@@ -20,7 +20,7 @@ class TokenRefreshService:
     def __init__(self, configuration_service: ConfigurationService, graph_provider: IGraphDBProvider) -> None:
         self.configuration_service = configuration_service
         self.graph_provider = graph_provider
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger("connector_service")
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations

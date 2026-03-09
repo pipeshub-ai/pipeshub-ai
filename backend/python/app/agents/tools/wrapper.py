@@ -65,6 +65,81 @@ class ToolInstanceCreator:
         else:
             return self._fallback_creation(action_class)
 
+    async def create_instance_async(self, action_class: type, app_name: str, tool_full_name: str = None) -> object:
+        """Create an instance of an action class with proper client (async version).
+
+        This avoids spawning a new event loop in a thread pool (which causes Redis
+        cross-loop errors on retries) by awaiting the factory's create_client coroutine
+        directly in the current event loop.
+
+        Args:
+            action_class: Class to instantiate
+            app_name: Name of the application
+            tool_full_name: Full tool name (e.g., "slack.send_message") for toolset lookup
+        Returns:
+            Instance of action_class
+        """
+        factory = ClientFactoryRegistry.get_factory(app_name)
+
+        if factory:
+            return await self._create_with_factory_async(factory, action_class, app_name, tool_full_name)
+        else:
+            return self._fallback_creation(action_class)
+
+    async def _create_with_factory_async(
+        self,
+        factory: object,
+        action_class: type,
+        app_name: str,
+        tool_full_name: str = None
+    ) -> object:
+        """Create instance using factory with async client creation (no thread-pool loop).
+
+        Args:
+            factory: Client factory instance
+            action_class: Class to instantiate
+            app_name: Application name
+            tool_full_name: Full tool name for toolset lookup
+
+        Returns:
+            Instance of action_class
+        """
+        try:
+            toolset_config = self._get_toolset_config(tool_full_name) if tool_full_name else None
+
+            config = toolset_config if toolset_config else {}
+
+            if self.logger:
+                if toolset_config:
+                    self.logger.debug(f"Using toolset auth for {app_name} (ID: {tool_full_name})")
+                else:
+                    self.logger.warning(
+                        f"No toolset config for {app_name} (tool: {tool_full_name}), "
+                        f"falling back to legacy auth"
+                    )
+
+            client = await factory.create_client(
+                self.config_service,
+                self.logger,
+                config,
+                self.state
+            )
+            return action_class(client)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(
+                    f"Failed to create client for {app_name}: {e}",
+                    exc_info=True
+                )
+            error_msg = str(e).lower()
+            if "not authenticated" in error_msg or "oauth" in error_msg or "authentication" in error_msg:
+                toolset_name = app_name.capitalize() if app_name else "Toolset"
+                raise ValueError(
+                    f"{toolset_name} toolset is not authenticated. Please complete the OAuth flow first. "
+                    f"Go to Settings > Toolsets to authenticate your {toolset_name} account."
+                ) from e
+            return self._fallback_creation(action_class)
+
     def _create_with_factory(
         self,
         factory: object,
@@ -118,6 +193,16 @@ class ToolInstanceCreator:
                     f"Failed to create client for {app_name}: {e}",
                     exc_info=True
                 )
+            # Check if this is an authentication error
+            error_msg = str(e).lower()
+            if "not authenticated" in error_msg or "oauth" in error_msg or "authentication" in error_msg:
+                # Re-raise authentication errors with user-friendly message
+                toolset_name = app_name.capitalize() if app_name else "Toolset"
+                raise ValueError(
+                    f"{toolset_name} toolset is not authenticated. Please complete the OAuth flow first. "
+                    f"Go to Settings > Toolsets to authenticate your {toolset_name} account."
+                ) from e
+            # For other errors, fall back to legacy creation
             return self._fallback_creation(action_class)
 
     def _get_toolset_config(self, tool_full_name: str) -> Optional[Dict]:
@@ -426,7 +511,11 @@ class RegistryToolWrapper(BaseTool):
 
             # Pass tool full name for toolset auth lookup
             tool_full_name = self.name  # self.name is "app_name.tool_name"
-            instance = self.instance_creator.create_instance(
+            # Use async instance creation to avoid spawning a new event loop in a
+            # thread pool (which causes Redis "Future attached to a different loop"
+            # errors on retries). Awaiting create_client directly in the current
+            # event loop keeps all async operations on a single loop.
+            instance = await self.instance_creator.create_instance_async(
                 action_class,
                 self.app_name,
                 tool_full_name

@@ -21,6 +21,7 @@ interface SidebarCategoryProps {
   dragType?: string;
   borderColor?: string;
   showConfigureIcon?: boolean;
+  showAuthenticatedIndicator?: boolean; // Show green checkmark for authenticated toolsets
   onConfigureClick?: () => void;
   onDragAttempt?: () => void;
   dragData?: Record<string, any>;
@@ -36,6 +37,7 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
   dragType,
   borderColor,
   showConfigureIcon = false,
+  showAuthenticatedIndicator = false,
   onConfigureClick,
   onDragAttempt,
   dragData,
@@ -112,7 +114,7 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
               height={18}
               style={{ objectFit: 'contain' }}
               onError={(e) => {
-                e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                e.currentTarget.src = '/assets/icons/connectors/collections-gray.svg';
               }}
             />
           ) : (
@@ -155,9 +157,30 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
             {itemCount}
           </Typography>
           
+          {/* Authenticated Indicator (Green Checkmark) */}
+          {showAuthenticatedIndicator && (
+            <Tooltip title="Authenticated" placement="right">
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  ml: 0.5,
+                }}
+              >
+                <Icon 
+                  icon={UI_ICONS.authenticated}
+                  width={16}
+                  height={16}
+                  style={{ color: theme.palette.success.main }}
+                />
+              </Box>
+            </Tooltip>
+          )}
+          
           {/* Configure Icon */}
           {showConfigureIcon && onConfigureClick && (
-            <Tooltip title="Configure connector" placement="right">
+            <Tooltip title="Configure toolset" placement="right">
               <IconButton
                 size="small"
                 onClick={(e) => {

@@ -1574,7 +1574,7 @@ class IGraphDBProvider(ABC):
         record_id: str,
         transaction: Optional[str] = None,
     ) -> bool:
-        """Delete the incoming PARENT_CHILD edge to a record."""
+        """Delete PARENT_CHILD edge(s) to a record."""
         pass
 
     @abstractmethod
@@ -1753,6 +1753,24 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_app_creator_user(
+        self,
+        connector_id: str,
+        transaction:Optional[str]=None
+    )->Optional['User']:
+        """
+        Resolve the creator of an App/Connector by connectorId, using the
+        `createdBy` field on the app document to fetch the user from `users`.
+
+        Args:
+            connector_id: Connector/App id (_key)
+            transaction: Optional transaction context
+
+        Returns:
+            User if found, otherwise None
+        """
+        pass
     # ==================== Organization Operations ====================
 
     @abstractmethod
@@ -2926,6 +2944,28 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of failed record documents
+        """
+        pass
+
+    @abstractmethod
+    async def check_toolset_instance_in_use(
+        self,
+        instance_id: str,
+        transaction: Optional[str] = None
+    ) -> List[str]:
+        """
+        Check if a toolset instance is currently in use by any active agents.
+
+        This method finds all toolset nodes with the given instanceId and checks
+        if any non-deleted agents are using them.
+
+        Args:
+            instance_id (str): Toolset instance ID to check
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of agent names that are using the toolset instance.
+                      Empty list if not in use.
         """
         pass
 

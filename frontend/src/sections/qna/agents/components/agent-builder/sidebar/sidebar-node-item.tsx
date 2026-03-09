@@ -44,6 +44,9 @@ export const SidebarNodeItem: React.FC<SidebarNodeItemProps> = ({
         const fullName = template.defaultConfig.fullName || template.type || (toolsetName && toolName ? `${toolsetName}.${toolName}` : '');
         
         event.dataTransfer.setData('type', 'tool');
+        event.dataTransfer.setData('instanceId', template.defaultConfig.instanceId || '');
+        event.dataTransfer.setData('instanceName', template.defaultConfig.instanceName || '');
+        event.dataTransfer.setData('toolsetType', template.defaultConfig.toolsetType || toolsetName);
         event.dataTransfer.setData('toolsetName', toolsetName);
         event.dataTransfer.setData('displayName', template.defaultConfig.displayName || '');
         event.dataTransfer.setData('toolName', toolName);

@@ -136,6 +136,39 @@ class Gmail:
         """
         self.client = GoogleGmailDataSource(client)
 
+    def _handle_error(self, error: Exception, operation: str = "operation") -> tuple[bool, str]:
+        """Handle errors with user-friendly authentication messages.
+
+        Args:
+            error: The exception that occurred
+            operation: Description of the operation that failed
+
+        Returns:
+            tuple[bool, str]: (False, error_json_string)
+        """
+        error_msg = str(error).lower()
+
+        # Check for AttributeError (client not properly initialized)
+        if isinstance(error, AttributeError):
+            if "users" in str(error) or "client" in error_msg:
+                logger.error(f"Gmail client not properly initialized - authentication may be required: {error}")
+                return False, json.dumps({
+                    "error": "Gmail toolset is not authenticated. Please complete the OAuth flow first. "
+                             "Go to Settings > Toolsets to authenticate your Gmail account."
+                })
+
+        # Check for authentication-related errors
+        if isinstance(error, ValueError) or "not authenticated" in error_msg or "oauth" in error_msg or "authentication" in error_msg:
+            logger.error(f"Gmail authentication error during {operation}: {error}")
+            return False, json.dumps({
+                "error": "Gmail toolset is not authenticated. Please complete the OAuth flow first. "
+                         "Go to Settings > Toolsets to authenticate your Gmail account."
+            })
+
+        # Generic error handling
+        logger.error(f"Failed to {operation}: {error}")
+        return False, json.dumps({"error": str(error)})
+
 
     @tool(
         app_name="gmail",
@@ -208,8 +241,7 @@ class Gmail:
                 "message": message,
             })
         except Exception as e:
-            logger.error(f"Failed to send reply: {e}")
-            return False, json.dumps({"error": str(e)})
+            return self._handle_error(e, "send reply")
 
     @tool(
         app_name="gmail",
@@ -276,8 +308,7 @@ class Gmail:
                 "draft": draft,
             })
         except Exception as e:
-            logger.error(f"Failed to create draft: {e}")
-            return False, json.dumps({"error": str(e)})
+            return self._handle_error(e, "create draft")
 
     @tool(
         app_name="gmail",
@@ -350,8 +381,7 @@ class Gmail:
                 "message": message,
             })
         except Exception as e:
-            logger.error(f"Failed to send email: {e}")
-            return False, json.dumps({"error": str(e)})
+            return self._handle_error(e, "send email")
 
     @tool(
         app_name="gmail",
@@ -447,8 +477,7 @@ class Gmail:
                 "resultSizeEstimate": result_size_estimate,
             })
         except Exception as e:
-            logger.error(f"Failed to search emails: {e}")
-            return False, json.dumps({"error": str(e)})
+            return self._handle_error(e, "search emails")
 
     @tool(
         app_name="gmail",
@@ -494,8 +523,7 @@ class Gmail:
             )
             return True, json.dumps(message)
         except Exception as e:
-            logger.error(f"Failed to get email details for {message_id}: {e}")
-            return False, json.dumps({"error": str(e)})
+            return self._handle_error(e, f"get email details for {message_id}")
 
     @tool(
         app_name="gmail",
@@ -553,8 +581,7 @@ class Gmail:
 
             return True, json.dumps(attachments)
         except Exception as e:
-            logger.error(f"Failed to get email attachments for {message_id}: {e}")
-            return False, json.dumps({"error": str(e)})
+            return self._handle_error(e, f"get email attachments for {message_id}")
 
     @tool(
         app_name="gmail",
@@ -603,8 +630,7 @@ class Gmail:
                 "history_id": profile.get("historyId", "")
             })
         except Exception as e:
-            logger.error(f"Failed to get user profile: {e}")
-            return False, json.dumps({"error": str(e)})
+            return self._handle_error(e, "get user profile")
 
     # @tool(
     #     app_name="gmail",

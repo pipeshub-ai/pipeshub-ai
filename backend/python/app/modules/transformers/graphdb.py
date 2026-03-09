@@ -10,7 +10,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
-class Arango(Transformer):
+class GraphDBTransformer(Transformer):
     def __init__(self, graph_provider: IGraphDBProvider, logger) -> None:
         super().__init__()
         self.logger = logger
@@ -19,12 +19,36 @@ class Arango(Transformer):
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
         metadata = record.semantic_metadata
-        if metadata is None:
-            return
-        record_id = record.id
         virtual_record_id = record.virtual_record_id
-        is_vlm_ocr_processed = getattr(record, 'is_vlm_ocr_processed', False)
-        await self.save_metadata_to_db(record_id, metadata, virtual_record_id, is_vlm_ocr_processed)
+        record_id = record.id
+
+        if metadata is None:
+            try:
+                async with self.graph_data_store.transaction() as tx_store:
+                    # Update extraction status for the record
+                    timestamp = get_epoch_timestamp_in_ms()
+                    # Update indexing status for the record
+                    status_doc = {
+                        "id": record_id,
+                        "extractionStatus": "FAILED",
+                        "lastExtractionTimestamp": timestamp,
+                        "indexingStatus": "COMPLETED",
+                        "isDirty": False,
+                        "virtualRecordId": virtual_record_id,
+                        "lastIndexTimestamp": timestamp,
+                    }
+                    self.logger.info(
+                        "🎯 Upserting indexing status metadata for document"
+                    )
+                    await tx_store.batch_upsert_nodes(
+                        [status_doc], CollectionNames.RECORDS.value
+                    )
+            except Exception as e:
+                self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
+                raise
+        else:
+            is_vlm_ocr_processed = getattr(record, 'is_vlm_ocr_processed', False)
+            await self.save_metadata_to_db(record_id, metadata, virtual_record_id, is_vlm_ocr_processed)
 
     async def save_metadata_to_db(
         self,  record_id: str, metadata: SemanticMetadata, virtual_record_id: str, is_vlm_ocr_processed: bool = False

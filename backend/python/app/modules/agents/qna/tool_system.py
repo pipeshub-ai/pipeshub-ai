@@ -103,13 +103,23 @@ class ToolLoader:
         """
         state_logger = state.get("logger")
 
+        has_knowledge = bool(state.get("kb") or state.get("apps") or state.get("agent_knowledge"))
+
         # Check cache validity
         cached_tools = state.get("_cached_agent_tools")
         cached_blocked = state.get("_cached_blocked_tools", {})
+        cached_has_knowledge = state.get("_cached_has_knowledge", None)
         blocked_tools = _get_blocked_tools(state)
 
+        # Cache is valid only when BOTH blocked_tools AND has_knowledge are unchanged
+        cache_valid = (
+            cached_tools is not None
+            and blocked_tools == cached_blocked
+            and cached_has_knowledge == has_knowledge
+        )
+
         # Return cached tools if valid
-        if cached_tools is not None and blocked_tools == cached_blocked:
+        if cache_valid:
             if state_logger:
                 state_logger.debug(f"⚡ Using cached tools ({len(cached_tools)} tools)")
             return cached_tools
@@ -117,7 +127,13 @@ class ToolLoader:
         # Cache miss or invalidated - rebuild
         if state_logger:
             if cached_tools:
-                state_logger.info("🔄 Blocked tools changed - rebuilding cache")
+                if cached_has_knowledge != has_knowledge:
+                    state_logger.info(
+                        f"🔄 has_knowledge changed ({cached_has_knowledge} → {has_knowledge}) "
+                        "— rebuilding tool cache so retrieval tool is included/excluded correctly"
+                    )
+                else:
+                    state_logger.info("🔄 Blocked tools changed - rebuilding cache")
             else:
                 state_logger.info("📦 First tool load - building cache")
 
@@ -127,13 +143,14 @@ class ToolLoader:
         # Initialize tool state
         _initialize_tool_state(state)
 
-        # Cache results
+        # Cache results (now including has_knowledge so next call can detect staleness)
         state["_cached_agent_tools"] = all_tools
         state["_cached_blocked_tools"] = blocked_tools.copy()
+        state["_cached_has_knowledge"] = has_knowledge
         state["available_tools"] = [t.name for t in all_tools]
 
         if state_logger:
-            state_logger.info(f"✅ Cached {len(all_tools)} tools")
+            state_logger.info(f"✅ Cached {len(all_tools)} tools (has_knowledge={has_knowledge})")
             if blocked_tools:
                 state_logger.warning(f"⚠️ Blocked {len(blocked_tools)} failed tools: {list(blocked_tools.keys())}")
 

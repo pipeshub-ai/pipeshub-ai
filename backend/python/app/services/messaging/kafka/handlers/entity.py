@@ -263,7 +263,8 @@ class EntityEventService(BaseEventService):
             )
 
             # Get or create knowledge base for the user
-            await self.__get_or_create_knowledge_base(user_key,payload["userId"], payload["orgId"])
+            kb_name = self._kb_name_from_user_added_payload(payload)
+            await self.__get_or_create_knowledge_base(user_key, payload["userId"], payload["orgId"], name=kb_name)
 
             # Create user-app relation edge for KB app
             await self.__create_user_kb_app_relation(user_key, payload["orgId"])
@@ -468,12 +469,22 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error disabling apps: {str(e)}")
             return False
 
+    def _kb_name_from_user_added_payload(self, payload: dict) -> str:
+        """Compute KB display name from userAdded event: fullName's Private or email's Private."""
+        full_name = (payload.get("fullName") or "").strip()
+        if full_name:
+            return f"{full_name}'s Private"
+        email = (payload.get("email") or "").strip()
+        if email:
+            return f"{email}'s Private"
+        return "Private"
+
     async def __get_or_create_knowledge_base(
         self,
         user_key: str,
         userId: str,
         orgId: str,
-        name: str = "Default"
+        name: str = "Private"
     ) -> dict:
         """Get or create a knowledge base for a user, with root folder and permissions."""
         try:

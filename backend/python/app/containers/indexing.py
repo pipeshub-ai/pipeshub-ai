@@ -64,8 +64,8 @@ class IndexingAppContainer(BaseAppContainer):
         graph_provider=graph_provider,
     )
 
-    arango = providers.Resource(
-        container_utils.create_arango,
+    graphdb = providers.Resource(
+        container_utils.create_graphdb,
         graph_provider=graph_provider,
         logger=logger,
     )
@@ -82,7 +82,7 @@ class IndexingAppContainer(BaseAppContainer):
     sink_orchestrator = providers.Resource(
         container_utils.create_sink_orchestrator,
         logger=logger,
-        arango=arango,
+        graphdb=graphdb,
         blob_storage=blob_storage,
         vector_store=vector_store,
         graph_provider=graph_provider,

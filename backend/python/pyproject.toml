@@ -4,10 +4,106 @@ target-version = "py310"
 src = ["."]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "F401", "PLW0603"]
-ignore = [
-    "E501",  # Line too long
+select = [
+    "E",        
+    "F",        
+    "W",        
+    "I",
+
+    # --- Bug detection (catches real runtime errors) ---
+    "B006",     # Mutable default argument (def f(x=[]))
+    "B007",     # Unused loop variable (use _ prefix)
+    "B011",     # assert False (use raise AssertionError)
+    "B012",     # return/break/continue in finally block
+    "B015",     # Pointless comparison (x == y without using result)
+    "B016",     # Raise literal (raise "error" instead of raise Exception)
+    "B017",     # assertRaises(Exception) too broad
+    "B018",     # Useless expression (statement with no effect)
+    "B020",     # Loop variable overwritten inside body
+    "B023",     # Function variable not bound in loop body (closure bug)
+    "B025",     # try-except-pass with bare except
+    "B029",     # except with empty tuple
+    "B032",     # Unintentional type annotation (possible := typo)
+    "B904",     # raise without from inside except (loses traceback)
+
+    # --- Pylint errors (definite bugs) ---
+    "PLE0100",  # __init__ returns a value
+    "PLE0101",  # return in __init__
+    "PLE0116",  # continue in finally
+    "PLE0117",  # non local at module level
+    "PLE0241",  # duplicate bases in class
+    "PLE0302",  # unexpected special method signature
+    "PLE0604",  # invalid __all__ object
+    "PLE0605",  # invalid __all__ format
+    "PLE1142",  # await outside async
+
+    # --- Pylint warnings (risky patterns) ---
+    "PLW0120",  # useless else on loop
+    "PLW0127",  # self-assigning variable (x = x)
+    "PLW0129",  # assert on string literal (always truthy)
+    "PLW0602",  # global without assignment
+    "PLW0603",  # global statement usage
+    "PLW0711",  # binary op in exception (except A or B)
+    "PLW1508",  # invalid envvar default type
+    "PLW2901",  # redefined loop variable by assignment
+
+    # --- Pylint refactor (code quality) ---
+    "PLR0206",  # property with positional args
+    "PLR1704",  # redefining argument with local name
+    "PLR1711",  # useless return (return None at end)
+
+    # --- Misc bug catchers ---
+    "PIE794",   # duplicate class field definition
+    "PIE796",   # non-unique enum values
+    "PIE810",   # multiple startswith/endswith (use tuple)
+
+    # --- Return statement issues ---
+    "RET504",   # unnecessary assignment before return
+
+    # --- Performance ---
+    "PERF101",  # unnecessary list() in for loop
+    "PERF102",  # unnecessary list() on dict items/keys/values
+    "PERF401",  # use list comprehension instead of for+append
+    "PERF403",  # use dict comprehension instead of for+assign
+
+    # --- Comprehension simplification ---
+    "C4",       # unnecessary list/dict/set wrappers
+
+    # --- Async issues ---
+    "ASYNC100", # no timeout on async blocking calls
+    "ASYNC110", # no timeout on async event wait
+
+    # --- Simplification ---
+    "SIM102",   # collapsible if statements
+    "SIM105",   # use contextlib.suppress instead of try-except-pass
+    "SIM108",   # use ternary instead of if-else block
+    "SIM110",   # use any() instead of for loop
+    "SIM112",   # use os.environ instead of os.environ.get
+    "SIM118",   # use `key in dict` instead of `key in dict.keys()`
+    "SIM201",   # negate comparison instead of not (x == y)
+    "SIM910",   # use dict.get(key) instead of dict.get(key, None)
+
+    # --- Type annotation enforcement (for new code in PRs) ---
+    "ANN201",   # missing return type for public function
+    "ANN202",   # missing return type for private function
+    "ANN204",   # missing return type for __init__
+    "ANN205",   # missing return type for staticmethod
+    "ANN206",   # missing return type for classmethod
+
+    # --- Ruff-specific ---
+    "RUF005",   # collection literal concatenation (use [*a, *b])
+    "RUF015",   # unnecessary iterable allocation for first element
+    "RUF019",   # unnecessary key check before dict access
+    "RUF100",   # unused noqa directive
 ]
+ignore = [
+    "E501",     # Line too long (handled by formatter)
+    "B008",     # Function call in default arg (conflicts with FastAPI Depends())
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app/sources/external/**/example*.py" = ["ANN201", "ANN202"]  # Example files don't need annotations
+"app/**/migrations/*.py" = ["ANN201", "ANN202"]               # Migration scripts
 
 
 [project]
@@ -34,7 +130,10 @@ dependencies = [
     "celery==5.4.0",
     "confluent-kafka==2.8.0",
     "cachetools==6.2.4",
+    "cloudscraper==1.2.71",
     "cryptography==44.0.1",
+    "curl-cffi==0.14.0",
+    # "databricks-sdk>=0.85.0",
     "dependency-injector==4.44.0",
     "discord.py==2.6.3",
     "docling==2.60.0",
@@ -43,6 +142,7 @@ dependencies = [
     "etcd3==0.12.0",
     "evernote3>=1.25.14",
     "fastapi==0.115.6",
+    "fastmcp==3.0.2",
     "fastembed==0.5.1",
     "feedparser>=6.0.0",
     "trafilatura>=2.0.0",
@@ -92,7 +192,9 @@ dependencies = [
     "opik==1.9.37",
     "pagerduty>=5.0.0",
     "pandas==2.2.3",
+    "Pillow<12.0.0",
     "pdf2image==1.17.0",
+    "pillow-avif-plugin==1.5.5",
     "protobuf==3.20.3",
     "pydantic==2.12.5",
     "py-trello==0.20.1",
@@ -100,7 +202,7 @@ dependencies = [
     "python-arango==8.1.5",
     "python-docx==1.1.2",
     "neo4j>=5.0.0",
-    "python-dotenv==1.0.1",
+    "python-dotenv==1.1.0",
     "pikepdf>=8.1.0,<9.0.0",
     "python-jose==3.4.0",
     "python-multipart==0.0.22",
@@ -115,7 +217,7 @@ dependencies = [
     "tenacity==8.5.0",
     "thrift>=0.16.0",
     "uuid==1.30",
-    "uvicorn==0.30.6",
+    "uvicorn==0.35",
     "zstandard==0.25.0",
 ]
 
@@ -130,4 +232,61 @@ build-backend = "setuptools.build_meta"
 module = "app.indexing_main:run"
 
 [project.optional-dependencies]
-dev = ["ruff"]
+dev = ["ruff", "pyright"]
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+include = ["app"]
+exclude = ["venv", ".venv", "**/__pycache__", "**/node_modules"]
+
+# --- Type inference strictness ---
+strictListInference = true                        # [1, "a"] inferred as list[int | str] not list[Unknown]
+strictDictionaryInference = true                  # {"a": 1} inferred narrowly
+strictSetInference = true                         # {1, "a"} inferred narrowly
+
+# --- Null safety (catch None-related crashes) ---
+reportOptionalMemberAccess = "error"              # x.attr where x could be None
+reportOptionalCall = "error"                      # x() where x could be None
+reportOptionalIterable = "error"                  # for i in x where x could be None
+reportOptionalSubscript = "error"                 # x[0] where x could be None
+reportOptionalContextManager = "error"            # with x where x could be None
+reportOptionalOperand = "error"                   # x + 1 where x could be None
+
+# --- Call-site validation (missing/wrong args) ---
+reportCallIssue = "error"                         # Wrong number of args, non-callable objects
+reportArgumentType = "error"                      # Wrong argument types passed to functions
+reportReturnType = "error"                        # Return type doesn't match annotation
+reportAssignmentType = "error"                    # Incompatible assignment types
+reportIndexIssue = "error"                        # Invalid subscript/index operations
+reportOperatorIssue = "error"                     # Invalid operator usage between types
+reportAttributeAccessIssue = "error"              # Accessing unknown attributes
+
+# --- Dead code detection ---
+reportUnreachable = "warning"                     # Code after return/raise that never runs
+reportUnnecessaryIsInstance = "warning"            # isinstance check always true/false
+reportUnnecessaryComparison = "warning"            # Comparison always true/false
+reportUnnecessaryContains = "warning"              # `in` check always true/false
+reportUnnecessaryCast = "warning"                  # Unnecessary cast() call
+reportUnnecessaryTypeIgnoreComment = "warning"     # Stale # type: ignore comments
+reportUnusedImport = "warning"                     # Imported but never used
+reportUnusedVariable = "warning"                   # Assigned but never read
+reportUnusedCallResult = "warning"                 # Return value silently discarded
+reportDuplicateImport = "warning"                  # Same module imported twice
+
+# --- Async safety ---
+reportUnusedCoroutine = "error"                    # Missing `await` on async calls
+
+# --- Code correctness ---
+reportMatchNotExhaustive = "warning"               # match statement missing cases
+reportDeprecated = "warning"                       # Using deprecated APIs
+reportImportCycles = "warning"                     # Circular imports (cause ImportError)
+reportCallInDefaultInitializer = "warning"         # Mutable default: def f(x=list())
+reportPropertyTypeMismatch = "warning"             # Getter/setter type mismatch
+reportConstantRedefinition = "warning"             # Overwriting ALL_CAPS constants
+reportInconsistentConstructor = "warning"          # __init__ vs __new__ signature mismatch
+reportUntypedNamedTuple = "warning"                # collections.namedtuple instead of typing.NamedTuple
+reportPrivateUsage = "warning"                     # Accessing _private members from outside
+reportIncompatibleMethodOverride = "error"         # Method override breaks parent contract
+reportIncompatibleVariableOverride = "error"       # Variable override breaks parent type
+reportImplicitStringConcatenation = "warning"      # Accidental "foo" "bar" concatenation

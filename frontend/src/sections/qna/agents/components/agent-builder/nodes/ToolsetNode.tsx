@@ -69,7 +69,7 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
   const displayName = data.config?.displayName || toolsetName;
   const tools = data.config?.tools || [];
   const availableTools = data.config?.availableTools || [];
-  const iconPath = data.config?.iconPath || '/assets/icons/toolsets/default.svg';
+  const iconPath = data.config?.iconPath || '/assets/icons/toolsets/collections-gray.svg';
 
   // Professional color scheme matching flow-node.tsx
   const colors = {

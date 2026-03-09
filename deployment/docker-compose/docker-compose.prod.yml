@@ -4,11 +4,7 @@ services:
     container_name: pipeshub-ai
     restart: always
     ports:
-      - "8091:8091"
-      - "8088:8088"
       - "3000:3000"
-      - "8001:8000"
-      - "8081:8081"
     deploy:
       resources:
         limits:
@@ -81,6 +77,10 @@ services:
 
       # Rate limit config
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-500}
+      - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
+
+      # MCP OAuth scopes
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,connector:read,connector:write,semantic:read,semantic:write,conversation:read,conversation:write,conversation:chat}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
@@ -89,6 +89,11 @@ services:
       # Indexing service config
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}
+
+      # Slack Bot config
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}
+      - BOT_TOKEN=${BOT_TOKEN:-}
+      - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
     depends_on:
       qdrant:
         condition: service_healthy

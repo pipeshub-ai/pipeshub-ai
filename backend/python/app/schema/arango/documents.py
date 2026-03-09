@@ -401,6 +401,18 @@ ticket_record_schema = {
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
+            "labels":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "assignee_source_id":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "reporter_source_id":{"type": ["string", "null"]},
+            "is_email_hidden": {"type": "boolean", "default": False},
         },
     },
 }
@@ -415,6 +427,48 @@ project_record_schema = {
             "leadId": {"type": ["string", "null"]},
             "leadName": {"type": ["string", "null"]},
             "leadEmail": {"type": ["string", "null"]},
+        },
+    },
+}
+
+
+pull_request_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties":{
+            "orgId": {"type": "string"},
+            "summary": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "status": {"type": ["string", "null"]},
+            "assignee":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "assigneeEmail":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "creatorEmail": {"type": ["string", "null"]},
+            "creatorName": {"type": ["string", "null"]},
+            "reviewEmail":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": []
+            },
+            "reviewName":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": []
+            },
+            "mergeable":{"type": ["string", "null"]},
+            "mergedBy": {"type": ["string", "null"]},
+            "labels":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
         },
     },
 }
@@ -920,10 +974,12 @@ toolset_schema = {
         "type": "object",
         "properties": {
             "_key": {"type": "string"},
-            "name": {"type": "string"},  # Normalized name for etcd path (e.g., "slack")
+            "name": {"type": "string"},  # Normalized name (e.g., "slack")
             "displayName": {"type": "string"},
             "type": {"type": "string"},  # "app", "utility", etc
-            "userId": {"type": "string"},  # Owner (used for etcd path)
+            "userId": {"type": "string"},  # Executing user (used for etcd auth path lookup)
+            "instanceId": {"type": "string"},  # Admin-created instance UUID (new architecture)
+            "instanceName": {"type": "string"},  # Human-readable instance name
             "createdBy": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"}

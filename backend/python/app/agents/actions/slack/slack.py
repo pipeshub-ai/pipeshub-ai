@@ -712,7 +712,7 @@ class Slack:
         """
         try:
             # Resolve channel name like "#bugs" to channel ID
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
             # Use SlackDataSource method
             response = await self.client.conversations_history(
@@ -1441,7 +1441,7 @@ class Slack:
             for channel in channels:
                 try:
                     # Resolve channel name to channel ID if needed
-                    chan = self._resolve_channel(channel)
+                    chan = await self._resolve_channel(channel)
 
                     response = await self.client.chat_post_message(
                         channel=chan,

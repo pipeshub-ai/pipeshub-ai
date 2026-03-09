@@ -48,12 +48,12 @@ import { StreamingContext } from 'src/sections/qna/chatbot/components/chat-messa
 import { processStreamingContentLegacy } from 'src/sections/qna/chatbot/utils/styles/content-processing';
 import { useConnectors } from 'src/sections/accountdetails/connectors/hooks/use-connectors';
 import { ConversationStreamingState } from 'src/sections/qna/chatbot/chat-bot';
-import { CHAT_MODES } from 'src/sections/qna/chatbot/utils/utils';
 import AgentApiService, { KnowledgeBase } from './services/api';
 import AgentChatInput from './components/agent-chat-input';
 import AgentChatSidebar from './components/agent-chat-sidebar';
 
 const DRAWER_WIDTH = 300;
+const QUICK_CHAT_MODE = 'quick';
 
 // Store messages per conversation
 interface ConversationMessages {
@@ -76,12 +76,6 @@ export interface Model {
   modelKey: string;
   modelName: string;
   modelFriendlyName?: string;
-}
-
-export interface ChatMode {
-  id: string;
-  name: string;
-  description: string;
 }
 
 export interface Tool {
@@ -510,6 +504,33 @@ class StreamingManager {
     this.completedNavigations.clear();
   }
 
+  resetNewConversation() {
+    const draftKey = 'new';
+    const state = this.conversationStates[draftKey];
+    if (state?.controller && !state.controller.signal.aborted) {
+      state.controller.abort();
+    }
+    this.conversationStates[draftKey] = StreamingManager.initializeStreamingState();
+    // Clear messages - this ensures start message can be shown again
+    this.conversationMessages[draftKey] = [];
+    this.notifyUpdates();
+  }
+
+  clearAllConversations() {
+    // Abort all active streams
+    Object.values(this.conversationStates).forEach((state) => {
+      if (state?.controller && !state.controller.signal.aborted) {
+        state.controller.abort();
+      }
+    });
+    // Clear all states and messages
+    this.conversationStates = {};
+    this.conversationMessages = {};
+    this.messageToConversationMap = {};
+    this.completedNavigations.clear();
+    this.notifyUpdates();
+  }
+
   isConversationLoading(conversationKey: string): boolean {
     const state = this.getConversationState(conversationKey);
     return !!(state && (state.isActive || state.isProcessingCompletion || state.showStatus));
@@ -570,6 +591,8 @@ const getEngagingStatusMessage = (event: string, data: any): string | null => {
     }
     case 'connected':
       return '🔌 Connected and processing...';
+    case 'metadata':
+      return '💾 Saving metadata...';
     case 'query_transformed':
     case 'results_ready':
       return null;
@@ -592,11 +615,9 @@ const AgentChat = () => {
   const [availableKBs, setAvailableKBs] = useState<KnowledgeBase[]>([]);
   // Model selection state
   const [selectedModel, setSelectedModel] = useState<Model | null>(availableModels[0]);
-  const [selectedChatMode, setSelectedChatMode] = useState<ChatMode | null>(null);
 
   // Refs to store latest values to avoid stale closures in callbacks
   const latestModelRef = useRef(selectedModel);
-  const latestChatModeRef = useRef(selectedChatMode);
   const availableModelsRef = useRef<Model[]>([]);
 
   // Update refs whenever values change
@@ -604,16 +625,12 @@ const AgentChat = () => {
     latestModelRef.current = selectedModel;
   }, [selectedModel]);
 
-  useEffect(() => {
-    latestChatModeRef.current = selectedChatMode;
-  }, [selectedChatMode]);
-
   // Keep availableModels ref in sync
   useEffect(() => {
     availableModelsRef.current = availableModels;
   }, [availableModels]);
 
-  // Helper function to set model and chat mode from conversation modelInfo
+  // Helper function to set model from conversation modelInfo
   const setModelFromConversation = useCallback((conversationModelInfo: any) => {
     if (!conversationModelInfo) return;
 
@@ -633,17 +650,9 @@ const AgentChat = () => {
         setSelectedModel(matchingModel);
       }
     }
-
-    // Set chat mode from conversation if available
-    if (conversationModelInfo.chatMode) {
-      const matchingMode = CHAT_MODES.find((m) => m.id === conversationModelInfo.chatMode);
-      if (matchingMode) {
-        setSelectedChatMode(matchingMode);
-      }
-    }
   }, []);
 
-  // Set default model and chat mode when models are first loaded
+  // Set default model when models are first loaded
   // Only set defaults if no conversation is selected (new chat scenario)
   useEffect(() => {
     // Don't set defaults if we have a selected chat - let the conversation model useEffect handle it
@@ -653,11 +662,7 @@ const AgentChat = () => {
       // Set first model as default if no model is selected and no conversation is selected
       setSelectedModel(availableModels[0]);
     }
-    // Set default chat mode if not already selected
-    if (!selectedChatMode && CHAT_MODES.length > 0) {
-      setSelectedChatMode(CHAT_MODES[0]);
-    }
-  }, [availableModels, selectedModel, selectedChatMode, selectedChat]);
+  }, [availableModels, selectedModel, selectedChat]);
 
   // When models are loaded and we have a selected chat, try to set model from conversation
   useEffect(() => {
@@ -673,6 +678,8 @@ const AgentChat = () => {
   const navigate = useNavigate();
   const { agentKey, conversationId } = useParams<{ agentKey: string; conversationId: string }>();
   const [agent, setAgent] = useState<Agent | null>(null);
+  const previousAgentKeyRef = useRef<string | undefined>(undefined);
+
   useEffect(() => {
     if (agentKey) {
       AgentApiService.getAgent(agentKey).then((agentItem) => {
@@ -818,6 +825,30 @@ const AgentChat = () => {
       streamingManager.removeUpdateCallback(forceUpdate);
     };
   }, [streamingManager, forceUpdate]);
+
+  // Clear all conversation states when agent changes
+  useEffect(() => {
+    if (agentKey && previousAgentKeyRef.current && previousAgentKeyRef.current !== agentKey) {
+      // Agent has changed - clear all conversation states
+      streamingManager.clearAllConversations();
+      setCurrentConversationId(null);
+      setSelectedChat(null);
+      setInputValue('');
+      setExpandedCitations({});
+      setIsNavigationBlocked(false);
+      setIsLoadingConversation(false);
+      
+      // Navigate to the new agent's base URL (without conversation ID) to ensure clean state
+      navigate(`/agents/${agentKey}`, { replace: true });
+      
+      // Reset the 'new' conversation state for the new agent
+      streamingManager.resetNewConversation();
+      
+      // Force update to ensure UI reflects the cleared state
+      forceUpdate();
+    }
+    previousAgentKeyRef.current = agentKey;
+  }, [agentKey, streamingManager, navigate, forceUpdate]);
 
   const handleCloseSnackbar = (): void => {
     setSnackbar({ open: false, message: '', severity: 'success' });
@@ -1008,6 +1039,11 @@ const AgentChat = () => {
             }
             break;
 
+          case 'metadata':
+            // Status message is already handled by getEngagingStatusMessage above
+            // This event indicates metadata is being saved, so we keep the status visible
+            break;
+
           case 'complete': {
             streamingManager.clearStatus(context.conversationKey);
             const completedConversation = data.conversation;
@@ -1034,6 +1070,14 @@ const AgentChat = () => {
                   }
                 }, 0);
               }
+            } else {
+              // complete event received but conversation data is missing/incomplete —
+              // still finalize so the loading state is cleared
+              streamingManager.finalizeStreaming(
+                context.conversationKey,
+                context.streamingBotMessageId,
+                data
+              );
             }
             break;
           }
@@ -1123,6 +1167,17 @@ const AgentChat = () => {
           controller
         );
 
+        // Guard: if the stream closed without emitting a complete event (e.g. server
+        // timeout, network drop, or CancelledError on the backend), isActive is still
+        // true and the loading indicator would spin forever.  Clear it here.
+        const resolvedKey = conversationIdRef.current
+          ? getConversationKey(conversationIdRef.current)
+          : conversationKey;
+        const endState = streamingManager.getConversationState(resolvedKey);
+        if (endState?.isActive) {
+          streamingManager.clearStreaming(resolvedKey);
+        }
+
         // Return the conversation ID if it was captured during streaming
         return conversationIdRef.current;
       } catch (error) {
@@ -1161,11 +1216,12 @@ const AgentChat = () => {
       const trimmedInput =
         typeof messageOverride === 'string' ? messageOverride.trim() : inputValue.trim();
       if (!trimmedInput) return;
-      if (isNavigationBlocked || isCurrentConversationLoading) return;
+      // Only block if actively loading, not if there's just an error state
+      if (isCurrentConversationLoading) return;
 
       // Use refs to get the latest values (prevents stale closures)
       const currentModel = latestModelRef.current;
-      const currentMode = latestChatModeRef.current;
+      const resolvedChatMode = chatMode || QUICK_CHAT_MODE;
 
       const wasCreatingNewConversation = !currentConversationId;
       const conversationKey = getConversationKey(currentConversationId);
@@ -1224,7 +1280,7 @@ const AgentChat = () => {
         modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
           ? currentModel.modelFriendlyName.trim() 
           : undefined,
-        chatMode: chatMode || currentMode?.id,
+        chatMode: resolvedChatMode,
 
         // Timezone and current time for LLM context
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -1241,33 +1297,15 @@ const AgentChat = () => {
           apps: getEnabledApps(),
 
           // Knowledge bases: KB IDs to use (extract from knowledge array if not selected)
-          kb: selectedKBs && selectedKBs.length > 0 ? selectedKBs : (() => {
-            const kbIds: string[] = [];
-            if (agent?.knowledge && Array.isArray(agent.knowledge)) {
-              agent.knowledge.forEach((k: any) => {
-                const filters = k.filtersParsed || k.filters || {};
-                let filtersParsed = filters;
-                if (typeof filters === 'string') {
-                  try {
-                    filtersParsed = JSON.parse(filters);
-                  } catch {
-                    filtersParsed = {};
-                  }
-                }
-                const recordGroups = filtersParsed.recordGroups || [];
-                kbIds.push(...recordGroups);
-              });
-            }
-            return [...new Set(kbIds)]; // Remove duplicates
-          })(),
+          kb: selectedKBs || [],
         },
 
         // Chat mode specific parameters
-        ...(chatMode === 'quick' && {
+        ...(resolvedChatMode === 'quick' && {
           limit: 5,
           quickMode: true,
         }),
-        ...(chatMode === 'standard' && {
+        ...(resolvedChatMode === 'standard' && {
           temperature: 0.7,
           limit: 10,
           quickMode: false,
@@ -1308,48 +1346,88 @@ const AgentChat = () => {
       streamingManager,
       getConversationKey,
       handleStreamingResponse,
-      isNavigationBlocked,
       isCurrentConversationLoading,
-      agent,
       agentKey,
       setSelectedChat,
     ]
   );
 
   const handleNewChat = useCallback(() => {
-    // Clear both current conversation and 'new' conversation states
+    // Abort any active streaming in current conversation
     if (currentConversationId) {
-      streamingManager.clearStreaming(getConversationKey(currentConversationId));
+      const currentKey = getConversationKey(currentConversationId);
+      const state = streamingManager.getConversationState(currentKey);
+      if (state?.controller && !state.controller.signal.aborted) {
+        state.controller.abort();
+      }
+      streamingManager.clearStreaming(currentKey);
     }
-    // Also clear the 'new' conversation state
-    streamingManager.clearStreaming('new');
+    
+    // Reset the 'new' conversation state (aborts any active stream there too)
+    // This clears messages so start message can be shown again
+    streamingManager.resetNewConversation();
     streamingManager.resetNavigationTracking();
 
+    // Reset all UI state
     setCurrentConversationId(null);
     navigate(`/agents/${agentKey}`, { replace: true });
     setInputValue('');
     setShouldRefreshSidebar(true);
     setSelectedChat(null);
     setIsNavigationBlocked(false);
-
-  }, [navigate, streamingManager, currentConversationId, getConversationKey, agentKey]);
+    setExpandedCitations({});
+    
+    // Explicitly trigger start message after reset
+    // Use setTimeout to ensure resetNewConversation has completed
+    setTimeout(() => {
+      if (agent?.startMessage) {
+        const conversationKey = getConversationKey(null);
+        const existingMessages = streamingManager.getConversationMessages(conversationKey);
+        // Only add if still empty (in case something else added messages)
+        if (existingMessages.length === 0) {
+          const customStartMessage: FormattedMessage = {
+            type: 'bot',
+            content: agent.startMessage,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            id: 'start-message',
+            contentFormat: 'MARKDOWN',
+            followUpQuestions: [],
+            citations: [],
+            confidence: '',
+            messageType: 'bot_response',
+            timestamp: new Date(),
+          };
+          streamingManager.setConversationMessages(conversationKey, [customStartMessage]);
+        }
+      }
+    }, 0);
+  }, [navigate, streamingManager, currentConversationId, getConversationKey, agentKey, agent?.startMessage]);
 
   const handleChatSelect = useCallback(
     async (chat: Conversation) => {
-      if (!chat?._id || isNavigationBlocked) return;
+      if (!chat?._id) return;
+      // Only block navigation if actively streaming, not on error states
+      const currentKey = getConversationKey(currentConversationId);
+      const currentState = streamingManager.getConversationState(currentKey);
+      const isCurrentlyStreaming =
+        currentState?.isActive ||
+        currentState?.isProcessingCompletion ||
+        currentState?.showStatus;
+      if (isCurrentlyStreaming && currentConversationId) return;
 
       try {
         const chatKey = getConversationKey(chat._id);
 
         // Check if this conversation is currently streaming
         const streamingState = streamingManager.getConversationState(chatKey);
-        const isCurrentlyStreaming =
+        const isChatStreaming =
           streamingState?.isActive ||
           streamingState?.isProcessingCompletion ||
           streamingState?.showStatus;
 
         // If the conversation is streaming, don't set loading state as it might interfere
-        if (!isCurrentlyStreaming) {
+        if (!isChatStreaming) {
           setIsLoadingConversation(true);
         }
 
@@ -1363,7 +1441,7 @@ const AgentChat = () => {
 
         // Always fetch fresh conversation data to get the latest modelInfo
         // This ensures model changes made during the conversation are reflected
-        if (!isCurrentlyStreaming) {
+        if (!isChatStreaming) {
           try {
             const response = await axios.get(`/api/v1/agents/${agentKey}/conversations/${chat._id}`);
             const { conversation } = response.data;
@@ -1422,12 +1500,12 @@ const AgentChat = () => {
         // Only clear loading if we set it
         const chatKey = getConversationKey(chat._id);
         const streamingState = streamingManager.getConversationState(chatKey);
-        const isCurrentlyStreaming =
+        const isStillStreaming =
           streamingState?.isActive ||
           streamingState?.isProcessingCompletion ||
           streamingState?.showStatus;
 
-        if (!isCurrentlyStreaming) {
+        if (!isStillStreaming) {
           setIsLoadingConversation(false);
         }
       }
@@ -1437,33 +1515,45 @@ const AgentChat = () => {
       navigate,
       streamingManager,
       getConversationKey,
-      isNavigationBlocked,
       agentKey,
       setModelFromConversation,
+      currentConversationId,
     ]
   );
 
   // Update the useEffect to better handle streaming conversations
   useEffect(() => {
     const urlConversationId = conversationId;
-    if (isNavigationBlocked) return;
+    
+    // Don't process if agentKey is not available yet (agent is still loading)
+    if (!agentKey) return;
+    
+    // Check if current conversation is actively streaming before blocking
+    const currentKey = getConversationKey(currentConversationId);
+    const currentState = streamingManager.getConversationState(currentKey);
+    const isCurrentlyStreaming =
+      currentState?.isActive ||
+      currentState?.isProcessingCompletion ||
+      currentState?.showStatus;
+    // Only block if actively streaming, not on error states
+    if (isCurrentlyStreaming && currentConversationId && urlConversationId !== currentConversationId) return;
 
     if (urlConversationId && urlConversationId !== currentConversationId) {
       const chatKey = getConversationKey(urlConversationId);
       const existingMessages = streamingManager.getConversationMessages(chatKey);
       const streamingState = streamingManager.getConversationState(chatKey);
-      const isCurrentlyStreaming =
+      const isUrlStreaming =
         streamingState?.isActive ||
         streamingState?.isProcessingCompletion ||
         streamingState?.showStatus;
 
-      if (existingMessages.length > 0 || isCurrentlyStreaming) {
+      if (existingMessages.length > 0 || isUrlStreaming) {
         // We have existing messages or it's streaming, but still fetch fresh data for modelInfo
         setCurrentConversationId(urlConversationId);
 
         // Always fetch fresh conversation data to get latest modelInfo
         // This ensures model changes made during the conversation are reflected
-        if (!isCurrentlyStreaming) {
+        if (!isUrlStreaming) {
           axios
             .get(`/api/v1/agents/${agentKey}/conversations/${urlConversationId}`)
             .then((response) => {
@@ -1513,10 +1603,10 @@ const AgentChat = () => {
       const crtStreamingState = streamingManager.getConversationState(
         getConversationKey(currentConversationId)
       );
-      const isCurrentlyStreaming =
+      const isCrtStreaming =
         crtStreamingState?.isActive || crtStreamingState?.isProcessingCompletion;
 
-      if (!isCurrentlyStreaming && crtMessages.length === 0) {
+      if (!isCrtStreaming && crtMessages.length === 0) {
         handleNewChat();
       }
     }
@@ -1540,6 +1630,7 @@ const AgentChat = () => {
       const existingMessages = streamingManager.getConversationMessages(conversationKey);
 
       // Only add start message if there are no messages at all
+      // This ensures start message shows after new chat, failed conversations, or agent changes
       if (existingMessages.length === 0) {
         const customStartMessage: FormattedMessage = {
           type: 'bot',
@@ -1564,6 +1655,7 @@ const AgentChat = () => {
     getConversationKey,
     streamingManager,
     agent?.name,
+    updateTrigger, // Include updateTrigger to ensure it re-runs after resetNewConversation
   ]);
 
   useEffect(() => {
@@ -1840,7 +1932,6 @@ const AgentChat = () => {
         const token = localStorage.getItem('jwt_access_token');
         // Use refs to get the latest values (prevents stale closures)
         const currentModel = latestModelRef.current;
-        const currentMode = latestChatModeRef.current;
 
         const response = await fetch(
           `${CONFIG.backendUrl}/api/v1/agents/${agentKey}/conversations/${currentConversationId}/message/${messageId}/regenerate`,
@@ -1854,7 +1945,7 @@ const AgentChat = () => {
             body: JSON.stringify({
               modelName: currentModel?.modelName,
               modelProvider: currentModel?.provider,
-              chatMode: currentMode?.id || 'quick',
+              chatMode: QUICK_CHAT_MODE,
             }),
             signal: controller.signal,
           }
@@ -2001,7 +2092,7 @@ const AgentChat = () => {
               position: 'relative',
             }}
           >
-            {/* Always show the chat messages area instead of welcome message */}
+            {/* Always show the chat messages area - start message will be shown via useEffect */}
             <MemoizedChatMessagesArea
               messages={currentMessages}
               isLoading={isCurrentConversationLoading}
@@ -2017,12 +2108,10 @@ const AgentChat = () => {
               key={`chat-input-${currentConversationId || 'new'}`}
               onSubmit={handleSendMessage}
               isLoading={isCurrentConversationLoading}
-              disabled={isCurrentConversationLoading || isNavigationBlocked}
+              disabled={isCurrentConversationLoading}
               placeholder="Type your message..."
               selectedModel={selectedModel}
-              selectedChatMode={selectedChatMode}
               onModelChange={(model) => setSelectedModel(model)}
-              onChatModeChange={(mode) => setSelectedChatMode(mode)}
               availableModels={availableModels}
               availableKBs={availableKBs}
               agent={agent}

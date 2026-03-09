@@ -18,12 +18,11 @@ import {
 import { Icon } from '@iconify/react';
 import brainIcon from '@iconify-icons/mdi/brain';
 import toolIcon from '@iconify-icons/mdi/tools';
-import databaseIcon from '@iconify-icons/mdi/database';
+import collectionIcon from '@iconify-icons/mdi/folder-multiple-outline';
 import closeIcon from '@iconify-icons/eva/close-outline';
 import scriptIcon from '@iconify-icons/mdi/script-text';
 import pencilIcon from '@iconify-icons/mdi/pencil';
 import messageTextIcon from '@iconify-icons/mdi/message-text';
-import informationIcon from '@iconify-icons/mdi/information';
 import packageIcon from '@iconify-icons/mdi/package-variant';
 import cogIcon from '@iconify-icons/mdi/cog';
 import cloudIcon from '@iconify-icons/mdi/cloud-outline';
@@ -61,68 +60,61 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
   const [systemPromptValue, setSystemPromptValue] = useState(
     data.config?.systemPrompt || 'You are a helpful assistant.'
   );
+  const [instructionsValue, setInstructionsValue] = useState(
+    data.config?.instructions || ''
+  );
   const [startMessageValue, setStartMessageValue] = useState(
     data.config?.startMessage || 'Hello! How can I help you today?'
   );
-  const [descriptionValue, setDescriptionValue] = useState(
-    data.config?.description || 'AI agent for task automation and assistance'
-  );
 
-  const updateNodeConfig = useCallback(
-    (key: string, value: string) => {
-      setNodes((nodes: any[]) =>
-        nodes.map((node: any) =>
-          node.id === data.id
-            ? {
-                ...node,
-                data: {
-                  ...node.data,
-                  config: {
-                    ...node.data.config,
-                    [key]: value,
-                  },
-                },
-              }
-            : node
-        )
-      );
-    },
-    [data.id, setNodes]
-  );
+  const nodeId = data.id;
 
-  const handlePromptDialogOpen = useCallback(() => {
+  const handlePromptDialogOpen = () => {
     setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
+    setInstructionsValue(data.config?.instructions ?? '');
     setStartMessageValue(data.config?.startMessage || 'Hello! How can I help you today?');
-    setDescriptionValue(data.config?.description || 'AI agent for task automation and assistance');
     setPromptDialogOpen(true);
-  }, [data.config?.systemPrompt, data.config?.startMessage, data.config?.description]);
+  };
 
-  const handlePromptDialogSave = useCallback(() => {
-    updateNodeConfig('systemPrompt', systemPromptValue);
-    updateNodeConfig('startMessage', startMessageValue);
-    updateNodeConfig('description', descriptionValue);
+  const handlePromptDialogSave = () => {
+    // Single setNodes call to atomically update all three fields at once
+    setNodes((nodes: any[]) =>
+      nodes.map((node: any) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                config: {
+                  ...node.data.config,
+                  systemPrompt: systemPromptValue,
+                  instructions: instructionsValue,
+                  startMessage: startMessageValue,
+                },
+              },
+            }
+          : node
+      )
+    );
     setPromptDialogOpen(false);
-  }, [systemPromptValue, startMessageValue, descriptionValue, updateNodeConfig]);
+  };
 
-  const handlePromptDialogCancel = useCallback(() => {
+  const handlePromptDialogCancel = () => {
     setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
+    setInstructionsValue(data.config?.instructions ?? '');
     setStartMessageValue(data.config?.startMessage || 'Hello! How can I help you today?');
-    setDescriptionValue(data.config?.description || 'AI agent for task automation and assistance');
     setPromptDialogOpen(false);
-  }, [data.config?.systemPrompt, data.config?.startMessage, data.config?.description]);
+  };
 
-  // Sync local state with node data changes
+  // Sync local state when node data changes externally (e.g. from flow reconstruction)
   useEffect(() => {
-    setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
-  }, [data.config?.systemPrompt]);
-
-  useEffect(() => {
-    setStartMessageValue(data.config?.startMessage || 'Hello! How can I help you today?');
-  }, [data.config?.startMessage]);
-
-  useEffect(() => {
-    setDescriptionValue(data.config?.description || 'AI agent for task automation and assistance');
-  }, [data.config?.description]);
+    if (!promptDialogOpen) {
+      setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
+      setInstructionsValue(data.config?.instructions ?? '');
+      setStartMessageValue(data.config?.startMessage || 'Hello! How can I help you today?');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.config?.systemPrompt, data.config?.instructions, data.config?.startMessage]);
 
   const connectedNodesByHandle = React.useMemo(() => {
     if (data.type !== 'agent-core') return {} as Record<string, any[]>;
@@ -420,7 +412,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
             </Box>
           </Box>
 
-          {/* Description */}
+          {/* Instructions */}
           <Box sx={{ mb: 2 }}>
             {' '}
             {/* Keep comfortable margin */}
@@ -441,12 +433,12 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                 }}
               >
                 <Icon
-                  icon={informationIcon}
+                  icon={scriptIcon}
                   width={12}
                   height={12} // Keep comfortable size
                   style={{ color: colors.info }}
                 />
-                Description
+                Instructions
               </Typography>
             </Box>
             <Box
@@ -456,7 +448,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                   ? alpha('#2a2a2a', 0.5) 
                   : alpha(theme.palette.background.paper, 0.9),
                 borderRadius: 1.5,
-                border: `2px solid ${colors.border.subtle}`,
+                border: `1px solid ${colors.border.subtle}`,
                 minHeight: 40,
                 maxHeight: 60,
                 overflow: 'auto',
@@ -472,14 +464,15 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
               <Typography
                 sx={{
                   fontSize: '0.75rem',
-                  color: colors.text.primary,
+                  color: data.config?.instructions?.trim() ? colors.text.primary : colors.text.muted,
                   fontWeight: 500,
                   lineHeight: 1.4,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
+                  fontStyle: data.config?.instructions?.trim() ? 'normal' : 'italic',
                 }}
               >
-                {data.config?.description || 'AI agent for task automation and assistance'}
+                {data.config?.instructions?.trim() || 'No instructions set'}
               </Typography>
             </Box>
           </Box>
@@ -712,7 +705,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                                     objectFit: 'contain',
                                   }}
                                   onError={(e) => {
-                                    e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                                    e.currentTarget.src = '/assets/icons/connectors/collections-gray.svg';
                                   }}
                                 />
                               </Box>
@@ -804,12 +797,12 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                           <img
                             src={
                               knowledgeNode.config?.iconPath ||
-                              '/assets/icons/connectors/default.svg'
+                              '/assets/icons/connectors/collections-gray.svg'
                             }
                             alt=""
                             style={{
-                              width: 14,
-                              height: 14,
+                              width: 20,
+                              height: 20,
                               objectFit: 'contain',
                             }}
                           />
@@ -834,9 +827,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                             }}
                           >
                             {knowledgeNode.type.startsWith('kb-')
-                              ? 'Knowledge Base'
+                              ? 'Collections'
                               : knowledgeNode.type.startsWith('knowledge-hub')
-                                ? 'Knowledge Hub'
+                                ? 'Collections Hub'
                                 : 'Knowledge'}
                           </Typography>
                         </Box>
@@ -1354,15 +1347,15 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
 
               <Box sx={{ mb: 3 }}>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500 }}>
-                  Description
+                  Instructions
                 </Typography>
                 <TextField
                   fullWidth
                   multiline
-                  rows={2}
-                  value={descriptionValue}
-                  onChange={(e) => setDescriptionValue(e.target.value)}
-                  placeholder="Enter a brief description for the agent's behavior..."
+                  rows={3}
+                  value={instructionsValue}
+                  onChange={(e) => setInstructionsValue(e.target.value)}
+                  placeholder="Optional additional instructions for the agent (e.g. always respond in French, use bullet points, focus on concise answers)..."
                   sx={{
                     '& .MuiOutlinedInput-root': {
                       borderRadius: 1,
@@ -2019,7 +2012,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                             objectFit: 'contain',
                           }}
                           onError={(e) => {
-                            e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                            e.currentTarget.src = '/assets/icons/connectors/collections-gray.svg';
                           }}
                         />
                       </Box>
@@ -2160,8 +2153,8 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                 gap: 1,
               }}
             >
-              <Icon icon={databaseIcon} width={12} height={12} style={{ color: colors.warning }} />
-              Knowledge Base Group
+              <Icon icon={collectionIcon} width={12} height={12} style={{ color: colors.warning }} />
+              Collection Group
             </Typography>
             <Box
               sx={{
@@ -2185,7 +2178,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                   lineHeight: 1.3,
                 }}
               >
-                All Knowledge Bases
+                All Collections
               </Typography>
               <Typography
                 sx={{
@@ -2195,7 +2188,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                   mt: 0.5,
                 }}
               >
-                {data.config?.knowledgeBases?.length || 0} KBs available
+                {data.config?.knowledgeBases?.length || 0} collection(s) available
               </Typography>
             </Box>
           </Box>
@@ -2218,8 +2211,8 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                 gap: 1,
               }}
             >
-              <Icon icon={databaseIcon} width={12} height={12} style={{ color: colors.warning }} />
-              Knowledge Base
+              <Icon icon={collectionIcon} width={12} height={12} style={{ color: colors.warning }} />
+              Collection
             </Typography>
             <Box
               sx={{

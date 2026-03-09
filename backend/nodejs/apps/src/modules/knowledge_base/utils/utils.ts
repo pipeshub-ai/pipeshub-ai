@@ -378,6 +378,7 @@ export const processUploadsInBackground = async (
         version: 1,
         webUrl: webUrl,
         mimeType: correctMimeType,
+        sizeInBytes: size,
       };
 
       const fileRecord: IFileRecordDocument = {

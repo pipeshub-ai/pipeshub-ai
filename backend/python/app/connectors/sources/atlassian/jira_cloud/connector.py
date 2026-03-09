@@ -4373,8 +4373,10 @@ class JiraConnector(BaseConnector):
                 if account_id and email:
                     user_by_account_id[account_id] = AppUser(
                         id="",
+                        app_name=Connectors.JIRA,
                         connector_id=self.connector_id,
                         email=email,
+                        full_name=user_obj.get("displayName") or email,
                         source_user_id=account_id
                     )
 

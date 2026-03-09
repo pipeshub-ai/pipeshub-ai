@@ -53,6 +53,7 @@ class GoogleClientFactory(ClientFactory):
             toolset_config=toolset_config,
             service_name=self.service_name,
             logger=logger,
+            config_service=config_service,
             version=self.version,
         )
         return client.get_client()

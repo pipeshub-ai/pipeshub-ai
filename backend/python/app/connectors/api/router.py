@@ -27,6 +27,7 @@ from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
+from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -35,7 +36,11 @@ from app.config.constants.arangodb import (
     MimeTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service import (
+    DefaultEndpoints,
+    OAuthScopes,
+    config_node_constants,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
@@ -330,7 +335,7 @@ def _trim_connector_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return trimmed_config
 
-@router.get("/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl")
+@router.get("/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_signed_url(
     org_id: str,
@@ -356,7 +361,7 @@ async def get_signed_url(
         logger.error(f"Error getting signed URL: {repr(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e))
 
-@router.delete("/api/v1/delete/record/{record_id}")
+@router.delete("/api/v1/delete/record/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 @inject
 async def handle_record_deletion(
     record_id: str, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
@@ -413,16 +418,28 @@ async def stream_record_internal(
         # TODO: Validate scopes ["connector:signedUrl"]
 
         org_id = payload.get("orgId")
-        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
-        record_task = graph_provider.get_record_by_id(
-            record_id
-        )
-        org, record = await asyncio.gather(org_task, record_task)
+        if not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="Missing orgId in token"
+            )
 
-        if not org:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+        record_task = graph_provider.get_record_by_id(record_id)
+        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        record, org = await asyncio.gather(record_task, org_task)
+
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
+        # Prefer the org_id stored on the record itself — the JWT org_id may differ
+        # if the token was issued for a slightly different context.
+        effective_org_id = record.org_id or org_id
+        if not org:
+            # Retry with the record's own org_id in case it differs from the JWT claim
+            if effective_org_id != org_id:
+                org = await graph_provider.get_document(effective_org_id, CollectionNames.ORGS.value)
+            if not org:
+                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
@@ -433,7 +450,7 @@ async def stream_record_internal(
             storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
             buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
             jwt_payload  = {
-                "orgId": org_id,
+                "orgId": effective_org_id,
                 "scopes": ["storage:token"],
             }
             token = await generate_jwt(config_service, jwt_payload)
@@ -466,9 +483,11 @@ async def stream_record_internal(
     except ValidationError as e:
         logger.error("Payload validation error: %s", str(e))
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload")
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error("Unexpected error during token validation: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
+        logger.error("Unexpected error in stream_record_internal: %s", str(e), exc_info=True)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error streaming record")
 
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
@@ -548,7 +567,7 @@ async def download_file(
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file")
 
 
-@router.get("/api/v1/stream/record/{record_id}", response_model=None)
+@router.get("/api/v1/stream/record/{record_id}", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def stream_record(
     request: Request,
@@ -686,7 +705,7 @@ async def stream_record(
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file")
 
 
-@router.post("/api/v1/record/buffer/convert")
+@router.post("/api/v1/record/buffer/convert", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_record_stream(request: Request, file: UploadFile = File(...)) -> StreamingResponse:
     request.query_params.get("from")
     to_format = request.query_params.get("to")
@@ -942,7 +961,7 @@ async def convert_buffer_to_pdf_stream(
             fallback_filename="converted_file.pdf"
         )
 
-@router.get("/api/v1/records")
+@router.get("/api/v1/records", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_records(
     request:Request,
@@ -1050,7 +1069,7 @@ async def get_records(
             "error": str(e),
         }
 
-@router.get("/api/v1/records/{record_id}")
+@router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_record_by_id(
     record_id: str,
@@ -1082,7 +1101,7 @@ async def get_record_by_id(
         logger.error(f"Error checking record access: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to check record access")
 
-@router.delete("/api/v1/records/{record_id}")
+@router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 @inject
 async def delete_record(
     record_id: str,
@@ -1144,7 +1163,7 @@ async def delete_record(
             detail=f"Internal server error while deleting record: {str(e)}"
         )
 
-@router.post("/api/v1/records/{record_id}/reindex")
+@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
 @inject
 async def reindex_single_record(
     record_id: str,
@@ -1227,7 +1246,7 @@ async def reindex_single_record(
             detail=f"Internal server error while reindexing record: {str(e)}"
         )
 
-@router.get("/api/v1/stats")
+@router.get("/api/v1/stats", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_stats_endpoint(
     request: Request,
     org_id: str,
@@ -1247,7 +1266,7 @@ async def get_connector_stats_endpoint(
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}")
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex")
+@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
 @inject
 async def reindex_record_group(
     record_group_id: str,
@@ -1518,7 +1537,7 @@ async def _get_settings_base_path(graph_provider: IGraphDBProvider) -> str:
 # Registry & Instance Endpoints
 # ============================================================================
 
-@router.get("/api/v1/connectors/registry")
+@router.get("/api/v1/connectors/registry", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_registry(
     request: Request,
     scope: Optional[str] = Query(None, description="personal | team"),
@@ -1597,7 +1616,7 @@ async def get_connector_registry(
 
 
 
-@router.get("/api/v1/connectors/")
+@router.get("/api/v1/connectors/", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instances(
     request: Request,
     scope: Optional[str] = Query(None, description="personal | team"),
@@ -1663,7 +1682,7 @@ async def get_connector_instances(
         )
 
 
-@router.get("/api/v1/connectors/active")
+@router.get("/api/v1/connectors/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_active_connector_instances(request: Request) -> Dict[str, Any]:
     """
     Get all active connector instances.
@@ -1706,7 +1725,7 @@ async def get_active_connector_instances(request: Request) -> Dict[str, Any]:
         )
 
 
-@router.get("/api/v1/connectors/inactive")
+@router.get("/api/v1/connectors/inactive", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
     """
     Get all inactive connector instances.
@@ -1748,7 +1767,7 @@ async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
         )
 
 
-@router.get("/api/v1/connectors/configured")
+@router.get("/api/v1/connectors/configured", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_configured_connector_instances(
     request: Request,
     scope: Optional[str] = Query(None, description="personal | team"),
@@ -2079,7 +2098,7 @@ async def _prepare_connector_config(
     return prepared_config
 
 
-@router.post("/api/v1/connectors/")
+@router.post("/api/v1/connectors/", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def create_connector_instance(
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
@@ -2378,7 +2397,7 @@ async def create_connector_instance(
         )
 
 
-@router.get("/api/v1/connectors/{connector_id}")
+@router.get("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instance(
     connector_id: str,
     request: Request
@@ -2442,7 +2461,7 @@ async def get_connector_instance(
             detail=f"Error getting connector instance: {str(e)}"
         )
 
-@router.get("/api/v1/connectors/{connector_id}/config")
+@router.get("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instance_config(
     connector_id: str,
     request: Request
@@ -2563,7 +2582,7 @@ async def get_connector_instance_config(
         )
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/auth")
+@router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def update_connector_instance_auth_config(
     connector_id: str,
     request: Request,
@@ -2884,7 +2903,7 @@ async def update_connector_instance_auth_config(
         )
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/filters-sync")
+@router.put("/api/v1/connectors/{connector_id}/config/filters-sync", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def update_connector_instance_filters_sync_config(
     connector_id: str,
     request: Request,
@@ -3034,7 +3053,7 @@ async def update_connector_instance_filters_sync_config(
         )
 
 
-@router.put("/api/v1/connectors/{connector_id}/config")
+@router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def update_connector_instance_config(
     connector_id: str,
     request: Request,
@@ -3297,7 +3316,7 @@ async def update_connector_instance_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector configuration: {str(e)}"
         )
-@router.put("/api/v1/connectors/{connector_id}/name")
+@router.put("/api/v1/connectors/{connector_id}/name", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def update_connector_instance_name(
     connector_id: str,
     request: Request,
@@ -3785,7 +3804,7 @@ async def _build_oauth_flow_config(
     return oauth_flow_config
 
 
-@router.get("/api/v1/connectors/{connector_id}/oauth/authorize")
+@router.get("/api/v1/connectors/{connector_id}/oauth/authorize", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def get_oauth_authorization_url(
     connector_id: str,
     request: Request,
@@ -3959,7 +3978,7 @@ async def get_oauth_authorization_url(
         )
 
 
-@router.get("/api/v1/connectors/oauth/callback")
+@router.get("/api/v1/connectors/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def handle_oauth_callback(
     request: Request,
     code: Optional[str] = Query(None),
@@ -4508,7 +4527,7 @@ async def _get_fallback_filter_options(
     return fallback_options.get(connector_type.upper(), {})
 
 
-@router.get("/api/v1/connectors/{connector_id}/filters")
+@router.get("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instance_filters(
     connector_id: str,
     request: Request,
@@ -4614,7 +4633,7 @@ async def get_connector_instance_filters(
             detail=f"Failed to get filter options: {str(e)}"
         )
 
-@router.get("/api/v1/connectors/{connector_id}/filters/{filter_key}/options")
+@router.get("/api/v1/connectors/{connector_id}/filters/{filter_key}/options", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_filter_field_options(
     connector_id: str,
     filter_key: str,
@@ -4788,7 +4807,7 @@ def _find_filter_field_config(
     return None
 
 
-@router.post("/api/v1/connectors/{connector_id}/filters")
+@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def save_connector_instance_filters(
     connector_id: str,
     request: Request,
@@ -5021,7 +5040,7 @@ async def _ensure_connector_initialized(
 # Connector Toggle Endpoint
 # ============================================================================
 
-@router.post("/api/v1/connectors/{connector_id}/toggle")
+@router.post("/api/v1/connectors/{connector_id}/toggle", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
 async def toggle_connector_instance(
     connector_id: str,
     request: Request,
@@ -5267,7 +5286,7 @@ async def toggle_connector_instance(
         )
 
 
-@router.delete("/api/v1/connectors/{connector_id}")
+@router.delete("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 async def delete_connector_instance(
     connector_id: str,
     request: Request,
@@ -5414,7 +5433,7 @@ async def delete_connector_instance(
         # 7. Clean up connector credentials from etcd/config store
         try:
             config_service = container.config_service()
-            config_path = f"connectors/{connector_id}"
+            config_path = _get_config_path_for_instance(connector_id)
             await config_service.delete_config(config_path)
             logger.info(f"✅ Deleted config for connector {connector_id}")
         except Exception as e:
@@ -5501,7 +5520,7 @@ def _clean_schema_for_response(schema: Dict[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
-@router.get("/api/v1/connectors/registry/{connector_type}/schema")
+@router.get("/api/v1/connectors/registry/{connector_type}/schema", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_schema(
     connector_type: str,
     request: Request
@@ -5550,7 +5569,7 @@ async def get_connector_schema(
             detail=f"Failed to get connector schema: {str(e)}"
         )
 
-@router.get("/api/v1/connectors/agents/active")
+@router.get("/api/v1/connectors/agents/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_active_agent_instances(
     request: Request,
     scope: Optional[str] = Query(None, description="personal | team"),
@@ -5617,7 +5636,7 @@ async def get_active_agent_instances(
 # OAuth Config Management Endpoints
 # ============================================================================
 
-@router.get("/api/v1/oauth/registry")
+@router.get("/api/v1/oauth/registry", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_oauth_config_registry(
     request: Request,
     page: int = Query(1, ge=1),
@@ -5675,7 +5694,7 @@ async def get_oauth_config_registry(
         )
 
 
-@router.get("/api/v1/oauth/registry/{connector_type}")
+@router.get("/api/v1/oauth/registry/{connector_type}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_oauth_config_registry_by_type(
     connector_type: str,
     request: Request,
@@ -5733,7 +5752,7 @@ async def get_oauth_config_registry_by_type(
         )
 
 
-@router.get("/api/v1/oauth")
+@router.get("/api/v1/oauth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_all_oauth_configs(
     request: Request,
@@ -6123,7 +6142,7 @@ def _find_oauth_config_by_id(
     return None
 
 
-@router.post("/api/v1/oauth/{connector_type}")
+@router.post("/api/v1/oauth/{connector_type}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def create_oauth_config(
     connector_type: str,
@@ -6251,7 +6270,7 @@ async def create_oauth_config(
         )
 
 
-@router.get("/api/v1/oauth/{connector_type}")
+@router.get("/api/v1/oauth/{connector_type}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def list_oauth_configs(
     connector_type: str,
@@ -6328,7 +6347,7 @@ async def list_oauth_configs(
         )
 
 
-@router.get("/api/v1/oauth/{connector_type}/{config_id}")
+@router.get("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_oauth_config_by_id(
     connector_type: str,
@@ -6414,7 +6433,7 @@ async def get_oauth_config_by_id(
         )
 
 
-@router.put("/api/v1/oauth/{connector_type}/{config_id}")
+@router.put("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def update_oauth_config(
     connector_type: str,
@@ -6521,7 +6540,7 @@ async def update_oauth_config(
         )
 
 
-@router.delete("/api/v1/oauth/{connector_type}/{config_id}")
+@router.delete("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 @inject
 async def delete_oauth_config(
     connector_type: str,

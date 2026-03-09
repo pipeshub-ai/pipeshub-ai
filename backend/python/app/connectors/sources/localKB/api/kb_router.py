@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional, Union
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.api.middlewares.auth import require_scopes
+from app.config.constants.service import OAuthScopes
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.localKB.api.models import (
     CreateFolderResponse,
@@ -67,6 +69,7 @@ def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
         400: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def create_knowledge_base(
@@ -122,7 +125,8 @@ async def create_knowledge_base(
     response_model=ListKnowledgeBaseResponse,
     responses={
         500: {"model": ErrorResponse},
-    }
+    },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
 )
 @inject
 async def list_user_knowledge_bases(
@@ -174,7 +178,8 @@ async def list_user_knowledge_bases(
 @kb_router.get(
     "/{kb_id}",
     response_model=KnowledgeBaseResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
 )
 @inject
 async def get_knowledge_base(
@@ -210,7 +215,8 @@ async def get_knowledge_base(
     responses={
         403: {"model": ErrorResponse},
         404: {"model": ErrorResponse}
-    }
+    },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def update_knowledge_base(
@@ -252,7 +258,8 @@ async def update_knowledge_base(
     responses={
         403: {"model": ErrorResponse},
         404: {"model": ErrorResponse}
-    }
+    },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_DELETE))],
 )
 @inject
 async def delete_knowledge_base(
@@ -309,7 +316,8 @@ async def delete_knowledge_base(
 @kb_router.post(
     "/{kb_id}/records",
     response_model=CreateRecordsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def create_records_in_kb(
@@ -359,6 +367,7 @@ async def create_records_in_kb(
         404: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_UPLOAD))],
 )
 @inject
 async def upload_records_to_kb(
@@ -463,6 +472,7 @@ async def upload_records_to_kb(
         404: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_UPLOAD))],
 )
 @inject
 async def upload_records_to_folder(
@@ -562,7 +572,8 @@ async def upload_records_to_folder(
 @kb_router.post(
     "/{kb_id}/folder",
     response_model=CreateFolderResponse,
-    responses={403: {"model": ErrorResponse}, 400: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 400: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def create_folder_in_kb_root(
@@ -613,7 +624,8 @@ async def create_folder_in_kb_root(
 @kb_router.post(
     "/{kb_id}/folder/{parent_folder_id}/subfolder",
     response_model=CreateFolderResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def create_nested_folder(
@@ -666,7 +678,8 @@ async def create_nested_folder(
 @kb_router.get(
     "/{kb_id}/folder/{folder_id}/user/{user_id}",
     response_model=FolderContentsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
 )
 @inject
 async def get_folder_contents(
@@ -700,7 +713,8 @@ async def get_folder_contents(
 @kb_router.put(
     "/{kb_id}/folder/{folder_id}",
     response_model=SuccessResponse,
-    responses={403: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def update_folder(
@@ -740,7 +754,8 @@ async def update_folder(
 @kb_router.delete(
     "/{kb_id}/folder/{folder_id}",
     response_model=SuccessResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_DELETE))],
 )
 @inject
 async def delete_folder(
@@ -798,7 +813,8 @@ async def delete_folder(
 
 @kb_router.get(
     "/{kb_id}/records",
-    response_model=ListRecordsResponse
+    response_model=ListRecordsResponse,
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
 )
 @inject
 async def list_kb_records(
@@ -837,7 +853,8 @@ async def list_kb_records(
     )
 
 @kb_router.get(
-    "/{kb_id}/children"
+    "/{kb_id}/children",
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
 )
 @inject
 async def get_kb_children(
@@ -896,6 +913,7 @@ async def get_kb_children(
 
 @kb_router.get(
     "/{kb_id}/folder/{folder_id}/children",
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
 )
 @inject
 async def get_folder_children(
@@ -956,7 +974,8 @@ async def get_folder_children(
 @kb_router.post(
     "/{kb_id}/permissions",
     response_model=CreatePermissionsResponse,
-    responses={403: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def create_kb_permissions(
@@ -1014,7 +1033,8 @@ async def create_kb_permissions(
 @kb_router.put(
     "/{kb_id}/permissions",
     response_model=UpdatePermissionResponse,
-    responses={403: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def update_kb_permission(
@@ -1079,7 +1099,8 @@ async def update_kb_permission(
 @kb_router.delete(
     "/{kb_id}/permissions",
     response_model=RemovePermissionResponse,
-    responses={403: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_DELETE))],
 )
 @inject
 async def remove_kb_permission(
@@ -1126,7 +1147,8 @@ async def remove_kb_permission(
 @kb_router.get(
     "/{kb_id}/permissions",
     response_model=ListPermissionsResponse,
-    responses={403: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
 )
 @inject
 async def list_kb_permissions(
@@ -1159,7 +1181,8 @@ async def list_kb_permissions(
 @kb_router.post(
     "/{kb_id}/folder/{folder_id}/records",
     response_model=CreateRecordsResponse,
-    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}}
+    responses={403: {"model": ErrorResponse}, 404: {"model": ErrorResponse}},
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def create_records_in_folder(
@@ -1209,7 +1232,8 @@ async def create_records_in_folder(
     responses={
         403: {"model": ErrorResponse},
         404: {"model": ErrorResponse}
-    }
+    },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def update_record(
@@ -1353,7 +1377,8 @@ async def update_record(
     responses={
         403: {"model": ErrorResponse},
         404: {"model": ErrorResponse}
-    }
+    },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_DELETE))],
 )
 @inject
 async def delete_records_in_kb(
@@ -1401,7 +1426,8 @@ async def delete_records_in_kb(
     responses={
         403: {"model": ErrorResponse},
         404: {"model": ErrorResponse}
-    }
+    },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_DELETE))],
 )
 @inject
 async def delete_record_in_folder(
@@ -1448,6 +1474,7 @@ async def delete_record_in_folder(
 @kb_router.get(
     "/records",
     # response_model=ListAllRecordsResponse
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
 )
 @inject
 async def list_all_records(
@@ -1510,6 +1537,7 @@ async def list_all_records(
         404: {"model": ErrorResponse},
         500: {"model": ErrorResponse},
     },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_WRITE))],
 )
 @inject
 async def move_record(

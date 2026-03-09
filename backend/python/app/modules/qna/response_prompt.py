@@ -156,9 +156,82 @@ You are responsible for:
 }}
 ```
 
+### MODE 3: Combined — Internal Knowledge + API Tool Results (MANDATORY when BOTH are present)
+
+**When to use:** When you have BOTH internal knowledge blocks (with R-labels) AND API tool results
+
+```json
+{{
+  "answer": "Your comprehensive answer weaving both sources. Cite internal knowledge facts inline [R1-0][R2-3]. Format API results with clickable links like [PA-123](url).",
+  "confidence": "High",
+  "answerMatchType": "Derived From Blocks",
+  "blockNumbers": ["R1-0", "R2-3"],
+  "referenceData": [
+    {{"name": "PA-123: Fix login bug", "key": "PA-123", "type": "jira_issue", "url": "https://org.atlassian.net/browse/PA-123"}}
+  ]
+}}
+```
+
+**⚠️ CRITICAL — MODE 3 Rules:**
+- `blockNumbers` MUST contain every R-label you cited in the answer
+- `referenceData` MUST contain every external-service item (Jira, Confluence, Drive, Gmail, Slack)
+- Do NOT omit knowledge citations just because API results are also present — cite BOTH
+- Synthesise both sources into ONE coherent answer; do not produce two separate sections
+
 **Tool Results — Show vs Hide:**
-- ✅ SHOW: Jira ticket keys (PA-123), project keys, names, statuses, dates
-- ❌ HIDE: Internal numeric IDs, UUIDs, database hashes
+- ✅ SHOW: Jira ticket keys (PA-123), project keys, names, statuses, dates, **ALL user-relevant fields including custom fields**
+- ❌ HIDE: Internal numeric IDs, UUIDs, database hashes, system/technical metadata
+
+**⚠️ CRITICAL for Jira/Issue Tables:**
+When creating markdown tables from Jira issue data, use these **principles** to determine which fields to include:
+
+**✅ INCLUDE Fields That Are:**
+1. **User-Actionable**: Fields users interact with or make decisions based on (status, priority, assignee, story points, due dates)
+2. **Business-Relevant**: Fields that provide business context (project, issue type, labels, components, epic link, sprint)
+3. **Content-Rich**: Fields with meaningful content (summary, description, comments count, attachments count)
+4. **Relationship-Oriented**: Fields showing connections (linked issues, sub-tasks, fix versions, affects versions)
+5. **Custom Fields with Values**: Any custom field (customfield_xxx or normalized name) that has a non-null value and provides meaningful information
+6. **Contact Information**: Email addresses for assignee, reporter, creator when available (format as "Name (email@example.com)" or "Name - email@example.com")
+7. **Important Metadata**: Any field that provides actionable information or context (e.g., resolution date, fix versions, affects versions when they have values)
+
+**❌ EXCLUDE Fields That Are:**
+1. **System Metadata**: Internal tracking fields (rank, workRatio, security level, lastViewed)
+2. **Technical Objects**: System structures (watches, votes, worklog, timetracking objects, progress objects)
+3. **Aggregate Calculations**: Computed fields (aggregateprogress, aggregatetimeestimate, aggregatetimespent) - unless the user specifically asks about time tracking
+4. **Internal Identifiers**: UUIDs, internal IDs, self links, avatar URLs
+5. **Empty/Null Fields**: Fields with no value (unless commonly expected like Due Date or Resolution)
+6. **Redundant Information**: Status category details when status name is already shown, nested objects when a simple value exists
+
+**Decision Framework:**
+- **Ask yourself**: "Would a project manager, developer, or stakeholder find this field useful for understanding or acting on this issue?"
+- **If YES** → Include it (even if it's a custom field not listed above)
+- **If NO** → Exclude it (it's likely system metadata)
+
+**Format Guidelines:**
+- **Single issue**: Show all relevant fields as field-value pairs (include custom fields that have values)
+  - For people fields (Assignee, Reporter, Creator): Show as "DisplayName (email@example.com)" when email is available, or just "DisplayName" if email is not present
+  - Include all important metadata that provides context (resolution date, fix versions, etc. when they have values)
+- **Multiple issues**: Create a scannable table with the most commonly relevant columns + any custom fields that have values across multiple issues
+  - For people columns: Include email addresses when available (format as "Name (email)" or add separate "Assignee Email" column if space allows)
+  - Prioritize columns that are most useful for comparison and action
+- **Custom fields**: Include them by their normalized name (e.g., "Story Points") or original name if more readable
+- **Empty fields**: Omit from tables unless they're commonly expected (Due Date, Resolution) - show "—" for those
+- **Prioritize**: Most important fields first (Key, Summary, Status, Assignee), then supporting fields, then custom fields
+- **People fields**: Always include email addresses when present in the data - they're important for contact and communication
+
+**Examples:**
+- ✅ Good: Includes Issue Key, Summary, Type, Priority, Status, Assignee (with email), Reporter (with email), Story Points, Created, Updated, Due Date, Labels, Components
+- ✅ Good: Includes custom fields like "Epic Link", "Sprint", "Story Points" when they have values
+- ✅ Good: Format people as "John Doe (john.doe@example.com)" or "John Doe - john.doe@example.com"
+- ✅ Good: Includes important metadata like Resolution Date, Fix Versions when they have values
+- ❌ Bad: Includes Rank, Work Ratio, Security Level, Time Spent (unless user asked), Last Viewed, aggregate* fields
+- ❌ Bad: Shows only display names without email addresses when emails are available in the data
+
+**📧 Contact Information (MANDATORY when available):**
+- **People fields (Assignee, Reporter, Creator)**: Always include email addresses when present in the data
+- Format as: "DisplayName (email@example.com)" or "DisplayName - email@example.com"
+- This is critical for communication and follow-up actions
+- Example: "John Doe (john.doe@example.com)" instead of just "John Doe"
 
 **🔗 Links — MANDATORY for External Service Items:**
 - **Jira issue**: Always format as a clickable link `[KEY-123](url)` using the `url` field.
@@ -180,9 +253,12 @@ You are responsible for:
 <source_prioritization>
 ## Source Priority Rules
 1. **User-Specific Questions**: Use User Information, no citations needed
-2. **Company Knowledge Questions**: Use internal knowledge blocks, cite all relevant blocks
-3. **Tool/API Data Questions**: Use tool results, format professionally, no citations needed
-4. **Combined Sources**: Cite only internal knowledge portions
+2. **Company Knowledge Questions**: Use internal knowledge blocks, cite all relevant blocks with [R1-0] inline
+3. **Tool/API Data Questions**: Use tool results only, format professionally, include referenceData, no block citations needed
+4. **Combined Sources (MANDATORY MODE 3)**: When BOTH internal knowledge AND API results are present:
+   - Cite ALL relevant internal knowledge facts with inline [R1-0] citations AND include `blockNumbers`
+   - Format ALL API results with links AND include them in `referenceData`
+   - Weave both into one unified, coherent answer — do NOT skip citations just because API results exist
 </source_prioritization>
 
 <critical_reminders>
@@ -610,7 +686,6 @@ def create_response_messages(state) -> List[Any]:
         AIMessage,
         HumanMessage,
         SystemMessage,
-        ToolMessage,
     )
 
     messages = []
@@ -619,28 +694,7 @@ def create_response_messages(state) -> List[Any]:
     system_prompt = build_response_prompt(state)
     messages.append(SystemMessage(content=system_prompt))
 
-    # 2. Knowledge retrieval tool messages (if present)
-    existing_messages = state.get("messages", [])
-    knowledge_ai_msg = None
-    knowledge_tool_msg = None
-
-    for existing_msg in existing_messages:
-        if isinstance(existing_msg, AIMessage) and hasattr(existing_msg, 'tool_calls') and existing_msg.tool_calls:
-            for tool_call in existing_msg.tool_calls:
-                if isinstance(tool_call, dict) and tool_call.get("name") == "internal_knowledge_retrieval":
-                    knowledge_ai_msg = existing_msg
-                    break
-        elif isinstance(existing_msg, ToolMessage):
-            if hasattr(existing_msg, 'tool_call_id') and existing_msg.tool_call_id and 'knowledge_retrieval' in existing_msg.tool_call_id:
-                knowledge_tool_msg = existing_msg
-                break
-
-    if knowledge_ai_msg:
-        messages.append(knowledge_ai_msg)
-    if knowledge_tool_msg:
-        messages.append(knowledge_tool_msg)
-
-    # 3. Conversation history
+    # 2. Conversation history
     previous_conversations = state.get("previous_conversations", [])
 
     from app.modules.agents.qna.conversation_memory import ConversationMemory
@@ -664,7 +718,7 @@ def create_response_messages(state) -> List[Any]:
         if messages and isinstance(messages[-1], AIMessage):
             messages[-1].content = messages[-1].content + "\n\n" + ref_data_text
 
-    # 4. Current user message
+    # 3. Current user message
     #
     # PREFERRED PATH: respond_node pre-built the user message using get_message_content()
     # — the exact same function the chatbot uses.  This produces consistent R-label block

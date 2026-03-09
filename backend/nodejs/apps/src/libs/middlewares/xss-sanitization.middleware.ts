@@ -222,6 +222,11 @@ export const xssSanitizationMiddleware = (
       return;
     }
 
+    if (req.path.startsWith('/api/v1/conversations/') && (req.method === 'POST' || req.method === 'PUT')) {
+      next();
+      return;
+    }
+
     // Validate request body
     if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
       // Skip if body is a Buffer (file upload)
