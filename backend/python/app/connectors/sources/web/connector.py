@@ -171,7 +171,7 @@ class WebApp(App):
             display_name="Crawl Type",
             field_type="SELECT",
             required=True,
-            # default_value="single",
+            default_value="recursive",
             options=["single", "recursive"],
             description="Choose whether to crawl a single page or recursively crawl linked pages"
         ))
@@ -180,7 +180,7 @@ class WebApp(App):
             display_name="Crawl Depth",
             field_type="NUMBER",
             required=False,
-            # default_value="3",
+            default_value="3",
             min_length=1,
             max_length=10,
             description="Maximum depth for recursive crawling (1-10, only applies to recursive type)"
@@ -190,7 +190,7 @@ class WebApp(App):
             display_name="Maximum Pages",
             field_type="NUMBER",
             required=False,
-            # default_value="100",
+            default_value="100",
             min_length=1,
             max_length=1000,
             description="Maximum number of pages to crawl (1-1000)"
@@ -983,10 +983,10 @@ class WebConnector(BaseConnector):
             if not self.follow_external and parsed.netloc != base_parsed.netloc:
                 return False
 
-            # Check if the URL is within the same path as the base URL
+            # Prevent upward path traversal.
             if self.restrict_to_start_path and self.url:
-                start_parsed = urlparse(self.url)
-                if parsed.netloc == start_parsed.netloc and not parsed.path.startswith(self.start_path_prefix):
+                decoded_path = unquote(parsed.path)
+                if not decoded_path.startswith(self.start_path_prefix):
                     return False
 
             return True
