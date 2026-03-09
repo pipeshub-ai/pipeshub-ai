@@ -404,19 +404,19 @@ class WebConnector(BaseConnector):
             if max_pages > 1000:
                 self.logger.warning("⚠️ WebPage max_pages is greater than 1000, setting to 1000")
                 max_pages = 1000
-            if max_pages < 1:
+            elif max_pages < 1:
                 self.logger.warning("⚠️ WebPage max_pages is less than 1, setting to 1")
                 max_pages = 1
             if max_depth > 10:
                 self.logger.warning("⚠️ WebPage max_depth is greater than 10, setting to 10")
                 max_depth = 10
-            if max_depth < 1:
+            elif max_depth < 1:
                 self.logger.warning("⚠️ WebPage max_depth is less than 1, setting to 1")
                 max_depth = 1
             if max_size_mb > 100:
                 self.logger.warning("⚠️ WebPage max_size_mb is greater than 100, setting to 100")
                 max_size_mb = 100
-            if max_size_mb < 1:
+            elif max_size_mb < 1:
                 self.logger.warning("⚠️ WebPage max_size_mb is less than 1, setting to 1")
                 max_size_mb = 1
 
@@ -557,19 +557,19 @@ class WebConnector(BaseConnector):
                 raise ValueError("Cannot change base domain for web connector.")
 
             if new_crawl_type != self.crawl_type:
-                self.logger.info(f"🔄 Crawl type changed from {self.crawl_type} to {new_crawl_type}")
+                self.logger.info("🔄 Crawl type changed from %s to %s", self.crawl_type, new_crawl_type)
                 self.crawl_type = new_crawl_type
             if new_max_depth != self.max_depth:
-                self.logger.info(f"🔄 Max depth changed from {self.max_depth} to {new_max_depth}")
+                self.logger.info("🔄 Max depth changed from %s to %s", self.max_depth, new_max_depth)
                 self.max_depth = new_max_depth
             if new_max_pages != self.max_pages:
-                self.logger.info(f"🔄 Max pages changed from {self.max_pages} to {new_max_pages}")
+                self.logger.info("🔄 Max pages changed from %s to %s", self.max_pages, new_max_pages)
                 self.max_pages = new_max_pages
             if new_max_size_mb != self.max_size_mb:
-                self.logger.info(f"🔄 Max size bytes changed from {self.max_size_mb} to {new_max_size_mb}")
+                self.logger.info("🔄 Max size in MB changed from %s to %s", self.max_size_mb, new_max_size_mb)
                 self.max_size_mb = new_max_size_mb
             if new_follow_external != self.follow_external:
-                self.logger.info(f"🔄 Follow external changed from {self.follow_external} to {new_follow_external}")
+                self.logger.info("🔄 Follow external changed from %s to %s", self.follow_external, new_follow_external)
                 self.follow_external = new_follow_external
 
 
