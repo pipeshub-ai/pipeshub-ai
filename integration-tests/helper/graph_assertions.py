@@ -110,10 +110,11 @@ def count_app_record_group_edges(driver: Driver, connector_id: str) -> int:
 def fetch_record_paths(
     driver: Driver, connector_id: str, limit: int = 200
 ) -> List[Tuple[str, str]]:
-    """Return up to *limit* (path, record_name) tuples."""
+    """Return up to *limit* (path, record_name) tuples. Path comes from File node when present."""
     cypher = """
     MATCH (r:Record {connectorId: $cid})
-    RETURN r.path AS path, coalesce(r.record_name, r.recordName, r.name) AS record_name
+    OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(f:File)
+    RETURN f.path AS path, coalesce(r.recordName, r.name) AS record_name
     LIMIT $limit
     """
     with driver.session() as session:
@@ -122,10 +123,10 @@ def fetch_record_paths(
 
 
 def fetch_record_names(driver: Driver, connector_id: str) -> List[str]:
-    """Return all record_name values for a connector."""
+    """Return all record_name values for a connector (recordName / name in Neo4j)."""
     cypher = """
     MATCH (r:Record {connectorId: $cid})
-    RETURN coalesce(r.record_name, r.recordName, r.name) AS name
+    RETURN coalesce(r.recordName, r.name) AS name
     """
     with driver.session() as session:
         result = session.run(cypher, cid=connector_id)
@@ -138,7 +139,7 @@ def get_record_by_name(
     """Retrieve a single Record by record_name. Returns None if not found."""
     cypher = """
     MATCH (r:Record {connectorId: $cid})
-    WHERE coalesce(r.record_name, r.recordName, r.name) = $name
+    WHERE coalesce(r.recordName, r.name) = $name
     RETURN r AS record
     LIMIT 1
     """
@@ -153,7 +154,9 @@ def get_record_parent_group(
 ) -> Optional[str]:
     """Get the name of the RecordGroup that a Record BELONGS_TO."""
     cypher = """
-    MATCH (r:Record {connectorId: $cid, record_name: $name})-[:BELONGS_TO]->(g:RecordGroup)
+    MATCH (r:Record {connectorId: $cid})
+    WHERE coalesce(r.recordName, r.name) = $name
+    MATCH (r)-[:BELONGS_TO]->(g:RecordGroup)
     RETURN g.name AS group_name
     LIMIT 1
     """
@@ -172,7 +175,9 @@ def get_record_parent_path(
     Returns a string like "bucket/folder/subfolder" or None if no parent groups exist.
     """
     cypher = """
-    MATCH (r:Record {connectorId: $cid, record_name: $name})-[:BELONGS_TO]->(g:RecordGroup)
+    MATCH (r:Record {connectorId: $cid})
+    WHERE coalesce(r.recordName, r.name) = $name
+    MATCH (r)-[:BELONGS_TO]->(g:RecordGroup)
     OPTIONAL MATCH path = (g)-[:BELONGS_TO*0..5]->(root:RecordGroup)
     WITH r, g, root, nodes(path) AS ns
     WITH r, [x IN ns | coalesce(x.name, '')] AS parts
@@ -235,6 +240,26 @@ def assert_record_paths_contain(
             raise AssertionError(
                 f"No Record.path for connector {connector_id} contained substring {substring!r}"
             )
+
+
+def record_paths_or_names_contain(
+    driver: Driver,
+    connector_id: str,
+    substrings: Iterable[str],
+) -> bool:
+    """
+    Return True if for each substring, at least one Record's path or name contains it.
+
+    Useful as a wait condition (e.g. after rename) before asserting.
+    """
+    pairs = fetch_record_paths(driver, connector_id, limit=1000)
+    names = fetch_record_names(driver, connector_id)
+    for substring in substrings:
+        in_paths = any(p is not None and substring in p for p, _ in pairs)
+        in_names = any(n is not None and substring in n for n in names)
+        if not (in_paths or in_names):
+            return False
+    return True
 
 
 def assert_record_paths_or_names_contain(

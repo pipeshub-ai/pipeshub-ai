@@ -70,13 +70,13 @@ def pipeshub_client() -> PipeshubClient:
 
 @pytest.fixture(scope="session")
 def neo4j_driver() -> Generator[Driver, None, None]:
-    """Session-scoped Neo4j driver pointing at the remote Aura instance."""
-    uri = os.getenv("NEO4J_URI")
-    user = os.getenv("NEO4J_USERNAME")
-    password = os.getenv("NEO4J_PASSWORD")
+    """Session-scoped Neo4j driver (uses TEST_NEO4J_* from .env.local / .env.prod)."""
+    uri = os.getenv("TEST_NEO4J_URI")
+    user = os.getenv("TEST_NEO4J_USERNAME")
+    password = os.getenv("TEST_NEO4J_PASSWORD")
 
     if not uri or not user or not password:
-        pytest.skip("Remote Neo4j env vars not set; skipping connector integration tests.")
+        pytest.skip("TEST_NEO4J_URI / TEST_NEO4J_USERNAME / TEST_NEO4J_PASSWORD not set; skipping connector integration tests.")
 
     driver = GraphDatabase.driver(uri, auth=(user, password))
     try:

@@ -31,6 +31,7 @@ from typing import Iterable, List
 import boto3
 from google.cloud import storage as gcs_storage  # type: ignore[import-not-found]
 from google.oauth2 import service_account  # type: ignore[import-not-found]
+from azure.core.exceptions import ResourceExistsError  # type: ignore[import-not-found]
 from azure.storage.blob import (  # type: ignore[import-not-found]
     BlobServiceClient,
 )
@@ -264,6 +265,21 @@ class AzureFilesStorageHelper:
     def list_objects(self, share: str) -> List[str]:
         return list(self._iter_files_in_share(share))
 
+    def _ensure_azure_files_directory(self, share_client: object, dir_name: str) -> object:
+        """Create directory and all parents; return client for dir_name."""
+        if not dir_name:
+            return share_client.get_directory_client("")  # type: ignore[return-value]
+        current = share_client.get_directory_client("")
+        for part in dir_name.split("/"):
+            if not part:
+                continue
+            current = current.get_subdirectory_client(part)
+            try:
+                current.create_directory()
+            except ResourceExistsError:
+                pass
+        return share_client.get_directory_client(dir_name)
+
     def upload_directory(self, share: str, root: Path) -> int:
         root = root.resolve()
         share_client = self._service.get_share_client(share)
@@ -273,8 +289,7 @@ class AzureFilesStorageHelper:
             dir_name, _, file_name = rel_path.rpartition("/")
 
             if dir_name:
-                directory_client = share_client.get_directory_client(dir_name)
-                directory_client.create_directory(exist_ok=True)  # type: ignore[arg-type]
+                directory_client = self._ensure_azure_files_directory(share_client, dir_name)
             else:
                 directory_client = share_client.get_directory_client("")
 
@@ -303,8 +318,7 @@ class AzureFilesStorageHelper:
         data = src_file_client.download_file().readall()
 
         if new_dir:
-            dest_dir_client = share_client.get_directory_client(new_dir)
-            dest_dir_client.create_directory(exist_ok=True)  # type: ignore[arg-type]
+            dest_dir_client = self._ensure_azure_files_directory(share_client, new_dir)
         else:
             dest_dir_client = share_client.get_directory_client("")
 
