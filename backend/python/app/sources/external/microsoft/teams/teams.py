@@ -8,7 +8,8 @@ from datetime import datetime
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Mapping
 from urllib.parse import quote
-
+from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
+from msgraph.generated.models.chat_type import ChatType
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
 )
@@ -33,6 +34,12 @@ from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType  
 from msgraph.generated.models.item_body import ItemBody  # type: ignore
 from msgraph.generated.models.team import Team  #type: ignore
 from msgraph.generated.models.body_type import BodyType
+from msgraph.generated.models.chat_info import ChatInfo
+from msgraph.generated.models.online_meeting import OnlineMeeting
+from msgraph.generated.models.meeting_participants import MeetingParticipants
+from msgraph.generated.models.meeting_participant_info import MeetingParticipantInfo
+from msgraph.generated.models.identity_set import IdentitySet
+from msgraph.generated.models.identity import Identity
 from msgraph.generated.teams.item.channels.channels_request_builder import (  # type: ignore
     ChannelsRequestBuilder,
 )
@@ -44,7 +51,10 @@ from msgraph.generated.teams.teams_request_builder import (  # type: ignore
 )
 
 from app.sources.client.microsoft.microsoft import MSGraphClient
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from msgraph.generated.chats.item.messages.messages_request_builder import (
+    MessagesRequestBuilder,
+)
 
 
 
@@ -83,6 +93,8 @@ _BASIC_USER_SELECT_FIELDS = [
     "surname",
     "mail",
     "userPrincipalName",
+    "externalUserState",
+    "userType",
 ]
 
 
@@ -854,6 +866,176 @@ class TeamsDataSource:
             logger.error(f"Error in teams_send_channel_message: {e}")
             return TeamsResponse(success=False, error=str(e))
 
+    async def teams_send_message_to_user(
+        self,
+        user_identifier: str,
+        message: str,
+    ) -> TeamsResponse:
+
+        """
+        Send a direct message to a user by resolving user identifier and posting
+        in an existing 1:1 chat.
+        """
+        try:
+            logger.info(
+                "teams_send_message_to_user: started user_identifier=%s",
+                user_identifier,
+            )
+
+            if not user_identifier or not user_identifier.strip():
+                return TeamsResponse(success=False, error="user_identifier is required")
+
+            # -------------------------------------------
+            # STEP 1: Resolve target user
+            # -------------------------------------------
+            logger.info("teams_send_message_to_user: step_1_fetch_users")
+            users = await self.client.users.get()
+            users_list = users.value or []
+            logger.info(
+                "teams_send_message_to_user: step_1_users_fetched count=%s",
+                len(users_list),
+            )
+
+            normalized_identifier = user_identifier.strip().lower()
+            target_user = None
+            for user in users_list:
+                if (
+                    normalized_identifier in (user.display_name or "").lower()
+                    or normalized_identifier in (user.mail or "").lower()
+                    or normalized_identifier in (user.user_principal_name or "").lower()
+                    or user_identifier.strip() == user.id
+                ):
+                    target_user = user
+                    break
+
+            if not target_user:
+                logger.warning(
+                    "teams_send_message_to_user: step_1_user_not_found user_identifier=%s",
+                    user_identifier,
+                )
+                return TeamsResponse(success=False, error="User not found")
+
+            logger.info(
+                "teams_send_message_to_user: step_1_user_matched user_id=%s display_name=%s",
+                target_user.id,
+                target_user.display_name,
+            )
+
+            # -------------------------------------------
+            # STEP 2: Find existing chat with user
+            # -------------------------------------------
+            logger.info("teams_send_message_to_user: step_2_fetch_my_chats")
+            chats = await self.client.me.chats.get()
+            chats_list = chats.value or []
+            logger.info(
+                "teams_send_message_to_user: step_2_chats_fetched count=%s",
+                len(chats_list),
+            )
+
+            chat_id = None
+            chats_checked = 0
+            for chat in chats_list:
+                chats_checked += 1
+                if chat.chat_type != "oneOnOne":
+                    continue
+                members = await self.client.chats.by_chat_id(chat.id).members.get()
+                for member in members.value or []:
+                    if member.user_id == target_user.id:
+                        chat_id = chat.id
+                        break
+                if chat_id:
+                    break
+
+            if not chat_id:
+                logger.warning(
+                    "teams_send_message_to_user: step_2_chat_not_found user_id=%s chats_checked=%s",
+                    target_user.id,
+                    chats_checked,
+                )
+                chat = Chat()
+                chat.chat_type = ChatType.OneOnOne
+                me = await self.client.me.get()
+
+                member_me = AadUserConversationMember()
+                member_me.roles = ["owner"]
+                member_me.additional_data = {
+                    "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{me.id}')"
+                }
+
+                member_target = AadUserConversationMember()
+                
+                if target_user.user_type == "Guest":
+                    member_target.roles = ["guest"]
+                else:
+                    member_target.roles = ["owner"]
+
+
+                member_target.additional_data = {
+                    "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{target_user.id}')"
+                }
+
+                chat.members = [member_me, member_target]
+
+                created_chat = await self.client.chats.post(chat)
+                chat_id = created_chat.id
+
+                logger.info(
+                    "teams_send_message_to_user: step_2_5_chat_created chat_id=%s",
+                    chat_id,
+                )
+
+            logger.info(
+                "teams_send_message_to_user: step_2_chat_matched chat_id=%s chats_checked=%s",
+                chat_id,
+                chats_checked,
+            )
+
+            # -------------------------------------------
+            # STEP 3: Send message in chat
+            # -------------------------------------------
+            logger.info(
+                "teams_send_message_to_user: step_3_send_chat_message chat_id=%s",
+                chat_id,
+            )
+            message_payload = ChatMessage()
+            body_payload = ItemBody()
+            body_payload.content = message
+            message_payload.body = body_payload
+
+            response = await self.client.chats.by_chat_id(chat_id).messages.post(
+                body=message_payload
+            )
+            return self._handle_teams_response(response)
+
+            # if response is None:
+            #     return TeamsResponse(
+            #         success=True,
+            #         data={
+            #             "user_identifier": user_identifier,
+            #             "user_id": target_user.id,
+            #             "user": target_user.display_name,
+            #             "chat_id": chat_id,
+            #             "message": message,
+            #         },
+            #         message="Teams direct message sent successfully",
+            #     )
+
+            # serialized_response = self._serialize_response(response)
+            # return TeamsResponse(
+            #     success=True,
+            #     data={
+            #         "user_identifier": user_identifier,
+            #         "user_id": target_user.id,
+            #         "user": target_user.display_name,
+            #         "chat_id": chat_id,
+            #         "message_result": serialized_response,
+            #     },
+            #     message="Teams direct message sent successfully",
+            # )
+        except Exception as e:
+            logger.error(f"Error in teams_send_message_to_user: {e}")
+            return TeamsResponse(success=False, error=str(e))
+
     async def teams_get_channel_messages(
         self,
         team_id: str,
@@ -953,36 +1135,124 @@ class TeamsDataSource:
 
     async def teams_update_channel_message(
         self,
-        team_id: str,
-        channel_id: str,
+        team_id: Optional[str],
+        channel_id: Optional[str],
         message_id: str,
         message: str,
+        chat_id: Optional[str] = None,
     ) -> TeamsResponse:
-        """Update a channel message (PATCH /teams/{team-id}/channels/{channel-id}/messages/{chatMessage-id})."""
+        """Update a channel message or direct chat message."""
         try:
+            logger.info(
+                "teams_update_channel_message: started chat_id=%s message_id=%s team_id=%s channel_id=%s message_len=%s",
+                chat_id,
+                message_id,
+                team_id,
+                channel_id,
+                len(message or ""),
+            )
             patch_payload = ChatMessage()
             body_payload = ItemBody()
             body_payload.content = message
             patch_payload.body = body_payload
 
-            response = (
-                await self.client.teams
-                .by_team_id(team_id)
-                .channels.by_channel_id(channel_id)
-                .messages.by_chat_message_id(message_id)
-                .patch(body=patch_payload)
+            if chat_id:
+                logger.info(
+                    "teams_update_channel_message: patching direct chat message chat_id=%s message_id=%s",
+                    chat_id,
+                    message_id,
+                )
+                response = (
+                    await self.client.chats
+                    .by_chat_id(chat_id)
+                    .messages.by_chat_message_id(message_id)
+                    .patch(body=patch_payload)
+                )
+            elif team_id and channel_id:
+                logger.info(
+                    "teams_update_channel_message: patching channel message team_id=%s channel_id=%s message_id=%s",
+                    team_id,
+                    channel_id,
+                    message_id,
+                )
+                response = (
+                    await self.client.teams
+                    .by_team_id(team_id)
+                    .channels.by_channel_id(channel_id)
+                    .messages.by_chat_message_id(message_id)
+                    .patch(body=patch_payload)
+                )
+            else:
+                logger.info(
+                    "teams_update_channel_message: attempting auto-resolve chat_id from message_id=%s",
+                    message_id,
+                )
+                chats_response = await self.client.me.chats.get()
+                chats = chats_response.value or []
+                resolved_chat_id: Optional[str] = None
+                checked_chats = 0
+
+                for chat in chats:
+                    if not getattr(chat, "id", None):
+                        continue
+                    checked_chats += 1
+                    try:
+                        chat_messages_response = await self.client.chats.by_chat_id(chat.id).messages.get()
+                        chat_messages = chat_messages_response.value or []
+                    except Exception as chat_scan_error:
+                        logger.debug(
+                            "teams_update_channel_message: chat scan failed chat_id=%s error=%s",
+                            chat.id,
+                            chat_scan_error,
+                        )
+                        continue
+
+                    for chat_message in chat_messages:
+                        if getattr(chat_message, "id", None) == message_id:
+                            resolved_chat_id = chat.id
+                            break
+                    if resolved_chat_id:
+                        break
+
+                if not resolved_chat_id:
+                    logger.warning(
+                        "teams_update_channel_message: could not resolve chat for message_id=%s chats_checked=%s",
+                        message_id,
+                        checked_chats,
+                    )
+                    return TeamsResponse(
+                        success=False,
+                        error="Unable to resolve chat_id from message_id. Provide chat_id or team_id and channel_id.",
+                    )
+
+                logger.info(
+                    "teams_update_channel_message: resolved chat_id=%s for message_id=%s",
+                    resolved_chat_id,
+                    message_id,
+                )
+                chat_id = resolved_chat_id
+                response = (
+                    await self.client.chats
+                    .by_chat_id(chat_id)
+                    .messages.by_chat_message_id(message_id)
+                    .patch(body=patch_payload)
+                )
+            logger.info(
+                "teams_update_channel_message: patch completed response_is_none=%s response_preview=%s",
+                response is None,
+                self._safe_response_preview(response),
             )
             if response is None:
-                return TeamsResponse(
-                    success=True,
-                    data={
-                        "team_id": team_id,
-                        "channel_id": channel_id,
-                        "message_id": message_id,
-                        "updated_message": message,
-                    },
-                    message="Message updated successfully",
-                )
+                data = {
+                    "message_id": message_id,
+                    "updated_message": message,
+                }
+                if chat_id:
+                    data["chat_id"] = chat_id
+                else:
+                    data["team_id"] = team_id
+                    data["channel_id"] = channel_id
+                return TeamsResponse(success=True, data=data, message="Message updated successfully")
             return self._handle_teams_response(response)
         except Exception as e:
             logger.error(f"Error in teams_update_channel_message: {e}")
@@ -1119,15 +1389,249 @@ class TeamsDataSource:
             logger.error(f"Error in teams_get_thread_replies: {e}")
             return TeamsResponse(success=False, error=str(e))
 
-    async def teams_get_user_conversations(self) -> TeamsResponse:
-        """List conversations/chats for authenticated user (GET /me/chats)."""
-        try:
-            response = await self.client.me.chats.get()
-            return self._handle_teams_response(response)
-        except Exception as e:
-            logger.error(f"Error in teams_get_user_conversations: {e}")
-            return TeamsResponse(success=False, error=str(e))
 
+
+    async def teams_get_conversation_with_user(
+        self,
+        user_identifier: str,
+        minutes: Optional[int] = None,
+        hours: Optional[int] = None,
+        days: Optional[int] = None,
+        top: Optional[int] = 50,
+    ) -> TeamsResponse:
+
+        try:
+            logger.info(
+                "teams_get_conversation_with_user: started "
+                "user_identifier=%s minutes=%s hours=%s days=%s top=%s",
+                user_identifier,
+                minutes,
+                hours,
+                days,
+                top,
+            )
+
+            logger.info("teams_get_conversation_with_user: step_1_fetch_users")
+            users = await self.client.users.get()
+            users_list = users.value or []
+            logger.info(
+                "teams_get_conversation_with_user: step_1_users_fetched count=%s",
+                len(users_list),
+            )
+
+            target_user = None
+
+            for user in users_list:
+                if (
+                    user_identifier.lower() in (user.display_name or "").lower()
+                    or user_identifier.lower() in (user.mail or "").lower()
+                    or user_identifier.lower() in (user.user_principal_name or "").lower()
+                    or user_identifier == user.id
+                ):
+                    target_user = user
+                    break
+
+            if not target_user:
+                logger.warning(
+                    "teams_get_conversation_with_user: step_1_user_not_found user_identifier=%s",
+                    user_identifier,
+                )
+                return TeamsResponse(success=False, error="User not found")
+            logger.info(
+                "teams_get_conversation_with_user: step_1_user_matched user_id=%s display_name=%s",
+                target_user.id,
+                target_user.display_name,
+            )
+
+            # -------------------------------------------
+            # STEP 2: Find chat with that user
+            # -------------------------------------------
+
+            logger.info("teams_get_conversation_with_user: step_2_fetch_my_chats")
+            chats = await self.client.me.chats.get()
+            chats_list = chats.value or []
+            logger.info(
+                "teams_get_conversation_with_user: step_2_chats_fetched count=%s",
+                len(chats_list),
+            )
+
+            chat_id = None
+            chats_checked = 0
+
+            for chat in chats_list:
+                chats_checked += 1
+
+                members = await self.client.chats.by_chat_id(chat.id).members.get()
+
+                for member in members.value:
+                    if member.user_id == target_user.id:
+                        chat_id = chat.id
+                        break
+
+                if chat_id:
+                    break
+
+            if not chat_id:
+                logger.warning(
+                    "teams_get_conversation_with_user: step_2_chat_not_found user_id=%s chats_checked=%s",
+                    target_user.id,
+                    chats_checked,
+                )
+                return TeamsResponse(success=False, error="Chat not found")
+            logger.info(
+                "teams_get_conversation_with_user: step_2_chat_matched chat_id=%s chats_checked=%s",
+                chat_id,
+                chats_checked,
+            )
+
+            # -------------------------------------------
+            # STEP 3: Compute time filter
+            # -------------------------------------------
+
+            logger.info("teams_get_conversation_with_user: step_3_compute_time_filter")
+            now = datetime.now(timezone.utc)
+
+            if not any([minutes, hours, days]):
+                start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            else:
+                delta = timedelta(
+                    minutes=minutes or 0,
+                    hours=hours or 0,
+                    days=days or 0,
+                )
+                start_time = now - delta
+            logger.info(
+                "teams_get_conversation_with_user: step_3_time_filter_computed now=%s start_time=%s",
+                now.isoformat(),
+                start_time.isoformat(),
+            )
+
+            # -------------------------------------------
+            # STEP 4: Fetch messages
+            # -------------------------------------------
+
+            logger.info(
+                "teams_get_conversation_with_user: step_4_fetch_messages chat_id=%s",
+                chat_id,
+            )
+            response = await self.client.chats.by_chat_id(chat_id).messages.get()
+
+            messages = response.value or []
+            logger.info(
+                "teams_get_conversation_with_user: step_4_messages_fetched count=%s",
+                len(messages),
+            )
+
+            # -------------------------------------------
+            # STEP 5: Filter messages in Python
+            # -------------------------------------------
+
+            logger.info(
+                "teams_get_conversation_with_user: step_5_filter_messages_started total_messages=%s",
+                len(messages),
+            )
+            results = []
+            skipped_missing_created_time = 0
+            skipped_before_start_time = 0
+            skipped_missing_sender = 0
+
+            for msg in messages:
+
+                if not msg.created_date_time:
+                    skipped_missing_created_time += 1
+                    continue
+
+                created_time = msg.created_date_time
+
+                if created_time < start_time:
+                    skipped_before_start_time += 1
+                    continue
+
+                sender = None
+                if msg.from_ and msg.from_.user:
+                    sender = msg.from_.user.display_name
+                if not sender:
+                    skipped_missing_sender += 1
+                    continue
+
+                content = None
+                if msg.body:
+                    content = msg.body.content
+
+                results.append(
+                    {
+                        "sender": sender,
+                        "message": content,
+                        "time": str(created_time),
+                        "message_id": msg.id,
+                        "chat_id": chat_id,
+                    }
+                )
+            logger.info(
+                "teams_get_conversation_with_user: step_5_filter_messages_completed "
+                "kept=%s skipped_missing_created_time=%s skipped_before_start_time=%s skipped_missing_sender=%s",
+                len(results),
+                skipped_missing_created_time,
+                skipped_before_start_time,
+                skipped_missing_sender,
+            )
+            logger.info(
+                "teams_get_conversation_with_user: step_5_filtered_results_preview=%s",
+                self._safe_response_preview(results),
+            )
+
+            # -------------------------------------------
+            # STEP 6: Sort chronologically
+            # -------------------------------------------
+
+            logger.info(
+                "teams_get_conversation_with_user: step_6_sort_results count=%s",
+                len(results),
+            )
+            results.sort(key=lambda x: x["time"])
+
+            # -------------------------------------------
+            # STEP 7: Limit results
+            # -------------------------------------------
+
+            limit = min(top or 50, 500)
+            logger.info(
+                "teams_get_conversation_with_user: step_7_apply_limit requested_top=%s applied_limit=%s",
+                top,
+                limit,
+            )
+
+            results = results[:limit]
+            logger.info(
+                "teams_get_conversation_with_user: completed response_count=%s chat_id=%s user_id=%s",
+                len(results),
+                chat_id,
+                target_user.id,
+            )
+            logger.info(
+                "teams_get_conversation_with_user: final_results_preview=%s",
+                self._safe_response_preview(results),
+            )
+            
+
+            return TeamsResponse(
+                success=True,
+                data={
+                    "user": target_user.display_name,
+                    "user_id": target_user.id,
+                    "chat_id": chat_id,
+                    "results": results,
+                    "count": len(results),
+                    "start_time": start_time.isoformat(),
+                },
+            )
+
+        except Exception as e:
+
+            logger.error(f"Error in teams_get_conversation_with_user: {e}")
+
+            return TeamsResponse(success=False, error=str(e))
+    
     async def teams_get_user_channels(self, team_id: Optional[str] = None) -> TeamsResponse:
         """List channels for authenticated user; optionally scoped to one team."""
         try:
@@ -1336,21 +1840,13 @@ class TeamsDataSource:
                 query_parameters=query_params
             )
 
-            print("\n---------------- GRAPH QUERY PARAM OBJECT ----------------")
-            print("Start:", query_params.start_date_time)
-            print("End:", query_params.end_date_time)
-            print("OrderBy:", query_params.orderby)
-            print("Top:", query_params.top)
-            print("Select:", query_params.select)
-            print("----------------------------------------------------------\n")
+            
 
             response = await self.client.me.calendar_view.get(request_configuration=config)
 
             raw_events = self._extract_collection_items(response)
 
-            print("--------------------------------")
-            print(f"raw_events: {json.dumps(raw_events, default=str)}")
-            print("--------------------------------")
+            
 
             # Optional meeting type filtering
             # Optional meeting type filtering
@@ -1364,7 +1860,7 @@ class TeamsDataSource:
                     if hasattr(event, "type"):
                         event_type = getattr(event.type, "value", event.type)
 
-                    print("EVENT TYPE:", event_type)
+                    
 
                     if normalized_meeting_type == "recurring":
                         if event_type in ["occurrence", "exception", "seriesMaster"]:
@@ -1385,9 +1881,7 @@ class TeamsDataSource:
                     
             #     )
 
-            print("--------------------------------")
-            print(f"Meetings: {json.dumps(meetings, default=str)}")
-            print("--------------------------------")
+            
 
             return TeamsResponse(
                 success=True,
@@ -1405,106 +1899,7 @@ class TeamsDataSource:
         except Exception as e:
             logger.error(f"Error in teams_get_meetings: {e}")
             return TeamsResponse(success=False, error=str(e))
-    # async def teams_get_meetings(
-    #     self,
-    #     start_datetime: Optional[str] = None,
-    #     end_datetime: Optional[str] = None,
-    #     is_deleted: Optional[bool] = None,
-    #     is_cancelled: Optional[bool] = None,
-    #     meeting_type: Optional[str] = None,
-    #     top: Optional[int] = 100,
-    # ) -> TeamsResponse:
-    #     """Get meetings using API-side filters only."""
-    #     has_start = isinstance(start_datetime, str) and bool(start_datetime.strip())
-    #     has_end = isinstance(end_datetime, str) and bool(end_datetime.strip())
-    #     if has_start != has_end:
-    #         return TeamsResponse(
-    #             success=False,
-    #             error="start_datetime and end_datetime must be provided together",
-    #         )
-
-    #     normalized_meeting_type: Optional[str] = None
-    #     if meeting_type is not None:
-    #         normalized_meeting_type = str(meeting_type).strip().lower()
-    #         if normalized_meeting_type not in {"recurring", "one_time"}:
-    #             return TeamsResponse(
-    #                 success=False,
-    #                 error="meeting_type must be either 'recurring' or 'one_time'",
-    #             )
-
-    #     start_dt = self._parse_iso_datetime(start_datetime) if has_start else None
-    #     end_dt = self._parse_iso_datetime(end_datetime) if has_end else None
-    #     if has_start and (start_dt is None or end_dt is None):
-    #         return TeamsResponse(
-    #             success=False,
-    #             error="start_datetime and end_datetime must be valid ISO datetime values",
-    #         )
-    #     if start_dt is not None and end_dt is not None and end_dt < start_dt:
-    #         return TeamsResponse(
-    #             success=False,
-    #             error="end_datetime must be after start_datetime",
-    #         )
-    #     try:
-            
-    #         query_params = EventsRequestBuilder.EventsRequestBuilderGetQueryParameters(
-    #             select=[
-    #                 "id",
-    #                 "subject",
-    #                 "start",
-    #                 "end",
-    #                 "webLink",
-    #                 "isOnlineMeeting",
-    #                 "onlineMeetingProvider",
-    #                 "onlineMeeting",
-    #             ]
-    #         )
-    #         filters: List[str] = []
-    #         if has_start and has_end:
-    #             filters.append(f"start/dateTime le '{end_dt.isoformat()}'")
-    #             filters.append(f"end/dateTime ge '{start_dt.isoformat()}'")
-            
-
-    #         if filters:
-    #             query_params.filter = " and ".join(filters)
-    #         query_params.orderby = ["start/dateTime asc"]
-    #         if top is not None:
-    #             query_params.top = min(top, 1000)
-
-    #         # config = RequestConfiguration(query_parameters=query_params)
-    #         config = EventsRequestBuilder.EventsRequestBuilderGetRequestConfiguration(
-    #             query_parameters=query_params
-    #         )
-    #         print("\n---------------- GRAPH QUERY PARAM OBJECT ----------------")
-    #         print("Query Params Object:", query_params)
-    #         print("Filter Object:", query_params.filter)
-    #         print("OrderBy:", query_params.orderby)
-    #         print("Top:", query_params.top)
-    #         print("Select:", query_params.select)
-    #         print("----------------------------------------------------------\n")
-    #         response = await self.client.me.events.get(request_configuration=config)
-    #         raw_events = self._extract_collection_items(response)
-    #         meetings = [self._event_to_dict(event_obj) for event_obj in raw_events]
-    #         for meeting in meetings:
-    #             meeting["meeting_id"] = meeting.get("meeting_id") or meeting.get("online_meeting_id") or meeting.get("id")
-
-    #         print("--------------------------------")
-    #         print(f"Meetings: {json.dumps(meetings, default=str)}")
-    #         print("--------------------------------")
-    #         return TeamsResponse(
-    #             success=True,
-    #             data={
-    #                 "results": meetings,
-    #                 "count": len(meetings),
-    #                 "start_datetime": start_datetime,
-    #                 "end_datetime": end_datetime,
-    #                 "is_deleted": is_deleted,
-    #                 "is_cancelled": is_cancelled,
-    #                 "meeting_type": normalized_meeting_type,
-    #             },
-    #         )
-    #     except Exception as e:
-    #         logger.error(f"Error in teams_get_meetings: {e}")
-    #         return TeamsResponse(success=False, error=str(e))
+   
 
     async def teams_get_my_recurring_meetings(self, top: Optional[int] = 50) -> TeamsResponse:
         """Get authenticated user's recurring meetings from calendar events."""
@@ -1888,6 +2283,7 @@ class TeamsDataSource:
             meeting_item = self._me_online_meeting_item(meeting_id)
             reports_response = await meeting_item.attendance_reports.get()
             reports = self._extract_collection_items(reports_response)
+           
 
             attendees: List[Dict[str, Any]] = []
             for report in reports:
@@ -1907,9 +2303,88 @@ class TeamsDataSource:
                 if report_item is None:
                     continue
                 records_response = await report_item.attendance_records.get()
+                
                 records = self._extract_collection_items(records_response)
+                
                 for record in records:
                     attendee = self._to_simple_dict(record)
+                    display_name: Optional[str] = None
+                    email_address: Optional[str] = None
+
+                    if isinstance(record, dict):
+                        display_name = (
+                            record.get("display_name")
+                            or record.get("displayName")
+                        )
+                        email_address_raw: Any = (
+                            record.get("email_address")
+                            or record.get("emailAddress")
+                        )
+                        identity = record.get("identity")
+                        if isinstance(identity, dict):
+                            display_name = (
+                                display_name
+                                or identity.get("display_name")
+                                or identity.get("displayName")
+                            )
+                            email_address_raw = (
+                                email_address_raw
+                                or identity.get("email_address")
+                                or identity.get("emailAddress")
+                            )
+                        if isinstance(email_address_raw, dict):
+                            email_address = (
+                                email_address_raw.get("address")
+                                or email_address_raw.get("Address")
+                            )
+                        elif isinstance(email_address_raw, str):
+                            email_address = email_address_raw
+                    else:
+                        display_name = (
+                            getattr(record, "display_name", None)
+                            or getattr(record, "displayName", None)
+                        )
+                        email_address_raw = (
+                            getattr(record, "email_address", None)
+                            or getattr(record, "emailAddress", None)
+                        )
+                        identity = getattr(record, "identity", None)
+                        if identity is not None:
+                            display_name = (
+                                display_name
+                                or getattr(identity, "display_name", None)
+                                or getattr(identity, "displayName", None)
+                            )
+                            identity_email = (
+                                getattr(identity, "email_address", None)
+                                or getattr(identity, "emailAddress", None)
+                            )
+                            email_address_raw = email_address_raw or identity_email
+                            if isinstance(identity, dict):
+                                display_name = (
+                                    display_name
+                                    or identity.get("display_name")
+                                    or identity.get("displayName")
+                                )
+                                email_address_raw = (
+                                    email_address_raw
+                                    or identity.get("email_address")
+                                    or identity.get("emailAddress")
+                                )
+                        if isinstance(email_address_raw, dict):
+                            email_address = (
+                                email_address_raw.get("address")
+                                or email_address_raw.get("Address")
+                            )
+                        elif email_address_raw is not None:
+                            email_address = getattr(email_address_raw, "address", None)
+                            if email_address is None and isinstance(email_address_raw, str):
+                                email_address = email_address_raw
+
+                    display_name = display_name or attendee.get("name")
+                    email_address = email_address or attendee.get("address")
+                    attendee["display_name"] = display_name
+                    attendee["email_address"] = email_address
                     attendee["meeting_id"] = meeting_id
                     attendee["attendance_report_id"] = report_id
                     attendees.append(attendee)
@@ -2025,8 +2500,93 @@ class TeamsDataSource:
             logger.error(f"Error in teams_create_event: {e}")
             return TeamsResponse(success=False, error=str(e))
 
+    async def teams_create_channel_meeting(
+        self,
+        team_id: str,
+        channel_name: str,
+        subject: str,
+        start_datetime: str,
+        end_datetime: str,
+        timezone: Optional[str] = "Asia/Kolkata",
+    ) -> TeamsResponse:
+        """
+        Creates a Teams meeting and broadcasts it to a specific channel's Posts tab.
+        """
+        try:
+            tz = timezone or "Asia/Kolkata"
 
-    
+            # 1. Resolve Channel ID from Name
+            channels_response = await self.client.teams.by_team_id(team_id).channels.get()
+            channels = getattr(channels_response, "value", None) or []
+            
+            matched_channel = next((
+                c for c in channels 
+                if getattr(c, "display_name", "").strip().lower() == channel_name.strip().lower()
+            ), None)
+
+            if not matched_channel:
+                return TeamsResponse(success=False, message=f"Channel '{channel_name}' not found.")
+
+            # Validation: Graph API doesn't support bot-scheduled meetings in private channels easily
+            if getattr(matched_channel, "membership_type", None) == "private":
+                return TeamsResponse(success=False, message="Meetings cannot be scheduled in private channels via API.")
+
+            channel_id = matched_channel.id
+
+            # 2. Create the Calendar Event
+            event_payload = Event()
+            event_payload.subject = subject
+            
+            # Set Start Time
+            start_payload = DateTimeTimeZone()
+            start_payload.date_time = start_datetime
+            start_payload.time_zone = tz
+            event_payload.start = start_payload
+
+            # Set End Time
+            end_payload = DateTimeTimeZone()
+            end_payload.date_time = end_datetime
+            end_payload.time_zone = tz
+            event_payload.end = end_payload
+
+            # Transform this into an Online Meeting (Teams link)
+            event_payload.is_online_meeting = True
+            event_payload.online_meeting_provider = OnlineMeetingProviderType.TeamsForBusiness
+
+            # POST to the organizer's calendar (the 'me' context)
+            created_event = await self.client.me.events.post(body=event_payload)
+            
+            # Extract the Join URL generated by Teams
+            join_url = getattr(created_event.online_meeting, "join_url", None)
+
+            # 3. Post the Meeting Invitation to the Channel
+            # This makes it visible to all members in the "Posts" section
+            chat_message = ChatMessage()
+            message_body = ItemBody()
+            message_body.content_type = BodyType.Html
+            message_body.content = f"""
+                <div style="border: 1px solid #e1e1e1; padding: 15px; border-radius: 8px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;">
+                    <h3 style="color: #5b5fc7; margin-top: 0;">📅 {subject}</h3>
+                    <p>A new meeting has been scheduled in this channel.</p>
+                    <p><b>Starts:</b> {start_datetime} ({tz})</p>
+                    <a href='{join_url}' style='background-color: #5b5fc7; color: white; padding: 8px 16px; text-decoration: none; border-radius: 4px; display: inline-block;'>Join Meeting</a>
+                </div>
+            """
+            chat_message.body = message_body
+
+            # Post the message to the specific channel
+            await self.client.teams.by_team_id(team_id).channels.by_channel_id(channel_id).messages.post(body=chat_message)
+
+            return TeamsResponse(
+                success=True, 
+                message="Meeting scheduled and posted to channel successfully.",
+                data={"event_id": created_event.id, "join_url": join_url}
+            )
+
+        except Exception as e:
+            logger.error(f"Error in teams_create_channel_meeting: {e}")
+            return TeamsResponse(success=False, error=str(e))
+
     async def me_calendar_create_events(
         self,
         select: Optional[List[str]] = None,
@@ -2231,31 +2791,55 @@ class TeamsDataSource:
             return TeamsResponse(success=False, error=str(e))
 
     async def teams_get_user(self, user_id: str) -> TeamsResponse:
-        """Get a Microsoft Entra user by ID/UPN."""
+        """Get a Microsoft Entra user by ID/UPN or Guest Email."""
         try:
             if not hasattr(self.client, "users"):
                 return TeamsResponse(success=False, error="Users endpoint is not available on Teams client")
 
             normalized_user_id = (user_id or "").strip()
+            
+            # 1. Handle "Me" shortcut
             if normalized_user_id.casefold() in {"me", "self", "myself"}:
-                # /me works with User.Read and avoids directory-wide user permissions.
                 response = await self.client.me.get()
                 return self._handle_teams_response(response)
 
             select_csv = ",".join(_BASIC_USER_SELECT_FIELDS)
+            response = None
 
-            # Prefer explicit URL with minimal $select so requests succeed with User.ReadBasic.All.
-            if hasattr(self.client.users, "with_url"):
-                encoded_user_id = quote(normalized_user_id, safe="")
-                user_url = f"https://graph.microsoft.com/v1.0/users/{encoded_user_id}?$select={select_csv}"
-                response = await self.client.users.with_url(user_url).get()
-            else:
-                response = await self.client.users.by_user_id(normalized_user_id).get()
+            try:
+                # 2. Attempt Direct Lookup (Works for GUID or internal UPN)
+                if hasattr(self.client.users, "with_url"):
+                    encoded_user_id = quote(normalized_user_id, safe="")
+                    user_url = f"https://graph.microsoft.com/v1.0/users/{encoded_user_id}?$select={select_csv}"
+                    response = await self.client.users.with_url(user_url).get()
+                else:
+                    response = await self.client.users.by_user_id(normalized_user_id).get()
+            
+            except Exception as e:
+                # 3. Fallback: Search by 'mail' property if the ID looks like an email
+                # This is the standard way to find Guest users using their external email.
+                if "@" in normalized_user_id:
+                    filter_url = f"https://graph.microsoft.com/v1.0/users?$filter=mail eq '{normalized_user_id}'&$select={select_csv}"
+                    search_result = await self.client.users.with_url(filter_url).get()
+                    
+                    if search_result and hasattr(search_result, 'value') and len(search_result.value) > 0:
+                        response = search_result.value[0]
+                    else:
+                        # If fallback also fails, return the original error
+                        return TeamsResponse(success=False, error=f"User not found by ID or Email: {str(e)}")
+                else:
+                    # No '@' symbol, so we can't perform an email fallback
+                    return TeamsResponse(success=False, error=str(e))
 
-            return self._handle_teams_response(response)
+            # 4. Process and return the successful response
+            if response:
+                return self._handle_teams_response(response)
+            
+            return TeamsResponse(success=False, error="User retrieval failed: No data returned.")
+
         except Exception as e:
             logger.error(f"Error in teams_get_user: {e}")
-            return TeamsResponse(success=False, error=str(e))
+            return TeamsResponse(success=False, error=str(e))    
 
     async def teams_list_users(self, cursor_url: Optional[str] = None) -> TeamsResponse:
         """

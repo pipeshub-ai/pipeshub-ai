@@ -35,9 +35,16 @@ logger = logging.getLogger(__name__)
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
-class SendMessageInput(BaseModel):
+class SendChannelMessageInput(BaseModel):
     team_id: str = Field(description="ID of the Microsoft Team")
     channel_id: str = Field(description="ID of the Microsoft Teams channel")
+    message: str = Field(description="Message content to send")
+
+
+class SendUserMessageInput(BaseModel):
+    user_identifier: str = Field(
+        description="User display name, email, user principal name, or user id to send message to"
+    )
     message: str = Field(description="Message content to send")
 
 
@@ -112,9 +119,35 @@ class SearchMessagesInput(BaseModel):
     top_per_channel: Optional[int] = Field(default=25, description="Max recent messages scanned per channel (default 25)")
 
 
-class GetUserConversationsInput(BaseModel):
-    top: Optional[int] = Field(default=100, description="Maximum number of conversations to return (default 100)")
+# class GetUserConversationsInput(BaseModel):
+#     top: Optional[int] = Field(default=100, description="Maximum number of conversations to return (default 100)")
 
+class GetUserConversationsInput(BaseModel):
+
+    user_identifier: Optional[str] = Field(
+        default=None,
+        description="User display name, email, or user id whose conversation should be fetched"
+    )
+
+    minutes: Optional[int] = Field(
+        default=None,
+        description="Fetch messages from last N minutes"
+    )
+
+    hours: Optional[int] = Field(
+        default=None,
+        description="Fetch messages from last N hours"
+    )
+
+    days: Optional[int] = Field(
+        default=None,
+        description="Fetch messages from last N days"
+    )
+
+    top: Optional[int] = Field(
+        default=50,
+        description="Maximum number of messages to return"
+    )
 
 class GetUserChannelsInput(BaseModel):
     team_id: Optional[str] = Field(default=None, description="Optional Team ID to scope channels to one team")
@@ -122,8 +155,18 @@ class GetUserChannelsInput(BaseModel):
 
 
 class UpdateMessageInput(BaseModel):
-    team_id: str = Field(description="ID of the Microsoft Team")
-    channel_id: str = Field(description="ID of the Microsoft Teams channel")
+    team_id: Optional[str] = Field(
+        default=None,
+        description="ID of the Microsoft Team (required when updating a channel message)",
+    )
+    channel_id: Optional[str] = Field(
+        default=None,
+        description="ID of the Microsoft Teams channel (required when updating a channel message)",
+    )
+    chat_id: Optional[str] = Field(
+        default=None,
+        description="ID of the Teams chat (required when updating a direct chat message)",
+    )
     message_id: str = Field(description="ID of the Teams message to update")
     message: str = Field(description="Updated message text")
 
@@ -234,7 +277,27 @@ class GetMeetingTranscriptsInput(BaseModel):
     )
 
 class GetPeopleAttendedInput(BaseModel):
-    meeting_id: str = Field(description="ID of the online meeting")
+    meeting_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "The online meeting ID. If provided, attendance API is called directly "
+            "without resolving from join_url/event_id."
+        ),
+    )
+    join_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "The Teams join URL (joinUrl from event.onlineMeeting.joinUrl). "
+            "Preferred over event_id because it skips one API call."
+        ),
+    )
+    event_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "The calendar event ID. Used as fallback when join_url is unavailable. "
+            "The tool fetches event details to extract joinUrl and resolve meeting_id."
+        ),
+    )
 
 
 class GetPeopleInvitedInput(BaseModel):
@@ -281,6 +344,20 @@ class CreateEventInput(BaseModel):
             " last Friday of March each year: {'pattern':{'type':'relativeYearly','interval':1,'daysOfWeek':['Friday'],'index':'last','month':3},'range':{'type':'noEnd','startDate':'2026-03-27'}}."
         ),
     )
+
+
+class CreateChannelMeetingInput(BaseModel):
+    """Schema for creating a Teams channel meeting event."""
+    team_id: str = Field(description="ID of the Microsoft Team")
+    channel_name: str = Field(description="Display name of the Teams channel")
+    subject: str = Field(description="Meeting title/subject")
+    start_datetime: str = Field(description="Start datetime in ISO 8601 format (e.g. 2024-01-15T10:00:00)")
+    end_datetime: str = Field(description="End datetime in ISO 8601 format (e.g. 2024-01-15T11:00:00)")
+    timezone: Optional[str] = Field(
+        default="Asia/Kolkata",
+        description="Timezone for the meeting (e.g. 'Asia/Kolkata', 'UTC')",
+    )
+
 
 class EditEventInput(BaseModel):
     event_id: str = Field(description="ID of the event to update")
@@ -543,7 +620,7 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
                     "Calendars.ReadWrite",
                     "OnlineMeetings.Read",
                     "OnlineMeetingTranscript.Read.All",
-                    
+                    "OnlineMeetingArtifact.Read.All",
                 ],
             ),
             additional_params={
@@ -1068,43 +1145,114 @@ class Teams:
         except Exception as e:
             return self._handle_error(e, "get users list")
 
+    # @tool(
+    #     app_name="teams",
+    #     tool_name="get_user_conversations",
+    #     description="Get conversations/chats for the authenticated Teams user",
+    #     args_schema=GetUserConversationsInput,
+    #     when_to_use=[
+    #         "User wants to list their Teams conversations",
+    #         "User asks for chats they are part of",
+    #     ],
+    #     when_not_to_use=[
+    #         "User wants team channels only (use get_user_channels)",
+    #         "No Teams mention",
+    #     ],
+    #     primary_intent=ToolIntent.SEARCH,
+    #     typical_queries=[
+    #         "Show my Teams conversations",
+    #         "List my chats in Teams",
+    #     ],
+    #     category=ToolCategory.SEARCH,
+    # )
+    # async def get_user_conversations(self, top: Optional[int] = 100) -> tuple[bool, str]:
+    #     try:
+    #         response = await self.client.teams_get_user_conversations()
+    #         if response.success:
+    #             serialized = self._serialize_response(response.data)
+    #             conversations = self._extract_collection_items(serialized)
+    #             limit = min(top or 100, 500)
+    #             conversations = conversations[:limit]
+    #             return True, json.dumps({
+    #                 "data": {"results": conversations},
+    #                 "conversations": conversations,
+    #                 "count": len(conversations),
+    #             })
+    #         return False, json.dumps({"error": response.error or "Failed to get user conversations"})
+    #     except Exception as e:
+    #         return self._handle_error(e, "get user conversations")
+
     @tool(
         app_name="teams",
         tool_name="get_user_conversations",
-        description="Get conversations/chats for the authenticated Teams user",
+        description="Get conversation messages with a Teams user",
         args_schema=GetUserConversationsInput,
         when_to_use=[
-            "User wants to list their Teams conversations",
-            "User asks for chats they are part of",
+            "User wants to see conversation with someone in Teams",
+            "User asks for chat history with a person",
+            "User asks messages with someone within a time range",
         ],
         when_not_to_use=[
-            "User wants team channels only (use get_user_channels)",
+            "User wants team channels only",
             "No Teams mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "Show my Teams conversations",
-            "List my chats in Teams",
+            "Show my conversation with Vansh",
+            "Show my conversation with Vansh in last 7 days",
+            "Show my messages with john@company.com",
+            "Get chat history with Alex in last 1 hour",
         ],
         category=ToolCategory.SEARCH,
     )
-    async def get_user_conversations(self, top: Optional[int] = 100) -> tuple[bool, str]:
+    async def get_user_conversations(
+        self,
+        user_identifier: Optional[str] = None,
+        minutes: Optional[int] = None,
+        hours: Optional[int] = None,
+        days: Optional[int] = None,
+        top: Optional[int] = 50,
+        ) -> tuple[bool, str]:
+
         try:
-            response = await self.client.teams_get_user_conversations()
+
+            response = await self.client.teams_get_conversation_with_user(
+                user_identifier=user_identifier,
+                minutes=minutes,
+                hours=hours,
+                days=days,
+                top=top,
+            )
+          
+
             if response.success:
+
                 serialized = self._serialize_response(response.data)
-                conversations = self._extract_collection_items(serialized)
-                limit = min(top or 100, 500)
-                conversations = conversations[:limit]
-                return True, json.dumps({
-                    "data": {"results": conversations},
-                    "conversations": conversations,
-                    "count": len(conversations),
-                })
-            return False, json.dumps({"error": response.error or "Failed to get user conversations"})
+                messages = self._extract_collection_items(
+                    serialized.get("results") if isinstance(serialized, dict) else serialized
+                )
+                if not messages and isinstance(serialized, dict):
+                    raw_messages = serialized.get("results")
+                    if isinstance(raw_messages, list):
+                        messages = raw_messages
+                    else:
+                        messages = self._extract_collection_items(serialized)
+
+                return True, json.dumps(
+                    {
+                        "data": {"results": messages},
+                        "messages": messages,
+                        "count": len(messages),
+                    }
+                )
+
+            return False, json.dumps(
+                {"error": response.error or "Failed to get conversation"}
+            )
+
         except Exception as e:
             return self._handle_error(e, "get user conversations")
-
+            
     @tool(
         app_name="teams",
         tool_name="get_user_channels",
@@ -1203,9 +1351,7 @@ class Teams:
             )
             if response.success:
                 serialized = self._serialize_response(response.data)
-                print("--------------------------------")
-                print(f"Serialized: {json.dumps(serialized, default=str)}")
-                print("--------------------------------")
+                
                 meetings = []
                 if isinstance(serialized, dict):
                     raw_meetings = serialized.get("results")
@@ -1413,7 +1559,6 @@ class Teams:
             if not keyword:
                 return False, json.dumps({"error": "keyword cannot be empty."})
 
-            print(f"[search_calendar_events_in_range] keyword={keyword!r}, range={start_datetime!r}..{end_datetime!r}")
 
             resp = await self.client.me_search_events_in_range(
                 keyword=keyword,
@@ -1425,20 +1570,15 @@ class Teams:
 
             if not resp.success:
                 return False, json.dumps({"error": resp.error or "Failed to search calendar events"})
-            print("--------------------------------")
-            print(f"Response search calendar events in range: {json.dumps(resp.data, default=str)}")
-            print("--------------------------------")
+            
             data = self._serialize_response(resp.data)
-            print("--------------------------------")
-            print(f"Data search calendar events in range: {json.dumps(data, default=str)}")
-            print("--------------------------------")
+            
             events = (
                 data.get("value", []) if isinstance(data, dict)
                 else (data if isinstance(data, list) else [])
             )
 
-            print(f"[search_calendar_events_in_range] found {len(events)} events")
-            print(f"[search_calendar_events_in_range] events: {json.dumps(events, default=str)}")
+            
 
             return True, json.dumps({
                 "results": events,
@@ -1453,55 +1593,7 @@ class Teams:
             return self._handle_error(e, "search calendar events in range")
 
 
-    # @tool(
-    #     app_name="teams",
-    #     tool_name="get_my_recurring_meetings_for_given_period",
-    #     description="Get recurring meetings for the authenticated Teams user within a given datetime period",
-    #     args_schema=GetMyRecurringMeetingsForGivenPeriodInput,
-    #     when_to_use=[
-    #         "User wants recurring meetings between start and end datetime",
-    #         "User asks recurring/repeated meetings for a specific period",
-    #     ],
-    #     when_not_to_use=[
-    #         "User wants all meetings without date filter (use get_my_meetings)",
-    #         "No Teams mention",
-    #     ],
-    #     primary_intent=ToolIntent.SEARCH,
-    #     typical_queries=[
-    #         "Show my recurring meetings between two dates",
-    #         "Find recurring meetings for this month",
-    #     ],
-    #     category=ToolCategory.SEARCH,
-    # )
-    # async def get_my_recurring_meetings_for_given_period(
-    #     self,
-    #     start_datetime: str,
-    #     end_datetime: str,
-    #     top: Optional[int] = 100,
-    # ) -> tuple[bool, str]:
-    #     try:
-    #         response = await self.client.teams_get_my_recurring_meetings_for_given_period(
-    #             start_datetime=start_datetime,
-    #             end_datetime=end_datetime,
-    #             top=top or 100,
-    #         )
-    #         if response.success:
-    #             serialized = self._serialize_response(response.data)
-    #             meetings = []
-    #             if isinstance(serialized, dict):
-    #                 raw_meetings = serialized.get("results")
-    #                 if isinstance(raw_meetings, list):
-    #                     meetings = raw_meetings
-    #             return True, json.dumps({
-    #                 "data": {"results": meetings},
-    #                 "meetings": meetings,
-    #                 "count": len(meetings),
-    #                 "start_datetime": start_datetime,
-    #                 "end_datetime": end_datetime,
-    #             })
-    #         return False, json.dumps({"error": response.error or "Failed to get recurring meetings for period"})
-    #     except Exception as e:
-    #         return self._handle_error(e, "get my recurring meetings for given period")
+
 
     @tool(
         app_name="teams",
@@ -1534,10 +1626,7 @@ class Teams:
         Preferred: meeting_id (direct call, no resolution).
         Fallback:  join_url (skips one API call) or event_id (fetches event first).
         """
-        print(
-            "[get_meeting_transcripts] entry: "
-            f"meeting_id={meeting_id!r}, event_id={event_id!r}, join_url={join_url!r}"
-        )
+        
         try:
             # Step 1: Resolve to online meeting ID
             resolved_meeting_id = meeting_id
@@ -1557,9 +1646,7 @@ class Teams:
                     )
                 })
 
-            print("--------------------------------")
-            print(f"Resolved meeting id: {resolved_meeting_id}")
-            print("--------------------------------")
+            
 
             # Step 2: List transcripts
             list_resp = await self.client.me_list_online_meeting_transcripts(
@@ -1567,9 +1654,7 @@ class Teams:
             )
             if not list_resp.success:
                 return False, json.dumps({"error": list_resp.error or "Failed to list transcripts"})
-            print("--------------------------------")
-            print(f"Response list transcripts: {json.dumps(list_resp.data, default=str)}")
-            print("--------------------------------")
+            
             data = self._serialize_response(list_resp.data) if list_resp.data else {}
             transcript_items = (
                 data.get("value", []) if isinstance(data, dict)
@@ -1582,9 +1667,7 @@ class Teams:
                     "transcripts": [],
                 })
 
-            print("--------------------------------")
-            print(f"Transcript items: {json.dumps(transcript_items, default=str)}")
-            print("--------------------------------")
+            
 
             # Step 3: Fetch metadataContent for each transcript
             all_transcripts = []
@@ -1619,9 +1702,7 @@ class Teams:
                     "entry_count": len(parsed_entries),
                 })
             
-            print("--------------------------------")
-            print(f"All transcripts: {json.dumps(all_transcripts, default=str)}")
-            print("--------------------------------")
+            
             return True, json.dumps({
                 "meeting_id": resolved_meeting_id,
                 "transcripts": all_transcripts,
@@ -1664,7 +1745,6 @@ class Teams:
 
                 om = ev.get("onlineMeeting") or ev.get("online_meeting")
                 if not isinstance(om, dict):
-                    print("[_resolve_to_online_meeting_id] path B: no onlineMeeting on event — not a Teams meeting")
                     return None
 
                 extracted_join_url = (
@@ -1674,15 +1754,11 @@ class Teams:
                     or om.get("join_url")
                 )
                 if not extracted_join_url or not isinstance(extracted_join_url, str):
-                    print("[_resolve_to_online_meeting_id] path B: no joinWebUrl in onlineMeeting")
                     return None
 
-                print(f"[_resolve_to_online_meeting_id] path B: extracted joinWebUrl, resolving...")
                 result = await self._online_meeting_id_from_join_url(extracted_join_url)
-                print(f"[_resolve_to_online_meeting_id] path B result: meeting_id={result!r}")
                 return result
 
-            print("[_resolve_to_online_meeting_id] no join_url or event_id, returning None")
             return None
 
         except Exception as e:
@@ -1711,9 +1787,7 @@ class Teams:
                 return None
 
             data = self._serialize_response(resp.data) if resp.data else {}
-            print("--------------------------------")
-            print(f"Response online meetings: {data}")
-            print("--------------------------------")
+            
             items = (
                 data.get("value") or data.get("results", [])
                 if isinstance(data, dict)
@@ -1770,9 +1844,31 @@ class Teams:
         ],
         category=ToolCategory.SEARCH,
     )
-    async def get_people_attended(self, meeting_id: str) -> tuple[bool, str]:
+    async def get_people_attended(
+        self,
+        meeting_id: Optional[str] = None,
+        event_id: Optional[str] = None,
+        join_url: Optional[str] = None,
+    ) -> tuple[bool, str]:
         try:
-            response = await self.client.teams_get_people_attended(meeting_id=meeting_id)
+            resolved_meeting_id = meeting_id
+            if not resolved_meeting_id:
+                resolved_meeting_id = await self._resolve_to_online_meeting_id(
+                    event_id=event_id,
+                    join_url=join_url,
+                )
+
+            if not resolved_meeting_id:
+                return False, json.dumps({
+                    "error": (
+                        "Could not resolve to a Teams online meeting ID. "
+                        "Provide meeting_id directly, or pass a valid join_url/event_id. "
+                        "The event may not be a Teams meeting, or you may lack "
+                        "OnlineMeetings.Read permission."
+                    )
+                })
+
+            response = await self.client.teams_get_people_attended(meeting_id=resolved_meeting_id)
             if response.success:
                 serialized = self._serialize_response(response.data)
                 people = []
@@ -1784,7 +1880,7 @@ class Teams:
                     "data": {"results": people},
                     "people": people,
                     "count": len(people),
-                    "meeting_id": meeting_id,
+                    "meeting_id": resolved_meeting_id,
                 })
             return False, json.dumps({"error": response.error or "Failed to get people attended"})
         except Exception as e:
@@ -1837,9 +1933,10 @@ class Teams:
         args_schema=CreateEventInput,
         when_to_use=[
             "User wants to schedule/create a meeting event",
-            "User asks to create a Teams event",
+            "User asks to create a Teams event and it is not a channel meeting",
         ],
         when_not_to_use=[
+            "When user wants to create a meeting for a channel, use create_channel_meeting",
             "User wants to list meetings (use get_my_meetings)",
             "No Teams mention",
         ],
@@ -1882,6 +1979,7 @@ class Teams:
                     "timeZone": tz,
                 },
                 "isOnlineMeeting": bool(is_online_meeting),
+                "onlineMeetingProvider": "teamsForBusiness",
             }
 
             if body:
@@ -1920,6 +2018,65 @@ class Teams:
             return False, json.dumps({"error": response.error or "Failed to create event"})
         except Exception as e:
             return self._handle_error(e, "create event")
+
+    @tool(
+        app_name="teams",
+        tool_name="create_channel_meeting",
+        description="Schedule an online meeting for a Teams channel in a team",
+        args_schema=CreateChannelMeetingInput,
+        when_to_use=[
+            "User wants to schedule a meeting for a specific Teams channel",
+            "User asks to create a channel meeting in a team",
+        ],
+        when_not_to_use=[
+            "User wants a personal calendar event (use create_event)",
+            "No Teams mention",
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Schedule a channel meeting tomorrow at 10 AM",
+            "Create a Teams meeting for the Engineering channel",
+        ],
+        category=ToolCategory.COMMUNICATION,
+    )
+    async def create_channel_meeting(
+        self,
+        team_id: str,
+        channel_name: str,
+        subject: str,
+        start_datetime: str,
+        end_datetime: str,
+        timezone: Optional[str] = "Asia/Kolkata",
+    ) -> tuple[bool, str]:
+        try:
+            response = await self.client.teams_create_channel_meeting(
+                team_id=team_id,
+                channel_name=channel_name,
+                subject=subject,
+                start_datetime=start_datetime,
+                end_datetime=end_datetime,
+                timezone=timezone or "Asia/Kolkata",
+            )
+            if response.success:
+                serialized_result = self._serialize_response(response.data)
+                event_id = None
+                if isinstance(serialized_result, dict):
+                    event_id = serialized_result.get("id")
+                return True, json.dumps(
+                    {
+                        "message": "Channel meeting created successfully",
+                        "event_id": event_id,
+                        "team_id": team_id,
+                        "channel_name": channel_name,
+                        "subject": subject,
+                        "result": serialized_result,
+                    }
+                )
+            return False, json.dumps(
+                {"error": response.error or response.message or "Failed to create channel meeting"}
+            )
+        except Exception as e:
+            return self._handle_error(e, "create channel meeting")
 
     @tool(
         app_name="teams",
@@ -2382,47 +2539,47 @@ class Teams:
         except Exception as e:
             return self._handle_error(e, f"create channel in team {team_id}")
 
-    @tool(
-        app_name="teams",
-        tool_name="delete_channel",
-        description="Delete a channel from a Microsoft Team",
-        args_schema=DeleteChannelInput,
-        when_to_use=[
-            "User wants to delete or remove a channel from a Microsoft Team",
-            "User asks to permanently remove a team channel",
-        ],
-        when_not_to_use=[
-            "User wants to delete the entire team (use delete_team)",
-            "User wants to send a message (use send_message)",
-            "No Teams mention",
-        ],
-        primary_intent=ToolIntent.ACTION,
-        typical_queries=[
-            "Delete channel X from team Y",
-            "Remove the announcements channel",
-            "Permanently delete this Teams channel",
-        ],
-        category=ToolCategory.COMMUNICATION,
-    )
-    async def delete_channel(
-        self,
-        team_id: str,
-        channel_id: str,
-    ) -> tuple[bool, str]:
-        try:
-            response = await self.client.teams_delete_channels(
-                team_id=team_id,
-                channel_id=channel_id,
-            )
-            if response.success:
-                return True, json.dumps({
-                    "message": "Channel deleted successfully",
-                    "team_id": team_id,
-                    "channel_id": channel_id,
-                })
-            return False, json.dumps({"error": response.error or "Failed to delete channel"})
-        except Exception as e:
-            return self._handle_error(e, f"delete channel {channel_id} from team {team_id}")
+    # @tool(
+    #     app_name="teams",
+    #     tool_name="delete_channel",
+    #     description="Delete a channel from a Microsoft Team",
+    #     args_schema=DeleteChannelInput,
+    #     when_to_use=[
+    #         "User wants to delete or remove a channel from a Microsoft Team",
+    #         "User asks to permanently remove a team channel",
+    #     ],
+    #     when_not_to_use=[
+    #         "User wants to delete the entire team (use delete_team)",
+    #         "User wants to send a message (use send_message)",
+    #         "No Teams mention",
+    #     ],
+    #     primary_intent=ToolIntent.ACTION,
+    #     typical_queries=[
+    #         "Delete channel X from team Y",
+    #         "Remove the announcements channel",
+    #         "Permanently delete this Teams channel",
+    #     ],
+    #     category=ToolCategory.COMMUNICATION,
+    # )
+    # async def delete_channel(
+    #     self,
+    #     team_id: str,
+    #     channel_id: str,
+    # ) -> tuple[bool, str]:
+    #     try:
+    #         response = await self.client.teams_delete_channels(
+    #             team_id=team_id,
+    #             channel_id=channel_id,
+    #         )
+    #         if response.success:
+    #             return True, json.dumps({
+    #                 "message": "Channel deleted successfully",
+    #                 "team_id": team_id,
+    #                 "channel_id": channel_id,
+    #             })
+    #         return False, json.dumps({"error": response.error or "Failed to delete channel"})
+    #     except Exception as e:
+    #         return self._handle_error(e, f"delete channel {channel_id} from team {team_id}")
 
     @tool(
         app_name="teams",
@@ -2484,9 +2641,9 @@ class Teams:
 
     @tool(
         app_name="teams",
-        tool_name="send_message",
+        tool_name="send_channel_message",
         description="Send a message to a Microsoft Teams channel",
-        args_schema=SendMessageInput,
+        args_schema=SendChannelMessageInput,
         when_to_use=[
             "User wants to send a message in Microsoft Teams",
             "User asks to post in a specific Teams channel",
@@ -2506,7 +2663,7 @@ class Teams:
         ],
         category=ToolCategory.COMMUNICATION,
     )
-    async def send_message(self, team_id: str, channel_id: str, message: str) -> tuple[bool, str]:
+    async def send_channel_message(self, team_id: str, channel_id: str, message: str) -> tuple[bool, str]:
         try:
             response = await self.client.teams_send_channel_message(
                 team_id=team_id,
@@ -2524,6 +2681,54 @@ class Teams:
             return False, json.dumps({"error": response.error or "Failed to send Teams message"})
         except Exception as e:
             return self._handle_error(e, "send Teams message")
+
+    @tool(
+        app_name="teams",
+        tool_name="send_user_message",
+        description="Send a direct message to a Microsoft Teams user",
+        args_schema=SendUserMessageInput,
+        when_to_use=[
+            "User wants to send a Teams message to a specific person",
+            "User provides a user name/email/id and asks to send a message",
+            "User asks to send a direct message in Teams",
+        ],
+        when_not_to_use=[
+            "User wants to send a channel message (use send_channel_message)",
+            "User wants to read conversation history (use get_user_conversations)",
+            "No Teams mention",
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Send a Teams message to john@company.com",
+            "Message Alex in Teams saying deployment is done",
+            "Send a direct Teams message to Vansh",
+        ],
+        category=ToolCategory.COMMUNICATION,
+    )
+    async def send_user_message(
+        self,
+        user_identifier: str,
+        message: str,
+    ) -> tuple[bool, str]:
+        try:
+            response = await self.client.teams_send_message_to_user(
+                user_identifier=user_identifier,
+                message=message,
+            )
+            if response.success:
+                serialized_result = self._serialize_response(response.data)
+                return True, json.dumps(
+                    {
+                        "message": "Teams direct message sent successfully",
+                        "user_identifier": user_identifier,
+                        "result": serialized_result,
+                    }
+                )
+            return False, json.dumps(
+                {"error": response.error or "Failed to send Teams direct message"}
+            )
+        except Exception as e:
+            return self._handle_error(e, "send Teams direct message")
 
     @tool(
         app_name="teams",
@@ -2909,10 +3114,11 @@ class Teams:
     @tool(
         app_name="teams",
         tool_name="update_message",
-        description="Update an existing message in a Microsoft Teams channel",
+        description="Update an existing Microsoft Teams message in a channel or direct chat",
         args_schema=UpdateMessageInput,
         when_to_use=[
             "User wants to edit a Teams channel message",
+            "User wants to edit a Teams direct chat message",
             "User asks to modify message text",
         ],
         when_not_to_use=[
@@ -2923,25 +3129,44 @@ class Teams:
         typical_queries=[
             "Update this Teams message",
             "Edit message in channel",
+            "Edit this direct Teams message",
         ],
         category=ToolCategory.COMMUNICATION,
     )
-    async def update_message(self, team_id: str, channel_id: str, message_id: str, message: str) -> tuple[bool, str]:
+    async def update_message(
+        self,
+        message_id: str,
+        message: str,
+        team_id: Optional[str] = None,
+        channel_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> tuple[bool, str]:
         try:
+            if not chat_id and ((team_id and not channel_id) or (channel_id and not team_id)):
+                return False, json.dumps({
+                    "error": "Provide both team_id and channel_id for channel updates, or provide chat_id for direct chat updates",
+                })
+
             response = await self.client.teams_update_channel_message(
                 team_id=team_id,
                 channel_id=channel_id,
+                chat_id=chat_id,
                 message_id=message_id,
                 message=message,
             )
+
             if response.success:
-                return True, json.dumps({
+                result_payload = {
                     "message": "Message updated successfully",
-                    "team_id": team_id,
-                    "channel_id": channel_id,
                     "message_id": message_id,
                     "result": self._serialize_response(response.data),
-                })
+                }
+                if chat_id:
+                    result_payload["chat_id"] = chat_id
+                elif team_id and channel_id:
+                    result_payload["team_id"] = team_id
+                    result_payload["channel_id"] = channel_id
+                return True, json.dumps(result_payload)
             return False, json.dumps({"error": response.error or "Failed to update message"})
         except Exception as e:
             return self._handle_error(e, "update Teams message")

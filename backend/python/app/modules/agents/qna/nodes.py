@@ -783,6 +783,17 @@ class ToolExecutor:
     """Handles tool execution with cascading support"""
 
     @staticmethod
+    def _format_args_preview(args: Dict[str, Any], max_len: int = 220) -> str:
+        """Return a compact JSON preview for tool args in logs."""
+        try:
+            preview = json.dumps(args, default=str, ensure_ascii=False)
+        except Exception:
+            preview = str(args)
+        if len(preview) > max_len:
+            return preview[:max_len] + "..."
+        return preview
+
+    @staticmethod
     async def execute_tools(
         planned_tools: List[Dict[str, Any]],
         tools_by_name: Dict[str, Any],
@@ -924,6 +935,14 @@ class ToolExecutor:
                 "data": {"status": "executing", "message": status_msg}
             }, config)
 
+            log.info(
+                "🛠️ Tool call [%d/%d]: %s | args=%s",
+                i + 1,
+                len(planned_tools),
+                actual_tool_name,
+                ToolExecutor._format_args_preview(resolved_args),
+            )
+
             # Execute tool
             result_dict = await ToolExecutor._execute_single_tool(
                 tool=tools_by_name[actual_tool_name],
@@ -935,6 +954,15 @@ class ToolExecutor:
             )
 
             tool_results.append(result_dict)
+
+            log.info(
+                "📌 Tool status [%d/%d]: %s | status=%s | duration_ms=%.0f",
+                i + 1,
+                len(planned_tools),
+                actual_tool_name,
+                result_dict.get("status", "unknown"),
+                float(result_dict.get("duration_ms", 0.0)),
+            )
 
             # Send completion status
             if result_dict.get("status") == "success":
@@ -1026,6 +1054,14 @@ class ToolExecutor:
                 })))
                 continue
 
+            log.info(
+                "🛠️ Parallel tool queued [%d/%d]: %s | args=%s",
+                i + 1,
+                min(len(planned_tools), NodeConfig.MAX_PARALLEL_TOOLS),
+                actual_tool_name,
+                ToolExecutor._format_args_preview(tool_args),
+            )
+
             # Execute tool directly (content generation happens in planner)
             tasks.append(
                 ToolExecutor._execute_single_tool(
@@ -1048,6 +1084,12 @@ class ToolExecutor:
                 continue
             if isinstance(result, dict):
                 tool_results.append(result)
+                log.info(
+                    "📌 Parallel tool status: %s | status=%s | duration_ms=%.0f",
+                    result.get("tool_name", "unknown"),
+                    result.get("status", "unknown"),
+                    float(result.get("duration_ms", 0.0)),
+                )
 
         return tool_results
 
@@ -1741,12 +1783,14 @@ TEAMS_GUIDANCE = r"""
 | List meetings for a period | `teams.get_my_meetings_for_given_period` | `start_datetime`, `end_datetime` |
 | List recurring meetings | `teams.get_my_recurring_meetings` | `top` (optional) |
 | Create a meeting/event | `teams.create_event` | `subject`, `start_datetime`, `end_datetime` |
+| Schedule a channel meeting | `teams.create_channel_meeting` | `team_id`, `channel_name`, `subject`, `start_datetime`, `end_datetime`, `timezone` (optional) |
 | Edit a meeting/event | `teams.edit_event` | `event_id`, fields to update |
 | Delete a meeting/event | `teams.delete_event` | `event_id` |
 | Get meeting transcript | `teams.get_my_meetings_transcript` | `meeting_id` |
 | Get people invited | `teams.get_people_invited` | `meeting_id` |
 | Get people who attended | `teams.get_people_attended` | `meeting_id` |
 | Search messages | `teams.search_messages` | `query`, `top_per_channel` (optional) |
+| Reply to a message | `teams.reply_to_message` | `team_id`, `channel_id`, `parent_message_id`, `message` |
 
 ---
 
@@ -1822,6 +1866,11 @@ YES → use it (Tier 3)
 NO  → Does any available tool return this kind of data?
 YES → call that tool now, then proceed (Tier 4)
 NO  → ask the user (Tier 5)
+
+Ambiguity rule (applies at any tier): if lookup/matching returns multiple users,
+channels, or meetings with the same name/subject and you cannot uniquely resolve
+the target, ask the user for specific clarification and one unique value.
+Never execute the task using the first match or a randomly selected match.
 
 This hierarchy is non-negotiable. Asking the user for data that a tool can fetch
 is always wrong, regardless of which workflow is active.
@@ -1927,6 +1976,22 @@ When the user asks about multiple meetings ("yesterday's meetings", "this week's
       "timezone": "India Standard Time",
       "description": "Weekly sync for project updates.",
       "is_online_meeting": true
+    }}
+  ]
+}
+```
+
+**Pattern: Schedule a meeting for a channel**
+```json
+{
+  "tools": [
+    {"name": "teams.create_channel_meeting", "args": {
+      "team_id": "00000000-0000-0000-0000-000000000000",
+      "channel_name": "Engineering",
+      "subject": "Sprint Planning",
+      "start_datetime": "2026-03-10T10:00:00",
+      "end_datetime": "2026-03-10T11:00:00",
+      "timezone": "Asia/Kolkata"
     }}
   ]
 }
@@ -6838,6 +6903,7 @@ async def react_agent_node(
 
                 # Detect actual tool success/failure from result content
                 tool_status = _detect_tool_result_status(result_content)
+                log.info("📌 ReAct tool status: %s | status=%s", tool_name, tool_status)
 
                 tool_results.append({
                     "tool_name": tool_name,
