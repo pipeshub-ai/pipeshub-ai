@@ -2,6 +2,7 @@
 Client factory for Lumos.
 """
 
+from logging import Logger
 from typing import Any, Dict
 
 from app.agents.tools.factories.base import ClientFactory
@@ -15,12 +16,12 @@ class LumosClientFactory(ClientFactory):
     - Toolset-based authentication (new architecture): Uses toolset config from etcd
     """
 
-    async def create_client(
+    async def create_client(  # type: ignore[override]
         self,
-        config_service,
-        logger,
+        config_service: object,
+        logger: Logger,
         toolset_config: Dict[str, Any],
-        state=None,
+        state: object = None,
     ) -> LumosClient:
         """
         Create Lumos client instance from toolset configuration.

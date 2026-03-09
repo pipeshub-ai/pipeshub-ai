@@ -1,15 +1,15 @@
 from typing import Any, Dict, Optional, Union
-from app.sources.client.http.http_response import HTTPResponse
+
 from app.sources.client.http.http_request import HTTPRequest
+from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.lumos.lumos import LumosClient
+
 
 class LumosDataSource:
     def __init__(self, client: LumosClient) -> None:
         """Default init for the connector-specific data source."""
         self._client = client
         self.http = client.get_client()
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         try:
             self.base_url = self.http.get_base_url().rstrip('/')
         except AttributeError as exc:
@@ -28,8 +28,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Apps\n\nHTTP GET /apps\nQuery params:\n  - name_search (str, optional)\n  - exact_match (bool, optional)\n  - expand (str, optional)\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -50,12 +48,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def create_app(
         self,
@@ -68,8 +65,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Create App\n\nHTTP POST /apps\nBody (application/json) fields:\n  - name (str, required)\n  - category (str, required)\n  - description (str, required)\n  - logo_url (str, optional)\n  - website_url (str, optional)\n  - request_instructions (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {}
@@ -90,20 +85,17 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_app_categories(
         self,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get App Categories\n\nHTTP GET /apps/categories"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -114,12 +106,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_app(
         self,
@@ -128,8 +119,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get App\n\nHTTP GET /apps/{app_id}\nPath params:\n  - app_id (str)\nQuery params:\n  - expand (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'app_id': app_id,
@@ -144,12 +133,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def update_app(
         self,
@@ -163,8 +151,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Update App\n\nHTTP PATCH /apps/{app_id}\nPath params:\n  - app_id (str)\nBody (application/json) fields:\n  - name (str, required)\n  - category (str, required)\n  - description (str, required)\n  - logo_url (str, optional)\n  - website_url (str, optional)\n  - request_instructions (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {
@@ -187,12 +173,11 @@ class LumosDataSource:
             method='PATCH',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_app_settings(
         self,
@@ -200,8 +185,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Appstore App Settings\n\nHTTP GET /apps/{app_id}/settings\nPath params:\n  - app_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'app_id': app_id,
@@ -214,12 +197,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def update_app_settings(
         self,
@@ -231,8 +213,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Update Domain App Appstore Settings\n\nHTTP PATCH /apps/{app_id}/settings\nPath params:\n  - app_id (str)\nBody (application/json) fields:\n  - custom_request_instructions (str, optional)\n  - request_flow (Dict[str, Any], optional)\n  - provisioning (Dict[str, Any], optional)\n  - in_app_store (bool, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {
@@ -254,20 +234,17 @@ class LumosDataSource:
             method='PATCH',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def current_user(
         self,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Current User\n\nHTTP GET /users/current"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -278,12 +255,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def list_users(
         self,
@@ -295,8 +271,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Users\n\nHTTP GET /users\nQuery params:\n  - search_term (str, optional)\n  - exact_match (bool, optional)\n  - expand (str, optional)\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -317,12 +291,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_user(
         self,
@@ -331,8 +304,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get User\n\nHTTP GET /users/{user_id}\nPath params:\n  - user_id (str)\nQuery params:\n  - expand (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'user_id': user_id,
@@ -347,12 +318,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_user_accounts(
         self,
@@ -363,8 +333,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get User Accounts\n\nHTTP GET /users/{user_id}/accounts\nPath params:\n  - user_id (str)\nQuery params:\n  - expand (str, optional)\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'user_id': user_id,
@@ -383,20 +351,17 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_inline_webhooks_inline_webhooks_get(
         self,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Inline Webhooks\n\nHTTP GET /inline_webhooks"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -407,12 +372,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_accounts(
         self,
@@ -427,8 +391,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Accounts\n\nHTTP GET /accounts\nQuery params:\n  - app_id (str, optional)\n  - discovered_before (str, optional)\n  - discovered_after (str, optional)\n  - sources (str, optional)\n  - status (str, optional)\n  - expand (str, optional)\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -455,12 +417,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_group_membership(
         self,
@@ -470,8 +431,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Group Membership\n\nHTTP GET /groups/{group_id}/users\nPath params:\n  - group_id (str)\nQuery params:\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'group_id': group_id,
@@ -488,12 +447,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_group(
         self,
@@ -501,8 +459,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Group\n\nHTTP GET /groups/{group_id}\nPath params:\n  - group_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'group_id': group_id,
@@ -515,12 +471,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_groups(
         self,
@@ -533,8 +488,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Groups\n\nHTTP GET /groups\nQuery params:\n  - integration_specific_id (str, optional)\n  - name (str, optional)\n  - exact_match (bool, optional)\n  - app_id (str, optional)\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -557,12 +510,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_upload_job_state(
         self,
@@ -570,8 +522,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Upload Job State\n\nHTTP GET /accounts/upload/{job_id}\nPath params:\n  - job_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'job_id': job_id,
@@ -584,12 +534,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_activity_logs(
         self,
@@ -600,8 +549,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Activity Logs\n\nHTTP GET /activity_logs\nQuery params:\n  - since (str, optional)\n  - until (str, optional)\n  - limit (int, optional)\n  - offset (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -620,12 +567,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_identity_events(
         self,
@@ -638,8 +584,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Identity Events\n\nHTTP GET /identity_events\nQuery params:\n  - identity_ids (str, optional)\n  - changed_fields (str, optional)\n  - start_time (str, optional)\n  - end_time (str, optional)\n  - cursor (str, optional)\n  - limit (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -662,12 +606,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def post_accounts(
         self,
@@ -676,8 +619,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Create Accounts\n\nHTTP POST /accounts/upload\nBody (application/json) fields:\n  - accounts (list[Dict[str, Any]], optional)\n  - app_id (str, required)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {}
@@ -692,12 +633,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def activity_records(
         self,
@@ -705,8 +645,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Update Activity Records\n\nHTTP POST /activity_records\nBody (application/json) fields:\n  - records (list[Dict[str, Any]], required)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {}
@@ -719,12 +657,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_activity_records_job_state(
         self,
@@ -732,8 +669,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Activity Records Job State\n\nHTTP GET /activity_records/job/{job_id}\nPath params:\n  - job_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'job_id': job_id,
@@ -746,12 +681,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_user_roles_users_user_id_roles_get(
         self,
@@ -759,8 +693,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get User Roles\n\nHTTP GET /users/{user_id}/roles\nPath params:\n  - user_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'user_id': user_id,
@@ -773,12 +705,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def add_role_to_user_users_user_id_roles_role_name_post(
         self,
@@ -787,8 +718,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Add Role To User\n\nHTTP POST /users/{user_id}/roles/{role_name}\nPath params:\n  - user_id (str)\n  - role_name (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'user_id': user_id,
@@ -802,12 +731,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def remove_role_from_user_users_user_id_roles_role_name_delete(
         self,
@@ -816,8 +744,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Remove Role From User\n\nHTTP DELETE /users/{user_id}/roles/{role_name}\nPath params:\n  - user_id (str)\n  - role_name (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'user_id': user_id,
@@ -831,12 +757,11 @@ class LumosDataSource:
             method='DELETE',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_appstore_permissions_for_app_appstore_apps_app_id_requestable_permissions_get(
         self,
@@ -850,8 +775,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Appstore Permissions For App\n\nHTTP GET /appstore/apps/{app_id}/requestable_permissions\nPath params:\n  - app_id (str)\nQuery params:\n  - search_term (str, optional)\n  - exact_match (bool, optional)\n  - in_app_store (str, optional)\n  - include_inherited_configs (bool, optional)\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'app_id': app_id,
@@ -876,12 +799,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_appstore_permissions_appstore_requestable_permissions_get(
         self,
@@ -895,8 +817,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Appstore Permissions\n\nHTTP GET /appstore/requestable_permissions\nQuery params:\n  - app_id (str, optional)\n  - search_term (str, optional)\n  - exact_match (bool, optional)\n  - in_app_store (str, optional)\n  - include_inherited_configs (bool, optional)\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -921,12 +841,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def create_appstore_requestable_permission_appstore_requestable_permissions_post(
         self,
@@ -939,8 +858,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Create Appstore Requestable Permission\n\nHTTP POST /appstore/requestable_permissions\nQuery params:\n  - include_inherited_configs (bool, optional)\nBody (application/json) fields:\n  - app_id (str, required)\n  - app_class_id (str, optional)\n  - app_instance_id (str, optional)\n  - label (str, required)\n  - request_config (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {}
@@ -962,12 +879,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_appstore_permission_appstore_requestable_permissions_permission_id_get(
         self,
@@ -976,8 +892,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Appstore Permission\n\nHTTP GET /appstore/requestable_permissions/{permission_id}\nPath params:\n  - permission_id (str)\nQuery params:\n  - include_inherited_configs (bool, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'permission_id': permission_id,
@@ -992,12 +906,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def update_appstore_permission_appstore_requestable_permissions_permission_id_patch(
         self,
@@ -1011,8 +924,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Update Appstore Permission\n\nHTTP PATCH /appstore/requestable_permissions/{permission_id}\nPath params:\n  - permission_id (str)\nQuery params:\n  - include_inherited_configs (bool, optional)\nBody (application/json) fields:\n  - app_id (str, optional)\n  - app_class_id (str, optional)\n  - app_instance_id (str, optional)\n  - label (str, optional)\n  - request_config (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {
@@ -1038,12 +949,11 @@ class LumosDataSource:
             method='PATCH',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def delete_appstore_permission_appstore_requestable_permissions_permission_id_delete(
         self,
@@ -1051,8 +961,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Delete Appstore Permission\n\nHTTP DELETE /appstore/requestable_permissions/{permission_id}\nPath params:\n  - permission_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'permission_id': permission_id,
@@ -1065,12 +973,11 @@ class LumosDataSource:
             method='DELETE',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_appstore_pre_approval_rules_for_app_appstore_pre_approval_rules_get(
         self,
@@ -1080,8 +987,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Appstore Pre Approval Rules For App\n\nHTTP GET /appstore/pre_approval_rules\nQuery params:\n  - app_id (str, optional)\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -1098,12 +1003,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def create_pre_approval_rule_appstore_pre_approval_rules_post(
         self,
@@ -1117,8 +1021,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Create Pre Approval Rule\n\nHTTP POST /appstore/pre_approval_rules\nBody (application/json) fields:\n  - justification (str, required)\n  - time_based_access (list[Dict[str, Any]], optional)\n  - app_id (str, required)\n  - preapproved_groups (list[Dict[str, Any]], optional)\n  - preapproved_permissions (list[Dict[str, Any]], optional)\n  - preapproved_users_by_attribute (list[Dict[str, Any]], optional)\n  - preapproval_webhooks (list[Dict[str, Any]], optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {}
@@ -1142,12 +1044,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_appstore_pre_approval_rule_appstore_pre_approval_rules_pre_approval_rule_id_get(
         self,
@@ -1155,8 +1056,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Appstore Pre Approval Rule\n\nHTTP GET /appstore/pre_approval_rules/{pre_approval_rule_id}\nPath params:\n  - pre_approval_rule_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'pre_approval_rule_id': pre_approval_rule_id,
@@ -1169,12 +1068,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def update_pre_approval_rule_appstore_pre_approval_rules_pre_approval_rule_id_patch(
         self,
@@ -1188,8 +1086,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Update Pre Approval Rule\n\nHTTP PATCH /appstore/pre_approval_rules/{pre_approval_rule_id}\nPath params:\n  - pre_approval_rule_id (str)\nBody (application/json) fields:\n  - justification (str, required)\n  - time_based_access (list[Dict[str, Any]], optional)\n  - preapproved_groups (list[Dict[str, Any]], optional)\n  - preapproved_permissions (list[Dict[str, Any]], optional)\n  - preapproved_users_by_attribute (list[Dict[str, Any]], optional)\n  - preapproval_webhooks (list[Dict[str, Any]], optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {
@@ -1214,12 +1110,11 @@ class LumosDataSource:
             method='PATCH',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def delete_pre_approval_rule_appstore_pre_approval_rules_pre_approval_rule_id_delete(
         self,
@@ -1227,8 +1122,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Delete Pre Approval Rule\n\nHTTP DELETE /appstore/pre_approval_rules/{pre_approval_rule_id}\nPath params:\n  - pre_approval_rule_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'pre_approval_rule_id': pre_approval_rule_id,
@@ -1241,12 +1134,11 @@ class LumosDataSource:
             method='DELETE',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_app_store_app_settings(
         self,
@@ -1254,8 +1146,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Appstore App Settings\n\nHTTP GET /appstore/apps/{app_id}/settings\nPath params:\n  - app_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'app_id': app_id,
@@ -1268,12 +1158,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def update_app_store_app_settings(
         self,
@@ -1284,8 +1173,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Update Appstore App Settings\n\nHTTP PATCH /appstore/apps/{app_id}/settings\nPath params:\n  - app_id (str)\nBody (application/json) fields:\n  - custom_request_instructions (str, optional)\n  - request_flow (Dict[str, Any], optional)\n  - provisioning (Dict[str, Any], optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {
@@ -1305,12 +1192,11 @@ class LumosDataSource:
             method='PATCH',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def add_app_to_app_store(
         self,
@@ -1321,8 +1207,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Add App To Appstore\n\nHTTP POST /appstore/apps\nBody (application/json) fields:\n  - custom_request_instructions (str, optional)\n  - request_flow (Dict[str, Any], optional)\n  - provisioning (Dict[str, Any], optional)\n  - app_id (str, required)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {}
@@ -1341,12 +1225,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_app_store_apps(
         self,
@@ -1360,8 +1243,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Appstore Apps\n\nHTTP GET /appstore/apps\nQuery params:\n  - app_id (str, optional)\n  - name_search (str, optional)\n  - exact_match (bool, optional)\n  - all_visibilities (bool, optional)\n  - expand (str, optional)\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -1386,12 +1267,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def remove_app_from_app_store(
         self,
@@ -1399,8 +1279,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Remove App From Appstore\n\nHTTP DELETE /appstore/apps/{app_id}\nPath params:\n  - app_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'app_id': app_id,
@@ -1413,12 +1291,11 @@ class LumosDataSource:
             method='DELETE',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_app_store_app(
         self,
@@ -1427,8 +1304,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Appstore App\n\nHTTP GET /appstore/apps/{app_id}\nPath params:\n  - app_id (str)\nQuery params:\n  - expand (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'app_id': app_id,
@@ -1443,12 +1318,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def cancel_access_request(
         self,
@@ -1457,8 +1331,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Cancel Access Request\n\nHTTP DELETE /appstore/access_requests/{id}\nPath params:\n  - id (str)\nQuery params:\n  - reason (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'id': id,
@@ -1473,12 +1345,11 @@ class LumosDataSource:
             method='DELETE',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_access_request(
         self,
@@ -1486,8 +1357,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Access Request\n\nHTTP GET /appstore/access_requests/{id}\nPath params:\n  - id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'id': id,
@@ -1500,12 +1369,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def create_access_request(
         self,
@@ -1520,8 +1388,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Create Access Request\n\nHTTP POST /appstore/access_request\nBody (application/json) fields:\n  - app_id (str, required)\n  - requester_user_id (str, optional)\n  - target_user_id (str, optional)\n  - note (str, optional)\n  - business_justification (str, optional)\n  - expiration_in_seconds (str, optional)\n  - access_length (str, optional)\n  - requestable_permission_ids (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {}
@@ -1548,12 +1414,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_access_requests(
         self,
@@ -1567,8 +1432,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Access Requests\n\nHTTP GET /appstore/access_requests\nQuery params:\n  - target_user_id (str, optional)\n  - requester_user_id (str, optional)\n  - user_id (str, optional)\n  - statuses (str, optional)\n  - sort (str, optional)\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -1593,12 +1456,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_access_policies(
         self,
@@ -1608,8 +1470,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Access Policies\n\nHTTP GET /access_policies\nQuery params:\n  - page (int, optional)\n  - size (int, optional)\n  - name (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -1626,12 +1486,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def create_access_policy(
         self,
@@ -1643,8 +1502,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Create Access Policy\n\nHTTP POST /access_policies\nBody (application/json) fields:\n  - name (str, required)\n  - business_justification (str, required)\n  - apps (list[Dict[str, Any]], required)\n  - access_condition (str, optional)\n  - is_everyone_condition (bool, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {}
@@ -1663,12 +1520,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def get_access_policy(
         self,
@@ -1676,8 +1532,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Access Policy\n\nHTTP GET /access_policies/{access_policy_id}\nPath params:\n  - access_policy_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'access_policy_id': access_policy_id,
@@ -1690,12 +1544,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def delete_access_policy(
         self,
@@ -1703,8 +1556,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Delete Access Policy\n\nHTTP DELETE /access_policies/{access_policy_id}\nPath params:\n  - access_policy_id (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {
             'access_policy_id': access_policy_id,
@@ -1717,12 +1568,11 @@ class LumosDataSource:
             method='DELETE',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def update_access_policy(
         self,
@@ -1735,8 +1585,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Update Access Policy\n\nHTTP PUT /access_policies/{access_policy_id}\nPath params:\n  - access_policy_id (str)\nBody (application/json) fields:\n  - name (str, required)\n  - business_justification (str, required)\n  - apps (list[Dict[str, Any]], required)\n  - access_condition (str, optional)\n  - is_everyone_condition (bool, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {
@@ -1757,12 +1605,11 @@ class LumosDataSource:
             method='PUT',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def list_vendor_agreements(
         self,
@@ -1771,8 +1618,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Vendor Agreements\n\nHTTP GET /vendor_agreements\nQuery params:\n  - page (int, optional)\n  - size (int, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -1787,12 +1632,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def update_vendor_agreement_custom_attribute(
         self,
@@ -1802,8 +1646,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Update Vendor Agreement Custom Attribute\n\nHTTP PUT /vendor_agreements/{vendor_agreement_id}/custom_attributes/{label}\nPath params:\n  - vendor_agreement_id (str)\n  - label (str)\nBody (application/json) fields:\n  - value (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {
@@ -1820,12 +1662,11 @@ class LumosDataSource:
             method='PUT',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def create_found_document(
         self,
@@ -1840,8 +1681,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Upload Found Documents\n\nHTTP POST /found_documents\nBody (application/json) fields:\n  - unique_identifier (str, required)\n  - files (list[Dict[str, Any]], required)\n  - vendor_name (str, optional)\n  - start_date (str, optional)\n  - end_date (str, optional)\n  - source_app_id (str, optional)\n  - total_cost (Dict[str, Any], optional)\n  - line_items (list[Dict[str, Any]], optional) - Line items on the contract (each with name, quantity, unit_cost)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {}
@@ -1867,12 +1706,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def create_order(
         self,
@@ -1889,8 +1727,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Upload Order\n\nHTTP POST /orders\nBody (application/json) fields:\n  - unique_identifier (str, required)\n  - vendor (Dict[str, Any], required)\n  - start_date (str, required)\n  - end_date (str, required)\n  - opt_out_date (str, optional)\n  - auto_renewal (bool, required)\n  - currency (str, optional)\n  - line_items (list[Dict[str, Any]], required)\n  - custom_attributes (Dict[str, Any], optional)\n  - source_app_id (str, optional)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {}
@@ -1916,20 +1752,17 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def lumos_art(
         self,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Art\n\nHTTP GET /art"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -1940,20 +1773,17 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def lumos_liveness_check(
         self,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Get Info\n\nHTTP GET /info"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _path: Dict[str, Any] = {}
         _query: Dict[str, Any] = {}
@@ -1964,12 +1794,11 @@ class LumosDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def process_airbase_milestone_event(
         self,
@@ -1982,8 +1811,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Process Airbase Purchase Request Approved\n\nHTTP POST /webhooks/airbase/purchase_request_approved/{domain_app_uuid}\nPath params:\n  - domain_app_uuid (str)\nBody (application/json) fields:\n  - id (str, required)\n  - object (str, required)\n  - type (str, required)\n  - created_date (str, required)\n  - data (Dict[str, Any], required)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {
@@ -2002,12 +1829,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
     async def process_vendr_request_completed_webhooks_vendr_request_completed_domain_app_uuid_post(
         self,
@@ -2016,8 +1842,6 @@ class LumosDataSource:
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Auto-generated from OpenAPI: Process Vendr Request Completed\n\nHTTP POST /webhooks/vendr/request_completed/{domain_app_uuid}\nPath params:\n  - domain_app_uuid (str)\nBody: application/json (str)"""
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})
         _headers.setdefault('Content-Type', 'application/json')
         _path: Dict[str, Any] = {
@@ -2031,12 +1855,11 @@ class LumosDataSource:
             method='POST',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
-        resp = await self.http.execute(req)
-        return resp
+        return await self.http.execute(req)
 
 # ---- Helpers used by generated methods ----
 def _safe_format_url(template: str, params: Dict[str, object]) -> str:

@@ -187,8 +187,7 @@ class LumosClient(IClient):
                 token = credentials_config.get("access_token", "")
                 if not token:
                     raise ValueError(
-                        "Access token not found in OAuth credentials. "
-                        "Please re-authenticate."
+                        "Access token not found in OAuth credentials. Please re-authenticate."
                     )
                 client = LumosRESTClientViaToken(token)
 
@@ -213,8 +212,7 @@ class LumosClient(IClient):
 
             else:
                 raise ValueError(
-                    f"Unsupported auth type: {auth_type}. "
-                    "Supported: OAUTH, API_KEY, API_TOKEN"
+                    f"Unsupported auth type: {auth_type}. Supported: OAUTH, API_KEY, API_TOKEN"
                 )
 
             logger.info(
@@ -238,15 +236,13 @@ class LumosClient(IClient):
             config = await config_service.get_config(
                 f"/services/connectors/{connector_instance_id}/config"
             )
-            if not config:
+            if not config or not isinstance(config, dict):
                 raise ValueError(
-                    f"Failed to get Lumos connector configuration "
-                    f"for instance {connector_instance_id}"
+                    f"Failed to get Lumos connector configuration for instance {connector_instance_id}"
                 )
             return config
         except Exception as e:
             logger.error(f"Failed to get Lumos connector config: {e}")
             raise ValueError(
-                f"Failed to get Lumos connector configuration "
-                f"for instance {connector_instance_id}"
-            )
+                f"Failed to get Lumos connector configuration for instance {connector_instance_id}"
+            ) from e
