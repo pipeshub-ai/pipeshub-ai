@@ -269,6 +269,26 @@ class GetThreadRepliesInput(BaseModel):
     timestamp: str = Field(description="Timestamp of the parent message")
     limit: Optional[int] = Field(default=None, description="Maximum number of replies to return")
 
+class UploadFileToChannelInput(BaseModel):
+    """Schema for uploading a file to a Slack channel"""
+    channel: str = Field(description="The channel to share the file in")
+    filename: str = Field(
+        description="Name of the file with extension, e.g. 'transcript.txt'. "
+                    "Slack uses the extension for syntax highlighting."
+    )
+    file_content: str = Field(
+        description="The full text content of the file to upload. "
+                    "For transcripts, pass the entire text — not a summary."
+    )
+    title: Optional[str] = Field(
+        default=None,
+        description="Display title for the file in Slack"
+    )
+    initial_comment: Optional[str] = Field(
+        default=None,
+        description="Message posted alongside the file in the channel"
+    )
+
 # Register Slack toolset
 @ToolsetBuilder("Slack")\
     .in_group("Slack")\
@@ -2718,6 +2738,84 @@ class Slack:
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
             logger.error(f"Error in get_thread_replies: {e}")
+            slack_response = self._handle_slack_error(e)
+            return (slack_response.success, slack_response.to_json())
+
+    @tool(
+        app_name="slack",
+        tool_name="upload_file_to_channel",
+        description="Upload a text file to a Slack channel as a snippet",
+        args_schema=UploadFileToChannelInput,
+        when_to_use=[
+            "User wants to upload a file or transcript to Slack",
+            "User wants to share a meeting transcript in a Slack channel",
+            "User wants to post a text snippet or log to Slack",
+        ],
+        when_not_to_use=[
+            "User wants to send a plain text message (use send_message)",
+            "User wants to search for files (use search_all)",
+            "No Slack mention",
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Upload the meeting transcript to #general",
+            "Share the Teams call transcript in Slack",
+            "Post this file to the engineering channel",
+        ],
+        category=ToolCategory.COMMUNICATION,
+        llm_description=(
+            "Upload a text file (transcript, log, snippet) to a Slack channel. "
+            "Pass the full file content in file_content. The file is hosted in "
+            "Slack and rendered as a collapsible snippet with syntax highlighting."
+        ),
+    )
+    async def upload_file_to_channel(
+        self,
+        channel: str,
+        filename: str,
+        file_content: str,
+        title: Optional[str] = None,
+        initial_comment: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Upload a text file to a Slack channel.
+
+        Uses the Slack SDK's files_upload_v2 which handles the 3-step upload
+        API internally (getUploadURLExternal -> POST -> completeUploadExternal).
+
+        Channel is resolved from name to ID before calling the SDK because
+        files_upload_v2 requires a channel ID — channel names will fail.
+
+        Args:
+            channel: Channel name (with or without #) or channel ID.
+            filename: File name with extension (e.g. 'transcript.txt').
+            file_content: Full text content to upload.
+            title: Optional display title in Slack.
+            initial_comment: Optional message alongside the file.
+
+        Returns:
+            Tuple (success: bool, json_response: str)
+        """
+        try:
+            # Resolve channel name -> channel ID
+            # CRITICAL: files_upload_v2 requires channel ID, not name.
+            # Passing '#general' or 'general' returns 'invalid_channel'.
+            chan = await self._resolve_channel(channel)
+
+            # SDK param is 'content' for string data (not 'file_content')
+            response = await self.client.files_upload_v2(
+                filename=filename,
+                content=file_content,
+                channel=chan,
+                title=title,
+                initial_comment=initial_comment,
+            )
+            slack_response = self._handle_slack_response(response)
+            return (slack_response.success, slack_response.to_json())
+        except Exception as e:
+            if "not_in_channel" in str(e):
+                err = SlackResponse(success=False, error="not_in_channel")
+                return (err.success, err.to_json())
+            logger.error(f"Error in upload_file_to_channel: {e}")
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 

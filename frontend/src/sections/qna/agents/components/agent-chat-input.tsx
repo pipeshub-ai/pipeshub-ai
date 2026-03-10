@@ -9,6 +9,10 @@ import toolIcon from '@iconify-icons/mdi/tools';
 import databaseIcon from '@iconify-icons/mdi/database';
 import cogIcon from '@iconify-icons/mdi/cog';
 import checkIcon from '@iconify-icons/mdi/check';
+import flashIcon from '@iconify-icons/mdi/flash';
+import shieldCheckIcon from '@iconify-icons/mdi/shield-check';
+import brainIcon from '@iconify-icons/mdi/brain';
+import autoFixIcon from '@iconify-icons/mdi/auto-fix';
 import {
   Box,
   Paper,
@@ -44,6 +48,8 @@ export interface Model {
   modelFriendlyName?: string;
 }
 
+export type ChatMode = 'quick' | 'verification' | 'deep' | 'auto';
+
 export type ChatInputProps = {
   onSubmit: (
     message: string,
@@ -63,8 +69,16 @@ export type ChatInputProps = {
   availableKBs: KnowledgeBase[];
   agent?: any;
   activeConnectors: Connector[];
+  chatMode: ChatMode;
+  onChatModeChange: (mode: ChatMode) => void;
 };
-const QUICK_CHAT_MODE = 'quick';
+
+const CHAT_MODES: { key: ChatMode; label: string; icon: any; tooltip: string }[] = [
+  { key: 'quick', label: 'Quick', icon: flashIcon, tooltip: 'Fast response — best for simple questions' },
+  { key: 'verification', label: 'Verify', icon: shieldCheckIcon, tooltip: 'ReAct agent — verifies with tool calls and reflection' },
+  { key: 'deep', label: 'Deep', icon: brainIcon, tooltip: 'Orchestrator + sub-agents — best for complex multi-step tasks' },
+  { key: 'auto', label: 'Auto', icon: autoFixIcon, tooltip: 'Automatically selects the best mode based on your query' },
+];
 
 interface ToolOption {
   id: string; // This will be app_name.tool_name format
@@ -137,11 +151,14 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   availableKBs,
   agent,
   activeConnectors,
+  chatMode,
+  onChatModeChange,
 }) => {
   const [localValue, setLocalValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasText, setHasText] = useState(false);
   const [modelMenuAnchor, setModelMenuAnchor] = useState<null | HTMLElement>(null);
+  const [chatModeMenuAnchor, setChatModeMenuAnchor] = useState<null | HTMLElement>(null);
 
   // Persistent selected items - these will remain selected throughout the conversation
   const [selectedTools, setSelectedTools] = useState<string[]>([]); // app_name.tool_name format
@@ -445,12 +462,12 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       // Pass the persistent selected items with correct IDs/names for API
       await onSubmit(
         trimmedValue,
-        selectedModel?.modelKey,        
-        selectedModel?.modelName,        
-        QUICK_CHAT_MODE,
-        selectedTools,                  
-        selectedKBs,                     
-        selectedApps                     
+        selectedModel?.modelKey,
+        selectedModel?.modelName,
+        chatMode,
+        selectedTools,
+        selectedKBs,
+        selectedApps
       );
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -469,6 +486,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
     disabled,
     onSubmit,
     selectedModel,
+    chatMode,
     selectedTools, // These remain persistent
     selectedKBs, // These remain persistent
     selectedApps, // These remain persistent
@@ -495,6 +513,19 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   const handleModelSelect = (model: Model) => {
     onModelChange(model);
     handleModelMenuClose();
+  };
+
+  const handleChatModeMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
+    setChatModeMenuAnchor(event.currentTarget);
+  };
+
+  const handleChatModeMenuClose = () => {
+    setChatModeMenuAnchor(null);
+  };
+
+  const handleChatModeSelect = (mode: ChatMode) => {
+    onChatModeChange(mode);
+    handleChatModeMenuClose();
   };
 
   // Toggle functions - using the correct IDs for API - these are persistent
@@ -745,10 +776,44 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
               py: 0.5,
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'flex-end',
+              justifyContent: 'space-between',
               borderTop: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
             }}
           >
+            {/* Chat Mode Selector */}
+            <Tooltip title={CHAT_MODES.find((m) => m.key === chatMode)?.tooltip || ''}>
+              <Button
+                onClick={handleChatModeMenuOpen}
+                size="small"
+                startIcon={
+                  <Icon
+                    icon={CHAT_MODES.find((m) => m.key === chatMode)?.icon || autoFixIcon}
+                    width={14}
+                    height={14}
+                  />
+                }
+                endIcon={<Icon icon={chevronDownIcon} width={12} height={12} />}
+                sx={{
+                  minWidth: 'auto',
+                  height: 28,
+                  px: 1.5,
+                  fontSize: '0.7rem',
+                  fontWeight: 500,
+                  color: theme.palette.text.secondary,
+                  border: '1px solid',
+                  borderColor: alpha(theme.palette.divider, 0.5),
+                  borderRadius: '8px',
+                  textTransform: 'none',
+                  '&:hover': {
+                    borderColor: theme.palette.primary.main,
+                    bgcolor: alpha(theme.palette.primary.main, 0.05),
+                  },
+                }}
+              >
+                {CHAT_MODES.find((m) => m.key === chatMode)?.label || 'Auto'}
+              </Button>
+            </Tooltip>
+
             {/* Right Controls */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
               {/* Resources Button */}
@@ -852,6 +917,69 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
                 <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
                   {`${normalizeDisplayName(model.provider || 'AI')} | ${model.modelName.substring(0, 16)}`}
                 </Typography>
+              </Box>
+            </MenuItem>
+          ))}
+        </Box>
+      </Menu>
+
+      {/* Chat Mode Selection Menu */}
+      <Menu
+        anchorEl={chatModeMenuAnchor}
+        open={Boolean(chatModeMenuAnchor)}
+        onClose={handleChatModeMenuClose}
+        PaperProps={{
+          sx: {
+            maxHeight: 300,
+            minWidth: 240,
+            borderRadius: '8px',
+            border: `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.1)}`,
+            boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.3)' : '0 4px 16px rgba(0, 0, 0, 0.1)',
+          },
+        }}
+      >
+        <Box sx={{ p: 1 }}>
+          <Typography
+            variant="caption"
+            sx={{ px: 1, pb: 0.5, color: 'text.secondary', display: 'block' }}
+          >
+            Chat Mode
+          </Typography>
+          <Divider sx={{ mb: 0.5 }} />
+          {CHAT_MODES.map((mode) => (
+            <MenuItem
+              key={mode.key}
+              onClick={() => handleChatModeSelect(mode.key)}
+              selected={chatMode === mode.key}
+              sx={{ borderRadius: '6px', mb: 0.5, py: 0.75 }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, width: '100%' }}>
+                <Icon
+                  icon={mode.icon}
+                  width={16}
+                  height={16}
+                  style={{ marginTop: 2, flexShrink: 0 }}
+                />
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2" fontWeight="medium" sx={{ fontSize: '0.8rem' }}>
+                    {mode.label}
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ fontSize: '0.65rem', display: 'block', lineHeight: 1.3 }}
+                  >
+                    {mode.tooltip}
+                  </Typography>
+                </Box>
+                {chatMode === mode.key && (
+                  <Icon
+                    icon={checkIcon}
+                    width={16}
+                    height={16}
+                    style={{ marginTop: 2, flexShrink: 0, color: theme.palette.primary.main }}
+                  />
+                )}
               </Box>
             </MenuItem>
           ))}

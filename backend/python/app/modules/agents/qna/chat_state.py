@@ -32,6 +32,7 @@ class ChatState(TypedDict):
     chat_mode: Optional[str]  # "quick", "standard", "analysis", "deep_research", "creative", "precise"
     filters: Optional[Dict[str, Any]]
     retrieval_mode: str
+    graph_type: str
 
     # Query analysis results
     query_analysis: Optional[Dict[str, Any]]  # Results from query analysis
@@ -327,7 +328,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, org_info: Dict[str, Any] = None) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, org_info: Dict[str, Any] = None, graph_type: str = "legacy") -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -385,6 +386,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
         "chat_mode": chat_query.get("chatMode", "standard"),
+        "graph_type": graph_type,
 
         # Query analysis (will be populated by analyze_query_node)
         "query_analysis": None,
