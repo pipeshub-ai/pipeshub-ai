@@ -21,8 +21,6 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
 from app.services.messaging.kafka.handlers.entity import BaseEventService
-
-# from app.connectors.sources.google.common.arango_service import ArangoService
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
@@ -44,7 +42,7 @@ class RecordEventHandler(BaseEventService):
             self.logger.info(f"🔍 Looking for next queued duplicate for record {record_id}")
 
             # Find the next queued duplicate
-            next_queued_record = await self.event_processor.arango_service.find_next_queued_duplicate(record_id)
+            next_queued_record = await self.event_processor.graph_provider.find_next_queued_duplicate(record_id)
 
             if not next_queued_record:
                 self.logger.info(f"✅ No queued duplicates found for record {record_id}")
@@ -56,25 +54,25 @@ class RecordEventHandler(BaseEventService):
             # Get file record for the queued duplicate
             file_record = None
             if next_queued_record.get("recordType") == RecordTypes.FILE.value:
-                file_record = await self.event_processor.arango_service.get_document(
+                file_record = await self.event_processor.graph_provider.get_document(
                     next_record_id, CollectionNames.FILES.value
                 )
 
             # Create event payload for the queued record
-            payload = await self.event_processor.arango_service._create_reindex_event_payload(
+            payload = await self.event_processor.graph_provider._create_reindex_event_payload(
                 next_queued_record,
                 file_record,
             )
 
             # Publish the event to trigger indexing
-            await self.event_processor.arango_service._publish_record_event("newRecord", payload)
+            await self.event_processor.graph_provider._publish_record_event("newRecord", payload)
 
             self.logger.info(f"✅ Successfully triggered indexing for queued duplicate: {next_record_id}")
 
         except Exception as e:
             self.logger.warning(f"Failed to trigger next queued duplicate: {str(e)}")
             try:
-                await self.event_processor.arango_service.update_queued_duplicates_status(record_id, ProgressStatus.FAILED.value, virtual_record_id)
+                await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, ProgressStatus.FAILED.value, virtual_record_id)
             except Exception as e:
                 self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
 
@@ -126,7 +124,7 @@ class RecordEventHandler(BaseEventService):
                 self.logger.error(f"Missing record_id in message {payload}")
                 return
 
-            record = await self.event_processor.arango_service.get_document(
+            record = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
 
@@ -167,7 +165,7 @@ class RecordEventHandler(BaseEventService):
                 connector_id = record.get("connectorId")
                 origin = record.get("origin")
                 if connector_id and origin == OriginTypes.CONNECTOR.value:
-                    connector_instance = await self.event_processor.arango_service.get_document(
+                    connector_instance = await self.event_processor.graph_provider.get_document(
                         connector_id, CollectionNames.APPS.value
                     )
                     if not connector_instance:
@@ -277,7 +275,7 @@ class RecordEventHandler(BaseEventService):
                     }
                 )
                 docs = [doc]
-                await self.event_processor.arango_service.batch_upsert_nodes(
+                await self.event_processor.graph_provider.batch_upsert_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
 
@@ -288,54 +286,11 @@ class RecordEventHandler(BaseEventService):
 
 
 
-            # Signed URL handling
-            if payload and payload.get("signedUrlRoute"):
-                try:
-                    jwt_payload  = {
-                        "orgId": payload["orgId"],
-                        "scopes": ["storage:token"],
-                    }
-                    token = await generate_jwt(self.config_service, jwt_payload)
-                    self.logger.debug(f"Generated JWT token for message {message_id}")
+            # Try signed URL first if available, fallback to connector streaming if it fails
+            signed_url_success = False
 
-                    response = await make_api_call(
-                        route=payload["signedUrlRoute"], token=token
-                    )
-                    self.logger.debug(
-                        f"Received signed URL response for message {message_id}"
-                    )
-
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload # The original payload
-                    }
-
-                    if response.get("is_json"):
-                        signed_url = response["data"]["signedUrl"]
-                        buffer = await self._download_from_signed_url(signed_url=signed_url, record_id=record_id, doc=doc, from_route=True)
-                        if not buffer:
-                            raise Exception("Failed to download file from signed URL")
-
-                        event_data_for_processor["payload"]["buffer"] = buffer
-                    else:
-                        event_data_for_processor["payload"]["buffer"] = response["data"]
-
-                    # Yield events from the event processor
-                    async for event in self.event_processor.on_event(event_data_for_processor):
-                        yield event
-
-                    processing_time = (datetime.now() - start_time).total_seconds()
-                    self.logger.info(
-                        f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
-                    )
-                    return
-                except Exception as e:
-                    error_occurred = True
-                    error_msg = str(e)
-                    raise Exception(error_msg)
-
-            elif payload and payload.get("signedUrl"):
+            if payload and payload.get("signedUrl"):
+                self.logger.info(f"🔍 Signed URL received for record {record_id}")
                 try:
                     response = await self._download_from_signed_url(signed_url=payload["signedUrl"], record_id=record_id, doc=doc)
                     if not response:
@@ -355,12 +310,17 @@ class RecordEventHandler(BaseEventService):
                         f"✅ Successfully processed document for event: {event_type}. "
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
+                    signed_url_success = True
                     return
                 except Exception as e:
-                    error_occurred = True
-                    error_msg = str(e)
-                    raise Exception(error_msg)
-            else:
+                    self.logger.warning(
+                        f"⚠️ Failed to download from signed URL for record {record_id}: {str(e)}. "
+                        f"Falling back to connector streaming..."
+                    )
+                    # Don't raise - fall through to connector streaming fallback
+
+            if not signed_url_success:
+                self.logger.info(f"🔍 No signed URL received for record {record_id}")
                 try:
                     jwt_payload  = {
                         "orgId": payload["orgId"],
@@ -431,18 +391,19 @@ class RecordEventHandler(BaseEventService):
 
             # Update queued duplicates for ALL record types (not just FILE)
             if event_type != EventTypes.DELETE_RECORD.value:
-                record = await self.event_processor.arango_service.get_document(
+                record = await self.event_processor.graph_provider.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
-
                 if record is None:
                     self.logger.warning(f"Record {record_id} not found in database")
                     return
 
+
+
                 indexing_status = record.get("indexingStatus")
                 virtual_record_id = record.get("virtualRecordId")
                 if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
-                    await self.event_processor.arango_service.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
+                    await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
                 elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
                     # Find and trigger indexing for the next queued duplicate
                     self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
@@ -455,9 +416,9 @@ class RecordEventHandler(BaseEventService):
         extraction_status: str,
         reason: Optional[str] = None,
     ) -> dict|None:
-        """Update document status in Arango"""
+        """Update document status in database"""
         try:
-            record = await self.event_processor.arango_service.get_document(
+            record = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
             if not record:
@@ -478,7 +439,7 @@ class RecordEventHandler(BaseEventService):
                 doc["reason"] = reason
 
             docs = [doc]
-            await self.event_processor.arango_service.batch_upsert_nodes(
+            await self.event_processor.graph_provider.batch_upsert_nodes(
                 docs, CollectionNames.RECORDS.value
             )
             self.logger.info(f"✅ Updated document status for record {record_id}")
@@ -511,46 +472,13 @@ class RecordEventHandler(BaseEventService):
             sock_read=1200,  # 20 minutes per chunk read
         )
 
-        headers = {}
-
-        # Check storage type - don't add JWT for S3 pre-signed URLs
-        storage_is_s3 = True
-        if self.config_service:
-            try:
-                storage_config = await self.config_service.get_config(
-                    config_node_constants.STORAGE.value, default={}
-                )
-                storage_type = storage_config.get("storageType") if isinstance(storage_config, dict) else None
-                if not storage_type:
-                    raise Exception("Missing storage type configuration")
-                storage_is_s3 = storage_type == "s3"
-                if storage_is_s3:
-                    self.logger.debug(f"S3 storage detected, skipping JWT header for signed URL download for record {record_id}")
-            except Exception as e:
-                self.logger.error(f"Failed to get storage config: {e}")
-                raise Exception(f"Failed to get storage config: {e}")
-
-        if self.config_service and from_route and not storage_is_s3:
-            try:
-                org_id = doc.get("orgId")
-                if org_id:
-                    jwt_payload = {
-                        "orgId": org_id,
-                        "scopes": ["connector:signedUrl"],
-                    }
-                    jwt_token = await generate_jwt(self.config_service, jwt_payload)
-                    headers["Authorization"] = f"Bearer {jwt_token}"
-                    self.logger.debug(f"Generated JWT token for downloading signed URL for record {record_id}")
-            except Exception as e:
-                self.logger.warning(f"Failed to generate JWT token for signed URL download: {e}")
-
         for attempt in range(max_retries):
             delay = base_delay * (2**attempt)  # Exponential backoff
             file_buffer = BytesIO()
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     try:
-                        async with session.get(signed_url, headers=headers) as response:
+                        async with session.get(signed_url) as response:
                             if response.status != HttpStatusCode.SUCCESS.value:
                                 raise aiohttp.ClientError(
                                     f"Failed to download file: {response.status}"

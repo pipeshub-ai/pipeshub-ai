@@ -54,7 +54,7 @@ class Connectors(Enum):
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
-
+    GITHUB = "GITHUB"
     SERVICENOW = "SERVICENOW"
     S3 = "S3"
     MINIO = "MINIO"
@@ -65,6 +65,9 @@ class Connectors(Enum):
     ZAMMAD = "ZAMMAD"
 
     UNKNOWN = "UNKNOWN"
+
+    RSS = "RSS"
+
 
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
@@ -77,6 +80,7 @@ class AppGroups(Enum):
     NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    GITHUB  = "Github"
     S3 = "S3"
     MINIO = "MinIO"
     GOOGLE_CLOUD = "Google Cloud"
@@ -84,6 +88,8 @@ class AppGroups(Enum):
     LINEAR = "Linear"
     ZAMMAD = "Zammad"
     LOCAL_STORAGE = "Local Storage"
+    RSS = "RSS"
+
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -129,6 +135,7 @@ class CollectionNames(Enum):
     TICKETS = "tickets"
     ENTITY_RELATIONS = "entityRelations"
     PROJECTS = "projects"
+    PULLREQUESTS = "prs"
 
     # Users and groups
     PEOPLE = "people"
@@ -179,6 +186,17 @@ class CollectionNames(Enum):
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
+
+    # Agent Builder Graph collections
+    AGENT_KNOWLEDGE = "agentKnowledge"
+    AGENT_TOOLSETS = "agentToolsets"
+    AGENT_TOOLS = "agentTools"
+
+    # Agent Builder Graph edges
+    AGENT_HAS_KNOWLEDGE = "agentHasKnowledge"
+    AGENT_HAS_TOOLSET = "agentHasToolset"
+    TOOLSET_HAS_TOOL = "toolsetHasTool"
+
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
@@ -276,6 +294,7 @@ class RecordTypes(Enum):
     WEBPAGE_COMMENT = "WEBPAGE_COMMENT"
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
+    PULL_REQUEST = "PULL_REQUEST"
 
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
@@ -333,5 +352,6 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "PROJECT": CollectionNames.PROJECTS.value,
     "DATABASE": CollectionNames.WEBPAGES.value,
     "DATASOURCE": CollectionNames.WEBPAGES.value,
+    "PULL_REQUEST":CollectionNames.PULLREQUESTS.value
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

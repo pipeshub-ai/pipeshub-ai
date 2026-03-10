@@ -2,29 +2,24 @@ import { config } from "dotenv";
 config(); // Load environment variables first
 
 import { json, urlencoded, Request, Response } from "express";
-import { connect } from "./utils/db";
+import { connect, dropLegacyThreadBotIndex } from "./utils/db";
 import { getFromDatabase, saveToDatabase } from "./utils/conversation";
-import {markdownToBlocks} from '@tryfabric/mack';
-// import { getUserByEmail } from "./services/iam.service";
-// import { authJwtGenerator } from "./utils/createJwt";
-// import { jwtValidator } from "./middlewares/userAuthentication";
-
 import axios from "axios";
-// import FormData from "form-data";
+import { marked } from "marked";
+// Disable marked's email mangling to prevent HTML entity encoding of email addresses.
+// @tryfabric/mack uses the same marked instance internally.
+marked.setOptions({ mangle: false } as any);
 import app from "./slackApp";
 import receiver from "./receiver";
-// import sendNotification from "./services/taskNotification";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
-import {  slackJwtGenerator } from "../../../libs/utils/createJwt";
+import { slackJwtGenerator } from "../../../libs/utils/createJwt";
+import { markdownToSlackMrkdwn, markdownToText } from "./utils/md_to_mrkdwn";
 
-// Type definitions
-// interface AuthenticatedRequest extends Request {
-//   decodedToken?: any;
-// }
+import {
+  type SlackBotConfig,
+  getCurrentMatchedSlackBot,
+} from "./botRegistry";
 
-interface CitationUrls {
-  [key: string]: string;
-}
 
 interface CitationData {
   citationId: string;
@@ -40,7 +35,7 @@ interface CitationData {
       webUrl?: string;
     };
     chunkIndex?: string;
-  };
+  }
 }
 
 interface BotResponse {
@@ -54,88 +49,1517 @@ interface ConversationData {
     _id: string;
     messages: BotResponse[];
   };
+  [key: string]: unknown;
 }
 
-// interface SearchRecord {
-//   _id: string;
-//   name: string;
-//   appSpecificRecordType: Array<{ name: string }>;
-//   departments: Array<{ name: string }>;
-//   recordType: string;
-//   status: string;
-//   createdAt: string;
-// }
+interface StreamEvent {
+  event: string;
+  data: unknown;
+}
 
-// interface SearchResponse {
-//   records: SearchRecord[];
-//   fileRecords: Array<{ recordId: string; fileName: string; extension: string }>;
-//   [key: number]: { content: string };
-// }
+const FAILED_RESPONSE_GENERATION_MESSAGE = 'Something went wrong while generating the response. Please try again later.';
+const STREAM_UPDATE_THROTTLE_MS = 900;
+const SLACK_MAX_TEXT_LENGTH = 39000;
+const SLACK_STREAM_MARKDOWN_LIMIT = 11500;
+const SLACK_STREAM_MESSAGE_CHAR_LIMIT = 11500;
+const MAX_SLACK_ERROR_BODY_LENGTH = 64000;
+const SLACK_BLOCKS_PER_MESSAGE_LIMIT = 50;
+/** Slack cumulative block text limit per message (~13,200 chars in practice); use 10k to stay safe. */
+const SLACK_BLOCKS_TOTAL_TEXT_LIMIT = 10000;
+/** Maximum rows (including header) per table block to prevent msg_blocks_too_long. */
+const MAX_TABLE_ROWS = 100;
+/** Maximum columns per table block; extra columns are silently dropped. */
+const MAX_TABLE_COLS = 20;
+/** Maximum character count per table block; Slack enforces a hard limit of 10,000. */
+const MAX_TABLE_CHARS = 9500;
+const SLACK_SECTION_TEXT_LIMIT = 3000;
+const SLACK_SECTION_FIELD_TEXT_LIMIT = 2000;
+const SLACK_SECTION_FIELDS_PER_BLOCK_LIMIT = 10;
+const DEFAULT_SLACK_ERROR_MESSAGE = "Something went wrong! Please try again later.";
+const MAX_USER_VISIBLE_ERROR_LENGTH = 320;
+const STREAM_FAILURE_MESSAGE =
+  "I ran into an issue while streaming the response. Please try again.";
+const BACKEND_STREAM_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const TABLE_STREAMING_PAUSED_HINT =
+  "\n\n:hourglass_flowing_sand:";
 
-// interface Module {
-//   _id: string;
-//   name: string;
-// }
+// User info cache to avoid redundant API calls
+interface CachedUserInfo {
+  userRecord: SlackUserRecord | undefined;
+  timestamp: number;
+}
 
-// interface Customer {
-//   _id: string;
-//   registeredName: string;
-// }
+const userInfoCache = new Map<string, CachedUserInfo>();
+const USER_INFO_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 
-// interface FormDataValues {
-//   name: string;
-//   modules: string;
-//   dueDate?: string;
-//   customerAccount: string;
-//   richformId: string;
-// }
+function getCachedUserInfo(userId: string): SlackUserRecord | undefined | null {
+  const cached = userInfoCache.get(userId);
+  if (!cached) {
+    return null; // Not in cache
+  }
 
-function convertCitationsToHyperlinks(text: string, citationUrls: CitationUrls): string {
-  return text.replace(/\[(\d+)\]/g, (match, citationNumber) => {
-    const url = citationUrls[citationNumber];
-    if (url) {
-      // Use proper markdown link format instead of Slack's HTML-style
-      return `[[${citationNumber}](${url})]`;
-    }
-    return match;
+  const now = Date.now();
+  if (now - cached.timestamp > USER_INFO_CACHE_TTL_MS) {
+    userInfoCache.delete(userId); // Expired
+    return null;
+  }
+
+  return cached.userRecord;
+}
+
+function setCachedUserInfo(userId: string, userRecord: SlackUserRecord | undefined): void {
+  userInfoCache.set(userId, {
+    userRecord,
+    timestamp: Date.now(),
   });
 }
 
-// Function to convert citations to hyperlinks
-function convertCitationsToHyperlinks2(text: string, citationUrls: CitationUrls): string {
-  return text.replace(/\[(\d+)\]/g, (match, citationNumber) => {
-    const url = citationUrls[citationNumber];
-    if (url) {
-      return `<${url}|[${citationNumber}]>`;
+interface StreamStartResult {
+  ts?: string;
+}
+
+type SlackBlock = Record<string, unknown>;
+
+interface SlackMessagePayload {
+  subtype?: string;
+  bot_id?: string;
+  user?: string;
+  files?: unknown[];
+  text?: string;
+  thread_ts?: string;
+  ts: string;
+  channel?: string;
+}
+
+interface SlackConversationsRepliesResponse {
+  messages?: SlackMessagePayload[];
+  response_metadata?: {
+    next_cursor?: string;
+  };
+}
+
+interface SlackUserProfile {
+  email?: string;
+  display_name?: string;
+  real_name?: string;
+}
+
+interface SlackUserRecord {
+  id?: string;
+  name?: string;
+  real_name?: string;
+  profile?: SlackUserProfile;
+}
+
+interface TypedSlackClient {
+  botUserId?: string;
+  users: {
+    info: (params: { user: string }) => Promise<{
+      user?: SlackUserRecord;
+    }>;
+  };
+  chat: {
+    postMessage: (params: {
+      channel: string;
+      thread_ts?: string;
+      text: string;
+      blocks?: SlackBlock[];
+    }) => Promise<{ ts?: string }>;
+    update: (params: {
+      channel: string;
+      ts: string;
+      text: string;
+      blocks?: SlackBlock[];
+    }) => Promise<{ ts?: string }>;
+  };
+  apiCall: (
+    apiMethod: string,
+    options?: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>>;
+}
+
+interface TypedSlackContext {
+  botUserId?: string;
+  teamId?: string;
+  matchedBotId?: string;
+  matchedBotUserId?: string;
+  matchedBotTeamId?: string;
+  matchedBotAgentId?: string | null;
+}
+
+function parseSSEEvents(buffer: string): { events: StreamEvent[]; remainder: string } {
+  const rawEvents = buffer.split("\n\n");
+  const remainder = rawEvents.pop() || "";
+  const events: StreamEvent[] = [];
+
+  for (const rawEvent of rawEvents) {
+    if (!rawEvent.trim()) {
+      continue;
     }
-    return match; // Keep original if no URL found
+
+    let eventType = "message";
+    const dataLines: string[] = [];
+
+    for (const line of rawEvent.split("\n")) {
+      if (line.startsWith("event:")) {
+        eventType = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+
+    const dataPayload = dataLines.join("\n");
+    let parsedData: unknown = dataPayload;
+
+    if (dataPayload) {
+      try {
+        parsedData = JSON.parse(dataPayload);
+      } catch {
+        parsedData = dataPayload;
+      }
+    }
+
+    events.push({ event: eventType, data: parsedData });
+  }
+
+  return { events, remainder };
+}
+
+function extractStreamChunk(data: unknown): string {
+  if (typeof data === "string") {
+    return data;
+  }
+  if (data && typeof data === "object") {
+    if ("chunk" in data && typeof data.chunk === "string") {
+      return data.chunk;
+    }
+    if ("content" in data && typeof data.content === "string") {
+      return data.content;
+    }
+  }
+  return "";
+}
+
+function readMessageFromObject(value: unknown): string | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  const directKeys = ["message", "error", "detail", "reason", "msg"] as const;
+
+  for (const key of directKeys) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+
+  if (record.error && typeof record.error === "object") {
+    const nestedErrorMessage = readMessageFromObject(record.error);
+    if (nestedErrorMessage) {
+      return nestedErrorMessage;
+    }
+  }
+
+  return null;
+}
+
+function isReadableStreamLike(value: unknown): value is NodeJS.ReadableStream {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.on === "function";
+}
+
+function readMessageFromTextPayload(payload: string): string | null {
+  const normalizedPayload = payload.trim();
+  if (!normalizedPayload) {
+    return null;
+  }
+
+  const isSSEPayload =
+    normalizedPayload.includes("event:") && normalizedPayload.includes("data:");
+  if (isSSEPayload) {
+    const payloadForParser = normalizedPayload.endsWith("\n\n")
+      ? normalizedPayload
+      : `${normalizedPayload}\n\n`;
+    const { events } = parseSSEEvents(payloadForParser);
+    for (const event of events) {
+      if (event.event !== "error") {
+        continue;
+      }
+      const streamMessage =
+        readMessageFromObject(event.data) ||
+        (typeof event.data === "string" ? event.data.trim() : null);
+      if (streamMessage) {
+        return streamMessage;
+      }
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(normalizedPayload);
+    const parsedMessage = readMessageFromObject(parsed);
+    if (parsedMessage) {
+      return parsedMessage;
+    }
+  } catch {
+    // Ignore JSON parsing errors and fall back to plain text.
+  }
+
+  return normalizedPayload;
+}
+
+async function readStreamToText(stream: NodeJS.ReadableStream): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const chunks: string[] = [];
+    let collectedLength = 0;
+
+    stream.setEncoding?.("utf8");
+
+    stream.on("data", (chunk: string | Buffer) => {
+      if (collectedLength >= MAX_SLACK_ERROR_BODY_LENGTH) {
+        return;
+      }
+      const chunkText = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      const remainingLength = MAX_SLACK_ERROR_BODY_LENGTH - collectedLength;
+      const clippedChunk = chunkText.slice(0, remainingLength);
+      chunks.push(clippedChunk);
+      collectedLength += clippedChunk.length;
+    });
+
+    stream.on("end", () => resolve(chunks.join("")));
+    stream.on("error", (error) => reject(error));
   });
 }
 
-// Helper functions
-// async function fetchModules(accessToken: string): Promise<Module[]> {
-//   const response = await axios.get(
-//     `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/modules`,
-//     {
-//       headers: {
-//         Authorization: `Bearer ${accessToken}`,
-//       },
-//     }
-//   );
-//   return response.data;
-// }
+async function readMessageFromAxiosResponseData(data: unknown): Promise<string | null> {
+  if (!data) {
+    return null;
+  }
 
-// async function fetchCustomers(accessToken: string): Promise<Customer[]> {
-//   const response = await axios.get(
-//     `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/customers/organization`,
-//     {
-//       headers: {
-//         Authorization: `Bearer ${accessToken}`,
-//       },
-//     }
-//   );
-//   return response.data;
-// }
+  if (typeof data === "string") {
+    return readMessageFromTextPayload(data);
+  }
+
+  if (Buffer.isBuffer(data)) {
+    return readMessageFromTextPayload(data.toString("utf8"));
+  }
+
+  const messageFromObject = readMessageFromObject(data);
+  if (messageFromObject) {
+    return messageFromObject;
+  }
+
+  if (isReadableStreamLike(data)) {
+    try {
+      const streamText = await readStreamToText(data);
+      return readMessageFromTextPayload(streamText);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function extractSlackErrorMessage(error: unknown): string {
+  if (!error) {
+    return DEFAULT_SLACK_ERROR_MESSAGE;
+  }
+
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (axios.isAxiosError(error)) {
+    const responseMessage = readMessageFromObject(error.response?.data);
+    if (responseMessage) {
+      return responseMessage;
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  const objectMessage = readMessageFromObject(error);
+  if (objectMessage) {
+    return objectMessage;
+  }
+
+  return DEFAULT_SLACK_ERROR_MESSAGE;
+}
+
+async function extractSlackErrorMessageAsync(error: unknown): Promise<string> {
+  if (!error) {
+    return DEFAULT_SLACK_ERROR_MESSAGE;
+  }
+
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+
+  if (axios.isAxiosError(error)) {
+    const responseMessage = await readMessageFromAxiosResponseData(
+      error.response?.data,
+    );
+    if (responseMessage) {
+      return responseMessage;
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  const objectMessage = readMessageFromObject(error);
+  if (objectMessage) {
+    return objectMessage;
+  }
+
+  return DEFAULT_SLACK_ERROR_MESSAGE;
+}
+
+function formatSlackErrorMessage(rawMessage: string): string {
+  const normalizedMessage = normalizeSlackErrorMessage(rawMessage);
+
+  if (!normalizedMessage) {
+    return DEFAULT_SLACK_ERROR_MESSAGE;
+  }
+
+
+
+
+  return truncateFromEnd(normalizedMessage, MAX_USER_VISIBLE_ERROR_LENGTH);
+}
+
+function normalizeSlackErrorMessage(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+
+
+
+
+function resolveSlackErrorMessage(error: unknown): string {
+  const rawMessage = extractSlackErrorMessage(error);
+  return formatSlackErrorMessage(rawMessage);
+}
+
+async function resolveSlackErrorMessageAsync(error: unknown): Promise<string> {
+  const rawMessage = await extractSlackErrorMessageAsync(error);
+  return formatSlackErrorMessage(rawMessage);
+}
+
+function truncateForSlack(text: string): string {
+  if (text.length <= SLACK_MAX_TEXT_LENGTH) {
+    return text;
+  }
+  return `...${text.slice(-(SLACK_MAX_TEXT_LENGTH - 3))}`;
+}
+
+function resolveThreadId(typedMessage: SlackMessagePayload): string {
+  return typedMessage.thread_ts || typedMessage.ts;
+}
+
+async function sendUserFacingSlackErrorMessage(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  errorOrMessage: unknown,
+): Promise<void> {
+  if (!typedMessage.channel) {
+    return;
+  }
+
+  const errorMessage = await resolveSlackErrorMessageAsync(errorOrMessage);
+  const threadId = resolveThreadId(typedMessage);
+
+  try {
+    await typedClient.chat.postMessage({
+      channel: typedMessage.channel,
+      thread_ts: threadId,
+      text: truncateForSlack(errorMessage),
+    });
+  } catch (sendError) {
+    console.error("Failed to send Slack user-facing error message:", sendError);
+  }
+}
+
+function truncateForSlackStreamMarkdown(text: string): string {
+  if (text.length <= SLACK_STREAM_MARKDOWN_LIMIT) {
+    return text;
+  }
+  return `...${text.slice(-(SLACK_STREAM_MARKDOWN_LIMIT - 3))}`;
+}
+
+function truncateFromEnd(text: string, limit: number): string {
+  if (limit <= 0) {
+    return "";
+  }
+  if (text.length <= limit) {
+    return text;
+  }
+  if (limit <= 3) {
+    return text.slice(0, limit);
+  }
+  return `${text.slice(0, limit - 3)}...`;
+}
+
+function splitByLengthPreferringNewlines(text: string, limit: number): string[] {
+  if (!text) {
+    return [];
+  }
+  if (limit <= 0) {
+    return [text];
+  }
+
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    const candidate = remaining.slice(0, limit);
+    const lastNewlineIndex = candidate.lastIndexOf("\n");
+    const splitIndex = lastNewlineIndex > -1 ? lastNewlineIndex + 1 : limit;
+    chunks.push(remaining.slice(0, splitIndex));
+    remaining = remaining.slice(splitIndex);
+  }
+
+  if (remaining.length > 0) {
+    chunks.push(remaining);
+  }
+
+  return chunks;
+}
+
+function splitSectionTextObjectByLimit(
+  textObject: unknown,
+  limit: number,
+): { chunks: Record<string, unknown>[]; didSplit: boolean; hasTextObject: boolean } {
+  if (!textObject || typeof textObject !== "object" || Array.isArray(textObject)) {
+    return { chunks: [], didSplit: false, hasTextObject: false };
+  }
+
+  const textRecord = textObject as Record<string, unknown>;
+  const textValue = textRecord.text;
+  if (typeof textValue !== "string") {
+    return { chunks: [textRecord], didSplit: false, hasTextObject: true };
+  }
+
+  const splitChunks = splitByLengthPreferringNewlines(textValue, limit);
+  if (splitChunks.length <= 1) {
+    return { chunks: [textRecord], didSplit: false, hasTextObject: true };
+  }
+
+  return {
+    chunks: splitChunks.map((chunk) => ({
+      ...textRecord,
+      text: chunk,
+    })),
+    didSplit: true,
+    hasTextObject: true,
+  };
+}
+
+function splitSectionFieldsByLimit(fields: unknown): {
+  groups: unknown[][];
+  didSplit: boolean;
+  hasFieldsArray: boolean;
+} {
+  if (!Array.isArray(fields)) {
+    return {
+      groups: [],
+      didSplit: false,
+      hasFieldsArray: false,
+    };
+  }
+
+  const expandedFields: unknown[] = [];
+  let didSplit = false;
+  for (const field of fields) {
+    if (!field || typeof field !== "object" || Array.isArray(field)) {
+      expandedFields.push(field);
+      continue;
+    }
+
+    const fieldRecord = field as Record<string, unknown>;
+    const fieldText = fieldRecord.text;
+    if (typeof fieldText !== "string") {
+      expandedFields.push(fieldRecord);
+      continue;
+    }
+
+    const fieldChunks = splitByLengthPreferringNewlines(
+      fieldText,
+      SLACK_SECTION_FIELD_TEXT_LIMIT,
+    );
+    if (fieldChunks.length <= 1) {
+      expandedFields.push(fieldRecord);
+      continue;
+    }
+
+    didSplit = true;
+    for (const fieldChunk of fieldChunks) {
+      expandedFields.push({
+        ...fieldRecord,
+        text: fieldChunk,
+      });
+    }
+  }
+
+  const groups: unknown[][] = [];
+  for (let i = 0; i < expandedFields.length; i += SLACK_SECTION_FIELDS_PER_BLOCK_LIMIT) {
+    groups.push(expandedFields.slice(i, i + SLACK_SECTION_FIELDS_PER_BLOCK_LIMIT));
+  }
+
+  if (groups.length > 1) {
+    didSplit = true;
+  }
+
+  return {
+    groups,
+    didSplit,
+    hasFieldsArray: true,
+  };
+}
+
+function splitSectionBlockForSlackLimits(block: any): any[] {
+  if (!block || typeof block !== "object" || Array.isArray(block) || block.type !== "section") {
+    return [block];
+  }
+
+  const sectionBlock = block as Record<string, unknown>;
+  const textSplit = splitSectionTextObjectByLimit(
+    sectionBlock.text,
+    SLACK_SECTION_TEXT_LIMIT,
+  );
+  const fieldsSplit = splitSectionFieldsByLimit(sectionBlock.fields);
+
+  if (!textSplit.didSplit && !fieldsSplit.didSplit) {
+    return [block];
+  }
+
+  const normalizedBlocks: any[] = [];
+  const textChunks = textSplit.hasTextObject ? textSplit.chunks : [];
+
+  if (textChunks.length > 0) {
+    for (let chunkIndex = 0; chunkIndex < textChunks.length; chunkIndex += 1) {
+      const normalizedChunk: Record<string, unknown> = {
+        ...sectionBlock,
+        text: textChunks[chunkIndex],
+      };
+
+      if (fieldsSplit.hasFieldsArray) {
+        if (chunkIndex === 0 && fieldsSplit.groups.length > 0) {
+          normalizedChunk.fields = fieldsSplit.groups[0];
+        } else {
+          delete normalizedChunk.fields;
+        }
+      }
+
+      if (chunkIndex > 0) {
+        delete normalizedChunk.accessory;
+        delete normalizedChunk.block_id;
+      }
+
+      normalizedBlocks.push(normalizedChunk);
+    }
+
+    for (let fieldGroupIndex = 1; fieldGroupIndex < fieldsSplit.groups.length; fieldGroupIndex += 1) {
+      const fieldsOnlyChunk: Record<string, unknown> = {
+        ...sectionBlock,
+        fields: fieldsSplit.groups[fieldGroupIndex],
+      };
+      delete fieldsOnlyChunk.text;
+      delete fieldsOnlyChunk.accessory;
+      delete fieldsOnlyChunk.block_id;
+      normalizedBlocks.push(fieldsOnlyChunk);
+    }
+
+    return normalizedBlocks;
+  }
+
+  if (!fieldsSplit.hasFieldsArray || fieldsSplit.groups.length === 0) {
+    return [block];
+  }
+
+  for (let groupIndex = 0; groupIndex < fieldsSplit.groups.length; groupIndex += 1) {
+    const normalizedFieldsChunk: Record<string, unknown> = {
+      ...sectionBlock,
+      fields: fieldsSplit.groups[groupIndex],
+    };
+    if (groupIndex > 0) {
+      delete normalizedFieldsChunk.accessory;
+      delete normalizedFieldsChunk.block_id;
+    }
+    normalizedBlocks.push(normalizedFieldsChunk);
+  }
+
+  return normalizedBlocks;
+}
+
+function normalizeSlackBlocksForLimits(blocks: any[]): any[] {
+  const normalizedBlocks: any[] = [];
+  for (const block of blocks) {
+    normalizedBlocks.push(...splitSectionBlockForSlackLimits(block));
+  }
+  return normalizedBlocks;
+}
+
+type MarkdownTableSegment =
+  | { type: "markdown"; content: string }
+  | { type: "table"; header: string[]; rows: string[][] };
+
+type FenceMarker = "`" | "~";
+
+interface ParsedMarkdownTable {
+  header: string[];
+  rows: string[][];
+  nextLineIndex: number;
+}
+
+function isMarkdownTableRow(line: string): boolean {
+  return /^\s*\|.*\|\s*$/.test(line);
+}
+
+function isMarkdownTableSeparatorRow(line: string): boolean {
+  return /^\s*\|[\s:]*-{3,}[\s:]*(\|[\s:]*-{3,}[\s:]*)*\|\s*$/.test(line);
+}
+
+function parseMarkdownTableCells(row: string): string[] {
+  return row
+    .replace(/^\s*\|/, "")
+    .replace(/\|\s*$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function getFenceMarker(line: string): FenceMarker | null {
+  if (/^\s*`{3,}/.test(line)) {
+    return "`";
+  }
+  if (/^\s*~{3,}/.test(line)) {
+    return "~";
+  }
+  return null;
+}
+
+function isFenceClosingLine(line: string, marker: FenceMarker): boolean {
+  if (marker === "`") {
+    return /^\s*`{3,}/.test(line);
+  }
+  return /^\s*~{3,}/.test(line);
+}
+
+function tryParseMarkdownTableAtLine(
+  lines: string[],
+  startLineIndex: number,
+): ParsedMarkdownTable | null {
+  const headerLine = lines[startLineIndex];
+  const separatorLine = lines[startLineIndex + 1];
+  const firstDataLine = lines[startLineIndex + 2];
+
+  if (!headerLine || !separatorLine || !firstDataLine) {
+    return null;
+  }
+
+  if (
+    !isMarkdownTableRow(headerLine) ||
+    !isMarkdownTableSeparatorRow(separatorLine) ||
+    !isMarkdownTableRow(firstDataLine)
+  ) {
+    return null;
+  }
+
+  const header = parseMarkdownTableCells(headerLine);
+  const rows: string[][] = [];
+  let rowIndex = startLineIndex + 2;
+
+  while (rowIndex < lines.length) {
+    const rowLine = lines[rowIndex];
+    if (!rowLine || !isMarkdownTableRow(rowLine)) {
+      break;
+    }
+    rows.push(parseMarkdownTableCells(rowLine));
+    rowIndex += 1;
+  }
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  return {
+    header,
+    rows,
+    nextLineIndex: rowIndex,
+  };
+}
+
+function hasMarkdownTableStartOutsideCodeFences(content: string): boolean {
+  if (!content) {
+    return false;
+  }
+  
+  const normalizedContent = content.replace(/\r\n/g, "\n").replace(/\\n/g, "\n");
+
+  const lines = normalizedContent.split("\n");
+  let activeFenceMarker: FenceMarker | null = null;
+
+  for (let lineIndex = 0; lineIndex < lines.length - 1; lineIndex += 1) {
+    const line = lines[lineIndex] ?? "";
+
+    if (activeFenceMarker) {
+      if (isFenceClosingLine(line, activeFenceMarker)) {
+        activeFenceMarker = null;
+      }
+      continue;
+    }
+
+    const openingFenceMarker = getFenceMarker(line);
+    if (openingFenceMarker) {
+      activeFenceMarker = openingFenceMarker;
+      continue;
+    }
+
+    const nextLine = lines[lineIndex + 1] ?? "";
+    if (isMarkdownTableRow(line) && isMarkdownTableSeparatorRow(nextLine)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function splitMarkdownMessageIntoTableAwareSegments(content: string): MarkdownTableSegment[] {
+  if (!content) {
+    return [];
+  }
+
+  const normalizedContent = content.replace(/\r\n/g, "\n");
+  const lines = normalizedContent.split("\n");
+  const segments: MarkdownTableSegment[] = [];
+  const markdownBuffer: string[] = [];
+  let activeFenceMarker: FenceMarker | null = null;
+
+  const flushMarkdownBuffer = () => {
+    if (markdownBuffer.length === 0) {
+      return;
+    }
+    const markdownContent = markdownBuffer.join("\n");
+    markdownBuffer.length = 0;
+    if (markdownContent.length === 0) {
+      return;
+    }
+    segments.push({
+      type: "markdown",
+      content: markdownContent,
+    });
+  };
+
+  for (let lineIndex = 0; lineIndex < lines.length;) {
+    const line = lines[lineIndex] ?? "";
+
+    if (activeFenceMarker) {
+      markdownBuffer.push(line);
+      if (isFenceClosingLine(line, activeFenceMarker)) {
+        activeFenceMarker = null;
+      }
+      lineIndex += 1;
+      continue;
+    }
+
+    const openingFenceMarker = getFenceMarker(line);
+    if (openingFenceMarker) {
+      activeFenceMarker = openingFenceMarker;
+      markdownBuffer.push(line);
+      lineIndex += 1;
+      continue;
+    }
+
+    const parsedTable = tryParseMarkdownTableAtLine(lines, lineIndex);
+    if (parsedTable) {
+      flushMarkdownBuffer();
+      segments.push({
+        type: "table",
+        header: parsedTable.header,
+        rows: parsedTable.rows,
+      });
+      lineIndex = parsedTable.nextLineIndex;
+      continue;
+    }
+
+    markdownBuffer.push(line);
+    lineIndex += 1;
+  }
+
+  flushMarkdownBuffer();
+  return segments;
+}
+
+function buildSlackRichTextTextElement(text: string, makeBold: boolean): Record<string, unknown> {
+  const stripped = markdownToText(text);
+  text = stripped.length > 0 ? stripped : text;
+  const element: Record<string, unknown> = {
+    type: "text",
+    text,
+  };
+  if (makeBold) {
+    element.style = {
+      bold: true,
+    };
+  }
+  return element;
+}
+
+function buildSlackRichTextLinkElement(
+  url: string,
+  label: string | undefined,
+  makeBold: boolean,
+): Record<string, unknown> {
+  const element: Record<string, unknown> = {
+    type: "link",
+    url,
+  };
+  if (label && label !== url) {
+    element.text = label;
+  }
+  if (makeBold) {
+    element.style = {
+      bold: true,
+    };
+  }
+  return element;
+}
+
+function splitTrailingPunctuationFromUrl(value: string): { url: string; trailingText: string } {
+  let url = value;
+  let trailingText = "";
+
+  while (url.length > 0 && /[),.;!?]$/.test(url)) {
+    trailingText = `${url.slice(-1)}${trailingText}`;
+    url = url.slice(0, -1);
+  }
+
+  return {
+    url,
+    trailingText,
+  };
+}
+
+function appendTextWithClickableUrls(
+  text: string,
+  elements: Record<string, unknown>[],
+  makeBold: boolean,
+): void {
+  if (!text) {
+    return;
+  }
+
+  const bareUrlRegex = /https?:\/\/[^\s<>()]+/g;
+  let cursor = 0;
+  bareUrlRegex.lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = bareUrlRegex.exec(text)) !== null) {
+    const matchedUrl = match[0] ?? "";
+    if (!matchedUrl) {
+      continue;
+    }
+
+    if (match.index > cursor) {
+      const plainTextChunk = text.slice(cursor, match.index);
+      if (plainTextChunk.length > 0) {
+        elements.push(buildSlackRichTextTextElement(plainTextChunk, makeBold));
+      }
+    }
+
+    const { url, trailingText } = splitTrailingPunctuationFromUrl(matchedUrl);
+    if (url.length > 0) {
+      elements.push(buildSlackRichTextLinkElement(url, undefined, makeBold));
+    } else {
+      elements.push(buildSlackRichTextTextElement(matchedUrl, makeBold));
+    }
+
+    if (trailingText.length > 0) {
+      elements.push(buildSlackRichTextTextElement(trailingText, makeBold));
+    }
+
+    cursor = match.index + matchedUrl.length;
+  }
+
+  if (cursor < text.length) {
+    const remainingText = text.slice(cursor);
+    if (remainingText.length > 0) {
+      elements.push(buildSlackRichTextTextElement(remainingText, makeBold));
+    }
+  }
+}
+
+function buildSlackTableCellElements(
+  cellText: string,
+  isHeaderCell: boolean,
+): Record<string, unknown>[] {
+  const elements: Record<string, unknown>[] = [];
+  const markdownLinkRegex = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+  let cursor = 0;
+  markdownLinkRegex.lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = markdownLinkRegex.exec(cellText)) !== null) {
+    const fullMatch = match[0] ?? "";
+    if (!fullMatch) {
+      continue;
+    }
+
+    const label = match[1] ?? "";
+    const rawUrl = match[2] ?? "";
+    const leadingText = cellText.slice(cursor, match.index);
+    appendTextWithClickableUrls(leadingText, elements, isHeaderCell);
+
+    const { url, trailingText } = splitTrailingPunctuationFromUrl(rawUrl);
+    if (url.length > 0) {
+      elements.push(buildSlackRichTextLinkElement(url, label, isHeaderCell));
+    } else {
+      appendTextWithClickableUrls(fullMatch, elements, isHeaderCell);
+    }
+
+    if (trailingText.length > 0) {
+      elements.push(buildSlackRichTextTextElement(trailingText, isHeaderCell));
+    }
+
+    cursor = match.index + fullMatch.length;
+  }
+
+  const trailingText = cellText.slice(cursor);
+  appendTextWithClickableUrls(trailingText, elements, isHeaderCell);
+
+  if (elements.length === 0) {
+    elements.push(buildSlackRichTextTextElement(" ", isHeaderCell));
+  }
+
+  return elements;
+}
+
+function buildSlackTableCell(cellText: string, isHeaderCell: boolean): Record<string, unknown> {
+  return {
+    type: "rich_text",
+    elements: [
+      {
+        type: "rich_text_section",
+        elements: buildSlackTableCellElements(cellText, isHeaderCell),
+      },
+    ],
+  };
+}
+
+function buildSlackTableBlock(rows: string[][]): Record<string, unknown> {
+  const columnCount = Math.min(
+    rows.reduce((max, row) => Math.max(max, row.length), 0),
+    MAX_TABLE_COLS,
+  );
+  const normalizedRows = rows.map((row, rowIndex) =>
+    Array.from({ length: columnCount }, (_, colIndex) =>
+      buildSlackTableCell(row[colIndex] ?? "", rowIndex === 0),
+    ),
+  );
+  return { type: "table", rows: normalizedRows };
+}
+
+function buildSlackTableBlocksFromMarkdownSegment(
+  segment: Extract<MarkdownTableSegment, { type: "table" }>,
+): Record<string, unknown>[] {
+  const { header, rows: dataRows } = segment;
+  const maxDataRows = MAX_TABLE_ROWS - 1; // reserve 1 slot for header
+  const headerCharCount = header.reduce((sum, cell) => sum + cell.length, 0);
+
+  if (dataRows.length === 0) {
+    return [buildSlackTableBlock([header])];
+  }
+
+  const blocks: Record<string, unknown>[] = [];
+  let currentRows: string[][] = [];
+  let currentCharCount = headerCharCount;
+
+  for (const row of dataRows) {
+    const rowChars = row.reduce((sum, cell) => sum + cell.length, 0);
+    const wouldExceedChars = currentCharCount + rowChars > MAX_TABLE_CHARS;
+    const wouldExceedRows = currentRows.length >= maxDataRows;
+
+    if (currentRows.length > 0 && (wouldExceedChars || wouldExceedRows)) {
+      blocks.push(buildSlackTableBlock([header, ...currentRows]));
+      currentRows = [];
+      currentCharCount = headerCharCount;
+    }
+
+    currentRows.push(row);
+    currentCharCount += rowChars;
+  }
+
+  if (currentRows.length > 0) {
+    blocks.push(buildSlackTableBlock([header, ...currentRows]));
+  }
+
+  return blocks;
+}
+
+
+/**
+ * Returns the approximate character count of a block that counts toward Slack's
+ * cumulative blocks payload limit (used for chunking).
+ */
+function getBlockPayloadTextSize(block: any): number {
+  if (!block || typeof block !== "object" || Array.isArray(block)) {
+    return 0;
+  }
+  const type = block.type;
+  if (type === "section") {
+    let size = 0;
+    if (block.text && typeof block.text.text === "string") {
+      size += block.text.text.length;
+    }
+    const fields = block.fields;
+    if (Array.isArray(fields)) {
+      for (const f of fields) {
+        if (f && typeof f.text === "string") size += f.text.length;
+      }
+    }
+    return size;
+  }
+  if (type === "rich_text" && Array.isArray(block.elements)) {
+    let size = 0;
+    for (const el of block.elements) {
+      if (el && Array.isArray(el.elements)) {
+        for (const sub of el.elements) {
+          if (sub && typeof sub.text === "string") size += sub.text.length;
+          if (sub && typeof sub.url === "string") size += sub.url.length;
+        }
+      }
+    }
+    return size;
+  }
+  if (type === "table" && Array.isArray(block.rows)) {
+    let size = 0;
+    for (const row of block.rows) {
+      if (!Array.isArray(row)) continue;
+      for (const cell of row) {
+        if (cell && Array.isArray(cell.elements)) {
+          for (const el of cell.elements) {
+            if (el && Array.isArray(el.elements)) {
+              for (const sub of el.elements) {
+                if (sub && typeof sub.text === "string") size += sub.text.length;
+                if (sub && typeof sub.url === "string") size += sub.url.length;
+              }
+            }
+          }
+        }
+      }
+    }
+    return size;
+  }
+  return JSON.stringify(block).length;
+}
+
+function splitSlackBlocksByLimit(
+  blocks: any[],
+  maxBlocksPerMessage: number = SLACK_BLOCKS_PER_MESSAGE_LIMIT,
+  maxTotalTextPerMessage: number = SLACK_BLOCKS_TOTAL_TEXT_LIMIT,
+): any[][] {
+  if (blocks.length === 0) {
+    return [];
+  }
+  const result: any[][] = [];
+  let currentChunk: any[] = [];
+  let currentSize = 0;
+  let currentChunkHasTable = false;
+  for (const block of blocks) {
+    const blockSize = getBlockPayloadTextSize(block);
+    const isTable = block.type === "table";
+    const wouldExceedCount = currentChunk.length >= maxBlocksPerMessage;
+    const wouldExceedSize = currentSize + blockSize > maxTotalTextPerMessage;
+    const wouldExceedTableLimit = isTable && currentChunkHasTable;
+    if (currentChunk.length > 0 && (wouldExceedCount || wouldExceedSize || wouldExceedTableLimit)) {
+      result.push(currentChunk);
+      currentChunk = [];
+      currentSize = 0;
+      currentChunkHasTable = false;
+    }
+    currentChunk.push(block);
+    currentSize += blockSize;
+    if (isTable) currentChunkHasTable = true;
+  }
+  if (currentChunk.length > 0) {
+    result.push(currentChunk);
+  }
+  return result;
+}
+
+async function buildFinalSlackChunks(
+  answerBody: string,
+): Promise<any[][]> {
+  const tableAwareSegments = splitMarkdownMessageIntoTableAwareSegments(answerBody || "");
+  const combinedBlocks: any[] = [];
+
+  for (const segment of tableAwareSegments) {
+    if (segment.type === "markdown") {
+      if (segment.content.trim().length === 0) {
+        continue;
+      }
+      const slackMrkdwn = markdownToSlackMrkdwn(segment.content);
+      const markdownBlocks = [{
+        "type": "section",
+        "text": {
+          "type": "mrkdwn",
+          "text": slackMrkdwn,
+        },
+      }];
+      const normalizedMarkdownBlocks = normalizeSlackBlocksForLimits(markdownBlocks);
+      combinedBlocks.push(...normalizedMarkdownBlocks);
+      continue;
+    }
+
+    combinedBlocks.push(...buildSlackTableBlocksFromMarkdownSegment(segment));
+  }
+
+  return splitSlackBlocksByLimit(combinedBlocks);
+}
+
+
+
+function isThreadFollowUpMessage(message: SlackMessagePayload): boolean {
+  return Boolean(message.thread_ts && message.thread_ts !== message.ts);
+}
+
+function sanitizeSlackLabelValue(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function formatMentionedUser(
+  userRecord: SlackUserRecord | undefined,
+  userId: string,
+): string {
+  const email = sanitizeSlackLabelValue(userRecord?.profile?.email);
+
+  // Skip mentions without email - replace with empty string
+  if (!email) {
+    return "";
+  }
+
+  const displayNameCandidates = [
+    userRecord?.profile?.display_name,
+    userRecord?.real_name,
+    userRecord?.profile?.real_name,
+    userRecord?.name,
+  ];
+  const displayName =
+    displayNameCandidates
+      .map((nameCandidate) => sanitizeSlackLabelValue(nameCandidate))
+      .find((nameCandidate) => Boolean(nameCandidate)) || "User";
+
+  return `${displayName} (Email: ${email}, Slack user id: ${userId})`;
+}
+
+function formatSlackUserLabel(userRecord: SlackUserRecord | undefined, userId: string): string {
+  const email = sanitizeSlackLabelValue(userRecord?.profile?.email);
+  const displayNameCandidates = [
+    userRecord?.profile?.display_name,
+    userRecord?.real_name,
+    userRecord?.profile?.real_name,
+    userRecord?.name,
+  ];
+  const displayName =
+    displayNameCandidates
+      .map((nameCandidate) => sanitizeSlackLabelValue(nameCandidate))
+      .find((nameCandidate) => Boolean(nameCandidate)) || "";
+
+  if (displayName && email) {
+    return `${displayName} (${email})`;
+  }
+  if (displayName) {
+    return displayName;
+  }
+  if (email) {
+    return email;
+  }
+  return `User (${userId})`;
+}
+
+async function resolveMentionsInText(
+  text: string | undefined,
+  typedClient: TypedSlackClient,
+): Promise<string> {
+  if (!text) {
+    return "";
+  }
+
+  // Extract all user IDs from mentions
+  const mentionRegex = /<@([A-Z0-9]+)>/g;
+  const userIds = new Set<string>();
+  let match: RegExpExecArray | null;
+
+  while ((match = mentionRegex.exec(text)) !== null) {
+    const userId = match[1];
+    if (userId) {
+      userIds.add(userId);
+    }
+  }
+
+  if (userIds.size === 0) {
+    return text.replace(/\s+/g, " ").trim();
+  }
+
+  // Build replacement map for all mentions
+  const replacements = new Map<string, string>();
+
+  for (const userId of userIds) {
+    const mention = `<@${userId}>`;
+
+    // Check cache first
+    const cachedUserRecord = getCachedUserInfo(userId);
+
+    if (cachedUserRecord !== null) {
+      // Cache hit (includes cached failures as undefined)
+      const formattedUser = formatMentionedUser(cachedUserRecord, userId);
+      replacements.set(mention, formattedUser);
+      continue;
+    }
+
+    // Cache miss - fetch from API
+    try {
+      const userInfoResult = await typedClient.users.info({ user: userId });
+      const userRecord = userInfoResult.user;
+      setCachedUserInfo(userId, userRecord);
+      const formattedUser = formatMentionedUser(userRecord, userId);
+      replacements.set(mention, formattedUser);
+    } catch (error) {
+      console.error(`Failed to resolve Slack user mention for ${userId}:`, error);
+      // Keep the original Slack mention token so the mention isn't silently lost.
+
+      replacements.set(mention, mention);
+    }
+  }
+
+  // Replace all mentions in text
+  let result = text;
+  for (const [mention, replacement] of replacements) {
+    result = result.replace(new RegExp(mention.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"), replacement);
+  }
+
+  return result.replace(/\s+/g, " ").trim();
+}
+
+function inferThreadMessageSpeaker(
+  message: SlackMessagePayload,
+  userLabelsById: Map<string, string>,
+): string {
+  if (message.bot_id || message.subtype === "bot_message") {
+    return "Assistant";
+  }
+  if (message.user) {
+    return userLabelsById.get(message.user) || `User (${message.user})`;
+  }
+  return "User";
+}
+
+async function resolveThreadUserLabels(
+  typedClient: TypedSlackClient,
+  priorMessages: SlackMessagePayload[],
+): Promise<Map<string, string>> {
+  const userLabelsById = new Map<string, string>();
+  const userIds = Array.from(
+    new Set(
+      priorMessages
+        .filter((message) => !message.bot_id && Boolean(message.user))
+        .map((message) => message.user as string),
+    ),
+  );
+
+  for (const userId of userIds) {
+    try {
+      const userInfoResult = await typedClient.users.info({ user: userId });
+      const userLabel = formatSlackUserLabel(userInfoResult.user, userId);
+      userLabelsById.set(userId, userLabel);
+    } catch (error) {
+      console.error(`Failed to resolve Slack user info for ${userId}:`, error);
+      userLabelsById.set(userId, `User (${userId})`);
+    }
+  }
+
+  return userLabelsById;
+}
+
+async function fetchPriorThreadMessages(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+): Promise<SlackMessagePayload[]> {
+  if (!typedMessage.channel || !typedMessage.thread_ts) {
+    return [];
+  }
+
+  const SLACK_MAX_REPLIES_LIMIT = 101;
+
+  // Call 1: fetch up to max limit, oldest-first
+  const call1Raw = await typedClient.apiCall("conversations.replies", {
+    channel: typedMessage.channel,
+    ts: typedMessage.thread_ts,
+    limit: SLACK_MAX_REPLIES_LIMIT,
+  });
+  const call1 = call1Raw as SlackConversationsRepliesResponse;
+  let firstBatch: SlackMessagePayload[] = Array.isArray(call1.messages) ? call1.messages : [];
+  
+  firstBatch = firstBatch.slice(0, -1);
+  return firstBatch;
+
+}
+
+async function buildThreadContextualQuery(
+  query: string,
+  priorMessages: SlackMessagePayload[],
+  userLabelsById: Map<string, string>,
+  typedClient: TypedSlackClient,
+): Promise<string> {
+  const contextLines = await Promise.all(
+    priorMessages.map(async (message) => {
+      const normalizedText = await resolveMentionsInText(message.text, typedClient);
+      if (!normalizedText) {
+        return null;
+      }
+      const speaker = inferThreadMessageSpeaker(message, userLabelsById);
+      return `${speaker}: ${normalizedText}`;
+    })
+  ).then(lines => lines.filter((line): line is string => Boolean(line)));
+
+  if (contextLines.length === 0) {
+    return query;
+  }
+
+  return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message/query: ${query}`;
+}
+
+async function buildQueryWithThreadContext(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  query: string,
+): Promise<string> {
+  if (!isThreadFollowUpMessage(typedMessage)) {
+    return query;
+  }
+
+  try {
+    const priorMessages = await fetchPriorThreadMessages(typedClient, typedMessage);
+    const userLabelsById = await resolveThreadUserLabels(typedClient, priorMessages);
+    return await buildThreadContextualQuery(query, priorMessages, userLabelsById, typedClient);
+  } catch (error) {
+    console.error("Failed to fetch Slack thread context:", error);
+    return query;
+  }
+}
+
+function getCitationWebUrl(webUrl?: string): string {
+  if (!webUrl) {
+    return "";
+  }
+  if (/^https?:\/\//i.test(webUrl)) {
+    return webUrl;
+  }
+  return `${process.env.FRONTEND_PUBLIC_URL || ""}${webUrl}`;
+}
+
+function buildCitationSources(citations?: CitationData[]): any[]  {
+
+  let blocks: any[] = [];
+  let elements: any[] = [];
+  for (const citation of citations || []) {
+    const webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
+    if (!webUrl) {
+      continue;
+    }
+
+    const chunkIndex = citation.citationData.chunkIndex;
+    if (chunkIndex) {
+
+      elements.push({
+        "type": "link",
+        "url": webUrl,
+        "text": ` [${chunkIndex}]`,
+      });
+    }
+
+    if (elements.length == 10) {
+      blocks.push({
+        "type": "rich_text",
+        "elements": [
+          {
+            "type": "rich_text_section",
+            "elements": [
+              ...elements,
+            ]
+          }
+        ]
+      });
+      elements = [];
+    }
+  }
+
+  if (elements.length > 0) {
+    blocks.push({
+      "type": "rich_text",
+      "elements": [
+        {
+          "type": "rich_text_section",
+          "elements": [
+            ...elements,
+          ]
+        }
+      ]
+    });
+  }
+
+  if (blocks.length > 0) {
+    blocks = [ {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "*Sources:*",
+      },
+    }, ...blocks];
+  }
+  return blocks;
+}
+
+
+function buildChatStreamUrl(
+  conversationId: string | null,
+  agentId: string | null,
+): string {
+  const backendUrl = process.env.BACKEND_URL || "http://localhost:3000";
+  if (!backendUrl) {
+    throw new Error("BACKEND_URL environment variable is not set.");
+  }
+
+  if (agentId) {
+    const encodedAgentId = encodeURIComponent(agentId);
+    return conversationId
+      ? `${backendUrl}/api/v1/agents/${encodedAgentId}/conversations/internal/${conversationId}/messages/stream`
+      : `${backendUrl}/api/v1/agents/${encodedAgentId}/conversations/internal/stream`;
+  }
+  
+  return conversationId
+    ? `${backendUrl}/api/v1/conversations/internal/${conversationId}/messages/stream`
+    : `${backendUrl}/api/v1/conversations/internal/stream`;
+}
+
+async function resolveSlackBotForEvent(
+): Promise<SlackBotConfig | null> {
+  const matchedFromRequestContext = getCurrentMatchedSlackBot();
+  if (matchedFromRequestContext) {
+    return matchedFromRequestContext;
+  }
+  return null;
+}
 
 // Middleware setup
 receiver.router.use(json());
@@ -147,41 +1571,8 @@ receiver.router.get("/", (req: Request, res: Response) => {
   res.send("Running");
 });
 
-// receiver.router.post("/send", jwtValidator, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-//   try {
-//     const userEmail = req.decodedToken?.email;
-//     if (!userEmail) {
-//       res.status(400).send("Email not found in token");
-//       return;
-//     }
-
-//     const result = await app.client.users.lookupByEmail({
-//       email: userEmail,
-//       token: process.env.BOT_TOKEN || '', 
-//     });
-
-//     if (!result.user?.id) {
-//       res.status(400).send("User not found");
-//       return;
-//     }
-
-//     const userId = result.user.id;
-
-//     await app.client.chat.postMessage({
-//       token: process.env.BOT_TOKEN || '',
-//       channel: userId,
-//       text: "Hello, Saketh!",
-//     });
-
-//     res.status(200).send("Notification sent successfully.");
-//   } catch (error) {
-//     console.error("Error sending notification:", error);
-//     res.status(500).send("Failed to send notification.");
-//   }
-// });
 
 receiver.router.post("slack/command", (req: Request, res: Response) => {
-  console.log("request");
   if (req.body.type === "url_verification") {
     res.send({ challenge: req.body.challenge });
   } else {
@@ -189,1858 +1580,745 @@ receiver.router.post("slack/command", (req: Request, res: Response) => {
   }
 });
 
-// receiver.router.post("/task", jwtValidator, async (req: AuthenticatedRequest, res: Response): Promise<void> => {
-//   try {
-//     const email = req.decodedToken?.email;
-//     if (!email) {
-//       res.status(400).send("Email not found in token");
-//       return;
-//     }
 
-//     const { notificationType, payload } = req.body;
+async function processSlackMessage(
+  typedMessage: SlackMessagePayload,
+  typedClient: TypedSlackClient,
+  typedContext: TypedSlackContext,
+  query: string,
+  resolvedSlackBot: SlackBotConfig | null,
+): Promise<void> {
 
-//     await sendNotification(email, notificationType, payload);
-
-//     res.status(200).send("Notification sent successfully.");
-//   } catch (error) {
-//     console.log(error instanceof Error ? error.stack : "Unknown error");
-//     console.error("Error sending notification:", error instanceof Error ? error.message : "Unknown error");
-//     res.status(500).send("Failed to send notification.");
-//   }
-// });
-
-// Slack app command handlers
-// app.command('/pipeshub', async ({ command, ack, respond, client, logger }) => {
-//   await ack();
-
-//   const args = command.text.trim().split(' ');
-//   const subCommand = args[0].toLowerCase();
-
-//   // Handle help command
-//   if (command.text.trim().toLowerCase() === 'help') {
-//     await respond({
-//       blocks: [
-//         {
-//           type: "section",
-//           text: {
-//             type: "mrkdwn",
-//             text: "Here are the commands that I understand:"
-//           }
-//         },
-//         {
-//           type: "section",
-//           text: {
-//             type: "mrkdwn",
-//             text: `• \`/pipeshub help\`: Show this help information
-// - \`/pipeshub search <query>\`: Search in the Knowledgebase
-// - \`/pipeshub qna <question>\`: Ask a question to QnA ChatBot`
-//           }
-//         }
-//       ],
-//       response_type: 'ephemeral'
-//     });
-//     return;
-//   }
-
-//   // Handle QnA command
-//   if (subCommand === 'qna') {
-//     const question = args.slice(1).join(' ');
-    
-//     if (!question) {
-//       await respond({
-//         text: "Please provide a question. Usage: `/pipeshub qna <your query>`",
-//         response_type: 'ephemeral'
-//       });
-//       return;
-//     }
-
-//     const initialMessage = await client.chat.postMessage({
-//       channel: command.channel_id,
-//       text: `Chat: "${question}"`,
-//     });
-    
-//     if (!initialMessage.ts) {
-//       await respond({
-//         text: "Failed to create initial message",
-//         response_type: 'ephemeral'
-//       });
-//       return;
-//     }
-
-//     const loadingMessage = await client.chat.postMessage({
-//       channel: command.channel_id,
-//       thread_ts: initialMessage.ts, 
-//       text: `Generating response... :hourglass_flowing_sand:`,
-//     });
-
-//     if (!loadingMessage.ts) {
-//       await respond({
-//         text: "Failed to create loading message",
-//         response_type: 'ephemeral'
-//       });
-//       return;
-//     }
-
-//     const messageTs = loadingMessage.ts;
-
-//     try {
-//       const lookupResult = await client.users.info({
-//         user: command.user_id,
-//       });
-      
-//       if (!lookupResult.user?.profile?.email) {
-//         await client.chat.update({
-//           channel: command.channel_id,
-//           ts: messageTs,
-//           text: "Error: Unable to get user email. Please try again later.",
-//         });
-//         return;
-//       }
-
-//       const email = lookupResult.user.profile.email;
-//       let result = await getUserByEmail(email);
-      
-//       if (result.statusCode !== 200) {
-//         await client.chat.update({
-//           channel: command.channel_id,
-//           ts: messageTs,
-//           text: "Error: Unable to authenticate user. Please try again later.",
-//         });
-//         return;
-//       }
-
-//       const user = result.data as any;
-//       const accessToken = authJwtGenerator(
-//         user.email,
-//         user._id,
-//         user.orgId,
-//         user.fullName,
-//         user.profileURL,
-//         user.mobile,
-//         user.slug
-//       );
-
-//       const response = await axios.post<ConversationData>(
-//         `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/conversations/create`,
-//         {
-//           query: question,
-//           conversationSource: "sales",
-//         },
-//         {
-//           headers: {
-//             Authorization: `Bearer ${accessToken}`,
-//             "Content-Type": "application/json",
-//           },
-//         }
-//       );
-
-//       const botResponse = response.data.conversation.messages.find(
-//         (message) => message.messageType === "bot_response"
-//       );
-
-//       const conversationId = response.data.conversation._id;
-
-//       // Save conversation to database with command.ts as threadId
-//       await saveToDatabase({ 
-//         threadId: initialMessage.ts,  
-//         conversationId, 
-//         email
-//       });
-
-//       if (botResponse) {
-//         const blocks: any[] = [
-//           {
-//             type: "section",
-//             text: {
-//               type: "mrkdwn",
-//               text: `*ChatBot Response for "${question}"*`,
-//             },
-//           },
-//           {
-//             type: "divider",
-//           },
-//           {
-//             type: "section",
-//             text: {
-//               type: "mrkdwn",
-//               text: botResponse.content,
-//             },
-//           },
-//         ];
-
-//         if (botResponse.citations && botResponse.citations.length > 0) {
-//           blocks.push({
-//             type: "context",
-//             elements: [
-//               {
-//                 type: "mrkdwn",
-//                 text: "*Citations:*",
-//               },
-//             ],
-//           });
-
-//           botResponse.citations.forEach((citation, index) => {
-//             blocks.push({
-//               type: "context",
-//               elements: [
-//                 {
-//                   type: "mrkdwn",
-//                   text: `[${index + 1}] ${citation.citationData.content}`,
-//                 },
-//               ],
-//             });
-
-//             blocks.push({
-//               type: "actions",
-//               elements: [
-//                 {
-//                   type: "button",
-//                   text: {
-//                     type: "plain_text",
-//                     text: "View Details",
-//                     emoji: true,
-//                   },
-//                   value: JSON.stringify({
-//                     citationId: citation.citationId,
-//                     recordId: citation.citationData.metadata.recordId,
-//                     recordName: citation.citationData.metadata.recordName,
-//                     content: citation.citationData.content,
-//                     metadata: {
-//                       recordType: citation.citationData.metadata.recordType,
-//                       createdAt: citation.citationData.metadata.createdAt,
-//                       departments: citation.citationData.metadata.departments,
-//                       categories: citation.citationData.metadata.categories,
-//                     },
-//                   }),
-//                   action_id: `view_citation_details_${index}`,
-//                 },
-//               ],
-//             });
-//           });
-//         }
-
-//         // Update the loading message with the chatbot response
-//         await client.chat.update({
-//           channel: command.channel_id,
-//           ts: messageTs,
-//           thread_ts: initialMessage.ts, 
-//           blocks: blocks,
-//           text: `ChatBot Response for "${question}"`,
-//         });
-//       } else {
-//         await client.chat.update({
-//           channel: command.channel_id,
-//           ts: messageTs,
-//           thread_ts: initialMessage.ts, 
-//           text: "No bot response found in the API result.",
-//         });
-//       }
-//     } catch (error) {
-//       logger.error("Error calling the Chat API:", error);
-
-//       await client.chat.update({
-//         channel: command.channel_id,
-//         ts: messageTs,
-//         thread_ts: initialMessage.ts,
-//         text: "Something went wrong while fetching the chatbot response. Please try again later.",
-//       });
-//     }
-//   }
-
-//   // Handle search command
-//   if (subCommand === 'search') {
-//     const searchText = args.slice(1).join(' ');
-    
-//     if (!searchText) {
-//       await respond({
-//         text: "Please provide a search term. Usage: `/pipeshub search <term>`",
-//         response_type: 'ephemeral'
-//       });
-//       return;
-//     }
-
-//     // Send loading message
-//     const loadingMessage = await client.chat.postMessage({
-//       channel: command.channel_id,
-//       text: `Searching for "${searchText}"... :hourglass_flowing_sand:`,
-//     });
-
-//     if (!loadingMessage.ts) {
-//       await respond({
-//         text: "Failed to create loading message",
-//         response_type: 'ephemeral'
-//       });
-//       return;
-//     }
-
-//     const messageTs = loadingMessage.ts;
-
-//     try {
-//       // Get user information
-//       const lookupResult = await client.users.info({
-//         user: command.user_id,
-//       });
-      
-//       if (!lookupResult.user?.profile?.email) {
-//         await client.chat.update({
-//           channel: command.channel_id,
-//           ts: messageTs,
-//           text: "Error: Unable to get user email. Please try again later.",
-//         });
-//         return;
-//       }
-
-//       const email = lookupResult.user.profile.email;
-//       let result = await getUserByEmail(email);
-
-//       if (result.statusCode !== 200) {
-//         await client.chat.update({
-//           channel: command.channel_id,
-//           ts: messageTs,
-//           text: "Error: Unable to authenticate user. Please try again later.",
-//         });
-//         return;
-//       }
-
-//       const user = result.data as any;
-//       const accessToken = authJwtGenerator(
-//         user.email,
-//         user._id,
-//         user.orgId,
-//         user.fullName,
-//         user.profileURL,
-//         user.mobile,
-//         user.slug
-//       );
-
-//       // Call search API
-//       const response = await axios.post<SearchResponse>(
-//         `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/knowledgebase/search?topK=20`,
-//         { searchtext: searchText },
-//         {
-//           headers: {
-//             Authorization: `Bearer ${accessToken}`,
-//             "Content-Type": "application/json",
-//           },
-//         }
-//       );
-
-//       const blocks: any[] = [
-//         {
-//           type: "section",
-//           text: {
-//             type: "mrkdwn",
-//             text: `*Search Results for "${searchText}"*`,
-//           },
-//         },
-//         {
-//           type: "divider",
-//         },
-//       ];
-
-//       response.data.records.forEach((record, index) => {
-//         const content = response.data[index] ? (response.data as any)[index].content : "No content preview available";
-        
-//         blocks.push({
-//           type: "section",
-//           text: {
-//             type: "mrkdwn",
-//             text: `*${record.name}*\n${content.substring(0, 150)}${content.length > 150 ? '...' : ''}`,
-//           },
-//         });
-
-//         const categories = record.appSpecificRecordType.map(type => type.name).join(", ");
-//         const departments = record.departments.map(dept => dept.name).join(", ");
-        
-//         blocks.push({
-//           type: "context",
-//           elements: [
-//             {
-//               type: "mrkdwn",
-//               text: `*Categories:* ${categories} | *Departments:* ${departments}`,
-//             },
-//           ],
-//         });
-
-//         blocks.push({
-//           type: "actions",
-//           elements: [
-//             {
-//               type: "button",
-//               text: {
-//                 type: "plain_text",
-//                 text: "View Details",
-//                 emoji: true,
-//               },
-//               value: JSON.stringify({
-//                 recordId: record._id,
-//                 recordName: record.name,
-//                 content: content,
-//                 metadata: {
-//                   recordType: record.recordType,
-//                   status: record.status,
-//                   createdAt: record.createdAt,
-//                   departments: record.departments,
-//                   categories: record.appSpecificRecordType,
-//                   fileInfo: response.data.fileRecords.find(f => f.recordId === record._id),
-//                 },
-//               }),
-//               action_id: `view_search_result_${index}`,
-//             },
-//           ],
-//         });
-
-//         blocks.push({
-//           type: "divider",
-//         });
-//       });
-
-//       // Update the loading message with search results
-//       await client.chat.update({
-//         channel: command.channel_id,
-//         ts: messageTs,
-//         blocks: blocks,
-//         text: `Search Results for "${searchText}"`,
-//       });
-
-//     } catch (error) {
-//       logger.error("Error handling search command:", error);
-      
-//       await client.chat.update({
-//         channel: command.channel_id,
-//         ts: messageTs,
-//         text: "Something went wrong while fetching the results. Please try again later.",
-//       });
-//     }
-//   }
-
-//   // If no valid command is matched
-//   if (!['help', 'search', 'qna'].includes(subCommand)) {
-//     await respond({
-//       text: "Unknown command. Use `/pipeshub help` to see available commands.",
-//       response_type: 'ephemeral'
-//     });
-//   }
-// });
-
-// Slack app event handlers
-// app.event('app_mention', async ({ event, say, client }) => {
-//   // Remove the app mention from the text to get just the query
-//   if (event.bot_id) {
-//     return;
-//   }
-
-//   // Check if files are attached to the message
-//   if (event.files) {
-//     const fileDetails = event.files.map((file: any) => `- ${file.name}`).join("\n");
-//     const fileIds = event.files.map((file: any) => file.id);
-
-//     // Post the message with the list of files and action buttons
-//     await client.chat.postMessage({
-//       channel: event.channel,
-//       thread_ts: event.thread_ts || event.ts,
-//       text: `Upload files:\n${fileDetails}`,
-//       blocks: [
-//         {
-//           type: "section",
-//           text: {
-//             type: "mrkdwn",
-//             text: `Upload the following files:\n${fileDetails}`,
-//           },
-//         },
-//         {
-//           type: "actions",
-//           elements: [
-//             {
-//               type: "button",
-//               text: {
-//                 type: "plain_text",
-//                 text: "Upload to QnA",
-//                 emoji: true,
-//               },
-//               value: JSON.stringify({ fileIds, action: "upload_to_qna" }),
-//               action_id: "upload_to_qna",
-//               style: "primary",
-//             },
-//             {
-//               type: "button",
-//               text: {
-//                 type: "plain_text",
-//                 text: "Upload to Knowledgebase",
-//                 emoji: true,
-//               },
-//               value: JSON.stringify({ fileIds, action: "upload_to_kb" }),
-//               action_id: "upload_to_knowledgebase",
-//               style: "primary",
-//             },
-//           ],
-//         },
-//       ],
-//     });
-
-//     return;
-//   }
-
-//   const text = event.text.replace(/<@[A-Z0-9]+>/, '').trim();
-  
-//   if (!text) return; // If no text after mention, do nothing
-
-//   try {
-//     const threadId = event.thread_ts || event.ts;
-
-//     // Lookup user information
-//     const lookupResult = await client.users.info({
-//       user: event.user || '',
-//     });
-    
-//     if (!lookupResult.user?.profile?.email) {
-//       console.error("Failed to get user email");
-//       await client.chat.postMessage({
-//         channel: event.channel,
-//         thread_ts: threadId,
-//         text: `Error: Unable to get user email. Please try again later.`,
-//       });
-//       return;
-//     }
-    
-//     const email = lookupResult.user.profile.email;
-//     let result = await getUserByEmail(email);
-    
-//     if (result.statusCode !== 200) {
-//       console.error(`Failed to fetch user: ${result.data}`);
-//       await client.chat.postMessage({
-//         channel: event.channel,
-//         thread_ts: threadId,
-//         text: `Error: Unable to fetch user details. Please try again later.`,
-//       });
-//       return;
-//     }
-    
-//     const user = result.data as any;
-//     const userId = user._id;
-//     const userSlug = user.slug;
-//     const fullName = user.fullName;
-//     const mobile = user.mobile;
-//     const orgId = user.orgId;
-//     const profileURL = user.profileURL;
-    
-//     const accessToken = authJwtGenerator(
-//       user.email,
-//       userId,
-//       orgId,
-//       fullName,
-//       profileURL,
-//       mobile,
-//       userSlug
-//     );
-    
-//     // Check if threadId exists in the database
-//     const conversation = await getFromDatabase(threadId, email);
-    
-//     if (conversation) {
-//       // Send loading message
-//       const loadingMessage = await client.chat.postMessage({
-//         channel: event.channel,
-//         thread_ts: threadId,
-//         text: `Generating response... :hourglass_flowing_sand:`,
-//       });
-    
-//       if (!loadingMessage.ts) {
-//         await client.chat.postMessage({
-//           channel: event.channel,
-//           thread_ts: threadId,
-//           text: "Error: Failed to create loading message",
-//         });
-//         return;
-//       }
-
-//       const messageTs = loadingMessage.ts;
-    
-//       try {
-//         // Continue the chat in an existing conversation
-//         const response = await axios.post<ConversationData>(
-//           `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/conversations/${conversation}/messages`,
-//           { query: text },
-//           {
-//             headers: {
-//               Authorization: `Bearer ${accessToken}`,
-//               "Content-Type": "application/json",
-//             },
-//           }
-//         );
-    
-//         const botResponse = response.data.conversation.messages.find(
-//           (message) => message.messageType === "bot_response"
-//         );
-    
-//         if (botResponse) {
-//           const blocks: any[] = [
-//             {
-//               type: "section",
-//               text: {
-//                 type: "mrkdwn",
-//                 text: `*ChatBot Response*`,
-//               },
-//             },
-//             {
-//               type: "divider",
-//             },
-//             {
-//               type: "section",
-//               text: {
-//                 type: "mrkdwn",
-//                 text: botResponse.content,
-//               },
-//             },
-//           ];
-    
-//           if (botResponse.citations && botResponse.citations.length > 0) {
-//             blocks.push({
-//               type: "context",
-//               elements: [
-//                 {
-//                   type: "mrkdwn",
-//                   text: "*Citations:*",
-//                 },
-//               ],
-//             });
-    
-//             botResponse.citations.forEach((citation, index) => {
-//               blocks.push({
-//                 type: "context",
-//                 elements: [
-//                   {
-//                     type: "mrkdwn",
-//                     text: `[${index + 1}] ${citation.citationData.content}`,
-//                   },
-//                 ],
-//               });
-    
-//               blocks.push({
-//                 type: "actions",
-//                 elements: [
-//                   {
-//                     type: "button",
-//                     text: {
-//                       type: "plain_text",
-//                       text: "View Details",
-//                       emoji: true,
-//                     },
-//                     value: JSON.stringify({
-//                       citationId: citation.citationId,
-//                       recordId: citation.citationData.metadata.recordId,
-//                       recordName: citation.citationData.metadata.recordName,
-//                       content: citation.citationData.content,
-//                       metadata: {
-//                         recordType: citation.citationData.metadata.recordType,
-//                         createdAt: citation.citationData.metadata.createdAt,
-//                         departments: citation.citationData.metadata.departments,
-//                         categories: citation.citationData.metadata.categories,
-//                       },
-//                     }),
-//                     action_id: `view_citation_details_${index}`,
-//                   },
-//                 ],
-//               });
-//             });
-//           }
-    
-//           // Update the loading message with the chatbot response
-//           await client.chat.update({
-//             channel: event.channel,
-//             ts: messageTs,
-//             blocks: blocks,
-//             text: `ChatBot Response`,
-//           });
-//         } else {
-//           await client.chat.update({
-//             channel: event.channel,
-//             ts: messageTs,
-//             text: "No bot response found in the API result.",
-//           });
-//         }
-//       } catch (error) {
-//         console.error("Error calling the Chat API:", error);
-    
-//         await client.chat.update({
-//           channel: event.channel,
-//           ts: messageTs,
-//           text: "Something went wrong while fetching the chatbot response. Please try again later.",
-//         });
-//       }
-//     } else {
-//       // No existing conversation, show the initial options
-//       const blocks: any[] = [
-//         {
-//           type: "section",
-//           text: {
-//             type: "mrkdwn",
-//             text: `Search "${text}" In KnowledgeBase`,
-//           },
-//         },
-//         {
-//           type: "actions",
-//           elements: [
-//             {
-//               type: "button",
-//               text: {
-//                 type: "plain_text",
-//                 text: "Search",
-//                 emoji: true,
-//               },
-//               style: "primary",
-//               action_id: "search_button",
-//               value: JSON.stringify({
-//                 searchText: text,
-//                 threadTs: threadId,
-//               }),
-//             },
-//           ],
-//         },
-       
-//         {
-//           type: "actions",
-//           elements: [
-//             {
-//               type: "button",
-//               text: {
-//                 type: "plain_text",
-//                 text: "QnA ChatBot",
-//                 emoji: true,
-//               },
-//               style: "primary",
-//               action_id: "chat_button",
-//               value: JSON.stringify({
-//                 searchText: text,
-//                 threadTs: threadId,
-//               }),
-//             },
-//           ]
-//         },
-//       ];
-
-//       await say({
-//         blocks: blocks,
-//         text: `Search "${text}"`,
-//         thread_ts: threadId,
-//       });
-//     }
-//   } catch (error) {
-//     console.error("Error handling app mention:", error);
-//   }
-// });
-
-// Slack app message handler
-app.message(async ({ message, client, context }) => {
-  // Type guard to ensure message has required properties
-  if (!message || typeof message !== 'object') {
+  if (!typedMessage.user || !typedMessage.channel) {
     return;
   }
 
-  const typedMessage = message as {
-    subtype?: string;
-    bot_id?: string;
-    user?: string;
-    files?: unknown[];
-    text?: string;
-    thread_ts?: string;
-    ts: string;
-    channel?: string;
+  const threadId = resolveThreadId(typedMessage);
+  
+  const lookupResult = await typedClient.users.info({
+    user: typedMessage.user,
+  });
+  
+
+
+  if (!lookupResult.user?.profile?.email) {
+    console.error("Failed to get user email");
+    await sendUserFacingSlackErrorMessage(
+      typedClient,
+      typedMessage,
+      "I couldn't verify your Slack profile details right now. Please try again in a moment.",
+    );
+    return;
+  }
+
+  const email = lookupResult.user.profile.email;
+  const configService = ConfigService.getInstance();
+  const accessToken = slackJwtGenerator(email, await configService.getScopedJwtSecret());
+
+  const currentAgentId = resolvedSlackBot?.agentId || null;
+  console.log("currentAgentId", currentAgentId);
+  const currentBotId = resolvedSlackBot?.botId;
+  if (!currentBotId) {
+    throw new Error("Unable to resolve Slack bot id for conversation persistence.");
+  }
+
+  const conversation = await getFromDatabase(
+    threadId,
+    currentBotId,
+    email,
+  );
+  let streamTs: string | null = null;
+  let streamStopped = false;
+  let streamCharCount = 0;
+  let rolledOverStreamTs: string[] = [];
+  let waitingMessageTs: string | null = null;
+
+  const sendOrUpdateNonStreamMessage = async (
+    text: string,
+    blocks?: any[],
+  ): Promise<void> => {
+    
+    const truncatedText = truncateForSlack(text);
+    if (!text && (!blocks || blocks.length === 0)) {
+      return;
+    }
+    if (waitingMessageTs) {
+      try {
+        await typedClient.chat.update({
+          channel: typedMessage.channel!,
+          ts: waitingMessageTs,
+          text: truncatedText,
+          ...(blocks && blocks.length > 0 ? { blocks } : {}),
+        });
+        return;
+      } catch (error) {
+        console.error("Error updating Slack waiting message:", error);
+        if (blocks && blocks.length > 0) {
+          throw error;
+        } 
+        else {
+          try {
+            await typedClient.chat.update({
+              channel: typedMessage.channel!,
+              ts: waitingMessageTs,
+              text: truncatedText,
+            });
+            return;
+          } catch (fallbackError) {
+            console.error(
+              "Error updating Slack waiting message with text fallback:",
+              fallbackError,
+            );
+            throw fallbackError;
+          }
+        }
+      }
+    }
+
+    try {
+      await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
+        thread_ts: threadId,
+        text: truncatedText,
+        ...(blocks && blocks.length > 0 ? { blocks } : {}),
+      });
+    } catch (error) {
+      if (blocks && blocks.length > 0) {
+        throw error;
+      }
+      console.error("Error posting Slack non-stream blocks message:", error);
+      await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
+        thread_ts: threadId,
+        text: truncatedText,
+      });
+    }
   };
 
-  const typedClient = client as {
-    botUserId?: string;
-    users: {
-      info: (params: { user: string }) => Promise<{
-        user?: {
-          profile?: {
-            email?: string;
-          };
-        };
-      }>;
+  const postThreadChunkMessage = async (chunk: any[]): Promise<void> => {
+    try {
+      await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
+        thread_ts: threadId,
+        text: "",
+        blocks: chunk,
+      });
+    } catch (error) {
+      console.error("Error posting Slack chunk as blocks, retrying with text:", error);
+      await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
+        thread_ts: threadId,
+        text: FAILED_RESPONSE_GENERATION_MESSAGE,
+      });
+    }
+  };
+
+  const stopSlackStream = async (markdownText?: string): Promise<boolean> => {
+    if (!streamTs || streamStopped) {
+      return true;
+    }
+
+    const payload: Record<string, unknown> = {
+      channel: typedMessage.channel!,
+      ts: streamTs,
     };
-    chat: {
-      postMessage: (params: {
-        channel: string;
-        thread_ts?: string;
-        text: string;
-      }) => Promise<{ ts?: string }>;
-      update: (params: {
-        channel: string;
-        ts: string;
-        blocks?: unknown[];
-        text: string;
-      }) => Promise<unknown>;
+    if (typeof markdownText === "string" && markdownText.length > 0) {
+      payload.markdown_text = truncateForSlackStreamMarkdown(markdownText);
+    }
+
+    try {
+      await typedClient.apiCall("chat.stopStream", payload);
+      streamStopped = true;
+      return true;
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        "data" in error &&
+        (error as { data?: { error?: string } }).data?.error ===
+          "message_not_in_streaming_state"
+      ) {
+        streamStopped = true;
+        return true;
+      }
+      console.error("Error stopping Slack stream:", error);
+      return false;
+    }
+  };
+
+  const rolloverSlackStream = async (): Promise<void> => {
+    if (!streamTs) return;
+    try {
+      await typedClient.apiCall("chat.stopStream", {
+        channel: typedMessage.channel!,
+        ts: streamTs,
+      });
+    } catch (error) {
+      const code = (error as { data?: { error?: string } }).data?.error;
+      if (code !== "message_not_in_streaming_state") throw error;
+    }
+    rolledOverStreamTs.push(streamTs);
+    streamTs = null;
+    streamCharCount = 0;
+    // streamStopped stays false — the overall session is still active
+  };
+
+  try {
+    const streamRecipientPayload: Record<string, unknown> = {};
+    streamRecipientPayload.recipient_user_id = typedMessage.user;
+    if (typedContext.teamId) {
+      streamRecipientPayload.recipient_team_id = typedContext.teamId;
+    }
+
+    try {
+      const waitingMessage = await typedClient.chat.postMessage({
+        channel: typedMessage.channel!,
+        thread_ts: threadId,
+        text: "_Thinking..._",
+      });
+      waitingMessageTs = waitingMessage.ts || null;
+    } catch (error) {
+      console.error("Error posting Slack waiting message:", error);
+    }
+
+    const url = buildChatStreamUrl(conversation, currentAgentId);
+    const response = await axios.post(
+      url,
+      {
+        query,
+        chatMode: "quick",
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        responseType: "stream",
+        timeout: BACKEND_STREAM_TIMEOUT_MS,
+      },
+    );
+
+    const responseStream = response.data as NodeJS.ReadableStream;
+    let sseBuffer = "";
+    let pendingAppendText = "";
+    let lastAppendAt = 0;
+    let streamErrorMessage: string | null = null;
+    let completionConversation: ConversationData["conversation"] | null = null;
+    let queuedStreamAppend: Promise<void> = Promise.resolve();
+    let tableStreamingDisabled = false;
+    let streamTableProbeText = "";
+    let tablePauseHintSent = false;
+
+    const pushTextToSlackStream = async (text: string): Promise<void> => {
+      // Bail out early if the stream is already stopped or an error was recorded —
+      // prevents the independent-catch queue items from firing redundant API calls.
+      if (streamStopped || streamErrorMessage) {
+        return;
+      }
+
+      if (text.length === 0) {
+        return;
+      }
+
+      const renderedDeltaText = markdownToSlackMrkdwn(text, {
+        preserveTrailingWhitespace: true,
+      });
+      if (renderedDeltaText.length === 0) {
+        return;
+      }
+
+      const markdownChunks = splitByLengthPreferringNewlines(
+        renderedDeltaText,
+        SLACK_STREAM_MARKDOWN_LIMIT,
+      );
+      if (markdownChunks.length === 0) {
+        return;
+      }
+
+      for (let chunk of markdownChunks) {
+        while (chunk.length > 0) {
+          if (streamStopped || streamErrorMessage) {
+            return;
+          }
+
+          // If this chunk would overflow the current message, split at a clean boundary first
+          if (streamTs && streamCharCount + chunk.length > SLACK_STREAM_MESSAGE_CHAR_LIMIT) {
+            const spaceLeft = SLACK_STREAM_MESSAGE_CHAR_LIMIT - streamCharCount;
+
+            if (spaceLeft > 0) {
+              // Prefer splitting at the last newline within the remaining space
+              const candidate = chunk.slice(0, spaceLeft);
+              const lastNewline = candidate.lastIndexOf("\n");
+              const splitIndex = lastNewline > -1 ? lastNewline + 1 : spaceLeft;
+              const fitsInCurrent = chunk.slice(0, splitIndex);
+
+              if (fitsInCurrent.length > 0) {
+                await typedClient.apiCall("chat.appendStream", {
+                  channel: typedMessage.channel!,
+                  ts: streamTs,
+                  markdown_text: fitsInCurrent,
+                });
+                streamCharCount += fitsInCurrent.length;
+              }
+              chunk = chunk.slice(splitIndex);
+            }
+
+            await rolloverSlackStream();
+            continue; // re-evaluate the overflow with a fresh streamCharCount = 0
+          }
+
+          // No overflow — start a new stream or append to existing
+          if (!streamTs) {
+            const startStreamResult = (await typedClient.apiCall(
+              "chat.startStream",
+              {
+                channel: typedMessage.channel!,
+                thread_ts: threadId,
+                markdown_text: chunk,
+                ...streamRecipientPayload,
+              },
+            )) as StreamStartResult;
+
+            if (!startStreamResult.ts) {
+              throw new Error("Failed to start Slack stream");
+            }
+            streamTs = startStreamResult.ts;
+            streamCharCount = chunk.length;
+
+            if (waitingMessageTs) {
+              try {
+                await typedClient.apiCall("chat.delete", {
+                  channel: typedMessage.channel!,
+                  ts: waitingMessageTs,
+                });
+              } catch (error) {
+                console.error("Error deleting Slack waiting message:", error);
+              } finally {
+                waitingMessageTs = null;
+              }
+            }
+          } else {
+            await typedClient.apiCall("chat.appendStream", {
+              channel: typedMessage.channel!,
+              ts: streamTs,
+              markdown_text: chunk,
+            });
+            streamCharCount += chunk.length;
+          }
+          break; // chunk fully consumed
+        }
+      }
     };
-  };
 
-  const typedContext = context as {
-    botUserId?: string;
-  };
+    const flushPendingAppend = (): void => {
+      const textToAppend = pendingAppendText;
+      if (!textToAppend) {
+        return;
+      }
 
-  if (
+      pendingAppendText = "";
+      queuedStreamAppend = queuedStreamAppend
+        .then(async () => pushTextToSlackStream(textToAppend))
+        .catch((error) => {
+          console.error("Error appending Slack stream text:", error);
+          if (!streamErrorMessage) {
+            streamErrorMessage = STREAM_FAILURE_MESSAGE;
+          }
+        });
+    };
+
+    const sendTableStreamingPausedHint = async (): Promise<void> => {
+      if (tablePauseHintSent) {
+        return;
+      }
+      tablePauseHintSent = true;
+
+      if (streamTs) {
+        if (streamStopped || streamErrorMessage) {
+          return;
+        }
+
+        const renderedHint = markdownToSlackMrkdwn(TABLE_STREAMING_PAUSED_HINT, {
+          preserveTrailingWhitespace: true,
+        });
+        if (!renderedHint) {
+          return;
+        }
+
+        try {
+          await typedClient.apiCall("chat.appendStream", {
+            channel: typedMessage.channel!,
+            ts: streamTs,
+            markdown_text: renderedHint,
+          });
+        } catch (error) {
+          console.error("Error appending Slack table formatting hint:", error);
+        }
+        return;
+      }
+
+      if (!waitingMessageTs) {
+        return;
+      }
+
+      try {
+        await typedClient.chat.update({
+          channel: typedMessage.channel!,
+          ts: waitingMessageTs,
+          text: TABLE_STREAMING_PAUSED_HINT,
+        });
+      } catch (error) {
+        console.error("Error updating Slack waiting message with table hint:", error);
+      }
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      responseStream.setEncoding("utf8");
+      let settled = false;
+
+      const cleanupListeners = (): void => {
+        responseStream.removeListener("data", onData);
+        responseStream.removeListener("end", onEnd);
+        responseStream.removeListener("error", onError);
+      };
+
+      const resolveOnce = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanupListeners();
+        resolve();
+      };
+
+      const rejectOnce = (error: unknown): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanupListeners();
+        reject(error);
+      };
+
+      const onData = (chunk: string): void => {
+        sseBuffer += chunk;
+        const { events, remainder } = parseSSEEvents(sseBuffer);
+        sseBuffer = remainder;
+
+        for (const evt of events) {
+          if (evt.event === "answer_chunk" || evt.event === "chunk") {
+            const nextChunk = extractStreamChunk(evt.data);
+            if (nextChunk.length === 0) {
+              continue;
+            }
+
+            if (tableStreamingDisabled) {
+              continue;
+            }
+
+            streamTableProbeText += nextChunk;
+            if (hasMarkdownTableStartOutsideCodeFences(streamTableProbeText)) {
+              tableStreamingDisabled = true;
+              pendingAppendText = "";
+              queuedStreamAppend = queuedStreamAppend
+                .then(async () => sendTableStreamingPausedHint())
+                .catch((error) => {
+                  console.error("Error sending Slack table formatting hint:", error);
+                });
+              continue;
+            }
+
+            pendingAppendText += nextChunk;
+            const now = Date.now();
+            if (now - lastAppendAt >= STREAM_UPDATE_THROTTLE_MS) {
+              lastAppendAt = now;
+              flushPendingAppend();
+            }
+          } else if (evt.event === "complete") {
+            if (
+              evt.data &&
+              typeof evt.data === "object" &&
+              "conversation" in evt.data
+            ) {
+              completionConversation = (evt.data as ConversationData).conversation;
+            }
+          } else if (evt.event === "error") {
+            streamErrorMessage = resolveSlackErrorMessage(evt.data);
+            resolveOnce();
+            return;
+          }
+        }
+      };
+
+      const onEnd = (): void => {
+        resolveOnce();
+      };
+
+      const onError = (error: unknown): void => {
+        rejectOnce(error);
+      };
+
+      responseStream.on("data", onData);
+      responseStream.on("end", onEnd);
+      responseStream.on("error", onError);
+    });
+
+    flushPendingAppend();
+    await queuedStreamAppend;
+
+    if (streamErrorMessage) {
+      if (streamTs) {
+        const stopStreamSucceeded = await stopSlackStream(streamErrorMessage);
+        if (!stopStreamSucceeded) {
+          await sendOrUpdateNonStreamMessage(streamErrorMessage);
+        }
+      } else {
+        await sendOrUpdateNonStreamMessage(streamErrorMessage);
+      }
+      return;
+    }
+
+    const conversationData =
+      completionConversation as ConversationData["conversation"] | null;
+    if (!conversationData) {
+      const incompleteResponseMessage =
+        "Received an incomplete response from the backend. Please try again later.";
+      if (streamTs) {
+        const stopStreamSucceeded = await stopSlackStream(incompleteResponseMessage);
+        if (!stopStreamSucceeded) {
+          await sendOrUpdateNonStreamMessage(incompleteResponseMessage);
+        }
+      } else {
+        await sendOrUpdateNonStreamMessage(incompleteResponseMessage);
+      }
+      return;
+    }
+
+    if (!conversation) {
+      const conversationId = conversationData._id;
+      await saveToDatabase({
+        threadId: threadId,
+        conversationId,
+        botId: currentBotId,
+        email: email,
+      });
+    }
+
+    const botResponses = conversationData.messages;
+    const botResponse = botResponses.length > 0 ? botResponses[botResponses.length - 1] : null;
+    if (!botResponse || botResponse.messageType !== "bot_response") {
+      const invalidResponseMessage =
+        "Received an unexpected response format from the backend. Please try again later.";
+      if (streamTs) {
+        const stopStreamSucceeded = await stopSlackStream(invalidResponseMessage);
+        if (!stopStreamSucceeded) {
+          await sendOrUpdateNonStreamMessage(invalidResponseMessage);
+        }
+      } else {
+        await sendOrUpdateNonStreamMessage(invalidResponseMessage);
+      }
+      return;
+    }
+
+    if (!streamTs && !tableStreamingDisabled && botResponse.content) {
+      await pushTextToSlackStream(botResponse.content);
+    }
+
+    const citationBlocks = buildCitationSources(botResponse.citations);
+    const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
+    const answerBody = botResponse.content || "" ;
+    const finalChunks = await buildFinalSlackChunks(answerBody);
+    
+    const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
+    
+    if (firstFinalChunk) {
+      let firstChunkSent = false;
+
+      if (streamTs) {
+        await stopSlackStream();
+
+        // Delete any earlier rolled-over stream messages — the final blocks
+        // represent the full answer so those partial-text messages are redundant.
+        for (const oldTs of rolledOverStreamTs) {
+          try {
+            await typedClient.apiCall("chat.delete", {
+              channel: typedMessage.channel!,
+              ts: oldTs,
+            });
+          } catch (deleteError) {
+            const code = (deleteError as { data?: { error?: string } }).data?.error;
+            if (code !== "message_not_found") {
+              console.error("Error deleting rolled-over stream message:", deleteError);
+            }
+          }
+        }
+        rolledOverStreamTs = [];
+
+        try {
+          await typedClient.chat.update({
+            channel: typedMessage.channel!,
+            ts: streamTs,
+            text: "",
+            blocks: firstFinalChunk,
+          });
+          firstChunkSent = true;
+        } catch (updateError) {
+          console.error(
+            "Error updating final streamed Slack message with blocks, trying delete and repost:",
+            updateError,
+          );
+          try {
+            try {
+              await typedClient.apiCall("chat.delete", {
+                channel: typedMessage.channel!,
+                ts: streamTs,
+              });
+            } catch (deleteError) {
+              // If the message is already gone, we can still post a fresh one
+              const code = (deleteError as { data?: { error?: string } }).data?.error;
+              if (code !== "message_not_found") {
+                throw deleteError;
+              }
+            }
+            await typedClient.chat.postMessage({
+              channel: typedMessage.channel!,
+              thread_ts: threadId,
+              text: "",
+              blocks: firstFinalChunk,
+            });
+            firstChunkSent = true;
+          } catch (replacementError) {
+            console.error(
+              "Error replacing failed streamed Slack message, sending fallback error message:",
+              replacementError,
+            );
+            await sendOrUpdateNonStreamMessage(
+              FAILED_RESPONSE_GENERATION_MESSAGE,
+            );
+          }
+        }
+      } else {
+        await sendOrUpdateNonStreamMessage("", firstFinalChunk);
+        firstChunkSent = true;
+      }
+
+      if (firstChunkSent) {
+        for (const remainingChunk of remainingFinalChunks) {
+          await postThreadChunkMessage(remainingChunk);
+        }
+        for (const citationChunk of citationBlockChunks) {
+          await postThreadChunkMessage(citationChunk);
+        }
+      }
+    }
+  } catch (error) {
+    try {
+      const errorMessage = await resolveSlackErrorMessageAsync(error);
+      if (streamTs) {
+        const stopStreamSucceeded = await stopSlackStream(errorMessage);
+        if (!stopStreamSucceeded) {
+          await sendOrUpdateNonStreamMessage(errorMessage);
+        }
+      } else {
+        await sendOrUpdateNonStreamMessage(errorMessage);
+      }
+    } catch (handlerError) {
+      console.error("Error in Slack message error handler:", handlerError);
+    }
+  }
+}
+
+function isIgnoredSlackMessage(
+  typedMessage: SlackMessagePayload,
+  typedContext: TypedSlackContext,
+): boolean {
+  return Boolean(
     typedMessage.subtype === "bot_message" ||
     typedMessage.bot_id ||
     typedMessage.user === typedContext.botUserId ||
-    typedMessage.files ||
-    typedMessage.text?.match(/<@[A-Z0-9]+>/)
-  ) {
+    typedMessage.files,
+  );
+}
+
+// Handle DMs via message.im events.
+app.message(async ({ message, client, context }) => {
+  if (!message || typeof message !== "object") {
+    return;
+  }
+  
+  const typedMessage = message as SlackMessagePayload;
+  const typedClient = client as unknown as TypedSlackClient;
+  const typedContext = context as TypedSlackContext;
+
+  if (isIgnoredSlackMessage(typedMessage, typedContext)) {
     return;
   }
 
-  if ('text' in message && message.text?.includes(`<@${typedClient.botUserId}>`)) {
+  const isDirectMessage = typedMessage.channel?.startsWith("D") || false;
+  if (!isDirectMessage) {
+    return;
+  }
+
+  const query = await resolveMentionsInText(typedMessage.text, typedClient);
+  if (!query) {
     return;
   }
 
   try {
-    const threadId = typedMessage.thread_ts || typedMessage.ts;
-    const lookupResult = await typedClient.users.info({
-      user: typedMessage.user!,
-    });
-    
-    if (!lookupResult.user?.profile?.email) {
-      console.error("Failed to get user email");
-      return;
-    }
-    
-    const email = lookupResult.user.profile.email;
-    const configService = ConfigService.getInstance();
-    const accessToken = slackJwtGenerator(email, await configService.getScopedJwtSecret());
-   
-    const conversation = await getFromDatabase(threadId, email);
-    
-      // Send loading message
-      const loadingMessage = await typedClient.chat.postMessage({
-        channel: typedMessage.channel!,
-        thread_ts: threadId,
-        text: `Generating response... :hourglass_flowing_sand:`,
-      });
-    
-      if (!loadingMessage.ts) {
-        console.error("Failed to create loading message");
-        return;
-      }
-
-      const messageTs = loadingMessage.ts;
-    
-      try {
-        const url = conversation ? `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/conversations/internal/${conversation}/messages` : `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/conversations/internal/create`;
-        const response = await axios.post<ConversationData>(
-          url,
-          { 
-            query: typedMessage.text,
-            chatMode: "quick"
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-          }
-        );
-
-    if(!conversation){
-        const conversationId = response.data.conversation._id;
-        await saveToDatabase({ threadId: threadId, conversationId, email });
-      }
-        const botResponses = response.data.conversation.messages;
-        let botResponse = null;
-        if (botResponses.length > 0) {
-          botResponse = botResponses[botResponses.length - 1];
-        }
-         console.log(botResponse, "botResponseeeeeeeeeeeeeeeeeeeeeeee");
-        if (botResponse && botResponse.messageType === "bot_response") {
-          
-          let citationUrls: CitationUrls = {};
-          if (botResponse.citations && botResponse.citations.length > 0) {
-            
-            botResponse.citations.forEach((citation) => {
-              let webUrl = citation.citationData.metadata.webUrl;
-              let chunkIndex = citation.citationData.chunkIndex;
-              if (!webUrl?.startsWith("https://")) {
-                webUrl = (process.env.FRONTEND_PUBLIC_URL || '') + (webUrl || '');
-              }
-              if (chunkIndex) {
-                citationUrls[chunkIndex] = webUrl || '';
-              }
-           
-            });
-        }
-        let blocks = [];
-        const originalContent = botResponse.content;
-        try {
-          const contentForMack = convertCitationsToHyperlinks(originalContent, citationUrls);
-          blocks = await markdownToBlocks(contentForMack);
-          for (const block of blocks) {
-            // Todo: replace substring &#39; by apostrophe
-            if (block.type === "section" && block.text?.type === "mrkdwn") {
-              block.text.text = block.text.text.replace(/\&#39;/g, "'");
-            }
-          }
-        } catch (error) {
-          console.error("Error converting markdown to blocks:", error);
-          const contentForFallback = convertCitationsToHyperlinks2(originalContent, citationUrls);
-          blocks = [
-            {
-              type: "section",
-              text: {
-                type: "mrkdwn",
-                text: contentForFallback,
-              },
-            },
-          ];
-        }
-       await typedClient.chat.update({
-        channel: typedMessage.channel!,
-        ts: messageTs,
-        blocks: blocks,
-        text: `ChatBot Response`,
-      });
-      }
-        else {
-          await typedClient.chat.update({
-            channel: typedMessage.channel!,
-            ts: messageTs,
-            text: "Something went wrong! Please try again later.",
-          });
-        }
-      } catch (error) {
-        console.error("Error calling the Chat API:", error);
-        await typedClient.chat.update({
-          channel: typedMessage.channel!,
-          ts: messageTs,
-          text: "Something went wrong! Please try again later.",
-        });
-      }
-}catch (error) {
-  console.error("Error handling message:", error); 
-}
+    const resolvedSlackBot = await resolveSlackBotForEvent();
+    await processSlackMessage(
+      typedMessage,
+      typedClient,
+      typedContext,
+      query,
+      resolvedSlackBot,
+    );
+  } catch (error) {
+    console.error("Error handling DM message:", error);
+    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, error);
+  }
 });
 
-// Continue with more action handlers...
-// app.action("upload_to_qna", async ({ ack, body, client, logger }) => {
-//   await ack();
-  
-//   const { fileId } = JSON.parse((body as any).actions[0].value);
-//   console.log(fileId, "fileId1")
+// Handle @mentions in channels via app_mention events.
+app.event("app_mention", async ({ event, client, context }) => {
+  const typedMessage = event as unknown as SlackMessagePayload;
+  const typedClient = client as unknown as TypedSlackClient;
+  const typedContext = context as TypedSlackContext;
+  if (isIgnoredSlackMessage(typedMessage, typedContext)) {
+    return;
+  }
+  const query = await resolveMentionsInText(typedMessage.text, typedClient);
+  if (!query) {
+    return;
+  }
+
+  try {
+    const contextualQuery = await buildQueryWithThreadContext(
+      typedClient,
+      typedMessage,
+      query,
+    );
+    const resolvedSlackBot = await resolveSlackBotForEvent();
+    await processSlackMessage(
+      typedMessage,
+      typedClient,
+      typedContext,
+      contextualQuery,
+      resolvedSlackBot,
+    );
+  } catch (error) {
+    console.error("Error handling app mention:", error);
+    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, error);
+  }
+});
 
-//   try {
-  
-//     const lookupResult = await client.users.info({ user: (body as any).user.id });
-//     const email = lookupResult.user?.profile?.email;
-    
-//     if (!email) {
-//       throw new Error('Unable to get user email');
-//     }
-    
-//     let userResult = await getUserByEmail(email);
-  
-//     if (userResult.statusCode !== 200) {
-//       throw new Error('Unable to authenticate user');
-//     }
-  
-//     const user = userResult.data as any;
-//     const accessToken = authJwtGenerator(
-//       user.email,
-//       user._id,
-//       user.orgId,
-//       user.fullName,
-//       user.profileURL,
-//       user.mobile,
-//       user.slug
-//     );
-
-    
-//     const modules = await fetchModules(accessToken);
-//     const customers = await fetchCustomers(accessToken);
-
-//     const result = await client.views.open({
-//       trigger_id: (body as any).trigger_id,
-//       view: {
-//         type: "modal",
-//         callback_id: "qna_upload_modal",
-//         title: {
-//           type: "plain_text",
-//           text: "Upload to QnA"
-//         },
-//         submit: {
-//           type: "plain_text",
-//           text: "Submit"
-//         },
-//         close: {
-//           type: "plain_text",
-//           text: "Cancel"
-//         },
-//         blocks: [
-//           {
-//             type: "input",
-//             block_id: "name_block",
-//             element: {
-//               type: "plain_text_input",
-//               action_id: "name_input"
-//             },
-//             label: {
-//               type: "plain_text",
-//               text: "Name"
-//             }
-//           },
-//           {
-//             type: "input",
-//             block_id: "modules_block",
-//             element: {
-//               type: "multi_static_select",
-//               action_id: "modules_input",
-//               options: modules.map(module => ({
-//                 text: {
-//                   type: "plain_text",
-//                   text: module.name
-//                 },
-//                 value: module._id
-//               }))
-//             },
-//             label: {
-//               type: "plain_text",
-//               text: "Modules"
-//             }
-//           },
-//           {
-//             type: "input",
-//             block_id: "due_date_block",
-//             optional: true,
-//             element: {
-//               type: "datepicker",
-//               action_id: "due_date_input"
-//             },
-//             label: {
-//               type: "plain_text",
-//               text: "Due Date (Optional)"
-//             }
-//           },
-//           {
-//             type: "input",
-//             block_id: "customer_account_block",
-//             element: {
-//               type: "static_select",
-//               action_id: "customer_account_input",
-//               options: customers.map(customer => ({
-//                 text: {
-//                   type: "plain_text",
-//                   text: customer.registeredName
-//                 },
-//                 value: customer._id
-//               }))
-//             },
-//             label: {
-//               type: "plain_text",
-//               text: "Customer Account"
-//             }
-//           }
-//         ],
-//         private_metadata: JSON.stringify({ fileId })
-//       }
-//     });
-//     logger.info(result);
-//   } catch (error) {
-//     logger.error(error);
-//     await client.chat.postMessage({
-//       channel: (body as any).user.id,
-//       text: "An error occurred while opening the upload form. Please try again later.",
-//     });
-//   }
-// });
-
-// Continue with more action handlers...
-// app.view("qna_upload_modal", async ({ ack, body, view, client, logger }) => {
-//   await ack();
-
-//   const { fileId } = JSON.parse(view.private_metadata);
-//   const values = view.state.values;
-
- 
-//   const loadingMessage = await client.chat.postMessage({
-//     channel: (body as any).user.id,
-//     text: `Uploading to QnA workflow... :hourglass_flowing_sand:`,
-//   });
-
-//   if (!loadingMessage.ts) {
-//     await client.chat.postMessage({
-//       channel: (body as any).user.id,
-//       text: "Error: Failed to create loading message",
-//     });
-//     return;
-//   }
-
-//   const messageTs = loadingMessage.ts;
-
-//   const formData: FormDataValues = {
-//     name: values.name_block.name_input.value,
-//     modules: JSON.stringify(
-//       values.modules_block.modules_input.selected_options.map(
-//         (option: any) => option.value
-//       )
-//     ),
-//     dueDate: values.due_date_block.due_date_input?.selected_date 
-//       ? new Date(values.due_date_block.due_date_input.selected_date).getTime().toString()
-//       : undefined,
-//     customerAccount: values.customer_account_block.customer_account_input.selected_option.value,
-//     richformId: "67211ab5debf199cae5f13b7"
-//   };
-
-//   try {
-    
-//     const lookupResult = await client.users.info({
-//       user: (body as any).user.id,
-//     });
-    
-//     const email = lookupResult.user?.profile?.email;
-//     if (!email) {
-//       await client.chat.update({
-//         channel: (body as any).user.id,
-//         ts: messageTs,
-//         text: "Error: Unable to get user email. Please try again later. :x:",
-//       });
-//       return;
-//     }
-    
-//     let result = await getUserByEmail(email);
-
-//     if (result.statusCode !== 200) {
-//       await client.chat.update({
-//         channel: (body as any).user.id,
-//         ts: messageTs,
-//         text: "Error: Unable to authenticate user. Please try again later. :x:",
-//       });
-//       return;
-//     }
-
-//     const user = result.data as any;
-//     const accessToken = authJwtGenerator(
-//       user.email,
-//       user._id,
-//       user.orgId,
-//       user.fullName,
-//       user.profileURL,
-//       user.mobile,
-//       user.slug
-//     );
-
-    
-//     const fileInfo = await client.files.info({
-//       file: fileId
-//     });
-
-//     if (!fileInfo.file?.url_private) {
-//       throw new Error('File not found or inaccessible');
-//     }
-
-// const fileContent = await axios({
-//   method: 'get',
-//   url: fileInfo.file.url_private,
-//   headers: {
-//     'Authorization': `Bearer ${process.env.BOT_TOKEN}`
-//   },
-//   responseType: 'arraybuffer'
-// }).then(response => response.data);
-
-//     const uploadFormData = new FormData();
-//     uploadFormData.append('file', fileContent, {
-//       filename: fileInfo.file.name || 'unknown',
-//       contentType: fileInfo.file.mimetype || 'application/octet-stream'
-//     });
-
-//     Object.entries(formData).forEach(([key, value]) => {
-//       if (value) {
-//         if (Array.isArray(value)) {
-//           value.forEach(item => uploadFormData.append(`${key}[]`, item));
-//         } else {
-//           uploadFormData.append(key, value);
-//         }
-//       }
-//     });
-
-//     const response = await axios.post(
-//       `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/workflow`,
-//       uploadFormData,
-//       {
-//         headers: {
-//           Authorization: `Bearer ${accessToken}`,
-//           ...uploadFormData.getHeaders()
-//         },
-//       }
-//     );
-   
-
-//     if (response.status === 201) {
-//       await client.chat.postMessage({
-//         channel: (body as any).user.id,
-      
-//         text: ` File "${fileInfo.file.name}" successfully uploaded to QnA workflow. :white_check_mark:`,
-//       });
-//     } else {
-//       throw new Error(response.data.errorMessage || 'Upload failed');
-//     }
-//   } catch (error) {
-//     logger.error("Error uploading file to QnA workflow:", error);
-    
-//     const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    
-//     await client.chat.postMessage({
-//       channel: (body as any).user.id,
-      
-//       text: "Failed to upload file to QnA workflow. Please try again later.",
-//     });
-//   }
-// });
-
-// app.action("upload_to_knowledgebase", async ({ ack, body, client, logger }) => {
-//   await ack();
-
-//   const { fileIds } = JSON.parse((body as any).actions[0].value); 
-//   console.log(fileIds, "fileIds");
-
-//   if (!(body as any).channel?.id) {
-//     logger.error("Channel not found in body");
-//     return;
-//   }
-
-//   const loadingMessage = await client.chat.postMessage({
-//     channel: (body as any).channel.id,
-//     text: `Uploading files to knowledgebase... :hourglass_flowing_sand:`,
-//   });
-
-//   if (!loadingMessage.ts) {
-//     logger.error("Failed to create loading message");
-//     return;
-//   }
-
-//   const messageTs = loadingMessage.ts;
-
-//   try {
-//     const lookupResult = await client.users.info({
-//       user: (body as any).user.id,
-//     });
-
-//     const email = lookupResult.user?.profile?.email;
-//     if (!email) {
-//       await client.chat.update({
-//         channel: (body as any).channel.id,
-//         ts: messageTs,
-//         text: "Error: Unable to get user email. Please try again later.",
-//       });
-//       return;
-//     }
-
-//     let result = await getUserByEmail(email);
-
-//     if (result.statusCode !== 200) {
-//       await client.chat.update({
-//         channel: (body as any).channel.id,
-//         ts: messageTs,
-//         text: "Error: Unable to authenticate user. Please try again later.",
-//       });
-//       return;
-//     }
-
-//     const user = result.data as any;
-//     const accessToken = authJwtGenerator(
-//       user.email,
-//       user._id,
-//       user.orgId,
-//       user.fullName,
-//       user.profileURL,
-//       user.mobile,
-//       user.slug
-//     );
-
-//     const uploadResults: string[] = [];
-//     for (const fileId of fileIds) {
-//       try {
-//         const fileInfo = await client.files.info({ file: fileId });
-
-//         if (!fileInfo.file?.url_private) {
-//           uploadResults.push(`Failed to access file with ID "${fileId}".`);
-//           continue;
-//         }
-
-// const fileContent = await axios({
-//   method: 'get',
-//   url: fileInfo.file.url_private,
-//   headers: {
-//     'Authorization': `Bearer ${process.env.BOT_TOKEN}`
-//   },
-//   responseType: 'arraybuffer'
-// }).then(response => response.data);
-
-//         const formData = new FormData();
-//         formData.append("file", fileContent, {
-//           filename: fileInfo.file.name || 'unknown',
-//           contentType: fileInfo.file.mimetype || 'application/octet-stream',
-//         });
-
-//         const response = await axios.post(
-//           `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/knowledgebase`,
-//           formData,
-//           {
-//             headers: {
-//               Authorization: `Bearer ${accessToken}`,
-//               ...formData.getHeaders(),
-//             },
-//           }
-//         );
-
-//         if (response.status === 200) {
-//           uploadResults.push(`File "${fileInfo.file.name}" uploaded successfully.`);
-//         } else {
-//           uploadResults.push(`Failed to upload file "${fileInfo.file.name}".`);
-//         }
-//       } catch (fileError) {
-//         logger.error(`Error processing file with ID ${fileId}:`, fileError);
-//         uploadResults.push(`Failed to upload file with ID "${fileId}".`);
-//       }
-//     }
-
-   
-//     const summaryMessage = uploadResults.join("\n");
-//     await client.chat.update({
-//       channel: (body as any).channel.id,
-//       ts: messageTs,
-//       text: `File upload completed:\n${summaryMessage}`,
-//     });
-//   } catch (error) {
-//     logger.error("Error uploading files to knowledgebase:", error);
-
-//     await client.chat.update({
-//       channel: (body as any).channel.id,
-//       ts: messageTs,
-//       text: "Failed to upload files to knowledgebase. Please try again later. :x:",
-//     });
-//   }
-// });
-
-// app.action("search_button", async ({ ack, body, client, logger }) => {
-//   await ack();
-  
-//   const { searchText, threadTs } = JSON.parse((body as any).actions[0].value);
-
-//   if (!(body as any).channel?.id) {
-//     logger.error("Channel not found in body");
-//     return;
-//   }
-
-//   const loadingMessage = await client.chat.postMessage({
-//     channel: (body as any).channel.id,
-//     thread_ts: threadTs,
-//     text: `Searching for "${searchText}"... :hourglass_flowing_sand:`,
-//   });
-
-//   if (!loadingMessage.ts) {
-//     logger.error("Failed to create loading message");
-//     return;
-//   }
-
-//   const messageTs = loadingMessage.ts;
-
-//   await client.chat.update({
-//     channel: (body as any).channel.id,
-//     ts: messageTs,
-//     blocks: [
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `Searching for "${searchText}"... :hourglass_flowing_sand:`,
-//         },
-//       },
-//     ],
-//     text: `Searching for "${searchText}"...`,
-//   });
-
-//   try {
-//     const lookupResult = await client.users.info({
-//       user: (body as any).user.id,
-//     });
-   
-//     const email = lookupResult.user?.profile?.email;
-//     if (!email) {
-//       await client.chat.update({
-//         channel: (body as any).channel.id,
-//         ts: messageTs,
-//         blocks: [
-//           {
-//             type: "section",
-//             text: {
-//               type: "mrkdwn",
-//               text: "Error: Unable to get user email. Please try again later.",
-//             },
-//           },
-//         ],
-//         text: "Error: Unable to get user email.",
-//       });
-//       return;
-//     }
-    
-//     let result = await getUserByEmail(email);
-  
-//     if (result.statusCode !== 200) {
-//       await client.chat.update({
-//         channel: (body as any).channel.id,
-//         ts: messageTs,
-//         blocks: [
-//           {
-//             type: "section",
-//             text: {
-//               type: "mrkdwn",
-//               text: "Error: Unable to authenticate user. Please try again later.",
-//             },
-//           },
-//         ],
-//         text: "Error: Unable to authenticate user.",
-//       });
-//       return;
-//     }
-  
-//     const user = result.data as any;
-//     const userId = user._id;
-//     const userSlug = user.slug;
-//     const fullName = user.fullName;
-//     const mobile = user.mobile;
-//     const orgId = user.orgId;
-//     const profileURL = user.profileURL;
-  
-//     const accessToken = authJwtGenerator(
-//       user.email,
-//       userId,
-//       orgId,
-//       fullName,
-//       profileURL,
-//       mobile,
-//       userSlug
-//     );
-//     const response = await axios.post<SearchResponse>(
-//       `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/knowledgebase/search?topK=20`,
-//       { searchtext: searchText }, 
-//       {
-//         headers: {
-//           Authorization: `Bearer ${accessToken}`,
-//           "Content-Type": "application/json",
-//         },
-//       }
-//     );
-
-//     const blocks: any[] = [
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Search Results for "${searchText}"*`,
-//         },
-//       },
-//       {
-//         type: "divider",
-//       },
-//     ];
-
-//     response.data.records.forEach((record, index) => {
-//       const content = response.data[index] ? (response.data as any)[index].content : "No content preview available";
-      
-//       blocks.push({
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*${record.name}*\n${content.substring(0, 150)}${content.length > 150 ? '...' : ''}`,
-//         },
-//       });
-
-//       const categories = record.appSpecificRecordType.map(type => type.name).join(", ");
-//       const departments = record.departments.map(dept => dept.name).join(", ");
-      
-//       blocks.push({
-//         type: "context",
-//         elements: [
-//           {
-//             type: "mrkdwn",
-//             text: `*Categories:* ${categories} | *Departments:* ${departments}`,
-//           },
-//         ],
-//       });
-
-//       blocks.push({
-//         type: "actions",
-//         elements: [
-//           {
-//             type: "button",
-//             text: {
-//               type: "plain_text",
-//               text: "View Details",
-//               emoji: true,
-//             },
-//             value: JSON.stringify({
-//               recordId: record._id,
-//               recordName: record.name,
-//               content: content,
-//               metadata: {
-//                 recordType: record.recordType,
-//                 status: record.status,
-//                 createdAt: record.createdAt,
-//                 departments: record.departments,
-//                 categories: record.appSpecificRecordType,
-//                 fileInfo: response.data.fileRecords.find(f => f.recordId === record._id),
-//               },
-//             }),
-//             action_id: `view_search_result_${index}`,
-//           },
-//         ],
-//       });
-
-//       blocks.push({
-//         type: "divider",
-//       });
-//     });
-
-//     await client.chat.update({
-//       channel: (body as any).channel.id,
-//       ts: messageTs,
-//       blocks: blocks,
-//       text: `Search Results for "${searchText}"`, 
-//     });
-//   } catch (error) {
-//     logger.error("Error calling the API:", error);
-
-//     await client.chat.update({
-//       channel: (body as any).channel.id,
-//       ts: messageTs,
-//       text: "Something went wrong while fetching the results. Please try again later.",
-//     });
-//   }
-// });
-
-// app.action(/^view_search_result_\d+$/, async ({ ack, body, client }) => {
-//   await ack();
-
-//   try {
-//     const recordData = JSON.parse((body as any).actions[0].value);
-    
-//     const modalBlocks: any[] = [
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: "*Record Details*",
-//         },
-//       },
-//       {
-//         type: "divider",
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Name*\n${recordData.recordName}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Record Type*\n${recordData.metadata.recordType}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Status*\n${recordData.metadata.status}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Content*\n${recordData.content}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Departments*\n${recordData.metadata.departments.map((d: any) => d.name).join(", ")}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Categories*\n${recordData.metadata.categories.map((c: any) => c.name).join(", ")}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Created At*\n${new Date(recordData.metadata.createdAt).toLocaleString()}`,
-//         },
-//       }
-//     ];
-
-   
-//     if (recordData.metadata.fileInfo) {
-//       modalBlocks.push({
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*File Information*\nName: ${recordData.metadata.fileInfo.fileName}\nExtension: ${recordData.metadata.fileInfo.extension}`,
-//         },
-//       });
-//     }
-
-   
-//     modalBlocks.push({
-//       type: "actions",
-//       elements: [
-//         {
-//           type: "button",
-//           text: {
-//             type: "plain_text",
-//             text: "View Record",
-//             emoji: true,
-//           },
-//           url: `https://playground.intellysense.com/knowledge-base/records/${recordData.recordId}`,
-//           action_id: "view_record",
-//         },
-//       ],
-//     });
-
-//     await client.views.open({
-//       trigger_id: (body as any).trigger_id,
-//       view: {
-//         type: "modal",
-//         title: {
-//           type: "plain_text",
-//           text: "Record Details",
-//         },
-//         blocks: modalBlocks,
-//       },
-//     });
-//   } catch (error) {
-//     console.error("Error opening record details modal:", error);
-//   }
-// });
-
-// app.action("chat_button", async ({ ack, body, client, logger }) => {
-//   await ack();
-
-//   const { searchText, threadTs } = JSON.parse((body as any).actions[0].value);
-
-//   if (!(body as any).channel?.id) {
-//     logger.error("Channel not found in body");
-//     return;
-//   }
-
-//   const loadingMessage = await client.chat.postMessage({
-//     channel: (body as any).channel.id,
-//     thread_ts: threadTs,
-//     text: `Generating response... :hourglass_flowing_sand:`,
-//   });
-
-//   if (!loadingMessage.ts) {
-//     logger.error("Failed to create loading message");
-//     return;
-//   }
-
-//   const messageTs = loadingMessage.ts;
-
-//   try {
-//     const lookupResult = await client.users.info({
-//       user: (body as any).user.id,
-//     });
-//     const email = lookupResult.user?.profile?.email;
-//     if (!email) {
-//       await client.chat.update({
-//         channel: (body as any).channel.id,
-//         ts: messageTs,
-//         text: "Error: Unable to get user email. Please try again later.",
-//       });
-//       return;
-//     }
-    
-//     const accessToken = authScopedJwtGenerator(email);
-    
-    
-//     const response = await axios.post<ConversationData>(
-//       `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/conversations/internal/create`,
-//       {
-//         query: searchText,
-//         conversationSource: "sales",
-//         chatMode: "quick"
-//       },
-//       {
-//         headers: {
-//           Authorization: `Bearer ${accessToken}`,
-//           "Content-Type": "application/json",
-//         },
-//       }
-//     );
-
-//     const botResponse = response.data.conversation.messages.find(
-//       (message) => message.messageType === "bot_response"
-//     );
-
-//     const conversationId = response.data.conversation._id;
-
-//     await saveToDatabase({ threadId: threadTs, conversationId, email });
-
-//     if (botResponse) {
-      
-
-//       if (botResponse.citations && botResponse.citations.length > 0) {
-//         let citationUrls: CitationUrls = {};
-//         botResponse.citations.forEach((citation) => {
-//           let webUrl = citation.citationData.metadata.webUrl;
-//           let chunkIndex = citation.citationData.chunkIndex;
-//           if (!webUrl?.startsWith("https://")) {
-//             webUrl = (process.env.FRONTEND_PUBLIC_URL || '') + (webUrl || '');
-//           }
-//           if (chunkIndex) {
-//             citationUrls[chunkIndex] = webUrl || '';
-//           }
-//         });
-//         botResponse.content = convertCitationsToHyperlinks(botResponse.content, citationUrls);
-        
-
-       
-//     }
-//     const blocks = [
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: botResponse.content,
-//         },
-//       },
-//     ];
-//     await client.chat.update({
-//       channel: (body as any).channel.id,
-//       ts: messageTs,
-//       blocks: blocks,
-//       text: `ChatBot Response for "${searchText}"`,
-//     });
-   
-//   }
-//   else {
-//       await client.chat.update({
-//         channel: (body as any).channel.id,
-//         ts: messageTs,
-//         text: "Something went wrong! Please try again later.",
-//       });
-//     }
-// }catch (error) {
-//   logger.error("Error calling the Chat API:", error);
-//   await client.chat.update({
-//     channel: (body as any).channel.id,
-//     ts: messageTs,
-//     text: "Something went wrong! Please try again later.",
-//   });
-// }
-// });
-
-// app.action(/^view_citation_details_\d+$/, async ({ ack, body, client }) => {
-//   await ack();
-
-//   try {
-//     const citationData = JSON.parse((body as any).actions[0].value);
-    
-//     const modalBlocks: any[] = [
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: "*Record Details*",
-//         },
-//       },
-//       {
-//         type: "divider",
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Name*\n${citationData.recordName}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Record Type*\n${citationData.metadata.recordType}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Content*\n${citationData.content}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Departments*\n${citationData.metadata.departments.join(", ")}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Categories*\n${citationData.metadata.categories.map((cat: any) => 
-//             `${cat.category}: ${cat.subcategories.join(", ")}`
-//           ).join("\n")}`,
-//         },
-//       },
-//       {
-//         type: "section",
-//         text: {
-//           type: "mrkdwn",
-//           text: `*Created At*\n${new Date(citationData.metadata.createdAt).toLocaleString()}`,
-//         },
-//       },
-//       {
-//         type: "actions",
-//         elements: [
-//           {
-//             type: "button",
-//             text: {
-//               type: "plain_text",
-//               text: "View Record",
-//               emoji: true,
-//             },
-            
-//             url: `https://playground.intellysense.com/knowledge-base/records/${citationData.recordId}`,
-//             action_id: "view_record",
-//           },
-//         ],
-//       },
-//     ];
-
-//     await client.views.open({
-//       trigger_id: (body as any).trigger_id,
-//       view: {
-//         type: "modal",
-//         title: {
-//           type: "plain_text",
-//           text: "Record Details",
-//         },
-//         blocks: modalBlocks,
-//       },
-//     });
-//   } catch (error) {
-//     console.error("Error opening citation details modal:", error);
-//   }
-// });
-
-// Start the application
 (async () => {
   await connect();
+
+  // Drop legacy threadId + botId index if it exists
+  await dropLegacyThreadBotIndex();
+
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");
 })();

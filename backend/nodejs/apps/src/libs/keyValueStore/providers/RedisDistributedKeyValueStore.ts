@@ -8,6 +8,9 @@ export interface RedisStoreConfig extends RedisConfig {
   keyPrefix?: string;
 }
 
+const CACHE_INVALIDATION_CHANNEL = 'pipeshub:cache:invalidate';
+
+
 export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStore<T> {
   private client: Redis;
   private serializer: (value: T) => Buffer;
@@ -203,6 +206,20 @@ export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStor
       Logger.getInstance().error(`Error in compareAndSet for key ${key}:`, error);
       // If operation fails, return false
       return false;
+    }
+  }
+
+  async publishCacheInvalidation(key: string): Promise<void> {
+    try {
+      await this.client.publish(
+        CACHE_INVALIDATION_CHANNEL,
+        key,
+      );
+    } catch (error) {
+      Logger.getInstance().warn(
+        `Failed to publish cache invalidation for key ${key}:`,
+        error,
+      );
     }
   }
 

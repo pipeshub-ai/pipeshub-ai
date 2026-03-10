@@ -31,6 +31,7 @@ import {
   groupConnectorInstances,
   groupToolsByConnectorType,
 } from './sidebar/index';
+import { SidebarToolsetsSection } from './sidebar/sidebar-toolsets-section';
 import { SidebarSkeleton } from '../skeleton-loader';
 
 interface FlowBuilderSidebarProps {
@@ -41,7 +42,11 @@ interface FlowBuilderSidebarProps {
   activeAgentConnectors: Connector[];
   configuredConnectors: Connector[];
   connectorRegistry: any[];
+  toolsets: any[]; // Pre-loaded toolsets with status
+  refreshToolsets: () => Promise<void>; // Refresh toolsets after OAuth
   isBusiness: boolean;
+  activeToolsetTypes?: string[];
+  userId?: string; // For toolsets section
 }
 
 const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
@@ -52,17 +57,19 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   activeAgentConnectors,
   configuredConnectors,
   connectorRegistry,
+  toolsets,
+  refreshToolsets,
   isBusiness,
+  activeToolsetTypes = [],
+  userId = '',
 }) => {
   const theme = useTheme();
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
     'Input / Output': true,
-    Agents: false,
     'LLM Models': false,
     Knowledge: false,
     Tools: true,
-    'Vector Stores': false,
   });
   const [expandedApps, setExpandedApps] = useState<Record<string, boolean>>({});
 
@@ -113,6 +120,15 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     [filteredTemplates]
   );
 
+  // Calculate actual Knowledge count (connector instances + individual KBs, excluding group nodes)
+  const knowledgeCount = useMemo(() => {
+    const connectorInstancesCount = Object.entries(groupedConnectorInstances).reduce(
+      (acc, [_, data]) => acc + data.instances.length,
+      0
+    );
+    return connectorInstancesCount + individualKBs.length;
+  }, [groupedConnectorInstances, individualKBs]);
+
   const handleCategoryToggle = (categoryName: string) => {
     setExpandedCategories((prev) => ({
       ...prev,
@@ -147,7 +163,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
             c.name.toUpperCase() === appName.toUpperCase() ||
             c.name === appName
         );
-        itemIcon = connector?.iconPath || '/assets/icons/connectors/default.svg';
+        itemIcon = connector?.iconPath || '/assets/icons/connectors/collections-gray.svg';
       } else {
         if (typeof appIcon === 'string' || appIcon.toString().includes('/assets/icons/connectors/')) {
           isDynamicIcon = true;
@@ -157,7 +173,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     } else if (sectionType === 'tools' && template.defaultConfig?.appName) {
       itemIcon = getToolIcon(template.type, template.defaultConfig.appName);
     } else if (sectionType === 'connectors' && template.defaultConfig?.name) {
-      itemIcon = template.defaultConfig.iconPath || '/assets/icons/connectors/default.svg';
+      itemIcon = template.defaultConfig.iconPath || '/assets/icons/connectors/collections-gray.svg';
       isDynamicIcon = true;
     }
 
@@ -165,6 +181,9 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     if (!isDynamicIcon && typeof itemIcon === 'string') {
       isDynamicIcon = true;
     }
+
+    // Input/output nodes should not be draggable
+    const isDraggable = template.category !== 'inputs' && template.category !== 'outputs';
 
     return (
       <SidebarNodeItem
@@ -174,6 +193,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
         sectionType={sectionType}
         itemIcon={itemIcon}
         isDynamicIcon={isDynamicIcon}
+        isDraggable={isDraggable}
       />
     );
   };
@@ -184,11 +204,6 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       name: 'Input / Output',
       icon: CATEGORY_ICONS.inputOutput,
       categories: ['inputs', 'outputs'],
-    },
-    {
-      name: 'Agents',
-      icon: CATEGORY_ICONS.agent,
-      categories: ['agent'],
     },
     {
       name: 'LLM Models',
@@ -204,11 +219,6 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       name: 'Tools',
       icon: CATEGORY_ICONS.processing,
       categories: ['tools', 'connectors'],
-    },
-    {
-      name: 'Vector Stores',
-      icon: CATEGORY_ICONS.vector,
-      categories: ['vector'],
     },
   ];
 
@@ -226,6 +236,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
           easing: theme.transitions.easing.easeInOut,
           duration: theme.transitions.duration.standard,
         }),
+        height: '100%',
         '& .MuiDrawer-paper': {
           width: sidebarWidth,
           boxSizing: 'border-box',
@@ -345,6 +356,8 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                         >
                           {config.name === 'Tools' 
                             ? Object.keys(toolsGroupedByConnectorType).length
+                            : config.name === 'Knowledge'
+                            ? knowledgeCount
                             : categoryTemplates.length}
                         </Typography>
                       )}
@@ -365,11 +378,14 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                     unmountOnExit
                   >
                     {config.name === 'Tools' ? (
-                      <SidebarToolsSection
-                        toolsGroupedByConnectorType={toolsGroupedByConnectorType}
+                      <SidebarToolsetsSection
                         expandedApps={expandedApps}
                         onAppToggle={handleAppToggle}
+                        toolsets={toolsets}
+                        refreshToolsets={refreshToolsets}
+                        loading={loading}
                         isBusiness={isBusiness}
+                        activeToolsetTypes={activeToolsetTypes}
                       />
                     ) : config.name === 'LLM Models' ? (
                       <List dense sx={{ py: 0 }}>

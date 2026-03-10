@@ -7,6 +7,7 @@ export interface NodeData extends Record<string, unknown> {
   id: string;
   type: string;
   label: string;
+  category?: string;
   config: Record<string, any>;
   description?: string;
   icon?: any;
@@ -47,6 +48,10 @@ export interface AgentBuilderHeaderProps {
   setTemplateDialogOpen: (open: boolean) => void;
   templatesLoading: boolean;
   agentId?: string;
+  shareWithOrg: boolean;
+  setShareWithOrg: (value: boolean) => void;
+  hasToolsets: boolean; // Whether the current flow has toolsets (blocks org sharing)
+  isReadOnly?: boolean;
 }
 
 export interface AgentBuilderCanvasWrapperProps {
@@ -57,7 +62,10 @@ export interface AgentBuilderCanvasWrapperProps {
   activeAgentConnectors: Connector[];
   configuredConnectors: Connector[];
   connectorRegistry: any[];
+  toolsets: any[];
+  refreshToolsets: () => Promise<void>;
   isBusiness: boolean;
+  activeToolsetTypes?: string[];
   nodes: any[];
   edges: any[];
   onNodesChange: (changes: any) => void;
@@ -71,6 +79,7 @@ export interface AgentBuilderCanvasWrapperProps {
   onNodeEdit?: (nodeId: string, data: any) => void;
   onNodeDelete?: (nodeId: string) => void;
   onError?: (error: string | AgentBuilderError) => void;
+  isReadOnly?: boolean;
 }
 
 export interface AgentBuilderError {
@@ -113,10 +122,12 @@ export interface UseAgentBuilderDataReturn {
   activeAgentConnectors: Connector[];
   configuredConnectors: Connector[];
   connectorRegistry: any[];
+  toolsets: any[]; // Toolsets with status (isConfigured, isAuthenticated)
   loading: boolean;
   loadedAgent: Agent | null;
   error: string | AgentBuilderError | null;
   setError: (error: string | AgentBuilderError | null) => void;
+  refreshToolsets: () => Promise<void>; // Refresh toolsets after OAuth authentication
 }
 
 export interface UseAgentBuilderStateReturn {

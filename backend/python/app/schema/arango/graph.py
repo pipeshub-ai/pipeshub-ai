@@ -86,4 +86,20 @@ EDGE_DEFINITIONS = [
         "from_vertex_collections": [CollectionNames.RECORDS.value],
         "to_vertex_collections": [CollectionNames.USERS.value],
     },
+    # Agent Builder Graph Edges
+    {
+        "edge_collection": CollectionNames.AGENT_HAS_TOOLSET.value,
+        "from_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
+        "to_vertex_collections": [CollectionNames.AGENT_TOOLSETS.value],
+    },
+    {
+        "edge_collection": CollectionNames.TOOLSET_HAS_TOOL.value,
+        "from_vertex_collections": [CollectionNames.AGENT_TOOLSETS.value],
+        "to_vertex_collections": [CollectionNames.AGENT_TOOLS.value],
+    },
+    {
+        "edge_collection": CollectionNames.AGENT_HAS_KNOWLEDGE.value,
+        "from_vertex_collections": [CollectionNames.AGENT_INSTANCES.value],
+        "to_vertex_collections": [CollectionNames.AGENT_KNOWLEDGE.value],
+    },
 ]

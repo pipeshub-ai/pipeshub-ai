@@ -401,6 +401,18 @@ ticket_record_schema = {
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
+            "labels":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "assignee_source_id":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "reporter_source_id":{"type": ["string", "null"]},
+            "is_email_hidden": {"type": "boolean", "default": False},
         },
     },
 }
@@ -415,6 +427,48 @@ project_record_schema = {
             "leadId": {"type": ["string", "null"]},
             "leadName": {"type": ["string", "null"]},
             "leadEmail": {"type": ["string", "null"]},
+        },
+    },
+}
+
+
+pull_request_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties":{
+            "orgId": {"type": "string"},
+            "summary": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "status": {"type": ["string", "null"]},
+            "assignee":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "assigneeEmail":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
+            "creatorEmail": {"type": ["string", "null"]},
+            "creatorName": {"type": ["string", "null"]},
+            "reviewEmail":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": []
+            },
+            "reviewName":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": []
+            },
+            "mergeable":{"type": ["string", "null"]},
+            "mergedBy": {"type": ["string", "null"]},
+            "labels":{
+                "type": "array",
+                "items": {"type": "string", "minLength": 0},
+                "default": [],
+            },
         },
     },
 }
@@ -558,70 +612,28 @@ agent_schema = {
             "description": {"type": "string", "minLength": 1},
             "startMessage": {"type": "string", "minLength": 1},
             "systemPrompt": {"type": "string", "minLength": 1},
+            "instructions": {"type": ["string", "null"]},
+            "models": {
+                "type": "array",
+                "items": {"type": "string"},  # Array of modelKey_modelName (e.g., ["uuid_gpt-4", "uuid_claude-3"])
+                "default": [],
+            },
             "tags": {
                 "type": "array",
                 "items": {"type": "string"},
                 "default": [],
             },
-            "tools": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-            },
-            "models": {
-                "type": "array",
-                "items": {"type": "object", "properties": {
-                    "provider": {"type": "string"},
-                    "modelName": {"type": "string"},
-                    "isReasoning": {"type": "boolean", "default": False},
-                    "modelKey": {"type": "string"},
-                },
-                "required": ["provider", "modelName", "isReasoning", "modelKey"],
-                "additionalProperties": True,
-                },
-                "default": [],
-            },
-            "kb": {
-                "type": "array",
-                "items": {"type": "string"},
-                "default": [],
-            },
-            "connectors": {
-                "type": "array",
-                "items": {"type": "object", "properties": {
-                    "id": {"type": "string"},
-                    "name": {"type": "string"},
-                    "category": {"type": "string", "enum": ["knowledge", "action"]},
-                    "scope": {"type": "string", "enum": [scope.value for scope in ConnectorScopes]},
-                    "type": {"type": "string"},
-                    },
-                    "required": ["id", "name", "category", "scope", "type"],
-                    "additionalProperties": True,
-                },
-                "default": [],
-            },
-            "vectorDBs": {
-                "type": "array",
-                "items": {"type": "object", "properties": {
-                    "id": {"type": "string"},
-                    "name": {"type": "string"},
-                    },
-                    "required": ["id", "name"],
-                    "additionalProperties": True,
-                },
-                "default": [],
-            },
             "isActive": {"type": "boolean", "default": True},
-            "createdBy": {"type": ["string", "null"]},
-            "updatedByUserId": {"type": ["string", "null"]},
-            "deletedByUserId": {"type": ["string", "null"]},
+            "createdBy": {"type": "string"},
+            "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "deletedAtTimestamp": {"type": "number"},
-            "isDeleted": {"type": "boolean", "default": False},
+            "deletedByUserId": {"type": ["string", "null"]},
+            "isDeleted": {"type": "boolean", "default": False}
         },
-        "required": ["name", "description", "startMessage", "systemPrompt", "tools", "models"],
-        "additionalProperties": True,
+        "required": ["name", "description", "startMessage", "systemPrompt", "models", "createdBy", "createdAtTimestamp"],
+        "additionalProperties": False,
     },
     "level": "strict",
     "message": "Document does not match the agent schema.",
@@ -933,4 +945,70 @@ people_schema = {
     },
     "level": "strict",
     "message": "Document does not match the people schema.",
+}
+
+# Knowledge Node Schema
+knowledge_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},
+            "connectorId": {"type": "string"},
+            "filters": {"type": "string"},  # Stringified JSON: '{"recordGroups":[],"records":[],...}'
+            "createdBy": {"type": "string"},
+            "updatedBy": {"type": ["string", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"}
+        },
+        "required": ["connectorId", "filters", "createdBy", "createdAtTimestamp"],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the knowledge schema.",
+}
+
+
+# Toolset Node Schema
+toolset_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},
+            "name": {"type": "string"},  # Normalized name (e.g., "slack")
+            "displayName": {"type": "string"},
+            "type": {"type": "string"},  # "app", "utility", etc
+            "userId": {"type": "string"},  # Executing user (used for etcd auth path lookup)
+            "instanceId": {"type": "string"},  # Admin-created instance UUID (new architecture)
+            "instanceName": {"type": "string"},  # Human-readable instance name
+            "createdBy": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"}
+        },
+        "required": ["name", "displayName", "type", "userId", "createdBy", "createdAtTimestamp"],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the toolset schema.",
+}
+
+
+# Tool Node Schema - Created for each selected tool in a toolset
+tool_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},
+            "name": {"type": "string"},  # e.g., "send_message"
+            "fullName": {"type": "string"},  # e.g., "slack.send_message" (for registry lookup)
+            "toolsetName": {"type": "string"},  # e.g., "slack"
+            "description": {"type": "string"},
+            "createdBy": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"}
+        },
+        "required": ["name", "fullName", "toolsetName", "createdBy", "createdAtTimestamp"],
+        "additionalProperties": False
+    },
+    "level": "strict",
+    "message": "Document does not match the tool schema.",
 }

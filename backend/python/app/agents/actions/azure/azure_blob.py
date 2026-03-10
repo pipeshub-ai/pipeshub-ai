@@ -2,17 +2,106 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Optional, Tuple
+from typing import Coroutine, List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.azure.azure_blob import AzureBlobClient
 from app.sources.external.azure.azure_blob import AzureBlobDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_container",
+        description="Create a new container",
+        parameters=[
+            {"name": "container_name", "type": "string", "description": "Container name", "required": True}
+        ],
+        tags=["containers", "create"]
+    ),
+    ToolDefinition(
+        name="get_container",
+        description="Get container details",
+        parameters=[
+            {"name": "container_name", "type": "string", "description": "Container name", "required": True}
+        ],
+        tags=["containers", "read"]
+    ),
+    ToolDefinition(
+        name="delete_container",
+        description="Delete a container",
+        parameters=[
+            {"name": "container_name", "type": "string", "description": "Container name", "required": True}
+        ],
+        tags=["containers", "delete"]
+    ),
+    ToolDefinition(
+        name="upload_blob",
+        description="Upload a blob",
+        parameters=[
+            {"name": "container_name", "type": "string", "description": "Container name", "required": True},
+            {"name": "blob_name", "type": "string", "description": "Blob name", "required": True},
+            {"name": "content", "type": "string", "description": "Blob content", "required": True}
+        ],
+        tags=["blobs", "upload"]
+    ),
+    ToolDefinition(
+        name="get_blob",
+        description="Get a blob",
+        parameters=[
+            {"name": "container_name", "type": "string", "description": "Container name", "required": True},
+            {"name": "blob_name", "type": "string", "description": "Blob name", "required": True}
+        ],
+        tags=["blobs", "read"]
+    ),
+    ToolDefinition(
+        name="delete_blob",
+        description="Delete a blob",
+        parameters=[
+            {"name": "container_name", "type": "string", "description": "Container name", "required": True},
+            {"name": "blob_name", "type": "string", "description": "Blob name", "required": True}
+        ],
+        tags=["blobs", "delete"]
+    ),
+    ToolDefinition(
+        name="search_blobs_by_tags",
+        description="Search blobs by tags",
+        parameters=[
+            {"name": "container_name", "type": "string", "description": "Container name", "required": True},
+            {"name": "tag_filter", "type": "string", "description": "Tag filter", "required": True}
+        ],
+        tags=["blobs", "search"]
+    ),
+]
 
+
+# Register Azure Blob Storage toolset
+@ToolsetBuilder("Azure Blob Storage")\
+    .in_group("Storage")\
+    .with_description("Azure Blob Storage integration for object storage and container management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("Azure Storage Account Name", "your-account-name", field_name="accountName"),
+            CommonFields.api_token("Azure Storage Account Key", "your-account-key", field_name="accountKey")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/azure.svg"))\
+    .build_decorator()
 class AzureBlob:
     """Azure Blob Storage tools using AzureBlobDataSource (CRUD + search)."""
 

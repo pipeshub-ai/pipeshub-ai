@@ -162,7 +162,7 @@ export default function KnowledgeBaseSearch() {
     (records: PipesHub.Record[]): Record<string, PipesHub.Record> =>
       records.reduce(
         (acc, record) => {
-          const recordKey = record._key || 'unknown';
+          const recordKey = record.id || record._key || 'unknown';
           acc[recordKey] = record;
           return acc;
         },

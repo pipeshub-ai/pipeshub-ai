@@ -1,5 +1,6 @@
 import os
-from typing import Optional
+from collections.abc import Callable, Coroutine
+from typing import Any, Optional
 
 from dependency_injector.wiring import inject
 from fastapi import HTTPException, Request, status
@@ -111,24 +112,35 @@ async def isJwtTokenValid(request: Request) -> dict:
         authorization_header = request.headers.get("Authorization")
         token = extract_bearer_token(authorization_header)
 
+        def _normalize_payload(payload: dict, token_type: str) -> dict:
+            """Add metadata and normalize OAuth tokens for scope enforcement."""
+            payload["user"] = token
+            payload["token_type"] = token_type
+
+            # Detect OAuth tokens and normalize for require_scopes()
+            if payload.get("tokenType") == "oauth":
+                payload["isOAuth"] = True
+                payload["oauthScopes"] = payload.get("scope", "").split(" ")
+                payload["oauthClientId"] = payload.get("client_id")
+                # For client_credentials grants, use the resolved userId from header
+                oauth_user_id = request.headers.get("x-oauth-user-id")
+                if oauth_user_id:
+                    payload["userId"] = oauth_user_id
+
+            return payload
+
         # Try regular JWT first (maintains backward compatibility)
         try:
             payload = jwt.decode(token, regular_jwt_secret, algorithms=[algorithm])
             logger.debug("✅ Validated token using regular JWT secret")
-            # Add metadata for backward compatibility
-            payload["user"] = token
-            payload["token_type"] = "regular"
-            return payload
+            return _normalize_payload(payload, "regular")
         except JWTError as regular_jwt_error:
             # If scoped JWT secret is available, try it as fallback
             if scoped_jwt_secret:
                 try:
                     payload = jwt.decode(token, scoped_jwt_secret, algorithms=[algorithm])
                     logger.debug("✅ Validated token using scoped JWT secret (fallback)")
-                    # Add metadata
-                    payload["user"] = token
-                    payload["token_type"] = "scoped"
-                    return payload
+                    return _normalize_payload(payload, "scoped")
                 except JWTError as scoped_jwt_error:
                     # Both failed - log and raise
                     logger.warning(
@@ -198,3 +210,33 @@ async def authMiddleware(request: Request) -> Request:
         raise credentials_exception
 
     return request
+
+
+def require_scopes(*required_scopes: str) -> Callable[..., Coroutine[Any, Any, None]]:
+    """
+    FastAPI dependency factory that enforces OAuth scope validation.
+    Args:
+        *required_scopes: One or more scope strings. The token must have
+                        at least one of them (OR logic).
+    """
+    async def _check_scopes(request: Request) -> None:
+        user = getattr(request.state, "user", None)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Only enforce scopes for OAuth tokens
+        if not user.get("isOAuth", False):
+            return
+
+        token_scopes = user.get("oauthScopes", [])
+        if not any(scope in token_scopes for scope in required_scopes):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Insufficient scope. Required: {' or '.join(required_scopes)}",
+            )
+
+    return _check_scopes

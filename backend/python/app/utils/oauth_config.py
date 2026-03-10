@@ -23,6 +23,14 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
     else:
         oauth_config.additional_params = {}
 
+    # Add scope_parameter_name support (defaults to "scope" if not provided)
+    if auth_config.get('scopeParameterName'):
+        oauth_config.scope_parameter_name = auth_config.get('scopeParameterName')
+
+    # Add token_response_path support (optional, for providers with nested token responses)
+    if auth_config.get('tokenResponsePath'):
+        oauth_config.token_response_path = auth_config.get('tokenResponsePath')
+
     # Check if this is Notion OAuth (by checking token_url)
     # Notion requires Basic Auth with JSON body
     token_url = auth_config.get('tokenUrl', '')

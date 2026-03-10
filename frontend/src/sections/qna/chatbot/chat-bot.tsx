@@ -581,6 +581,8 @@ const getEngagingStatusMessage = (event: string, data: any): string | null => {
     }
     case 'connected':
       return '🔌 Connected and processing...';
+    case 'metadata':
+      return '💾 Saving metadata...';
     case 'query_transformed':
     case 'results_ready':
       return null;
@@ -820,10 +822,10 @@ const ChatInterface = () => {
     }
 
     // Set model from conversation if available
-    if (conversationModelInfo.modelName) {
+    if (conversationModelInfo.modelName && conversationModelInfo.modelKey) {
       // Try to find matching model by modelName first
       let matchingModel = models.find(
-        (m) => m.modelName === conversationModelInfo.modelName
+        (m) => m.modelName === conversationModelInfo.modelName && m.modelKey === conversationModelInfo.modelKey
       );
 
       // If not found by name, try by modelKey
@@ -1045,6 +1047,11 @@ const ChatInterface = () => {
                 data.citations || []
               );
             }
+            break;
+
+          case 'metadata':
+            // Status message is already handled by getEngagingStatusMessage above
+            // This event indicates metadata is being saved, so we keep the status visible
             break;
 
           case 'complete': {
@@ -1317,6 +1324,9 @@ const ChatInterface = () => {
             query: trimmedInput,
             modelKey: currentModel?.modelKey,
             modelName: currentModel?.modelName,
+            modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
+              ? currentModel.modelFriendlyName.trim() 
+              : undefined,
             chatMode: chatMode || currentMode?.id,
             filters: filters || currentFiltersValue,
           },
@@ -1972,6 +1982,9 @@ const ChatInterface = () => {
               filters: currentFiltersValue,
               modelKey: currentModel?.modelKey,
               modelName: currentModel?.modelName,
+              modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
+                ? currentModel.modelFriendlyName.trim() 
+                : undefined,
               chatMode: currentMode?.id || 'standard',
             }),
             signal: controller.signal,

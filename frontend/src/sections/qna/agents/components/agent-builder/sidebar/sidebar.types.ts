@@ -190,6 +190,8 @@ export interface SidebarNodeItemProps {
   itemIcon?: IconifyIcon | string;
   /** Whether the icon is a dynamic image path */
   isDynamicIcon?: boolean;
+  /** Whether the item is draggable (default: true) */
+  isDraggable?: boolean;
 }
 
 /**
@@ -212,6 +214,8 @@ export interface SidebarCategoryProps {
   borderColor?: string;
   /** Whether to show configuration icon */
   showConfigureIcon?: boolean;
+  /** Whether to show authenticated indicator (green checkmark) */
+  showAuthenticatedIndicator?: boolean;
   /** Callback when configure is clicked */
   onConfigureClick?: () => void;
   /** Additional drag data */

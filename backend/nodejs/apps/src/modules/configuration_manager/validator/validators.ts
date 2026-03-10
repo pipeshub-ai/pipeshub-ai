@@ -9,6 +9,13 @@ export const baseStorageSchema = z.object({
   ]),
 });
 
+const slackBotConfigBodySchema = z.object({
+  name: z.string().trim().min(1, { message: 'Slack Bot name is required' }),
+  botToken: z.string().trim().min(1, { message: 'Bot token is required' }),
+  signingSecret: z.string().trim().min(1, { message: 'Signing secret is required' }),
+  agentId: z.string().trim().optional().or(z.literal('')),
+});
+
 export const s3ConfigSchema = baseStorageSchema.extend({
   storageType: z.literal(storageTypes.S3),
   s3AccessKeyId: z.string().min(1, { message: 'S3 access key ID is required' }),
@@ -200,6 +207,25 @@ export const platformSettingsSchema = z.object({
       .record(z.boolean())
       .default({})
       .describe('Feature flags map, e.g., { ENABLE_WORKFLOW_BUILDER: true }'),
+  }),
+});
+
+
+
+export const createSlackBotConfigSchema = z.object({
+  body: slackBotConfigBodySchema,
+});
+
+export const updateSlackBotConfigSchema = z.object({
+  params: z.object({
+    configId: z.string().min(1, { message: 'Config ID is required' }),
+  }),
+  body: slackBotConfigBodySchema,
+});
+
+export const deleteSlackBotConfigSchema = z.object({
+  params: z.object({
+    configId: z.string().min(1, { message: 'Config ID is required' }),
   }),
 });
 
@@ -452,6 +478,7 @@ export const providerType = z.union([embeddingProvider, llmProvider, ocrProvider
 // Model Configuration schema
 export const configurationSchema = z.object({
   model: z.string().optional().describe("Model name(s) - can be comma-separated for multiple models (e.g., 'gpt-4o, gpt-4o-mini')"),
+  modelFriendlyName: z.string().optional().describe("Friendly name for the model (only allowed when model contains a single model name, not comma-separated)"),
   apiKey: z.string().optional().describe("API key for the model"),
   endpoint: z.string().optional().describe("Endpoint URL for the model"),
   organizationId: z.string().optional().describe("Organization ID"),
@@ -463,7 +490,21 @@ export const configurationSchema = z.object({
   model_kwargs: z.record(z.any()).optional().describe("Additional model kwargs"),
   encode_kwargs: z.record(z.any()).optional().describe("Additional encoding kwargs"),
   cache_folder: z.string().optional().describe("Cache folder for models")
-});
+}).refine(
+  (data) => {
+    // If modelFriendlyName is provided, model must be a single model (not comma-separated)
+    if (data.modelFriendlyName && data.modelFriendlyName.trim() !== '') {
+      if (!data.model || data.model.includes(',')) {
+        return false;
+      }
+    }
+    return true;
+  },
+  {
+    message: "Model friendly name can only be set when a single model name is provided (not comma-separated)",
+    path: ["modelFriendlyName"],
+  }
+);
 
 // Add Provider Request schema
 export const modelConfigurationSchema = z.object({

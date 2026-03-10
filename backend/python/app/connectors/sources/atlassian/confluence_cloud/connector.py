@@ -904,7 +904,10 @@ class ConfluenceConnector(BaseConnector):
                         if not content_indexing_enabled:
                             webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-                        if len(permissions) > 0:
+                        # Only set inherit_permissions to False if there are READ restrictions
+                        # EDIT-only restrictions should still inherit from space for READ access
+                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+                        if len(read_permissions) > 0:
                             webpage_record.inherit_permissions = False
 
                         # Add item to batch
@@ -1280,7 +1283,10 @@ class ConfluenceConnector(BaseConnector):
                         permissions = await self._fetch_page_permissions(item_id)
                         total_permissions += len(permissions)
 
-                        if len(permissions) > 0:
+                        # Only set inherit_permissions to False if there are READ restrictions
+                        # EDIT-only restrictions should still inherit from space for READ access
+                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+                        if len(read_permissions) > 0:
                             webpage_record.inherit_permissions = False
 
                         # Add to batch for update
@@ -3155,7 +3161,10 @@ class ConfluenceConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(page_id)
-            if len(permissions) > 0:
+            # Only set inherit_permissions to False if there are READ restrictions
+            # EDIT-only restrictions should still inherit from space for READ access
+            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+            if len(read_permissions) > 0:
                 webpage_record.inherit_permissions = False
 
             return (webpage_record, permissions)
@@ -3207,7 +3216,10 @@ class ConfluenceConnector(BaseConnector):
 
             # Fetch fresh permissions
             permissions = await self._fetch_page_permissions(blogpost_id)
-            if len(permissions) > 0:
+            # Only set inherit_permissions to False if there are READ restrictions
+            # EDIT-only restrictions should still inherit from space for READ access
+            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
+            if len(read_permissions) > 0:
                 webpage_record.inherit_permissions = False
 
             return (webpage_record, permissions)

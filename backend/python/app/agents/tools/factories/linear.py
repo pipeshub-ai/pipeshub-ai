@@ -2,8 +2,7 @@
 Client factories for Linear.
 """
 
-
-from typing import Optional
+from typing import Any, Dict
 
 from app.agents.tools.factories.base import ClientFactory
 from app.sources.client.linear.linear import LinearClient
@@ -13,13 +12,32 @@ from app.sources.client.linear.linear import LinearClient
 # ============================================================================
 
 class LinearClientFactory(ClientFactory):
-    """Factory for creating Linear clients"""
+    """
+    Factory for creating Linear clients.
 
-    async def create_client(self, config_service, logger, state=None, connector_instance_id: Optional[str] = None) -> LinearClient:
-        """Create Linear client instance"""
+    Supports both toolset-based and connector-based authentication.
+    """
 
-        return await LinearClient.build_from_services(
+    async def create_client(
+        self,
+        config_service,
+        logger,
+        toolset_config: Dict[str, Any],
+        state=None
+    ) -> LinearClient:
+        """
+        Create Linear client instance from toolset configuration.
+
+        Args:
+            config_service: Configuration service instance
+            logger: Logger instance
+            state: Chat state (optional)
+            toolset_config: Toolset configuration from etcd (REQUIRED)
+
+        Returns:
+            LinearClient instance
+        """
+        return await LinearClient.build_from_toolset(
+            toolset_config=toolset_config,
             logger=logger,
-            config_service=config_service,
-            connector_instance_id=connector_instance_id
         )

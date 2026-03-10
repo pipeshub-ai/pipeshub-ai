@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional, Set, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.api.middlewares.auth import require_scopes
+from app.config.constants.service import OAuthScopes
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     IncludeOption,
     KnowledgeHubErrorResponse,
@@ -173,6 +175,7 @@ def _parse_size_range(value: Optional[str]) -> Optional[Dict[str, Optional[int]]
         400: {"model": KnowledgeHubErrorResponse},
         500: {"model": KnowledgeHubErrorResponse},
     },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
 )
 async def get_knowledge_hub_root_nodes(
     request: Request,
@@ -233,6 +236,7 @@ async def get_knowledge_hub_root_nodes(
         400: {"model": KnowledgeHubErrorResponse},
         500: {"model": KnowledgeHubErrorResponse},
     },
+    dependencies=[Depends(require_scopes(OAuthScopes.KB_READ))],
 )
 async def get_knowledge_hub_children_nodes(
     request: Request,

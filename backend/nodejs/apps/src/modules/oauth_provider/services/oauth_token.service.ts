@@ -59,22 +59,26 @@ export class OAuthTokenService {
     orgId: string,
     scopes: string[],
     includeRefreshToken: boolean = true,
+    fullName?: string,
+    accountType?: string,
   ): Promise<GeneratedTokens> {
     const jti = uuidv4()
     const now = Math.floor(Date.now() / 1000)
 
     // Generate access token
     const accessTokenPayload: OAuthTokenPayload = {
-      sub: userId || app.clientId,
+      userId: userId || app.clientId,
+      orgId,
       iss: this.issuer,
-      aud: app.clientId,
       exp: now + app.accessTokenLifetime,
       iat: now,
       jti,
       scope: scopes.join(' '),
       client_id: app.clientId,
-      org_id: orgId,
-      token_type: 'access',
+      tokenType: 'oauth',
+      fullName,
+      accountType,
+      createdBy: app.createdBy?.toString(),
     }
 
     const signOptions: jwt.SignOptions = { algorithm: this.algorithm }
@@ -105,16 +109,19 @@ export class OAuthTokenService {
     if (includeRefreshToken && userId && scopes.includes('offline_access')) {
       const refreshJti = uuidv4()
       const refreshTokenPayload: OAuthTokenPayload = {
-        sub: userId,
+        userId: userId,
+        orgId,
         iss: this.issuer,
-        aud: app.clientId,
         exp: now + app.refreshTokenLifetime,
         iat: now,
         jti: refreshJti,
         scope: scopes.join(' '),
         client_id: app.clientId,
-        org_id: orgId,
-        token_type: 'refresh',
+        tokenType: 'oauth',
+        isRefreshToken: true,
+        fullName,
+        accountType,
+        createdBy: app.createdBy?.toString(),
       }
 
       const refreshToken = jwt.sign(refreshTokenPayload, this.signingKey, signOptions)
@@ -152,7 +159,7 @@ export class OAuthTokenService {
         algorithms: [this.algorithm],
       }) as OAuthTokenPayload
 
-      if (payload.token_type !== 'access') {
+      if (payload.isRefreshToken) {
         throw new InvalidTokenError('Invalid token type')
       }
 
@@ -188,7 +195,7 @@ export class OAuthTokenService {
         algorithms: [this.algorithm],
       }) as OAuthTokenPayload
 
-      if (payload.token_type !== 'refresh') {
+      if (!payload.isRefreshToken) {
         throw new InvalidTokenError('Invalid token type')
       }
 
@@ -247,15 +254,17 @@ export class OAuthTokenService {
     // Generate new tokens
     const newTokens = await this.generateTokens(
       app,
-      payload.sub,
-      payload.org_id,
+      payload.userId,
+      payload.orgId,
       scopes,
       true, // Include new refresh token
+      payload.fullName,
+      payload.accountType,
     )
 
     this.logger.info('Tokens refreshed', {
       clientId: app.clientId,
-      userId: payload.sub,
+      userId: payload.userId,
       rotationCount: storedToken.rotationCount + 1,
     })
 
@@ -383,7 +392,7 @@ export class OAuthTokenService {
 
       // Check revocation
       const storedToken =
-        payload.token_type === 'access'
+        !payload.isRefreshToken
           ? await OAuthAccessToken.findOne({
               tokenHash: { $eq: tokenHash },
               isRevoked: { $eq: false },
@@ -402,11 +411,10 @@ export class OAuthTokenService {
         active: true,
         scope: payload.scope,
         client_id: payload.client_id,
-        token_type: payload.token_type === 'access' ? 'Bearer' : 'refresh_token',
+        token_type: !payload.isRefreshToken ? 'Bearer' : 'refresh_token',
         exp: payload.exp,
         iat: payload.iat,
-        sub: payload.sub,
-        aud: payload.aud,
+        user_id: payload.userId,
         iss: payload.iss,
         jti: payload.jti,
       }

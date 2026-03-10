@@ -1,0 +1,72 @@
+name: Integration Tests
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+  workflow_dispatch:
+    inputs:
+      connectors:
+        description: 'Connector markers to run (e.g. "s3", "gcs", "azure_blob", "azure_files", or "integration" for all)'
+        required: false
+        default: 'integration'
+  schedule:
+    # Run nightly at 02:00 UTC
+    - cron: '0 2 * * *'
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        working-directory: integration-tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run integration tests
+        working-directory: integration-tests
+        env:
+          # Pipeshub API
+          PIPESHUB_BASE_URL: ${{ secrets.PIPESHUB_BASE_URL }}
+          CLIENT_ID: ${{ secrets.PIPESHUB_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.PIPESHUB_CLIENT_SECRET }}
+
+          # Neo4j Aura
+          TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
+          TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
+          TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
+          TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
+
+          # AWS S3
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+
+          # Google Cloud Storage
+          GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
+
+          # Azure Blob Storage
+          AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
+
+          # Azure Files
+          AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
+        run: |
+          MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
+          pytest -m "$MARKERS" -v --tb=short 2>&1

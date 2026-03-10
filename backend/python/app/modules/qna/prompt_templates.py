@@ -212,21 +212,14 @@ qna_prompt_instructions_1 = """
   Context for Current Query:
 """
 
-qna_prompt_context = """
-<record>
-      - Record Id: {{ record_id }}
-      - Record Name: {{ record_name }}
-      - Record Summary with metadata:
-        * Summary: {{ semantic_metadata.summary }}
-        * Category: {{ semantic_metadata.categories }}
-        * Sub-categories:
-          - Level 1: {{ semantic_metadata.sub_category_level_1 }}
-          - Level 2: {{ semantic_metadata.sub_category_level_2 }}
-          - Level 3: {{ semantic_metadata.sub_category_level_3 }}
-        * Topics: {{ semantic_metadata.topics }}
-      - Record blocks (sorted):
-"""
 
+
+qna_prompt_context = """<record>
+{% if context_metadata %}
+{{ context_metadata }}
+{% endif %}
+Record blocks (sorted):
+"""
 
 qna_prompt_instructions_2 = """
 <instructions>
@@ -408,8 +401,6 @@ Your answer: """
 #         * Topics: {{ semantic_metadata.topics }}
 #       - Record blocks (sorted):
 # """
-
-
 
 # qna_prompt_instructions_2 = """
 # <instructions>

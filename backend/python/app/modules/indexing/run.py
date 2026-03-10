@@ -323,19 +323,19 @@ class IndexingPipeline:
         self,
         logger,
         config_service: ConfigurationService,
-        arango_service,
+        graph_provider,
         collection_name: str,
         vector_db_service: IVectorDBService,
     ) -> None:
         self.logger = logger
         self.config_service = config_service
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         """
         Initialize the indexing pipeline with necessary configurations.
 
         Args:
             config_service: Configuration service
-            arango_service: Arango service
+            graph_provider: Arango service
             collection_name: Name for the collection
             vector_db_service: Vector DB service
         """
@@ -568,7 +568,7 @@ class IndexingPipeline:
 
             # Update record with indexing status
             try:
-                record = await self.arango_service.get_document(
+                record = await self.graph_provider.get_document(
                     meta["recordId"], CollectionNames.RECORDS.value
                 )
                 if not record:
@@ -589,7 +589,7 @@ class IndexingPipeline:
 
                 docs = [doc]
 
-                success = await self.arango_service.batch_upsert_nodes(
+                success = await self.graph_provider.batch_upsert_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
                 if not success:
@@ -645,7 +645,7 @@ class IndexingPipeline:
             self.logger.info(f"🔍 Checking other records with virtual_record_id {virtual_record_id}")
 
             # Get other records with same virtual_record_id
-            other_records = await self.arango_service.get_records_by_virtual_record_id(
+            other_records = await self.graph_provider.get_records_by_virtual_record_id(
                 virtual_record_id=virtual_record_id
             )
 
@@ -662,7 +662,7 @@ class IndexingPipeline:
             self.logger.info("🗑️ Proceeding with deletion as no other records exist")
 
             try:
-                await self.arango_service.delete_nodes(keys=[virtual_record_id], collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+                await self.graph_provider.delete_nodes(keys=[virtual_record_id], collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
 
                 filter_dict = await self.vector_db_service.filter_collection(
                     must={"virtualRecordId": virtual_record_id}
@@ -736,15 +736,71 @@ class IndexingPipeline:
                 self.logger.info("No virtual record IDs provided for bulk deletion")
                 return {"deleted_count": 0, "virtual_record_ids_processed": 0, "success": True}
 
-            self.logger.info(f"🗑️ Starting bulk deletion of embeddings for {len(virtual_record_ids)} records")
+            # Normalize IDs: remove empty values and deduplicate while preserving order
+            normalized_virtual_record_ids = list(
+                dict.fromkeys(
+                    virtual_record_id.strip()
+                    for virtual_record_id in virtual_record_ids
+                    if isinstance(virtual_record_id, str) and virtual_record_id.strip()
+                )
+            )
+
+            if not normalized_virtual_record_ids:
+                self.logger.info("No valid virtual record IDs provided for bulk deletion")
+                return {"deleted_count": 0, "virtual_record_ids_processed": 0, "success": True}
+
+            self.logger.info(
+                f"🗑️ Starting bulk deletion candidate evaluation for {len(normalized_virtual_record_ids)} virtual record IDs"
+            )
+
+            safe_virtual_record_ids: List[str] = []
+            skipped_virtual_record_ids: List[str] = []
+
+            for virtual_record_id in normalized_virtual_record_ids:
+                try:
+                    remaining_records = await self.graph_provider.get_records_by_virtual_record_id(
+                        virtual_record_id=virtual_record_id
+                    )
+                    if remaining_records:
+                        skipped_virtual_record_ids.append(virtual_record_id)
+                        self.logger.info(
+                            f"⏭️ Skipping bulk deletion for virtual_record_id {virtual_record_id} "
+                            f"because it is still referenced by records: {remaining_records}"
+                        )
+                        continue
+
+                    safe_virtual_record_ids.append(virtual_record_id)
+                except Exception as e:
+                    skipped_virtual_record_ids.append(virtual_record_id)
+                    self.logger.error(
+                        f"❌ Failed to validate virtual_record_id {virtual_record_id} before bulk deletion: {e}. "
+                        f"Skipping this ID to avoid accidental data loss."
+                    )
+
+            if skipped_virtual_record_ids:
+                self.logger.info(
+                    f"⏭️ Skipped {len(skipped_virtual_record_ids)} virtual record IDs during bulk deletion safety checks"
+                )
+
+            if not safe_virtual_record_ids:
+                self.logger.info(
+                    "No virtual record IDs are eligible for bulk deletion after safety checks"
+                )
+                return {"deleted_count": 0, "virtual_record_ids_processed": 0, "success": True}
+
+            self.logger.info(
+                f"🗑️ Proceeding with bulk deletion for {len(safe_virtual_record_ids)} safe virtual record IDs"
+            )
 
             # Delete from virtualRecordToDocIdMapping collection in batch
             try:
-                await self.arango_service.delete_nodes(
-                    keys=virtual_record_ids,
+                await self.graph_provider.delete_nodes(
+                    keys=safe_virtual_record_ids,
                     collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
                 )
-                self.logger.info(f"✅ Deleted {len(virtual_record_ids)} entries from virtualRecordToDocIdMapping")
+                self.logger.info(
+                    f"✅ Deleted {len(safe_virtual_record_ids)} entries from virtualRecordToDocIdMapping"
+                )
             except Exception as e:
                 # This is critical for data consistency - log as error
                 self.logger.error(
@@ -763,8 +819,8 @@ class IndexingPipeline:
             total_deleted = 0
 
             # Process in batches to avoid filter size limits
-            for i in range(0, len(virtual_record_ids), QDRANT_BULK_DELETE_BATCH_SIZE):
-                batch = virtual_record_ids[i:i + QDRANT_BULK_DELETE_BATCH_SIZE]
+            for i in range(0, len(safe_virtual_record_ids), QDRANT_BULK_DELETE_BATCH_SIZE):
+                batch = safe_virtual_record_ids[i:i + QDRANT_BULK_DELETE_BATCH_SIZE]
 
                 try:
                     # Build filter for batch - use "should" for OR logic
@@ -830,11 +886,14 @@ class IndexingPipeline:
                     # Continue with next batch even if one fails
                     continue
 
-            self.logger.info(f"✅ Bulk deletion complete: {total_deleted} embeddings deleted for {len(virtual_record_ids)} virtual record IDs")
+            self.logger.info(
+                f"✅ Bulk deletion complete: {total_deleted} embeddings deleted for "
+                f"{len(safe_virtual_record_ids)} virtual record IDs"
+            )
 
             return {
                 "deleted_count": total_deleted,
-                "virtual_record_ids_processed": len(virtual_record_ids),
+                "virtual_record_ids_processed": len(safe_virtual_record_ids),
                 "success": True
             }
 
@@ -884,7 +943,7 @@ class IndexingPipeline:
                 )
 
             if len(documents) == 0:
-                record_dict = await self.arango_service.get_document(
+                record_dict = await self.graph_provider.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
 
@@ -906,7 +965,7 @@ class IndexingPipeline:
                 )
 
                 docs = [record_dict]
-                success = await self.arango_service.batch_upsert_nodes(
+                success = await self.graph_provider.batch_upsert_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
                 if not success:

@@ -91,4 +91,11 @@ export class InMemoryKeyValueStore<T> implements DistributedKeyValueStore<T> {
   async healthCheck(): Promise<boolean> {
     return true;
   }
+
+  /**
+   * Cache invalidation is a no-op for in-memory store since there is no distributed cache.
+   */
+  async publishCacheInvalidation(_key: string): Promise<void> {
+    // No-op: in-memory store has no distributed cache to invalidate
+  }
 }

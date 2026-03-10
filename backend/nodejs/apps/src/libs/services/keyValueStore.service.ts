@@ -158,6 +158,13 @@ export class KeyValueStoreService implements IKVStoreConnection {
     }
   }
 
+
+  private async publishCacheInvalidation(key: string): Promise<void> {
+    if (this.store.publishCacheInvalidation) {
+      await this.store.publishCacheInvalidation(key);
+    }
+  }
+
   /**
    * Sets a value in the store, creating new key or updating existing
    * @param key - The key to set
@@ -174,6 +181,7 @@ export class KeyValueStoreService implements IKVStoreConnection {
         throw error;
       }
     }
+    await this.publishCacheInvalidation(key);
   }
 
   /**
@@ -193,6 +201,7 @@ export class KeyValueStoreService implements IKVStoreConnection {
   async delete(key: string): Promise<void> {
     await this.ensureConnection();
     await this.store.deleteKey(key);
+    await this.publishCacheInvalidation(key);
   }
 
   /**
@@ -237,6 +246,10 @@ export class KeyValueStoreService implements IKVStoreConnection {
    */
   async compareAndSet<T>(key: string, expectedValue: T | null, newValue: T): Promise<boolean> {
     await this.ensureConnection();
-    return await this.store.compareAndSet(key, expectedValue, newValue);
+    const success = await this.store.compareAndSet(key, expectedValue, newValue);
+    if (success) {
+      await this.publishCacheInvalidation(key);
+    }
+    return success;
   }
 }

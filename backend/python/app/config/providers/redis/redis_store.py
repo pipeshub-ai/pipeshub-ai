@@ -86,9 +86,10 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self._db = db
         self._connect_timeout = connect_timeout
 
-        # Thread-local storage for Redis clients (one per event loop/thread)
-        self._local = threading.local()
-        self._clients: Dict[int, redis.Redis] = {}
+        # Per-thread Redis clients dict: thread_id → (client, event_loop_ref)
+        # The event_loop_ref lets us detect stale clients bound to a closed
+        # event loop (e.g. after asyncio.run() finishes in a thread pool).
+        self._clients: Dict[int, tuple[redis.Redis, Optional[asyncio.AbstractEventLoop]]] = {}
         self._clients_lock = threading.Lock()
 
         logger.debug("Redis store initialized with lazy client creation")
@@ -97,12 +98,39 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         """Get or create a Redis client for the current thread/event loop.
 
         This ensures each event loop has its own Redis client to avoid
-        'Future attached to a different loop' errors.
+        'Future attached to a different loop' errors. Stale clients whose
+        event loop has been closed (e.g. after asyncio.run() finishes in a
+        thread-pool thread) are automatically discarded and replaced.
         """
-        # Use thread ID as key since each thread typically has its own event loop
         thread_id = threading.get_ident()
 
+        # Determine the current running event loop, if any
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
         with self._clients_lock:
+            if thread_id in self._clients:
+                client, bound_loop = self._clients[thread_id]
+                # Discard if the loop the client was created on has been closed,
+                # or if a different loop is now running on this thread.
+                loop_closed = bound_loop is not None and bound_loop.is_closed()
+                loop_changed = (
+                    current_loop is not None
+                    and bound_loop is not None
+                    and current_loop is not bound_loop
+                )
+                if loop_closed or loop_changed:
+                    logger.debug(
+                        "Discarding stale Redis client for thread %s "
+                        "(loop_closed=%s, loop_changed=%s)",
+                        thread_id,
+                        loop_closed,
+                        loop_changed,
+                    )
+                    del self._clients[thread_id]
+
             if thread_id not in self._clients:
                 logger.debug("Creating new Redis client for thread %s", thread_id)
 
@@ -126,9 +154,9 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     health_check_interval=30,
                     single_connection_client=True,
                 )
-                self._clients[thread_id] = client
+                self._clients[thread_id] = (client, current_loop)
 
-            return self._clients[thread_id]
+            return self._clients[thread_id][0]
 
     @property
     def client(self) -> Optional[redis.Redis]:
@@ -169,11 +197,12 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         Returns:
             True if connection was established, False if timeout reached.
         """
-        start_time = asyncio.get_event_loop().time()
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
         retry_count = 0
         base_delay = RETRY_BASE_DELAY
 
-        while (asyncio.get_event_loop().time() - start_time) < timeout:
+        while (loop.time() - start_time) < timeout:
             try:
                 result = await self._get_client().ping()
                 if result is True:
@@ -182,7 +211,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             except Exception as e:
                 retry_count += 1
                 delay = min(base_delay * (2 ** (retry_count - 1)), RETRY_MAX_DELAY)
-                remaining = timeout - (asyncio.get_event_loop().time() - start_time)
+                remaining = timeout - (loop.time() - start_time)
 
                 if remaining <= 0:
                     break
@@ -410,12 +439,13 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         # Set closing flag to stop reconnection attempts
         self._is_closing = True
 
-        # Cancel Pub/Sub task
+        # Cancel Pub/Sub task (may be on a different event loop if started from a background thread)
         if self._pubsub_task and not self._pubsub_task.done():
             self._pubsub_task.cancel()
             try:
                 await self._pubsub_task
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, RuntimeError):
+                # RuntimeError if the task belongs to a different event loop
                 pass
         self._pubsub_task = None
         self._pubsub_callback = None
@@ -426,15 +456,18 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self._watch_tasks.clear()
         self._watchers.clear()
 
-        # Close all Redis connections (one per thread/event loop)
+        # Close all Redis connections (one per thread/event loop).
+        # Snapshot and clear under the lock, then await outside the lock so
+        # we never hold a threading.Lock across an await (deadlock risk).
         with self._clients_lock:
-            for thread_id, client in self._clients.items():
-                try:
-                    await client.close()
-                    logger.debug("Closed Redis client for thread %s", thread_id)
-                except Exception as e:
-                    logger.warning("Error closing Redis client for thread %s: %s", thread_id, str(e))
+            clients_to_close = list(self._clients.items())
             self._clients.clear()
+        for thread_id, (client, _loop) in clients_to_close:
+            try:
+                await client.close()
+                logger.debug("Closed Redis client for thread %s", thread_id)
+            except Exception as e:
+                logger.warning("Error closing Redis client for thread %s: %s", thread_id, str(e))
         logger.debug("Redis store closed successfully")
 
     # -------------------------------------------------------------------------
@@ -452,7 +485,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         while retry_count < max_retries:
             try:
                 await self._get_client().publish(self.CACHE_INVALIDATION_CHANNEL, key)
-                logger.debug("Published cache invalidation for key: %s", key)
+                logger.info("Published cache invalidation for key: %s", key)
                 return
             except Exception as e:
                 retry_count += 1

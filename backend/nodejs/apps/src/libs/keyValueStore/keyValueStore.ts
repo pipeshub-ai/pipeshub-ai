@@ -8,4 +8,5 @@ export interface DistributedKeyValueStore<T> {
   listKeysInDirectory(directory: string): Promise<string[]>;
   compareAndSet(key: string, expectedValue: T | null, newValue: T): Promise<boolean>;
   healthCheck(): Promise<boolean>;
+  publishCacheInvalidation(key: string): Promise<void>;
 }

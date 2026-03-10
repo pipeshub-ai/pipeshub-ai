@@ -136,6 +136,36 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
               </Grid>
             );
           }
+          if (key === 'instructions') {
+            return (
+              <Grid item xs={12} key={key}>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500 }}>
+                  Instructions
+                </Typography>
+                <TextField
+                  fullWidth
+                  multiline
+                  rows={3}
+                  value={value || ''}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, [key]: e.target.value }))}
+                  placeholder="Optional additional instructions for the agent (e.g. always respond in French, use bullet points)..."
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: isDark
+                          ? theme.palette.primary.main
+                          : theme.palette.primary.main,
+                      },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                        borderWidth: 1,
+                      },
+                    },
+                  }}
+                />
+              </Grid>
+            );
+          }
           if (key === 'startMessage') {
             return (
               <Grid item xs={12} key={key}>
@@ -897,7 +927,28 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
                             const newSelected = e.target.checked
                               ? [...currentSelected, kb.id]
                               : currentSelected.filter((id) => id !== kb.id);
-                            setConfig((prev) => ({ ...prev, [key]: newSelected }));
+                            
+                            // Update kbConnectorIds mapping when KBs are selected/deselected
+                            setConfig((prev) => {
+                              const currentKbConnectorIds = prev.kbConnectorIds || {};
+                              const newKbConnectorIds = { ...currentKbConnectorIds };
+                              
+                              if (e.target.checked) {
+                                // Add KB connectorId to mapping when selected
+                                if (kb.connectorId) {
+                                  newKbConnectorIds[kb.id] = kb.connectorId;
+                                }
+                              } else {
+                                // Remove from mapping when deselected
+                                delete newKbConnectorIds[kb.id];
+                              }
+                              
+                              return { 
+                                ...prev, 
+                                [key]: newSelected,
+                                kbConnectorIds: newKbConnectorIds,
+                              };
+                            });
                           }}
                           size="small"
                         />
