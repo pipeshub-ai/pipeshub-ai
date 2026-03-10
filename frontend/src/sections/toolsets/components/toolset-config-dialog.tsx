@@ -243,8 +243,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
     label: '',
   });
   
-  // CREATE mode: new OAuth app name for admin
-  const [newOAuthAppName, setNewOAuthAppName] = useState('');
+  // CREATE mode: new OAuth app name for admin (removed - using instanceName instead)
   const [selectedCreateOAuthConfigId, setSelectedCreateOAuthConfigId] = useState<string | null>(null);
   
   // Loading states
@@ -697,12 +696,6 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
       setError(null);
       setSuccess(null);
 
-      // Validate OAuth app name for admin creating new OAuth app
-      if (isAdmin && selectedAuthType === 'OAUTH' && !selectedOAuthConfigId && !newOAuthAppName.trim()) {
-        setError('Please enter a name for the new OAuth App');
-        return;
-      }
-
       if (!validateForm()) {
         setError('Please fill in all required fields correctly');
         return;
@@ -732,9 +725,9 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
         if (selectedOAuthConfigId) {
           // Using existing OAuth app
           payload.oauthConfigId = selectedOAuthConfigId;
-        } else if (newOAuthAppName.trim()) {
-          // Creating new OAuth app with separate name
-          payload.oauthInstanceName = newOAuthAppName.trim();
+        } else {
+          // Creating new OAuth app - use instanceName as oauthInstanceName
+          payload.oauthInstanceName = instanceName.trim();
         }
       }
 
@@ -1010,7 +1003,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
         PaperProps={{ sx: { borderRadius: 2.5, boxShadow: isDark ? '0 24px 48px rgba(0,0,0,0.4)' : '0 20px 60px rgba(0,0,0,0.12)' } }}
       >
         <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 3, py: 2.5, borderBottom: `1px solid ${theme.palette.divider}` }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, width: '100%', mt:1 }}>
             <Skeleton variant="rectangular" width={48} height={48} sx={{ borderRadius: 1.5 }} />
             <Box sx={{ flex: 1 }}>
               <Skeleton variant="text" width="60%" height={32} sx={{ mb: 1 }} />
@@ -1021,7 +1014,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
             </Box>
           </Box>
         </DialogTitle>
-        <DialogContent sx={{ px: 3, py: 3 }}>
+        <DialogContent sx={{ px: 3, py: 3, mt:1 }}>
           <Stack spacing={3}>
             <Skeleton variant="rectangular" height={60} sx={{ borderRadius: 1.5 }} />
             <Skeleton variant="rectangular" height={200} sx={{ borderRadius: 1.25 }} />
@@ -1197,6 +1190,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                         setFormData({});
                         setFormErrors({});
                         setSaveAttempted(false);
+                        setSelectedOAuthConfigId(null);
                       }}
                       label="Authentication Type"
                       sx={{ borderRadius: 1.25 }}
@@ -1276,26 +1270,73 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                     </Box>
 
                     {/* Instance Name - Always required */}
-                    <TextField
-                      label="Toolset Instance Name"
-                      value={instanceName}
-                      onChange={(e) => {
-                        setInstanceName(e.target.value);
-                        if (formErrors.instanceName) {
-                          setFormErrors((prev) => { const n = { ...prev }; delete n.instanceName; return n; });
-                        }
-                      }}
-                      required
-                      fullWidth
-                      size="small"
-                      error={saveAttempted && !!formErrors.instanceName}
-                      helperText={saveAttempted && formErrors.instanceName}
-                      placeholder={`e.g., ${toolset.displayName || 'My Toolset'} - Production`}
-                      sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.25 } }}
-                    />
+                    <Grid container spacing={2}>
+                      <Grid item xs={12}>
+                        <TextField
+                          label="Toolset Instance Name"
+                          value={instanceName}
+                          onChange={(e) => {
+                            setInstanceName(e.target.value);
+                            if (formErrors.instanceName) {
+                              setFormErrors((prev) => { const n = { ...prev }; delete n.instanceName; return n; });
+                            }
+                          }}
+                          required
+                          fullWidth
+                          size="small"
+                          error={saveAttempted && !!formErrors.instanceName}
+                          helperText={saveAttempted && formErrors.instanceName}
+                          placeholder={`e.g., ${toolset.displayName || 'My Toolset'} - Production`}
+                          sx={{
+                            '& .MuiOutlinedInput-root': {
+                              borderRadius: 1.25,
+                              backgroundColor: isDark
+                                ? alpha(theme.palette.background.paper, 0.6)
+                                : alpha(theme.palette.background.paper, 0.8),
+                              transition: 'all 0.2s',
+                              '&:hover': {
+                                backgroundColor: isDark
+                                  ? alpha(theme.palette.background.paper, 0.8)
+                                  : alpha(theme.palette.background.paper, 1),
+                              },
+                              '&:hover .MuiOutlinedInput-notchedOutline': {
+                                borderColor: alpha(theme.palette.primary.main, isDark ? 0.4 : 0.3),
+                              },
+                              '&.Mui-focused': {
+                                backgroundColor: isDark
+                                  ? alpha(theme.palette.background.paper, 0.9)
+                                  : theme.palette.background.paper,
+                              },
+                              '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                                borderWidth: 1.5,
+                                borderColor: theme.palette.primary.main,
+                              },
+                            },
+                            '& .MuiInputLabel-root': {
+                              fontSize: '0.875rem',
+                              fontWeight: 500,
+                              '&.Mui-focused': {
+                                fontSize: '0.875rem',
+                              },
+                            },
+                            '& .MuiOutlinedInput-input': {
+                              fontSize: '0.875rem',
+                              padding: '10.5px 14px',
+                              fontWeight: 400,
+                            },
+                            '& .MuiFormHelperText-root': {
+                              fontSize: '0.75rem',
+                              fontWeight: 400,
+                              marginTop: 0.75,
+                              marginLeft: 1,
+                            },
+                          }}
+                        />
+                      </Grid>
+                    </Grid>
 
-                    {/* OAuth App Selector (Admin in CREATE mode for OAuth) */}
-                    {isOAuth && isAdmin && (
+                    {/* OAuth App Selector (Admin in CREATE mode for OAuth) - Only show if OAuth apps exist */}
+                    {isOAuth && isAdmin && availableOAuthConfigs.length > 0 && (
                       <>
                         {loadingOAuthConfigs ? (
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 2, bgcolor: alpha(theme.palette.primary.main, 0.04), borderRadius: 1.25 }}>
@@ -1303,70 +1344,84 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                             <Typography variant="body2" color="text.secondary">Loading OAuth apps...</Typography>
                           </Box>
                         ) : (
-                          <>
-                            <FormControl fullWidth size="small">
-                              <InputLabel>OAuth App</InputLabel>
-                              <Select
-                                value={selectedOAuthConfigId || '__new__'}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  if (val === '__new__') {
-                                    setSelectedOAuthConfigId(null);
-                                    setNewOAuthAppName('');
-                                    setFormData({});
-                                  } else {
-                                    setSelectedOAuthConfigId(val);
-                                    // Load selected OAuth config data into formData
-                                    const selectedConfig = availableOAuthConfigs.find(cfg => cfg._id === val);
-                                    if (selectedConfig) {
-                                      const newFormData: Record<string, any> = {};
-                                      // Populate all fields from the selected config
-                                      Object.keys(selectedConfig).forEach(key => {
-                                        if (key !== '_id' && key !== 'oauthInstanceName' && key !== 'orgId' && key !== 'userId' && key !== 'toolsetType' && key !== 'createdAtTimestamp' && key !== 'updatedAtTimestamp' && key !== 'clientSecretSet') {
-                                          const value = (selectedConfig as any)[key];
-                                          if (Array.isArray(value)) {
-                                            newFormData[key] = value.join(',');
-                                          } else if (value !== null && value !== undefined) {
-                                            newFormData[key] = value;
+                          <Grid container spacing={2}>
+                            <Grid item xs={12}>
+                              <FormControl fullWidth size="small">
+                                <InputLabel sx={{ fontSize: '0.875rem', fontWeight: 500 }}>OAuth App</InputLabel>
+                                <Select
+                                  value={selectedOAuthConfigId || '__new__'}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    if (val === '__new__') {
+                                      setSelectedOAuthConfigId(null);
+                                      setFormData({});
+                                    } else {
+                                      setSelectedOAuthConfigId(val);
+                                      // Load selected OAuth config data into formData
+                                      const selectedConfig = availableOAuthConfigs.find(cfg => cfg._id === val);
+                                      if (selectedConfig) {
+                                        const newFormData: Record<string, any> = {};
+                                        // Populate all fields from the selected config
+                                        Object.keys(selectedConfig).forEach(key => {
+                                          if (key !== '_id' && key !== 'oauthInstanceName' && key !== 'orgId' && key !== 'userId' && key !== 'toolsetType' && key !== 'createdAtTimestamp' && key !== 'updatedAtTimestamp' && key !== 'clientSecretSet') {
+                                            const value = (selectedConfig as any)[key];
+                                            if (Array.isArray(value)) {
+                                              newFormData[key] = value.join(',');
+                                            } else if (value !== null && value !== undefined) {
+                                              newFormData[key] = value;
+                                            }
                                           }
-                                        }
-                                      });
-                                      setFormData(newFormData);
-                                      setNewOAuthAppName('');
+                                        });
+                                        setFormData(newFormData);
+                                      }
                                     }
-                                  }
-                                }}
-                                label="OAuth App"
-                                sx={{ borderRadius: 1.25 }}
-                              >
-                                <MenuItem value="__new__">
-                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                                    <Iconify icon="mdi:plus-circle" width={16} />
-                                    <span>+ Create New OAuth App</span>
-                                  </Box>
+                                  }}
+                                  label="OAuth App"
+                                  sx={{
+                                    borderRadius: 1.25,
+                                    backgroundColor: isDark
+                                      ? alpha(theme.palette.background.paper, 0.6)
+                                      : alpha(theme.palette.background.paper, 0.8),
+                                    transition: 'all 0.2s',
+                                    '&:hover': {
+                                      backgroundColor: isDark
+                                        ? alpha(theme.palette.background.paper, 0.8)
+                                        : alpha(theme.palette.background.paper, 1),
+                                    },
+                                    '&:hover .MuiOutlinedInput-notchedOutline': {
+                                      borderColor: alpha(theme.palette.primary.main, isDark ? 0.4 : 0.3),
+                                    },
+                                    '&.Mui-focused': {
+                                      backgroundColor: isDark
+                                        ? alpha(theme.palette.background.paper, 0.9)
+                                        : theme.palette.background.paper,
+                                    },
+                                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                                      borderWidth: 1.5,
+                                      borderColor: theme.palette.primary.main,
+                                    },
+                                    '& .MuiSelect-select': {
+                                      fontSize: '0.875rem',
+                                      padding: '10.5px 14px',
+                                      fontWeight: 500,
+                                    },
+                                  }}
+                                >
+                              <MenuItem value="__new__">
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  <Iconify icon="mdi:plus-circle" width={16} />
+                                  <span>+ Create New OAuth App</span>
+                                </Box>
+                              </MenuItem>
+                              {availableOAuthConfigs.map((cfg) => (
+                                <MenuItem key={cfg._id} value={cfg._id}>
+                                  {cfg.oauthInstanceName}
                                 </MenuItem>
-                                {availableOAuthConfigs.map((cfg) => (
-                                  <MenuItem key={cfg._id} value={cfg._id}>
-                                    {cfg.oauthInstanceName}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-                          </>
-                        )}
-
-                        {/* OAuth Instance Name (Admin creating new OAuth app) */}
-                        {!selectedOAuthConfigId && !loadingOAuthConfigs && (
-                          <TextField
-                            label="OAuth App Name"
-                            value={newOAuthAppName}
-                            onChange={(e) => setNewOAuthAppName(e.target.value)}
-                            placeholder="e.g., Company OAuth App"
-                            size="small"
-                            fullWidth
-                            required
-                            sx={{ '& .MuiOutlinedInput-root': { borderRadius: 1.25 } }}
-                          />
+                              ))}
+                            </Select>
+                          </FormControl>
+                            </Grid>
+                          </Grid>
                         )}
                       </>
                     )}
@@ -1426,14 +1481,14 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                                 <strong>OAuth App:</strong> {selectedOAuthConfigId 
                                   ? 'Using an existing OAuth app. Credentials are pre-filled and can be updated if needed.'
                                   : !loadingOAuthConfigs && availableOAuthConfigs.length > 0
-                                    ? 'Select an existing OAuth app to reuse credentials, or create a new one.'
-                                    : 'Create a new OAuth app that can be shared across multiple toolset instances.'}
+                                    ? 'Select an existing OAuth app to reuse credentials, or create a new one using the instance name above.'
+                                    : 'A new OAuth app will be created automatically using the instance name above.'}
                               </span>
                             </Typography>
-                            {!selectedOAuthConfigId && !loadingOAuthConfigs && (
+                            {!selectedOAuthConfigId && !loadingOAuthConfigs && availableOAuthConfigs.length > 0 && (
                               <Typography variant="caption" color="text.secondary" sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5, fontSize: '0.75rem' }}>
                                 <Iconify icon="mdi:lightbulb-on-outline" width={14} sx={{ mt: 0.125, flexShrink: 0, color: theme.palette.warning.main }} />
-                                <span><strong>Tip:</strong> The OAuth App Name is separate from the Instance Name and can be reused across multiple instances.</span>
+                                <span><strong>Tip:</strong> When creating a new OAuth app, it will use the same name as the toolset instance name above.</span>
                               </Typography>
                             )}
                           </>
