@@ -174,7 +174,7 @@ class DataSourceEntitiesProcessor:
                     extension=None,
                     mime_type=MimeTypes.HTML.value,
                     size_in_bytes=None,
-                    weburl="",  # Will be updated when real directory is synced
+                    weburl=parent_external_id,
                     path=None,  # Will be updated when real directory is synced
                     indexing_status=IndexingStatus.NOT_STARTED.value,
                 )
