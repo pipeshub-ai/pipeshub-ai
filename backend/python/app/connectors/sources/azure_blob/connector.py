@@ -1170,13 +1170,14 @@ class AzureBlobConnector(BaseConnector):
 
             web_url = self._generate_web_url(container_name, normalized_name)
 
-            record_id = existing_record.id if existing_record else str(uuid.uuid4())
-            record_name = normalized_name.rstrip("/").split("/")[-1] or normalized_name.rstrip("/")
-
-            # For moves/renames, remove old parent relationship
+            # For move/rename: create new record at new path and delete old node (align with Azure Files)
             if is_move and existing_record:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await self._remove_old_parent_relationship(record_id, tx_store)
+                record_id = str(uuid.uuid4())
+                old_record_id = existing_record.id
+            else:
+                record_id = existing_record.id if existing_record else str(uuid.uuid4())
+                old_record_id = None
+            record_name = normalized_name.rstrip("/").split("/")[-1] or normalized_name.rstrip("/")
 
             version = 0 if not existing_record else existing_record.version + 1
 
@@ -1229,6 +1230,15 @@ class AzureBlobConnector(BaseConnector):
                 and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
             ):
                 file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            # For moves/renames, delete old record node so graph has no duplicate/orphan
+            if is_move and old_record_id:
+                try:
+                    await self.data_entities_processor.on_record_deleted(old_record_id)
+                except Exception as e:
+                    self.logger.warning(
+                        f"Error deleting old record {old_record_id} during move/rename: {e}"
+                    )
 
             permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 
@@ -1751,4 +1761,3 @@ class AzureBlobConnector(BaseConnector):
             config_service,
             connector_id,
         )
-
