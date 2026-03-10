@@ -1,13 +1,16 @@
-
-
 import json
 import logging
-from dataclasses import asdict
+from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
 )
+from msgraph.generated.models.entity_type import EntityType  # type: ignore
+from msgraph.generated.models.search_query import SearchQuery  # type: ignore
+from msgraph.generated.models.search_request import SearchRequest  # type: ignore
+from msgraph.generated.models.sort_property import SortProperty  # type: ignore
+from msgraph.generated.search.query.query_post_request_body import QueryPostRequestBody  # type: ignore
 from msgraph.generated.sites.item.columns.columns_request_builder import (  # type: ignore
     ColumnsRequestBuilder,
 )
@@ -20,8 +23,6 @@ from msgraph.generated.sites.item.lists.lists_request_builder import (  # type: 
 from msgraph.generated.sites.item.pages.pages_request_builder import (  # type: ignore
     PagesRequestBuilder,
 )
-
-# Import MS Graph specific query parameter classes for SharePoint
 from msgraph.generated.sites.sites_request_builder import (  # type: ignore
     SitesRequestBuilder,
 )
@@ -44,7 +45,12 @@ class SharePointResponse:
         self.message = message
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return {
+            "success": self.success,
+            "data": self.data,
+            "error": self.error,
+            "message": self.message,
+        }
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
@@ -147,6 +153,1418 @@ class SharePointDataSource:
     def get_data_source(self) -> 'SharePointDataSource':
         """Get the underlying SharePoint client."""
         return self
+
+    # ========== DELEGATED-AUTH OPTIMIZED METHODS ==========
+    # for delegated (user-consent) OAuth permissions.
+
+    async def list_sites_with_search_api(
+        self,
+        search_query: Optional[str] = None,
+        top: Optional[int] = None,
+        from_index: int = 0,
+        orderby: Optional[str] = None,
+    ) -> SharePointResponse:
+        """List ALL SharePoint sites the user can access using Microsoft Graph Search API.
+
+        Uses POST /search/query with entityTypes: ["site"] which is security-trimmed
+        to the authenticated user. This returns ALL sites the user has access to.
+
+        This is the RECOMMENDED approach for delegated permissions per Microsoft docs:
+        https://learn.microsoft.com/en-us/graph/api/search-query
+
+        The SDK handles authentication automatically - no manual token extraction needed.
+
+        Args:
+            search_query: Optional KQL search query to filter sites.
+                         If None, searches for all site collections and webs:
+                         "(contentclass:STS_Site OR contentclass:STS_Web)"
+            top: Maximum number of sites to return (default: 10, max: 50)
+            from_index: Offset for pagination (default: 0). Use multiples of top to
+                        paginate (e.g. from_index=10 to get the next page of 10).
+            orderby: Sort expression in "<field> <asc|desc>" format.
+                     Examples: "createdDateTime desc", "lastModifiedDateTime desc", "name asc".
+
+        Returns:
+            SharePointResponse with:
+                - success: True if search succeeded
+                - data: {"value": List[Dict], "count": int}
+                - error: Error message if search failed
+        """
+        try:
+            all_sites_dict = {}  # For deduplication by webUrl
+            page_size = min(top or 10, 50)
+
+            # Build KQL query for site search
+            if search_query and search_query.strip():
+                kql_query = search_query
+            else:
+                # Default: search for all site collections and webs
+                kql_query = "(contentclass:STS_Site OR contentclass:STS_Web)"
+
+            logger.info(f"📍 Using Graph Search API (KQL: {kql_query!r}, size: {page_size}, from: {from_index})")
+
+            # Build search request using SDK
+            request_body = QueryPostRequestBody()
+            search_request = SearchRequest()
+            search_request.entity_types = [EntityType.Site]
+
+            query = SearchQuery()
+            query.query_string = kql_query
+            search_request.query = query
+            search_request.from_ = from_index
+            search_request.size = page_size
+
+            # Apply sort if provided — parse "<field> <asc|desc>"
+            if orderby and orderby.strip():
+                parts = orderby.strip().rsplit(" ", 1)
+                sort_field = parts[0].strip()
+                is_descending = len(parts) > 1 and parts[1].strip().lower() == "desc"
+                sort_prop = SortProperty()
+                sort_prop.name = sort_field
+                sort_prop.is_descending = is_descending
+                search_request.sort_properties = [sort_prop]
+            
+            request_body.requests = [search_request]
+
+            # Execute search
+            response = await self.client.search.query.post(request_body)
+            
+            # Parse results
+            if response and hasattr(response, 'value') and response.value:
+                for search_response in response.value:
+                    hits_containers = getattr(search_response, 'hits_containers', None)
+                    
+                    if hits_containers:
+                        for container in hits_containers:
+                            if hasattr(container, 'hits') and container.hits:
+                                for hit in container.hits:
+                                    if hasattr(hit, 'resource'):
+                                        site_dict = self._serialize_site(hit.resource)
+                                        web_url = site_dict.get("webUrl")
+                                        if web_url and web_url not in all_sites_dict:
+                                            all_sites_dict[web_url] = site_dict
+
+                logger.info(f"✅ Graph Search API returned {len(all_sites_dict)} unique sites")
+            else:
+                logger.warning("⚠️ No search results returned")
+
+            all_sites = list(all_sites_dict.values())
+            logger.info(f"✅ Total sites accessible to user: {len(all_sites)}")
+
+            return SharePointResponse(
+                success=True,
+                data={"sites": all_sites, "count": len(all_sites)},
+                message=f"Found {len(all_sites)} sites using Graph Search API (security-trimmed to user)",
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Graph Search API failed: {e}")
+            error_msg = "Failed to list sites"
+            if hasattr(e, 'error') and hasattr(e.error, 'message'):
+                error_msg = e.error.message
+            elif hasattr(e, 'message'):
+                error_msg = str(e.message)
+            else:
+                error_msg = str(e)
+            return SharePointResponse(
+                success=False,
+                error=error_msg,
+            )
+
+    async def search_pages_with_search_api(
+        self,
+        query: str,
+        top: Optional[int] = 10,
+        from_index: int = 0,
+    ) -> SharePointResponse:
+        """Search for SharePoint modern pages across ALL sites using the Graph Search API.
+
+        Uses POST /search/query with entityTypes: ["listItem"] and KQL filter
+        contentclass:STS_ListItem_WebPageLibrary — this correctly finds SharePoint
+        modern site pages across every site the user has access to without needing
+        a site ID.
+
+        Args:
+            query: Keyword or phrase to search (e.g. "pipeshub KT", "onboarding")
+            top:   Maximum pages to return (default 10, max 50)
+            from_index: Offset for pagination
+
+        Returns:
+            SharePointResponse with data={"pages": List[Dict], "count": int}
+            Each page dict contains: id (page_id for get_page), title, web_url,
+            site_id, list_item_id, last_modified, created
+        """
+        try:
+            page_size = min(top or 10, 50)
+            # contentclass:STS_ListItem_WebPageLibrary correctly targets SharePoint modern pages.
+            # Terms are AND-ed by default in Microsoft Search KQL.
+            kql_query = (
+                f'{query.strip()} AND contentclass:STS_ListItem_WebPageLibrary'
+                if query and query.strip()
+                else "contentclass:STS_ListItem_WebPageLibrary"
+            )
+
+            logger.info(f"📍 Searching pages via Graph Search API (KQL: {kql_query!r}, size: {page_size}, from: {from_index})")
+
+            request_body = QueryPostRequestBody()
+            search_request = SearchRequest()
+            search_request.entity_types = [EntityType.ListItem]
+
+            search_query = SearchQuery()
+            search_query.query_string = kql_query
+            search_request.query = search_query
+            search_request.from_ = from_index
+            search_request.size = page_size
+
+            request_body.requests = [search_request]
+
+            response = await self.client.search.query.post(request_body)
+
+            pages: List[Dict[str, Any]] = []
+            if response and hasattr(response, "value") and response.value:
+                for search_response in response.value:
+                    hits_containers = getattr(search_response, "hits_containers", None)
+                    if hits_containers:
+                        for container in hits_containers:
+                            if hasattr(container, "hits") and container.hits:
+                                for hit in container.hits:
+                                    resource = getattr(hit, "resource", None)
+                                    if resource:
+                                        page_dict = self._serialize_page_from_list_item(resource)
+                                        if page_dict.get("web_url"):
+                                            pages.append(page_dict)
+
+            logger.info(f"✅ Page search returned {len(pages)} results")
+            return SharePointResponse(
+                success=True,
+                data={"pages": pages, "count": len(pages)},
+                message=f"Found {len(pages)} pages matching '{query}'",
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Page search failed: {e}")
+            error_msg = str(e)
+            if hasattr(e, "error") and hasattr(e.error, "message"):
+                error_msg = e.error.message
+            return SharePointResponse(success=False, error=error_msg)
+
+    def _serialize_page_from_list_item(self, resource) -> Dict[str, Any]:
+        """Extract page metadata from a listItem search hit resource.
+
+        Expected resource shape (from Postman / Graph API):
+        {
+            "@odata.type": "#microsoft.graph.listItem",
+            "id": "<guid>",                      ← returned as 'page_id' for use in get_page
+            "webUrl": "https://.../SitePages/pipeshub-kt.aspx",
+            "parentReference": {
+                "siteId": "host,collection-guid,web-guid"
+            },
+            "sharepointIds": {
+                "listId": "<guid>",
+                "listItemId": "<int>"
+            },
+            "createdDateTime": "...",
+            "lastModifiedDateTime": "..."
+        }
+        """
+        # --- dict path (additional_data from Kiota or raw JSON) ---
+        if isinstance(resource, dict):
+            web_url = resource.get("webUrl") or resource.get("web_url", "")
+            parent_ref = resource.get("parentReference") or {}
+            sp_ids = resource.get("sharepointIds") or {}
+            filename = web_url.rstrip("/").split("/")[-1] if web_url else ""
+            return {
+                "page_id": resource.get("id"),
+                "title": self._title_from_aspx_name(filename),
+                "web_url": web_url,
+                "site_id": parent_ref.get("siteId"),
+                "list_item_id": sp_ids.get("listItemId"),
+                "last_modified": resource.get("lastModifiedDateTime"),
+                "created": resource.get("createdDateTime"),
+            }
+
+        # --- Kiota Parsable object path ---
+        item_id = getattr(resource, "id", None)
+        web_url = getattr(resource, "web_url", None) or getattr(resource, "webUrl", None)
+        last_modified = getattr(resource, "last_modified_date_time", None)
+        created = getattr(resource, "created_date_time", None)
+
+        site_id = None
+        list_item_id = None
+
+        parent_ref = getattr(resource, "parent_reference", None)
+        if parent_ref:
+            site_id = getattr(parent_ref, "site_id", None) or getattr(parent_ref, "siteId", None)
+
+        sp_ids = getattr(resource, "sharepoint_ids", None)
+        if sp_ids:
+            list_item_id = getattr(sp_ids, "list_item_id", None) or getattr(sp_ids, "listItemId", None)
+
+        # Fallback — look in additional_data for fields Kiota typed model may not expose
+        additional = getattr(resource, "additional_data", {}) or {}
+        if isinstance(additional, dict):
+            if not web_url:
+                web_url = additional.get("webUrl") or additional.get("web_url")
+            if not site_id:
+                pr = additional.get("parentReference") or {}
+                if isinstance(pr, dict):
+                    site_id = pr.get("siteId")
+            if not list_item_id:
+                sp = additional.get("sharepointIds") or {}
+                if isinstance(sp, dict):
+                    list_item_id = sp.get("listItemId")
+
+        filename = web_url.rstrip("/").split("/")[-1] if web_url else ""
+        return {
+            "page_id": item_id,
+            "title": self._title_from_aspx_name(filename),
+            "web_url": web_url,
+            "site_id": site_id,
+            "list_item_id": list_item_id,
+            "last_modified": str(last_modified) if last_modified else None,
+            "created": str(created) if created else None,
+        }
+
+    def _title_from_aspx_name(self, name: str) -> str:
+        """Convert an .aspx filename to a human-readable title.
+
+        e.g. 'KT-Session.aspx' → 'KT Session'
+             'deployment_guide.aspx' → 'deployment guide'
+        """
+        title = name.replace(".aspx", "")
+        title = title.replace("-", " ").replace("_", " ")
+        return title.strip()
+
+    # ========== DOCUMENT / FILE OPERATIONS ==========
+
+    def _serialize_drive(self, drive) -> Dict[str, Any]:
+        """Serialize a Graph SDK Drive object to a plain dict."""
+        if isinstance(drive, dict):
+            return drive
+
+        result: Dict[str, Any] = {}
+        # Pull from additional_data first (Kiota backing store)
+        additional = getattr(drive, "additional_data", None) or {}
+        if isinstance(additional, dict):
+            result.update(additional)
+
+        prop_map = {
+            "id": "id",
+            "name": "name",
+            "driveType": "drive_type",
+            "webUrl": "web_url",
+            "createdDateTime": "created_date_time",
+            "lastModifiedDateTime": "last_modified_date_time",
+            "description": "description",
+        }
+        for camel, snake in prop_map.items():
+            if camel not in result:
+                val = getattr(drive, camel, None) or getattr(drive, snake, None)
+                if val is not None:
+                    if isinstance(val, datetime):
+                        val = val.isoformat()
+                    result[camel] = val
+
+        # Quota
+        quota = getattr(drive, "quota", None)
+        if quota and "quota" not in result:
+            try:
+                result["quota"] = {
+                    "used": getattr(quota, "used", None),
+                    "remaining": getattr(quota, "remaining", None),
+                    "total": getattr(quota, "total", None),
+                }
+            except Exception:
+                pass
+
+        return result
+
+    def _serialize_drive_item(self, item) -> Dict[str, Any]:
+        """Serialize a Graph SDK DriveItem to a plain dict suitable for agents."""
+        if isinstance(item, dict):
+            return item
+
+        result: Dict[str, Any] = {}
+        additional = getattr(item, "additional_data", None) or {}
+        if isinstance(additional, dict):
+            result.update(additional)
+
+        prop_map = {
+            "id": "id",
+            "name": "name",
+            "webUrl": "web_url",
+            "size": "size",
+            "createdDateTime": "created_date_time",
+            "lastModifiedDateTime": "last_modified_date_time",
+            "eTag": "e_tag",
+        }
+        for camel, snake in prop_map.items():
+            if camel not in result:
+                val = getattr(item, camel, None) or getattr(item, snake, None)
+                if val is not None:
+                    if isinstance(val, datetime):
+                        val = val.isoformat()
+                    result[camel] = val
+
+        # Folder / File facets
+        folder = getattr(item, "folder", None)
+        if folder and "folder" not in result:
+            child_count = getattr(folder, "child_count", None)
+            result["folder"] = {"childCount": child_count}
+
+        file_facet = getattr(item, "file", None)
+        if file_facet and "file" not in result:
+            mime = getattr(file_facet, "mime_type", None) or getattr(file_facet, "mimeType", None)
+            result["file"] = {"mimeType": mime}
+
+        # parentReference for site_id / drive_id
+        parent_ref = getattr(item, "parent_reference", None)
+        if parent_ref and "parentReference" not in result:
+            result["parentReference"] = {
+                "driveId": getattr(parent_ref, "drive_id", None) or getattr(parent_ref, "driveId", None),
+                "driveType": getattr(parent_ref, "drive_type", None) or getattr(parent_ref, "driveType", None),
+                "id": getattr(parent_ref, "id", None),
+                "siteId": getattr(parent_ref, "site_id", None) or getattr(parent_ref, "siteId", None),
+                "path": getattr(parent_ref, "path", None),
+            }
+
+        return result
+
+    def _is_text_mime(self, mime_type: Optional[str]) -> bool:
+        """Return True for MIME types whose content can be read as plain text."""
+        if not mime_type:
+            return False
+        TEXT_MIMES = {
+            "text/plain",
+            "text/html",
+            "text/csv",
+            "text/markdown",
+            "text/xml",
+            "application/json",
+            "application/xml",
+        }
+        return mime_type in TEXT_MIMES or mime_type.startswith("text/")
+
+    async def list_drives_for_site(
+        self,
+        site_id: str,
+        top: int = 10,
+    ) -> SharePointResponse:
+        """List document libraries (drives) for a SharePoint site.
+
+        Uses GET /sites/{site-id}/drives via the Graph SDK.
+
+        Args:
+            site_id: SharePoint site ID
+            top: Maximum number of drives to return (default 10, max 50)
+
+        Returns:
+            SharePointResponse with data={"drives": List[Dict], "count": int}
+        """
+        try:
+            config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration(
+                query_parameters=DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters(
+                    top=min(top, 50),
+                )
+            )
+            response = await self.client.sites.by_site_id(site_id).drives.get(request_configuration=config)
+
+            drives: List[Dict[str, Any]] = []
+            if response and hasattr(response, "value") and response.value:
+                drives = [self._serialize_drive(d) for d in response.value]
+            elif response and isinstance(response, dict):
+                raw = response.get("value") or []
+                drives = [self._serialize_drive(d) for d in raw]
+
+            logger.info(f"✅ list_drives_for_site: {len(drives)} drives for site {site_id}")
+            return SharePointResponse(
+                success=True,
+                data={"drives": drives, "count": len(drives)},
+                message=f"Found {len(drives)} document libraries",
+            )
+        except Exception as e:
+            logger.error(f"❌ list_drives_for_site failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    async def list_drive_children(
+        self,
+        site_id: str,
+        drive_id: str,
+        folder_id: Optional[str] = None,
+        top: int = 10,
+    ) -> SharePointResponse:
+        """List children (files and folders) inside a drive or folder.
+
+        - folder_id is None: lists the root of the drive via
+            GET /sites/{site-id}/drives/{drive-id}/root/children
+        - folder_id provided: lists that folder's children via
+            GET /sites/{site-id}/drives/{drive-id}/items/{folder-id}/children
+
+        Args:
+            site_id:   SharePoint site ID
+            drive_id:  Drive (document library) ID
+            folder_id: Item ID of the folder to list; None for drive root
+            top:       Max items to return (default 10, max 50)
+
+        Returns:
+            SharePointResponse with data={"items": List[Dict], "count": int}
+        """
+        try:
+            from kiota_abstractions.method import Method  # type: ignore
+            from kiota_abstractions.request_information import RequestInformation  # type: ignore
+            from msgraph.generated.models.drive_item_collection_response import (  # type: ignore
+                DriveItemCollectionResponse,
+            )
+
+            capped_top = min(top, 50)
+
+            # Build the URL.
+            # For root: GET /drives/{drive-id}/root/children
+            # For sub-folder: GET /drives/{drive-id}/items/{folder-id}/children
+            # Note: we use /drives/{drive-id}/... (top-level) because the
+            # /sites/{site-id}/drives/{drive-id}/... typed path in the SDK
+            # only exposes Drive metadata — items must go through /drives/.
+            if folder_id:
+                url = (
+                    f"https://graph.microsoft.com/v1.0"
+                    f"/drives/{drive_id}/items/{folder_id}/children"
+                    f"?$top={capped_top}"
+                )
+            else:
+                url = (
+                    f"https://graph.microsoft.com/v1.0"
+                    f"/drives/{drive_id}/root/children"
+                    f"?$top={capped_top}"
+                )
+
+            ri = RequestInformation()
+            ri.http_method = Method.GET
+            ri.url_template = url
+            ri.path_parameters = {}
+
+            response = await self.client.request_adapter.send_async(
+                ri, DriveItemCollectionResponse, {}
+            )
+
+            items: List[Dict[str, Any]] = []
+            if response and hasattr(response, "value") and response.value:
+                items = [self._serialize_drive_item(i) for i in response.value]
+
+            logger.info(f"✅ list_drive_children: {len(items)} items (drive={drive_id}, folder={folder_id})")
+            return SharePointResponse(
+                success=True,
+                data={"items": items, "count": len(items)},
+                message=f"Found {len(items)} items",
+            )
+        except Exception as e:
+            logger.error(f"❌ list_drive_children failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    async def search_files_with_search_api(
+        self,
+        query: str,
+        site_id: Optional[str] = None,
+        top: int = 10,
+        from_index: int = 0,
+    ) -> SharePointResponse:
+        """Search for SharePoint files/documents using the Graph Search API.
+
+        Uses POST /search/query with EntityType.DriveItem — searches across all
+        document libraries the user can access (optionally scoped to a site).
+
+        Args:
+            query:      Keyword or phrase to search for
+            site_id:    Optional site ID to scope the search (KQL: path filter)
+            top:        Max results (default 10, max 50)
+            from_index: Offset for pagination
+
+        Returns:
+            SharePointResponse with data={"files": List[Dict], "count": int}
+        """
+        try:
+            page_size = min(top, 50)
+
+            # Build KQL query — scope to site if provided
+            kql = query.strip() if query and query.strip() else "*"
+
+            logger.info(f"📍 search_files_with_search_api: KQL={kql!r}, size={page_size}, from={from_index}")
+
+            request_body = QueryPostRequestBody()
+            search_request = SearchRequest()
+            search_request.entity_types = [EntityType.DriveItem]
+
+            search_query = SearchQuery()
+            search_query.query_string = kql
+            search_request.query = search_query
+            search_request.from_ = from_index
+            search_request.size = page_size
+
+            request_body.requests = [search_request]
+            response = await self.client.search.query.post(request_body)
+
+            files: List[Dict[str, Any]] = []
+            if response and hasattr(response, "value") and response.value:
+                for search_response in response.value:
+                    hits_containers = getattr(search_response, "hits_containers", None)
+                    if hits_containers:
+                        for container in hits_containers:
+                            if hasattr(container, "hits") and container.hits:
+                                for hit in container.hits:
+                                    resource = getattr(hit, "resource", None)
+                                    if resource:
+                                        file_dict = self._serialize_file_from_search_hit(resource)
+                                        # Filter to site if requested
+                                        if site_id:
+                                            parent_ref = file_dict.get("parentReference") or {}
+                                            item_site_id = parent_ref.get("siteId", "")
+                                            if site_id not in item_site_id and item_site_id not in site_id:
+                                                continue
+                                        files.append(file_dict)
+
+            logger.info(f"✅ search_files_with_search_api: {len(files)} files for query={query!r}")
+            return SharePointResponse(
+                success=True,
+                data={"files": files, "count": len(files)},
+                message=f"Found {len(files)} files matching '{query}'",
+            )
+        except Exception as e:
+            logger.error(f"❌ search_files_with_search_api failed: {e}")
+            error_msg = str(e)
+            if hasattr(e, "error") and hasattr(e.error, "message"):
+                error_msg = e.error.message
+            return SharePointResponse(success=False, error=error_msg)
+
+    def _serialize_file_from_search_hit(self, resource) -> Dict[str, Any]:
+        """Extract file metadata from a Graph Search DriveItem hit resource."""
+        if isinstance(resource, dict):
+            parent_ref = resource.get("parentReference") or {}
+            file_facet = resource.get("file") or {}
+            return {
+                "id": resource.get("id"),
+                "name": resource.get("name"),
+                "webUrl": resource.get("webUrl") or resource.get("web_url"),
+                "size": resource.get("size"),
+                "createdDateTime": resource.get("createdDateTime"),
+                "lastModifiedDateTime": resource.get("lastModifiedDateTime"),
+                "mimeType": file_facet.get("mimeType"),
+                "parentReference": {
+                    "driveId": parent_ref.get("driveId"),
+                    "siteId": parent_ref.get("siteId"),
+                    "id": parent_ref.get("id"),
+                    "path": parent_ref.get("path"),
+                },
+                "isFolder": "folder" in resource,
+            }
+
+        # Kiota Parsable object
+        item_id = getattr(resource, "id", None)
+        name = getattr(resource, "name", None)
+        web_url = getattr(resource, "web_url", None) or getattr(resource, "webUrl", None)
+        size = getattr(resource, "size", None)
+        created = getattr(resource, "created_date_time", None)
+        modified = getattr(resource, "last_modified_date_time", None)
+
+        mime_type = None
+        file_facet = getattr(resource, "file", None)
+        if file_facet:
+            mime_type = getattr(file_facet, "mime_type", None) or getattr(file_facet, "mimeType", None)
+
+        parent_ref_obj = getattr(resource, "parent_reference", None)
+        drive_id = site_id_from_item = parent_id = parent_path = None
+        if parent_ref_obj:
+            drive_id = getattr(parent_ref_obj, "drive_id", None) or getattr(parent_ref_obj, "driveId", None)
+            site_id_from_item = getattr(parent_ref_obj, "site_id", None) or getattr(parent_ref_obj, "siteId", None)
+            parent_id = getattr(parent_ref_obj, "id", None)
+            parent_path = getattr(parent_ref_obj, "path", None)
+
+        is_folder = getattr(resource, "folder", None) is not None
+
+        # Also check additional_data
+        additional = getattr(resource, "additional_data", {}) or {}
+        if isinstance(additional, dict):
+            if not web_url:
+                web_url = additional.get("webUrl") or additional.get("web_url")
+            if not mime_type:
+                f = additional.get("file") or {}
+                if isinstance(f, dict):
+                    mime_type = f.get("mimeType")
+            if parent_ref_obj is None:
+                pr = additional.get("parentReference") or {}
+                if isinstance(pr, dict):
+                    drive_id = pr.get("driveId")
+                    site_id_from_item = pr.get("siteId")
+                    parent_id = pr.get("id")
+                    parent_path = pr.get("path")
+
+        return {
+            "id": item_id,
+            "name": name,
+            "webUrl": web_url,
+            "size": size,
+            "createdDateTime": str(created) if created else None,
+            "lastModifiedDateTime": str(modified) if modified else None,
+            "mimeType": mime_type,
+            "parentReference": {
+                "driveId": drive_id,
+                "siteId": site_id_from_item,
+                "id": parent_id,
+                "path": parent_path,
+            },
+            "isFolder": is_folder,
+        }
+
+    async def list_all_drives_children(
+        self,
+        site_id: str,
+        top_per_drive: int = 10,
+    ) -> SharePointResponse:
+        """List root-level files from ALL document libraries in a site.
+
+        Fetches every drive for the site, then calls list_drive_children on each
+        one and merges the results.  Adds 'drive_name' and 'drive_web_url' to
+        every item so callers can tell which library each file came from.
+
+        Args:
+            site_id:        SharePoint site ID
+            top_per_drive:  Max items per drive (default 10, max 50)
+
+        Returns:
+            SharePointResponse with data={"items": List[Dict], "drives_searched": int, "count": int}
+        """
+        try:
+            # Step 1 — get all drives
+            drives_response = await self.list_drives_for_site(site_id=site_id, top=50)
+            if not drives_response.success:
+                return drives_response
+
+            drives = (drives_response.data or {}).get("drives") or []
+            if not drives:
+                return SharePointResponse(
+                    success=True,
+                    data={"items": [], "drives_searched": 0, "count": 0},
+                    message="No document libraries found in this site",
+                )
+
+            # Step 2 — iterate every drive and collect children
+            all_items: List[Dict[str, Any]] = []
+            errors: List[str] = []
+
+            for drive in drives:
+                if not isinstance(drive, dict):
+                    continue
+                drive_id = drive.get("id")
+                drive_name = drive.get("name") or "Unknown"
+                drive_web_url = drive.get("webUrl") or drive.get("web_url") or ""
+
+                if not drive_id:
+                    continue
+
+                try:
+                    children_response = await self.list_drive_children(
+                        site_id=site_id,
+                        drive_id=drive_id,
+                        folder_id=None,
+                        top=top_per_drive,
+                    )
+                    if children_response.success:
+                        items = (children_response.data or {}).get("items") or []
+                        for item in items:
+                            if isinstance(item, dict):
+                                item["drive_name"] = drive_name
+                                item["drive_web_url"] = drive_web_url
+                                all_items.append(item)
+                    else:
+                        errors.append(f"Drive '{drive_name}': {children_response.error}")
+                except Exception as drive_err:
+                    errors.append(f"Drive '{drive_name}': {str(drive_err)}")
+                    logger.warning(f"⚠️ list_all_drives_children: skipping drive {drive_id} — {drive_err}")
+
+            logger.info(
+                f"✅ list_all_drives_children: {len(all_items)} items across "
+                f"{len(drives)} drives for site {site_id}"
+            )
+            result: Dict[str, Any] = {
+                "items": all_items,
+                "drives_searched": len(drives),
+                "count": len(all_items),
+            }
+            if errors:
+                result["drive_errors"] = errors
+            return SharePointResponse(
+                success=True,
+                data=result,
+                message=f"Found {len(all_items)} items across {len(drives)} document libraries",
+            )
+        except Exception as e:
+            logger.error(f"❌ list_all_drives_children failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    async def create_folder(
+        self,
+        drive_id: str,
+        name: str,
+        parent_folder_id: Optional[str] = None,
+    ) -> SharePointResponse:
+        """Create a new folder in a SharePoint document library.
+
+        - parent_folder_id is None: creates in drive root via
+            POST /drives/{drive-id}/root/children
+        - parent_folder_id provided: creates inside that folder via
+            POST /drives/{drive-id}/items/{parent-id}/children
+
+        Args:
+            drive_id:         Drive (document library) ID
+            name:             Folder name
+            parent_folder_id: Item ID of the parent folder; None for drive root
+
+        Returns:
+            SharePointResponse with folder metadata
+        """
+        try:
+            from kiota_abstractions.method import Method  # type: ignore
+            from kiota_abstractions.request_information import RequestInformation  # type: ignore
+            from msgraph.generated.models.drive_item import DriveItem  # type: ignore
+
+            if parent_folder_id:
+                url = (
+                    f"https://graph.microsoft.com/v1.0"
+                    f"/drives/{drive_id}/items/{parent_folder_id}/children"
+                )
+            else:
+                url = (
+                    f"https://graph.microsoft.com/v1.0"
+                    f"/drives/{drive_id}/root/children"
+                )
+
+            body = {
+                "name": name,
+                "folder": {},
+                "@microsoft.graph.conflictBehavior": "rename",
+            }
+
+            ri = RequestInformation()
+            ri.http_method = Method.POST
+            ri.url_template = url
+            ri.path_parameters = {}
+            ri.content = json.dumps(body).encode("utf-8")
+            ri.headers.try_add("Content-Type", "application/json")
+
+            response = await self.client.request_adapter.send_async(ri, DriveItem, {})
+            if response is None:
+                return SharePointResponse(success=False, error="Failed to create folder — no response")
+
+            item_dict = self._serialize_drive_item(response)
+            logger.info(f"✅ create_folder: '{name}' in drive {drive_id} (parent={parent_folder_id})")
+            return SharePointResponse(
+                success=True,
+                data=item_dict,
+                message=f"Folder '{name}' created successfully",
+            )
+        except Exception as e:
+            logger.error(f"❌ create_folder failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    async def create_word_document(
+        self,
+        drive_id: str,
+        name: str,
+        parent_folder_id: Optional[str] = None,
+        content_text: Optional[str] = None,
+    ) -> SharePointResponse:
+        """Create a new Word document (.docx) in a SharePoint document library.
+
+        Builds a minimal valid .docx in memory using Python's zipfile + OOXML
+        and uploads it via:
+          PUT /drives/{drive-id}/root:/{name}.docx:/content  (root)
+          PUT /drives/{drive-id}/items/{parent-id}:/{name}.docx:/content  (subfolder)
+
+        Args:
+            drive_id:         Drive (document library) ID
+            name:             Document name (without .docx extension; extension is appended)
+            parent_folder_id: Item ID of the parent folder; None for drive root
+            content_text:     Optional plain-text content to insert into the document body
+
+        Returns:
+            SharePointResponse with document metadata (id, name, webUrl, etc.)
+        """
+        try:
+            import io
+            import zipfile
+            from kiota_abstractions.method import Method  # type: ignore
+            from kiota_abstractions.request_information import RequestInformation  # type: ignore
+            from msgraph.generated.models.drive_item import DriveItem  # type: ignore
+
+            safe_name = name.strip()
+            if safe_name.lower().endswith(".docx"):
+                safe_name = safe_name[:-5]
+            file_name = f"{safe_name}.docx"
+
+            # Build minimal in-memory .docx (OOXML ZIP) ─────────────────────
+            raw_text = content_text or ""
+            escaped = (
+                raw_text
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+            )
+            paragraphs_xml = "".join(
+                f'<w:p><w:r><w:t xml:space="preserve">{line}</w:t></w:r></w:p>'
+                for line in escaped.split("\n")
+            ) or '<w:p><w:r><w:t></w:t></w:r></w:p>'
+
+            content_types_xml = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Default Extension="xml" ContentType="application/xml"/>'
+                '<Override PartName="/word/document.xml" ContentType="application/'
+                'vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                '</Types>'
+            )
+            rels_xml = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+                '</Relationships>'
+            )
+            word_rels_xml = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>'
+            )
+            document_xml = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:body>'
+                f'{paragraphs_xml}'
+                '<w:sectPr/>'
+                '</w:body>'
+                '</w:document>'
+            )
+
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("[Content_Types].xml", content_types_xml)
+                zf.writestr("_rels/.rels", rels_xml)
+                zf.writestr("word/_rels/document.xml.rels", word_rels_xml)
+                zf.writestr("word/document.xml", document_xml)
+            docx_bytes = buf.getvalue()
+            # ─────────────────────────────────────────────────────────────────
+
+            if parent_folder_id:
+                url = (
+                    f"https://graph.microsoft.com/v1.0"
+                    f"/drives/{drive_id}/items/{parent_folder_id}:/{file_name}:/content"
+                )
+            else:
+                url = (
+                    f"https://graph.microsoft.com/v1.0"
+                    f"/drives/{drive_id}/root:/{file_name}:/content"
+                )
+
+            ri = RequestInformation()
+            ri.http_method = Method.PUT
+            ri.url_template = url
+            ri.path_parameters = {}
+            ri.content = docx_bytes
+            ri.headers.try_add(
+                "Content-Type",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+
+            response = await self.client.request_adapter.send_async(ri, DriveItem, {})
+            if response is None:
+                return SharePointResponse(success=False, error="Failed to create Word document — no response")
+
+            item_dict = self._serialize_drive_item(response)
+            logger.info(f"✅ create_word_document: '{file_name}' in drive {drive_id} (parent={parent_folder_id})")
+            return SharePointResponse(
+                success=True,
+                data=item_dict,
+                message=f"Word document '{file_name}' created successfully",
+            )
+        except Exception as e:
+            logger.error(f"❌ create_word_document failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    async def create_onenote_notebook(
+        self,
+        site_id: str,
+        name: str,
+        section_name: Optional[str] = None,
+        page_title: Optional[str] = None,
+        page_content_html: Optional[str] = None,
+    ) -> SharePointResponse:
+        """Create a new OneNote notebook in a SharePoint site.
+
+        Optionally creates a first section and a first page within that section.
+
+        Steps:
+          1. POST /sites/{site-id}/onenote/notebooks
+          2. If section_name: POST /sites/{site-id}/onenote/notebooks/{id}/sections
+          3. If section created and (page_title or page_content_html):
+                 POST /sites/{site-id}/onenote/sections/{id}/pages  (text/html body)
+
+        Args:
+            site_id:           SharePoint site ID
+            name:              Notebook display name
+            section_name:      Optional name for the first section to create
+            page_title:        Optional title for the first page (requires section_name)
+            page_content_html: Optional HTML body for the first page (requires section_name)
+
+        Returns:
+            SharePointResponse with notebook metadata and optionally section/page metadata
+        """
+        try:
+            from msgraph.generated.models.notebook import Notebook  # type: ignore
+            from msgraph.generated.models.onenote_section import OnenoteSection  # type: ignore
+            from msgraph.generated.models.o_data_errors.o_data_error import ODataError  # type: ignore
+            from kiota_abstractions.method import Method  # type: ignore
+            from kiota_abstractions.request_information import RequestInformation  # type: ignore
+            from msgraph.generated.models.onenote_page import OnenotePage  # type: ignore
+
+            # ── Step 1: Create notebook ──────────────────────────────────────
+            # Use the fluent SDK API so Kiota automatically handles error mapping,
+            # serialization and the compound site ID format correctly.
+            notebook_body = Notebook()
+            notebook_body.display_name = name
+
+            nb_response = await self.client.sites.by_site_id(site_id).onenote.notebooks.post(notebook_body)
+            if nb_response is None:
+                return SharePointResponse(success=False, error="Failed to create notebook — no response")
+
+            notebook_id = nb_response.id
+            nb_links = nb_response.links
+            notebook_web_url: Optional[str] = None
+            if nb_links:
+                onenote_web = getattr(nb_links, "one_note_web_url", None)
+                if onenote_web:
+                    notebook_web_url = getattr(onenote_web, "href", None)
+
+            result: Dict[str, Any] = {
+                "notebook_id": notebook_id,
+                "notebook_name": name,
+                "notebook_web_url": notebook_web_url,
+            }
+            logger.info(f"✅ create_onenote_notebook: '{name}' (id={notebook_id}) in site {site_id}")
+
+            # ── Step 2: Create section (optional) ────────────────────────────
+            section_id: Optional[str] = None
+            if section_name and notebook_id:
+                section_body = OnenoteSection()
+                section_body.display_name = section_name
+
+                sec_response = await (
+                    self.client.sites.by_site_id(site_id)
+                    .onenote.notebooks.by_notebook_id(notebook_id)
+                    .sections.post(section_body)
+                )
+                section_id = sec_response.id if sec_response else None
+                result["section_id"] = section_id
+                result["section_name"] = section_name
+                logger.info(f"✅ created section '{section_name}' (id={section_id})")
+
+            # ── Step 3: Create page (optional) ───────────────────────────────
+            # The pages endpoint requires a multipart/form-data or text/html body,
+            # which the fluent API does not support natively — use raw RequestInformation.
+            # Compound site_id must be URL-encoded so path parsing does not produce error 20143.
+            if section_id and (page_title or page_content_html):
+                from urllib.parse import quote
+
+                title = page_title or name
+                body_html = page_content_html or ""
+                html_content = (
+                    f"<!DOCTYPE html>"
+                    f"<html>"
+                    f"<head><title>{title}</title></head>"
+                    f"<body>{body_html}</body>"
+                    f"</html>"
+                )
+                encoded_site_id = quote(site_id, safe="")
+                page_ri = RequestInformation()
+                page_ri.http_method = Method.POST
+                page_ri.url_template = (
+                    f"https://graph.microsoft.com/v1.0"
+                    f"/sites/{encoded_site_id}/onenote/sections/{section_id}/pages"
+                )
+                page_ri.path_parameters = {}
+                page_ri.content = html_content.encode("utf-8")
+                page_ri.headers.try_add("Content-Type", "text/html")
+
+                from msgraph.generated.models.o_data_errors.o_data_error import ODataError as _ODE  # type: ignore
+                page_response = await self.client.request_adapter.send_async(
+                    page_ri,
+                    OnenotePage,
+                    {
+                        "4XX": _ODE,
+                        "5XX": _ODE,
+                    },
+                )
+                page_id = getattr(page_response, "id", None) if page_response else None
+                page_web_url: Optional[str] = None
+                if page_response:
+                    pg_links = getattr(page_response, "links", None)
+                    if pg_links:
+                        onenote_web = getattr(pg_links, "one_note_web_url", None)
+                        if onenote_web:
+                            page_web_url = getattr(onenote_web, "href", None)
+                result["page_id"] = page_id
+                result["page_title"] = title
+                result["page_web_url"] = page_web_url
+                logger.info(f"✅ created page '{title}' (id={page_id})")
+
+            return SharePointResponse(
+                success=True,
+                data=result,
+                message=f"OneNote notebook '{name}' created successfully",
+            )
+        except ODataError as e:
+            error_msg = getattr(getattr(e, "error", None), "message", str(e))
+            logger.error(f"❌ create_onenote_notebook Graph API error: {error_msg}")
+            return SharePointResponse(success=False, error=error_msg)
+        except Exception as e:
+            logger.error(f"❌ create_onenote_notebook failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    async def get_drive_item_metadata(
+        self,
+        site_id: str,
+        drive_id: str,
+        item_id: str,
+    ) -> SharePointResponse:
+        """Get metadata for a specific drive item (file or folder).
+
+        Uses the Graph SDK typed path:
+          GET /drives/{drive-id}/items/{item-id}
+
+        Args:
+            site_id:  SharePoint site ID (kept for API consistency; routing goes through drive_id)
+            drive_id: Drive (document library) ID
+            item_id:  DriveItem ID
+
+        Returns:
+            SharePointResponse with the item metadata dict
+        """
+        try:
+            from kiota_abstractions.method import Method  # type: ignore
+            from kiota_abstractions.request_information import RequestInformation  # type: ignore
+            from msgraph.generated.models.drive_item import DriveItem  # type: ignore
+
+            url = (
+                f"https://graph.microsoft.com/v1.0"
+                f"/drives/{drive_id}/items/{item_id}"
+            )
+            ri = RequestInformation()
+            ri.http_method = Method.GET
+            ri.url_template = url
+            ri.path_parameters = {}
+
+            response = await self.client.request_adapter.send_async(ri, DriveItem, {})
+            if response is None:
+                return SharePointResponse(success=False, error="Item not found")
+
+            item_dict = self._serialize_drive_item(response)
+            logger.info(f"✅ get_drive_item_metadata: {item_id}")
+            return SharePointResponse(success=True, data=item_dict)
+        except Exception as e:
+            logger.error(f"❌ get_drive_item_metadata failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    # Office MIME types that support ?format=html conversion via Microsoft Graph
+    _OFFICE_CONVERTIBLE_MIMES = {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
+        "application/msword",                                                        # .doc
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",        # .xlsx
+        "application/vnd.ms-excel",                                                  # .xls
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation", # .pptx
+        "application/vnd.ms-powerpoint",                                             # .ppt
+        "application/vnd.oasis.opendocument.text",                                  # .odt
+    }
+
+    # Office file extensions that should use ?format=html when mime_type is unknown
+    _OFFICE_CONVERTIBLE_EXTS = {".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".odt"}
+
+    async def get_drive_item_content(
+        self,
+        site_id: str,
+        drive_id: str,
+        item_id: str,
+        max_bytes: int = 512_000,
+        mime_type: Optional[str] = None,
+        file_name: Optional[str] = None,
+    ) -> SharePointResponse:
+        """Download the content of a drive item as readable text.
+
+        For Office files (.docx, .xlsx, .pptx, etc.) Microsoft Graph's
+        ``?format=html`` conversion is used, which returns HTML that the LLM
+        can read and summarise directly.  Plain-text files are returned as-is.
+        Truly binary files (PDFs, images) fall back to base64.
+
+        Args:
+            site_id:   SharePoint site ID (unused in URL but kept for API consistency)
+            drive_id:  Drive ID
+            item_id:   DriveItem ID
+            max_bytes: Maximum bytes to read (default 512 KB)
+            mime_type: MIME type of the file (if known); used to decide whether
+                       to request the HTML-converted version.
+            file_name: File name (if known); used as fallback to detect Office
+                       files by extension when mime_type is not available.
+
+        Returns:
+            SharePointResponse with data={"content": str, "encoding": str, ...}
+        """
+        try:
+            from kiota_abstractions.method import Method  # type: ignore
+            from kiota_abstractions.request_information import RequestInformation  # type: ignore
+
+            # Decide whether to request the HTML-converted version
+            use_html_conversion = False
+            if mime_type and mime_type in self._OFFICE_CONVERTIBLE_MIMES:
+                use_html_conversion = True
+            elif file_name:
+                import os as _os
+                ext = _os.path.splitext(file_name)[1].lower()
+                if ext in self._OFFICE_CONVERTIBLE_EXTS:
+                    use_html_conversion = True
+
+            if use_html_conversion:
+                # Use Microsoft Graph's on-the-fly HTML conversion
+                # GET /drives/{drive-id}/items/{item-id}/content?format=html
+                html_url = (
+                    f"https://graph.microsoft.com/v1.0"
+                    f"/drives/{drive_id}/items/{item_id}/content?format=html"
+                )
+                ri_html = RequestInformation()
+                ri_html.http_method = Method.GET
+                ri_html.url_template = html_url
+                ri_html.path_parameters = {}
+
+                try:
+                    raw_html: Optional[bytes] = await self.client.request_adapter.send_primitive_async(
+                        ri_html, "bytes", {}
+                    )
+                    if raw_html:
+                        truncated = len(raw_html) > max_bytes
+                        chunk = raw_html[:max_bytes]
+                        html_text = chunk.decode("utf-8", errors="replace")
+                        logger.info(
+                            f"✅ get_drive_item_content (html): {item_id}, "
+                            f"{len(raw_html)} bytes"
+                        )
+                        return SharePointResponse(
+                            success=True,
+                            data={
+                                "content": html_text,
+                                "encoding": "utf-8",
+                                "format": "html",
+                                "size_bytes": len(raw_html),
+                                "truncated": truncated,
+                            },
+                            message=(
+                                f"Office document converted to HTML ({len(raw_html)} bytes"
+                                f"{', truncated' if truncated else ''})"
+                            ),
+                        )
+                except Exception as html_err:
+                    # HTML conversion failed (e.g. unsupported format on the server side),
+                    # fall through to the regular /content download below.
+                    logger.warning(
+                        f"⚠️ HTML conversion failed for {item_id} ({html_err}), "
+                        "falling back to raw content download"
+                    )
+
+            # Regular raw content download
+            url = (
+                f"https://graph.microsoft.com/v1.0"
+                f"/drives/{drive_id}/items/{item_id}/content"
+            )
+            ri = RequestInformation()
+            ri.http_method = Method.GET
+            ri.url_template = url
+            ri.path_parameters = {}
+
+            raw: Optional[bytes] = await self.client.request_adapter.send_primitive_async(
+                ri, "bytes", {}
+            )
+
+            if not raw:
+                return SharePointResponse(
+                    success=True,
+                    data={"content": "", "encoding": "utf-8", "size_bytes": 0},
+                    message="Empty file",
+                )
+
+            truncated = len(raw) > max_bytes
+            chunk = raw[:max_bytes]
+
+            # Try to decode as text
+            for enc in ("utf-8", "utf-8-sig", "latin-1"):
+                try:
+                    text = chunk.decode(enc)
+                    logger.info(f"✅ get_drive_item_content: {item_id}, {len(raw)} bytes, enc={enc}")
+                    return SharePointResponse(
+                        success=True,
+                        data={
+                            "content": text,
+                            "encoding": enc,
+                            "size_bytes": len(raw),
+                            "truncated": truncated,
+                        },
+                        message=f"Content read ({len(raw)} bytes{', truncated' if truncated else ''})",
+                    )
+                except (UnicodeDecodeError, LookupError):
+                    continue
+
+            # Binary fallback — return base64
+            import base64
+            b64 = base64.b64encode(chunk).decode("ascii")
+            return SharePointResponse(
+                success=True,
+                data={
+                    "content_base64": b64,
+                    "encoding": "base64",
+                    "size_bytes": len(raw),
+                    "truncated": truncated,
+                    "note": "Binary file — content is base64-encoded. Use a specialised viewer.",
+                },
+            )
+        except Exception as e:
+            logger.error(f"❌ get_drive_item_content failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    def _serialize_site(self, site) -> Dict[str, Any]:
+        """Convert a Graph SDK site object to a dictionary."""
+        if isinstance(site, dict):
+            return site
+        
+        # Serialize using additional_data (Kiota backing store)
+        if hasattr(site, 'additional_data') and isinstance(site.additional_data, dict):
+            result = dict(site.additional_data)
+            
+            # Add common properties (check both camelCase and snake_case)
+            prop_map = {
+                'id': 'id',
+                'name': 'name', 
+                'displayName': 'display_name',
+                'webUrl': 'web_url',
+                'description': 'description',
+                'createdDateTime': 'created_date_time',
+                'lastModifiedDateTime': 'last_modified_date_time',
+            }
+            
+            for camel_case, snake_case in prop_map.items():
+                if camel_case not in result:
+                    val = None
+                    if hasattr(site, camel_case):
+                        val = getattr(site, camel_case)
+                    elif hasattr(site, snake_case):
+                        val = getattr(site, snake_case)
+                    
+                    if val is not None:
+                        if isinstance(val, datetime):
+                            val = val.isoformat()
+                        result[camel_case] = val
+            
+            return result
+        
+        # Fallback: extract all non-private attributes
+        result = {}
+        for attr in dir(site):
+            if not attr.startswith('_'):
+                try:
+                    val = getattr(site, attr)
+                    if not callable(val):
+                        if isinstance(val, datetime):
+                            val = val.isoformat()
+                        result[attr] = val
+                except Exception:
+                    pass
+        return result
+
+    async def get_site_by_id(
+        self,
+        site_id: str,
+        select: Optional[List[str]] = None,
+        expand: Optional[List[str]] = None,
+    ) -> SharePointResponse:
+        """Get a specific SharePoint site by its ID using delegated permissions.
+
+        Uses the SDK's GET /sites/{site-id} endpoint which works with delegated OAuth.
+
+        Args:
+            site_id: The site ID (e.g., 'contoso.sharepoint.com,guid1,guid2')
+            select: Select specific properties to return
+            expand: Expand related entities
+
+        Returns:
+            SharePointResponse with the site data or error
+        """
+        try:
+            response = await self.client.sites.by_site_id(site_id).get()
+            
+            if response:
+                site_dict = self._serialize_site(response)
+                logger.info(f"✅ Retrieved site: {site_id}")
+                return SharePointResponse(success=True, data=site_dict)
+            else:
+                logger.warning(f"⚠️ No site returned for ID: {site_id}")
+                return SharePointResponse(success=False, error="Site not found")
+
+        except Exception as e:
+            logger.error(f"❌ Error getting site by ID: {e}")
+            error_msg = "Failed to get site"
+            if hasattr(e, 'error') and hasattr(e.error, 'message'):
+                error_msg = e.error.message
+            elif hasattr(e, 'message'):
+                error_msg = str(e.message)
+            else:
+                error_msg = str(e)
+            return SharePointResponse(success=False, error=error_msg)
+
+    async def get_site_page_with_canvas(
+        self,
+        site_id: str,
+        page_id: str,
+    ) -> SharePointResponse:
+        """Get a SharePoint modern site page by ID with canvas layout (full content).
+
+        Uses GET /sites/{site-id}/pages/{page-id}/microsoft.graph.sitePage?$expand=canvasLayout.
+        Compound site_id (host,guid,guid) is URL-encoded so the path is not mis-parsed (404).
+
+        Args:
+            site_id: SharePoint site ID (e.g. contoso.sharepoint.com,guid,guid)
+            page_id: Page ID (GUID from search_pages or get_pages)
+
+        Returns:
+            SharePointResponse with success=True and data=<SitePage Kiota object>,
+            or success=False with error message.
+        """
+        try:
+            from urllib.parse import quote
+
+            from kiota_abstractions.method import Method  # type: ignore
+            from kiota_abstractions.request_information import RequestInformation  # type: ignore
+            from msgraph.generated.models.site_page import SitePage  # type: ignore
+
+            encoded_site_id = quote(site_id, safe="")
+            encoded_page_id = quote(page_id, safe="")
+            ri = RequestInformation()
+            ri.http_method = Method.GET
+            ri.url_template = (
+                f"https://graph.microsoft.com/v1.0/sites/{encoded_site_id}"
+                f"/pages/{encoded_page_id}/microsoft.graph.sitePage"
+                f"?$expand=canvasLayout"
+            )
+            ri.path_parameters = {}
+
+            response = await self.client.request_adapter.send_async(ri, SitePage, {})
+            if response is None:
+                return SharePointResponse(success=False, error="Page not found")
+            logger.info(f"✅ get_site_page_with_canvas: {page_id}")
+            return SharePointResponse(success=True, data=response)
+        except Exception as e:
+            logger.error(f"❌ get_site_page_with_canvas failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
 
     # ========== SITES OPERATIONS (17 methods) ==========
 

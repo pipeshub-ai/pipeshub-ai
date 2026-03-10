@@ -2590,6 +2590,8 @@ Examples of retrieval queries:
 - User uses **service-specific resource nouns** (even without naming the service):
   - `tickets` / `issues` / `bugs` / `epics` / `stories` / `sprints` / `backlog` → **Jira** search/list tool
   - `pages` / `spaces` / `wiki` → **Confluence** search/list tool
+  - `sites` → **SharePoint** search/list tool
+  - Note: `pages` can map to Confluence or SharePoint — prefer explicitly named service or use context
   - `emails` / `inbox` / `drafts` → **Gmail** search tool
   - `messages` / `channels` / `DMs` → **Slack** search tool
 - Tool description matches the user's request
@@ -2838,7 +2840,7 @@ Action: Set can_answer_directly: true, answer from conversation history, NO tool
 
 ## Content Generation for Action Tools
 
-**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `gmail.send`, etc.):**
+**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `sharepoint.create_page`, `sharepoint.update_page`, `gmail.send`, etc.):**
 
 **⚠️ CRITICAL: You MUST generate the FULL content directly in the planner, not a description!**
 
@@ -2850,12 +2852,12 @@ Action: Set can_answer_directly: true, answer from conversation history, NO tool
    - This is the content that should go on the page/in the message
 
 2. **Extract from tool results:**
-   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`)
+   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`, `sharepoint.get_page`)
    - Extract the relevant content from those results
    - Combine with conversation history if needed
 
 3. **Format according to tool requirements:**
-   - **Confluence**: Convert markdown to HTML storage format
+   - **Confluence & SharePoint**: Convert markdown to HTML format
      - `# Title` → `<h1>Title</h1>`
      - `## Section` → `<h2>Section</h2>`
      - `**bold**` → `<strong>bold</strong>`
@@ -2923,6 +2925,7 @@ Generate:
 {redshift_guidance}
 {zoom_guidance}
 {salesforce_guidance}
+{sharepoint_guidance}
 
 ## Planning Best Practices
 
@@ -3826,6 +3829,82 @@ BEFORE checking if timezone is missing, always read the **Time context**
 9. **Resolve invitee email from name using contacts.**
 10. **Recurring meetings require type=8 and a recurrence block.**
 """
+SHAREPOINT_GUIDANCE = r"""
+## SharePoint-Specific Guidance
+
+### Tool Selection — Use the Right SharePoint Tool for Every Task
+
+| User intent | Correct SharePoint tool | Key parameters |
+|---|---|---|
+| List / search all accessible sites | `sharepoint.get_sites` | `search` (KQL), `top` (default 10, max 50; use 50 for "all"), `skip`, `orderby` |
+| Get a specific site by ID | `sharepoint.get_site` | `site_id` |
+| Find a page by name/keyword across ALL sites | `sharepoint.search_pages` | `query` (keyword), `top`, `skip` — returns `page_id`, `site_id` |
+| List ALL pages in a known site | `sharepoint.get_pages` | `site_id`, `top` |
+| Get full HTML content of a page | `sharepoint.get_page` | `site_id`, `page_id` (from search_pages or get_pages) |
+| Create a new page | `sharepoint.create_page` | `site_id`, `title`, `content_html`, `publish` (default False = draft) |
+| Update an existing page | `sharepoint.update_page` | `site_id`, `page_id`, `title` (opt), `content_html` (opt), `publish` (default False = draft) |
+
+**R-SP-1: NEVER use retrieval for SharePoint page content.**
+When the user asks for the content, body, summary, text, or details of a SharePoint page — always use `sharepoint.get_page`, not `retrieval.search_internal_knowledge`.
+- ❌ "Get the content of page X" → Do NOT use retrieval → ✅ Use `sharepoint.search_pages` then `sharepoint.get_page`
+- ❌ "Summarize the page" → Do NOT use retrieval → ✅ Use `sharepoint.get_page`
+- ❌ "What's in the KT page?" → Do NOT use retrieval → ✅ Use `sharepoint.search_pages` then `sharepoint.get_page`
+
+**R-SP-2: When the user mentions a page by name — ALWAYS start with `search_pages`.**
+Do NOT first search for sites, then list all pages. Jump directly to `search_pages`.
+- ❌ WRONG: `get_sites(search="...")` → `get_pages(site_id=...)` → scan all pages
+- ✅ CORRECT: `search_pages(query="...")` → returns `page_id`, `site_id`, `web_url` directly
+- Use the words the user said as the `query` (e.g. "pipeshub KT" → `query="pipeshub KT"`). After `search_pages`, use `get_page(site_id, page_id)` for full content — do NOT call `get_pages` in between.
+
+**R-SP-3: NEVER use retrieval to get site_id or page_id.**
+Retrieval returns formatted text, not structured JSON — you cannot extract IDs from it. Use service tools instead.
+- ✅ `sharepoint.get_sites` → extract `data.sites[0].id` → use as `site_id`
+- ✅ `sharepoint.search_pages` → extract `data.pages[0].page_id` AND `data.pages[0].site_id`
+- ✅ `sharepoint.get_pages` → extract `data.pages[0].page_id` → use as `page_id`
+
+**R-SP-4: Site ID resolution — check conversation history first.**
+1. Check if the site was mentioned in conversation history → use that `site_id` directly
+2. Check Reference Data for a `sharepoint_site` entry → use its `id` directly
+3. If the user provided a `site_id` → use it directly
+4. Only if none of the above → cascade: call `sharepoint.get_sites` first, then use the result (e.g. for `get_pages`: `site_id` = `{{{{sharepoint.get_sites.data.sites[0].id}}}}`)
+
+**R-SP-5: Page ID resolution.**
+1. If the page was mentioned or created in conversation history → use that `page_id` (and `site_id`) directly
+2. If user mentions a page by name and you need full content: `search_pages(query="...")` then `get_page(site_id={{{{sharepoint.search_pages.data.pages[0].site_id}}}}, page_id={{{{sharepoint.search_pages.data.pages[0].page_id}}}})` — do NOT call `get_pages` between them
+3. If user wants to list ALL pages in a site: `get_sites` then `get_pages(site_id=...)`
+
+**R-SP-6: Exact parameter names (never substitute).**
+- `sharepoint.get_sites` → `search`, `top`, `skip`, `orderby`
+- `sharepoint.get_site` → `site_id` (NOT `id`)
+- `sharepoint.search_pages` → `query` (required), `top`, `skip`
+- `sharepoint.get_pages` → `site_id`, `top`
+- `sharepoint.get_page` → `site_id`, `page_id`
+- `sharepoint.create_page` → `site_id`, `title`, `content_html`, `publish` (only True when user explicitly asks to publish; default draft)
+- `sharepoint.update_page` → `site_id`, `page_id`, `title` (opt), `content_html` (opt), `publish` (default draft)
+
+**R-SP-7: SharePoint HTML format for create/update.**
+When generating page content for `create_page` or `update_page`, use HTML format:
+- Heading 1: `<h1>Title</h1>`, Heading 2: `<h2>Section</h2>`
+- Paragraph: `<p>Text here</p>`
+- Bold: `<strong>bold</strong>`, Italic: `<em>italic</em>`
+- Bullet list: `<ul><li>item</li></ul>`, Numbered list: `<ol><li>step</li></ol>`
+- Code block: `<pre><code>code here</code></pre>`
+
+**R-SP-8: Pagination, top, and site ID format.**
+- "all sites" or "show all" → `top=50` (max). Use `next_skip` when `has_more` is true.
+- Site IDs are like `hostname,site-guid,web-guid` — use the full string from results or Reference Data; do not parse or modify.
+
+**R-SP-9: Update page content — call `get_page` first if merging.**
+When updating a page and need to preserve existing content: call `sharepoint.get_page` to fetch current content, merge the new content with existing content, then call `sharepoint.update_page` with the fully merged HTML. Do not use placeholders for content — generate the full merged HTML.
+
+**R-SP-10: NEVER use retrieval when SharePoint tools can directly serve the request.**
+- Find page by name → `sharepoint.search_pages`
+- List sites → `sharepoint.get_sites`
+- List pages in a site → `sharepoint.get_pages`
+- Read page content → `sharepoint.get_page`
+- Create/update → `sharepoint.create_page` / `sharepoint.update_page`
+"""
+
 PLANNER_USER_TEMPLATE = """Query: {query}
 
 Plan the tools. Return only valid JSON."""
@@ -3991,6 +4070,8 @@ async def planner_node(
     redshift_guidance = REDSHIFT_GUIDANCE if _has_redshift_tools(state) else ""
     zoom_guidance = ZOOM_GUIDANCE if _has_zoom_tools(state) else ""
     salesforce_guidance = SALESFORCE_GUIDANCE if _has_salesforce_tools(state) else ""
+    sharepoint_guidance = SHAREPOINT_GUIDANCE if _has_sharepoint_tools(state) else ""
+
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
         jira_guidance=jira_guidance,
@@ -4005,6 +4086,7 @@ async def planner_node(
         redshift_guidance=redshift_guidance,
         zoom_guidance=zoom_guidance,
         salesforce_guidance=salesforce_guidance,
+        sharepoint_guidance=sharepoint_guidance
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -5073,6 +5155,10 @@ def _has_redshift_tools(state: ChatState) -> bool:
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "redshift" in ts.get("name", "").lower() for ts in agent_toolsets)
 
+def _has_sharepoint_tools(state: ChatState) -> bool:
+    """Check if SharePoint tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "sharepoint" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     """
@@ -8203,6 +8289,8 @@ Use this decision tree to choose the right approach:
     # ── Timezone / current time context ──────────────────────────────────────
     if _has_teams_tools(state):
         base_prompt += "\n" + TEAMS_GUIDANCE
+    if _has_sharepoint_tools(state):
+        base_prompt += "\n" + SHAREPOINT_GUIDANCE
 
     # Add timezone / current time context if provided
     time_block = build_llm_time_context(
