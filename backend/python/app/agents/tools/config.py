@@ -170,6 +170,14 @@ class ToolDiscoveryConfig:
             app_name="github",
             client_builder="GitHubClient",
         ),
+        "lumos": AppConfiguration(
+            app_name="lumos",
+            client_builder="LumosClient",
+        ),
+        # "github": AppConfiguration(
+        #     app_name="github",
+        #     client_builder="GitHubClient",
+        # ),
         # "gitlab": AppConfiguration(
         #     app_name="gitlab",
         #     client_builder="GitLabClient",
