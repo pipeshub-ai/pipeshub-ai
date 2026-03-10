@@ -7,13 +7,15 @@ from urllib.parse import quote
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import get_enhanced_metadata, is_base64_image, valid_group_labels
 from app.utils.logger import create_logger
+from urllib.parse import quote
+
 # Initialize logger
 logger = create_logger(__name__)
 
 # Regex that matches both tiny refs (ref1, ref2, ...) and legacy full block web URLs
 _MD_LINK_PATTERN = r'\[([^\]]*?)\]\((ref\d+|[^)]*?/record/[^)]*?preview[^)]*?block(?:Group)?Index=\d+[^)]*?)\)'
 
-CITATION_WORD_LIMIT = 8
+CITATION_WORD_LIMIT = 4
 
 
 @dataclass
@@ -22,15 +24,13 @@ class ChatDocCitation:
     metadata: dict[str, Any]
     chunkindex: int
 
-
-
 def extract_start_end_text(snippet: Optional[str]) -> Tuple[str, str]:
     if not snippet:
         return "", ""
+    
+    PATTERN = re.compile(r"(?<!\S)[A-Za-z0-9.',;:]+(?:[ ][A-Za-z0-9.',;:]+)+(?!\S)")
 
-    PATTERN = re.compile(r'[a-zA-Z0-9 ]+')
-
-    # --- Find start_text: first matching segment, first 4 words ---
+    # --- Find start_text: first matching segment ---
     first_match = PATTERN.search(snippet)
     if not first_match:
         return "", ""
@@ -73,7 +73,10 @@ def extract_start_end_text(snippet: Optional[str]) -> Tuple[str, str]:
     else:
         end_text = ""
 
-    return start_text, end_text
+    while end_text and end_text[-1] == '.':
+        end_text = end_text[:-1]
+
+    return start_text, end_text.strip()
 
 def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
     """
@@ -96,15 +99,20 @@ def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
         if not snippet:
             return base_url
 
+        while snippet and not snippet[-1].isalnum():
+            snippet = snippet[:-1]
+        if not snippet:
+            return base_url
+
         start_text, end_text = extract_start_end_text(snippet)
 
         if not start_text:
             return base_url
 
-        encoded_start = quote(start_text, safe='')
+        encoded_start = quote(start_text, safe="';:[]")
 
         if end_text:
-            encoded_end = quote(end_text, safe='')
+            encoded_end = quote(end_text, safe="';:[]")
 
         if '#' in base_url:
             base_url = base_url.split('#')[0]

@@ -816,8 +816,6 @@ async def execute_tool_calls(
 
 
     logger.debug(f"[WEB_CITATIONS] execute_tool_calls: About to yield tool_execution_complete with {len(web_records)} web_records")
-    if web_records:
-        logger.debug(f"[WEB_CITATIONS] web_records being yielded: {[(wr.get('citation_id'), wr.get('url_number'), wr.get('block_index')) for wr in web_records]}")
 
     yield {
         "event": "tool_execution_complete",
