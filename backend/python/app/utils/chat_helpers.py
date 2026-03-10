@@ -1593,8 +1593,8 @@ def count_tokens_text(text: str) -> int:
 
     return max(1, len(text) // 4)
 
-def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int, int]:
-    current_message_tokens = count_tokens_in_messages(messages,enc)
+def count_tokens(messages: List[Any], message_contents: dict[str, Any]) -> Tuple[int, int]:
+    current_message_tokens = count_tokens_in_messages(messages)
     new_tokens = 0
 
     for message_content in message_contents.values():
