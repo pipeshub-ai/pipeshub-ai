@@ -27,7 +27,7 @@ class GraphQLResponse(BaseModel):
         success = "errors" not in response_data or not response_data["errors"]
 
         errors = None
-        if "errors" in response_data and response_data["errors"]:
+        if response_data.get("errors"):
             errors = [
                 GraphQLError(
                     message=error.get("message", "Unknown error"),

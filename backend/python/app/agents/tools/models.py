@@ -62,10 +62,10 @@ class ToolParameter:
             type=data.get("type", ""),
             description=data.get("description", ""),
             required=data.get("required", True),
-            default=data.get("default", None),
-            enum=data.get("enum", None),
-            items=data.get("items", None),
-            properties=data.get("properties", None)
+            default=data.get("default"),
+            enum=data.get("enum"),
+            items=data.get("items"),
+            properties=data.get("properties")
         )
 
 @dataclass

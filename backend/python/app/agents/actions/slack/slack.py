@@ -68,7 +68,7 @@ class SendDirectMessageInput(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def handle_text_alias(cls, data: Any) -> Any:  # noqa: ANN401
+    def handle_text_alias(cls, data: Any) -> Any:
         """Handle both 'text' and 'message' fields - prefer 'message' but accept 'text' as fallback"""
         if isinstance(data, dict):
             # If 'text' is provided but 'message' is not, use 'text' as 'message'
@@ -373,7 +373,7 @@ class Slack:
         """
         self.client = SlackDataSource(client)
 
-    def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
+    def _handle_slack_response(self, response: Any) -> SlackResponse:
         """Handle Slack API response and convert to standardized format.
         - If response already is a SlackResponse (has 'success'), pass it through
         - If it's a dict with 'ok'==False, return error

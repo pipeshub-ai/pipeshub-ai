@@ -2,44 +2,49 @@
 
 import json
 import logging
-import urllib.parse
-import re
-from datetime import datetime
-from dataclasses import asdict
-from typing import Any, Dict, List, Optional, Mapping
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import quote
-from msgraph.generated.models.online_meeting_provider_type import OnlineMeetingProviderType
-from msgraph.generated.models.chat_type import ChatType
+
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
 )
 from msgraph.generated.chats.chats_request_builder import (  # type: ignore
     ChatsRequestBuilder,
 )
-from msgraph.generated.users.item.events.events_request_builder import EventsRequestBuilder
-from msgraph.generated.models.aad_user_conversation_member import AadUserConversationMember  # type: ignore
-from msgraph.generated.models.chat import Chat  #type: ignore
-from msgraph.generated.models.chat_message import ChatMessage  # type: ignore
-from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone  # type: ignore
-from msgraph.generated.models.event import Event  # type: ignore
-from msgraph.generated.models.email_address import EmailAddress  # type: ignore
-from msgraph.generated.models.location import Location  # type: ignore
+from msgraph.generated.models.aad_user_conversation_member import (
+    AadUserConversationMember,  # type: ignore
+)
 from msgraph.generated.models.attendee import Attendee  # type: ignore
 from msgraph.generated.models.attendee_type import AttendeeType  # type: ignore
-from msgraph.generated.models.patterned_recurrence import PatternedRecurrence  # type: ignore
-from msgraph.generated.models.recurrence_pattern import RecurrencePattern  # type: ignore
-from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType  # type: ignore
-from msgraph.generated.models.recurrence_range import RecurrenceRange  # type: ignore
-from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType  # type: ignore
-from msgraph.generated.models.item_body import ItemBody  # type: ignore
-from msgraph.generated.models.team import Team  #type: ignore
 from msgraph.generated.models.body_type import BodyType
-from msgraph.generated.models.chat_info import ChatInfo
-from msgraph.generated.models.online_meeting import OnlineMeeting
-from msgraph.generated.models.meeting_participants import MeetingParticipants
-from msgraph.generated.models.meeting_participant_info import MeetingParticipantInfo
-from msgraph.generated.models.identity_set import IdentitySet
-from msgraph.generated.models.identity import Identity
+from msgraph.generated.models.chat import Chat  #type: ignore
+from msgraph.generated.models.chat_message import ChatMessage  # type: ignore
+from msgraph.generated.models.chat_type import ChatType
+from msgraph.generated.models.date_time_time_zone import (
+    DateTimeTimeZone,  # type: ignore
+)
+from msgraph.generated.models.email_address import EmailAddress  # type: ignore
+from msgraph.generated.models.event import Event  # type: ignore
+from msgraph.generated.models.item_body import ItemBody  # type: ignore
+from msgraph.generated.models.location import Location  # type: ignore
+from msgraph.generated.models.online_meeting_provider_type import (
+    OnlineMeetingProviderType,
+)
+from msgraph.generated.models.patterned_recurrence import (
+    PatternedRecurrence,  # type: ignore
+)
+from msgraph.generated.models.recurrence_pattern import (
+    RecurrencePattern,  # type: ignore
+)
+from msgraph.generated.models.recurrence_pattern_type import (
+    RecurrencePatternType,  # type: ignore
+)
+from msgraph.generated.models.recurrence_range import RecurrenceRange  # type: ignore
+from msgraph.generated.models.recurrence_range_type import (
+    RecurrenceRangeType,  # type: ignore
+)
+from msgraph.generated.models.team import Team  #type: ignore
 from msgraph.generated.teams.item.channels.channels_request_builder import (  # type: ignore
     ChannelsRequestBuilder,
 )
@@ -51,11 +56,6 @@ from msgraph.generated.teams.teams_request_builder import (  # type: ignore
 )
 
 from app.sources.client.microsoft.microsoft import MSGraphClient
-from datetime import datetime, timedelta, timezone
-from msgraph.generated.chats.item.messages.messages_request_builder import (
-    MessagesRequestBuilder,
-)
-
 
 
 # Teams-specific response wrapper
@@ -187,6 +187,7 @@ def _dict_to_event(data: dict) -> Event:
             event.recurrence = rec
         elif isinstance(rec, dict):
             from datetime import date
+
             from msgraph.generated.models.day_of_week import DayOfWeek
             from msgraph.generated.models.week_index import WeekIndex
 
@@ -704,7 +705,7 @@ class TeamsDataSource:
         event_data["meeting_id"] = event_data.get("online_meeting_id") or event_data.get("id")
 
         return event_data
-    
+
     @staticmethod
     def _attendee_to_dict(attendee_obj: Any) -> Dict[str, Any]:
         attendee: Dict[str, Any] = {}
@@ -963,7 +964,7 @@ class TeamsDataSource:
                 }
 
                 member_target = AadUserConversationMember()
-                
+
                 if target_user.user_type == "Guest":
                     member_target.roles = ["guest"]
                 else:
@@ -1612,7 +1613,7 @@ class TeamsDataSource:
                 "teams_get_conversation_with_user: final_results_preview=%s",
                 self._safe_response_preview(results),
             )
-            
+
 
             return TeamsResponse(
                 success=True,
@@ -1631,7 +1632,7 @@ class TeamsDataSource:
             logger.error(f"Error in teams_get_conversation_with_user: {e}")
 
             return TeamsResponse(success=False, error=str(e))
-    
+
     async def teams_get_user_channels(self, team_id: Optional[str] = None) -> TeamsResponse:
         """List channels for authenticated user; optionally scoped to one team."""
         try:
@@ -1749,7 +1750,7 @@ class TeamsDataSource:
         """Get authenticated user's meetings from calendar events."""
         try:
             response = await self.client.me.events.get()
-            
+
             raw_events = self._extract_collection_items(response)
             meetings = [self._event_to_dict(event_obj) for event_obj in raw_events]
             meetings = [m for m in meetings if m.get("is_online_meeting") is not False]
@@ -1776,7 +1777,7 @@ class TeamsDataSource:
         top: Optional[int] = 100,
     ) -> TeamsResponse:
         """Get meetings including recurring instances using calendarView."""
-        
+
 
         has_start = isinstance(start_datetime, str) and bool(start_datetime.strip())
         has_end = isinstance(end_datetime, str) and bool(end_datetime.strip())
@@ -1793,7 +1794,7 @@ class TeamsDataSource:
             meeting_type = meeting_type.strip().lower()
 
             if meeting_type in {"recurring", "one_time"}:
-                normalized_meeting_type = meeting_type      
+                normalized_meeting_type = meeting_type
 
         start_dt = self._parse_iso_datetime(start_datetime) if has_start else None
         end_dt = self._parse_iso_datetime(end_datetime) if has_end else None
@@ -1840,17 +1841,17 @@ class TeamsDataSource:
                 query_parameters=query_params
             )
 
-            
+
 
             response = await self.client.me.calendar_view.get(request_configuration=config)
 
             raw_events = self._extract_collection_items(response)
 
-            
+
 
             # Optional meeting type filtering
             # Optional meeting type filtering
-            
+
             if normalized_meeting_type:
                 filtered_events = []
 
@@ -1860,7 +1861,7 @@ class TeamsDataSource:
                     if hasattr(event, "type"):
                         event_type = getattr(event.type, "value", event.type)
 
-                    
+
 
                     if normalized_meeting_type == "recurring":
                         if event_type in ["occurrence", "exception", "seriesMaster"]:
@@ -1878,10 +1879,10 @@ class TeamsDataSource:
             #     meeting["meeting_id"] = (
             #         meeting.get("meeting_id")
             #         or meeting.get("online_meeting_id")
-                    
+
             #     )
 
-            
+
 
             return TeamsResponse(
                 success=True,
@@ -1899,7 +1900,7 @@ class TeamsDataSource:
         except Exception as e:
             logger.error(f"Error in teams_get_meetings: {e}")
             return TeamsResponse(success=False, error=str(e))
-   
+
 
     async def teams_get_my_recurring_meetings(self, top: Optional[int] = 50) -> TeamsResponse:
         """Get authenticated user's recurring meetings from calendar events."""
@@ -2283,7 +2284,7 @@ class TeamsDataSource:
             meeting_item = self._me_online_meeting_item(meeting_id)
             reports_response = await meeting_item.attendance_reports.get()
             reports = self._extract_collection_items(reports_response)
-           
+
 
             attendees: List[Dict[str, Any]] = []
             for report in reports:
@@ -2303,9 +2304,9 @@ class TeamsDataSource:
                 if report_item is None:
                     continue
                 records_response = await report_item.attendance_records.get()
-                
+
                 records = self._extract_collection_items(records_response)
-                
+
                 for record in records:
                     attendee = self._to_simple_dict(record)
                     display_name: Optional[str] = None
@@ -2518,9 +2519,9 @@ class TeamsDataSource:
             # 1. Resolve Channel ID from Name
             channels_response = await self.client.teams.by_team_id(team_id).channels.get()
             channels = getattr(channels_response, "value", None) or []
-            
+
             matched_channel = next((
-                c for c in channels 
+                c for c in channels
                 if getattr(c, "display_name", "").strip().lower() == channel_name.strip().lower()
             ), None)
 
@@ -2536,7 +2537,7 @@ class TeamsDataSource:
             # 2. Create the Calendar Event
             event_payload = Event()
             event_payload.subject = subject
-            
+
             # Set Start Time
             start_payload = DateTimeTimeZone()
             start_payload.date_time = start_datetime
@@ -2555,7 +2556,7 @@ class TeamsDataSource:
 
             # POST to the organizer's calendar (the 'me' context)
             created_event = await self.client.me.events.post(body=event_payload)
-            
+
             # Extract the Join URL generated by Teams
             join_url = getattr(created_event.online_meeting, "join_url", None)
 
@@ -2578,7 +2579,7 @@ class TeamsDataSource:
             await self.client.teams.by_team_id(team_id).channels.by_channel_id(channel_id).messages.post(body=chat_message)
 
             return TeamsResponse(
-                success=True, 
+                success=True,
                 message="Meeting scheduled and posted to channel successfully.",
                 data={"event_id": created_event.id, "join_url": join_url}
             )
@@ -2620,7 +2621,7 @@ class TeamsDataSource:
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
-    
+
 
     async def teams_edit_event(
         self,
@@ -2797,7 +2798,7 @@ class TeamsDataSource:
                 return TeamsResponse(success=False, error="Users endpoint is not available on Teams client")
 
             normalized_user_id = (user_id or "").strip()
-            
+
             # 1. Handle "Me" shortcut
             if normalized_user_id.casefold() in {"me", "self", "myself"}:
                 response = await self.client.me.get()
@@ -2814,14 +2815,14 @@ class TeamsDataSource:
                     response = await self.client.users.with_url(user_url).get()
                 else:
                     response = await self.client.users.by_user_id(normalized_user_id).get()
-            
+
             except Exception as e:
                 # 3. Fallback: Search by 'mail' property if the ID looks like an email
                 # This is the standard way to find Guest users using their external email.
                 if "@" in normalized_user_id:
                     filter_url = f"https://graph.microsoft.com/v1.0/users?$filter=mail eq '{normalized_user_id}'&$select={select_csv}"
                     search_result = await self.client.users.with_url(filter_url).get()
-                    
+
                     if search_result and hasattr(search_result, 'value') and len(search_result.value) > 0:
                         response = search_result.value[0]
                     else:
@@ -2834,12 +2835,12 @@ class TeamsDataSource:
             # 4. Process and return the successful response
             if response:
                 return self._handle_teams_response(response)
-            
+
             return TeamsResponse(success=False, error="User retrieval failed: No data returned.")
 
         except Exception as e:
             logger.error(f"Error in teams_get_user: {e}")
-            return TeamsResponse(success=False, error=str(e))    
+            return TeamsResponse(success=False, error=str(e))
 
     async def teams_list_users(self, cursor_url: Optional[str] = None) -> TeamsResponse:
         """
@@ -18630,7 +18631,7 @@ class TeamsDataSource:
                 )
 
             response = await self.client.teams.post(body=payload)
-            logger.debug(f"TEAMS create log: {response}")            
+            logger.debug(f"TEAMS create log: {response}")
             if response is None:
                 # Graph create-team is an async operation that can return 202
                 # with an empty body. Treat this as accepted instead of failure.

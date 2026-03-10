@@ -152,7 +152,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                         "mimeType": record.get("mimeType"),
                         "origin": record.get("origin"),
                         "recordType": record.get("recordType"),
-                        "virtualRecordId": record.get("virtualRecordId", None),
+                        "virtualRecordId": record.get("virtualRecordId"),
                     }
 
                     # Determine event type - default to NEW_RECORD for recovery
