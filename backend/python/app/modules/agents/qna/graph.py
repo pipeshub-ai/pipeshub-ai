@@ -174,14 +174,15 @@ def create_modern_agent_graph() -> "CompiledStateGraph":
     """
     Create simplified ReAct agent graph.
 
-    This graph uses a single ReAct agent node that handles:
+    This graph uses ReAct for tool execution and respond_node for
+    chatbot-identical final response formatting:
     - Tool selection
     - Tool execution
     - Cascading tool calls (one tool's output → next tool's input)
-    - Response generation
+    - Final response generation (respond_node)
 
     Architecture:
-        Entry → ReAct Agent → End
+        Entry → ReAct Agent → Respond → End
 
     Benefits:
     - 1 LLM call vs 3+ in current system
@@ -194,10 +195,13 @@ def create_modern_agent_graph() -> "CompiledStateGraph":
     """
     workflow = StateGraph(ChatState)
 
-    # Single node - ReAct agent handles everything
+    # ReAct node handles tool calling and prepares state
     workflow.add_node("agent", react_agent_node)
+    # Reuse existing chatbot response formatter
+    workflow.add_node("respond", respond_node)
     workflow.set_entry_point("agent")
-    workflow.add_edge("agent", END)
+    workflow.add_edge("agent", "respond")
+    workflow.add_edge("respond", END)
 
     return workflow.compile()
 
