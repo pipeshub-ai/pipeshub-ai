@@ -190,6 +190,51 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
 
+  // Shared MUI outlined-input styles used by TextField and Select components
+  const outlinedInputSx = {
+    borderRadius: 1.25,
+    backgroundColor: isDark
+      ? alpha(theme.palette.background.paper, 0.6)
+      : alpha(theme.palette.background.paper, 0.8),
+    transition: 'all 0.2s',
+    '&:hover': {
+      backgroundColor: isDark
+        ? alpha(theme.palette.background.paper, 0.8)
+        : alpha(theme.palette.background.paper, 1),
+    },
+    '&:hover .MuiOutlinedInput-notchedOutline': {
+      borderColor: alpha(theme.palette.primary.main, isDark ? 0.4 : 0.3),
+    },
+    '&.Mui-focused': {
+      backgroundColor: isDark
+        ? alpha(theme.palette.background.paper, 0.9)
+        : theme.palette.background.paper,
+    },
+    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+      borderWidth: 1.5,
+      borderColor: theme.palette.primary.main,
+    },
+  } as const;
+
+  const inputLabelSx = {
+    fontSize: '0.875rem',
+    fontWeight: 500,
+    '&.Mui-focused': { fontSize: '0.875rem' },
+  } as const;
+
+  const inputTextSx = {
+    fontSize: '0.875rem',
+    padding: '10.5px 14px',
+    fontWeight: 400,
+  } as const;
+
+  const helperTextSx = {
+    fontSize: '0.75rem',
+    fontWeight: 400,
+    marginTop: 0.75,
+    marginLeft: 1,
+  } as const;
+
   // Is this an edit/manage operation (instanceId provided)?
   const isManageMode = !!toolsetId;
   const instanceId = toolsetId ?? null;
@@ -727,7 +772,12 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
           payload.oauthConfigId = selectedOAuthConfigId;
         } else {
           // Creating new OAuth app - use instanceName as oauthInstanceName
-          payload.oauthInstanceName = instanceName.trim();
+          const oauthName = instanceName.trim();
+          if (!oauthName) {
+            setError('Instance name is required to create a new OAuth App');
+            return;
+          }
+          payload.oauthInstanceName = oauthName;
         }
       }
 
@@ -1288,62 +1338,24 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                           helperText={saveAttempted && formErrors.instanceName}
                           placeholder={`e.g., ${toolset.displayName || 'My Toolset'} - Production`}
                           sx={{
-                            '& .MuiOutlinedInput-root': {
-                              borderRadius: 1.25,
-                              backgroundColor: isDark
-                                ? alpha(theme.palette.background.paper, 0.6)
-                                : alpha(theme.palette.background.paper, 0.8),
-                              transition: 'all 0.2s',
-                              '&:hover': {
-                                backgroundColor: isDark
-                                  ? alpha(theme.palette.background.paper, 0.8)
-                                  : alpha(theme.palette.background.paper, 1),
-                              },
-                              '&:hover .MuiOutlinedInput-notchedOutline': {
-                                borderColor: alpha(theme.palette.primary.main, isDark ? 0.4 : 0.3),
-                              },
-                              '&.Mui-focused': {
-                                backgroundColor: isDark
-                                  ? alpha(theme.palette.background.paper, 0.9)
-                                  : theme.palette.background.paper,
-                              },
-                              '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                                borderWidth: 1.5,
-                                borderColor: theme.palette.primary.main,
-                              },
-                            },
-                            '& .MuiInputLabel-root': {
-                              fontSize: '0.875rem',
-                              fontWeight: 500,
-                              '&.Mui-focused': {
-                                fontSize: '0.875rem',
-                              },
-                            },
-                            '& .MuiOutlinedInput-input': {
-                              fontSize: '0.875rem',
-                              padding: '10.5px 14px',
-                              fontWeight: 400,
-                            },
-                            '& .MuiFormHelperText-root': {
-                              fontSize: '0.75rem',
-                              fontWeight: 400,
-                              marginTop: 0.75,
-                              marginLeft: 1,
-                            },
+                            '& .MuiOutlinedInput-root': outlinedInputSx,
+                            '& .MuiInputLabel-root': inputLabelSx,
+                            '& .MuiOutlinedInput-input': inputTextSx,
+                            '& .MuiFormHelperText-root': helperTextSx,
                           }}
                         />
                       </Grid>
                     </Grid>
 
-                    {/* OAuth App Selector (Admin in CREATE mode for OAuth) - Only show if OAuth apps exist */}
-                    {isOAuth && isAdmin && availableOAuthConfigs.length > 0 && (
+                    {/* OAuth App Selector (Admin in CREATE mode for OAuth) */}
+                    {isOAuth && isAdmin && (
                       <>
                         {loadingOAuthConfigs ? (
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 2, bgcolor: alpha(theme.palette.primary.main, 0.04), borderRadius: 1.25 }}>
                             <CircularProgress size={16} />
                             <Typography variant="body2" color="text.secondary">Loading OAuth apps...</Typography>
                           </Box>
-                        ) : (
+                        ) : availableOAuthConfigs.length > 0 ? (
                           <Grid container spacing={2}>
                             <Grid item xs={12}>
                               <FormControl fullWidth size="small">
@@ -1362,8 +1374,9 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                                       if (selectedConfig) {
                                         const newFormData: Record<string, any> = {};
                                         // Populate all fields from the selected config
+                                        const excludedKeys = new Set(['_id', 'oauthInstanceName', 'orgId', 'userId', 'toolsetType', 'createdAtTimestamp', 'updatedAtTimestamp', 'clientSecretSet']);
                                         Object.keys(selectedConfig).forEach(key => {
-                                          if (key !== '_id' && key !== 'oauthInstanceName' && key !== 'orgId' && key !== 'userId' && key !== 'toolsetType' && key !== 'createdAtTimestamp' && key !== 'updatedAtTimestamp' && key !== 'clientSecretSet') {
+                                          if (!excludedKeys.has(key)) {
                                             const value = (selectedConfig as any)[key];
                                             if (Array.isArray(value)) {
                                               newFormData[key] = value.join(',');
@@ -1378,28 +1391,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                                   }}
                                   label="OAuth App"
                                   sx={{
-                                    borderRadius: 1.25,
-                                    backgroundColor: isDark
-                                      ? alpha(theme.palette.background.paper, 0.6)
-                                      : alpha(theme.palette.background.paper, 0.8),
-                                    transition: 'all 0.2s',
-                                    '&:hover': {
-                                      backgroundColor: isDark
-                                        ? alpha(theme.palette.background.paper, 0.8)
-                                        : alpha(theme.palette.background.paper, 1),
-                                    },
-                                    '&:hover .MuiOutlinedInput-notchedOutline': {
-                                      borderColor: alpha(theme.palette.primary.main, isDark ? 0.4 : 0.3),
-                                    },
-                                    '&.Mui-focused': {
-                                      backgroundColor: isDark
-                                        ? alpha(theme.palette.background.paper, 0.9)
-                                        : theme.palette.background.paper,
-                                    },
-                                    '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
-                                      borderWidth: 1.5,
-                                      borderColor: theme.palette.primary.main,
-                                    },
+                                    ...outlinedInputSx,
                                     '& .MuiSelect-select': {
                                       fontSize: '0.875rem',
                                       padding: '10.5px 14px',
@@ -1422,6 +1414,21 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                           </FormControl>
                             </Grid>
                           </Grid>
+                        ) : (
+                          <Box sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1,
+                            p: 1.5,
+                            bgcolor: alpha(theme.palette.info.main, isDark ? 0.08 : 0.05),
+                            borderRadius: 1.25,
+                            border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+                          }}>
+                            <Iconify icon="mdi:information-outline" width={18} sx={{ color: theme.palette.info.main, flexShrink: 0 }} />
+                            <Typography variant="body2" sx={{ color: theme.palette.text.secondary, fontSize: '0.8125rem' }}>
+                              No existing OAuth apps found. A new OAuth app will be created using the Instance Name above.
+                            </Typography>
+                          </Box>
                         )}
                       </>
                     )}
