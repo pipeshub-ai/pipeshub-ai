@@ -373,7 +373,7 @@ class AzureOCRStrategy(OCRStrategy):
         self, element_data: Dict[str, Any], page_width: float, page_height: float
     ) -> Dict[str, Any]:
         """Normalize coordinates to 0-1 range"""
-        if "bounding_box" in element_data and element_data["bounding_box"]:
+        if element_data.get("bounding_box"):
             element_data["bounding_box"] = self._normalize_coordinates(
                 element_data["bounding_box"], page_width, page_height
             )

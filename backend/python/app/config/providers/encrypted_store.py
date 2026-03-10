@@ -23,7 +23,7 @@ T = TypeVar("T")
 
 class _DatetimeSafeEncoder(json.JSONEncoder):
     """JSON encoder that safely handles datetime objects by converting them to ISO format strings."""
-    def default(self, obj: Any) -> Any:  # noqa: ANN401
+    def default(self, obj: Any) -> Any:
         if isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)

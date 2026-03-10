@@ -352,7 +352,7 @@ class RetrievalService:
                 virtual_id = result["metadata"].get("virtualRecordId")
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id].get("_key")
-                    record = record_id_to_record_map.get(record_id, None)
+                    record = record_id_to_record_map.get(record_id)
 
                     result["metadata"]["recordId"] = record_id
                     if record:

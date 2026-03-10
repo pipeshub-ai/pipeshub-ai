@@ -29,7 +29,7 @@ from langgraph.types import StreamWriter
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.agents.qna.stream_utils import safe_stream_write
 from app.modules.qna.response_prompt import create_response_messages
-from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
+from app.utils.streaming import stream_llm_response_with_tools
 
 # ============================================================================
 # CONSTANTS & CONFIGURATION
@@ -6399,7 +6399,7 @@ async def respond_node(
                 if _raw_answer:
                     try:
                         from app.utils.citations import (
-                            normalize_citations_and_chunks_for_agent as _ncc_agent,  # noqa: PLC0415
+                            normalize_citations_and_chunks_for_agent as _ncc_agent,
                         )
                         _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [])
                         if _enriched:
@@ -6836,7 +6836,7 @@ def _build_tool_results_context(
 
             parts.append(f"### {tool_name}\n")
             parts.append(f"```json\n{content_str}\n```\n\n")
-    
+
 
 
     parts.append("\n---\n## 📝 RESPONSE INSTRUCTIONS\n\n")
@@ -7050,7 +7050,7 @@ def _detect_tool_result_status(result_content: Any) -> str:
                 return "error"
 
             # Check for error key
-            if "error" in parsed and parsed["error"]:
+            if parsed.get("error"):
                 return "error"
 
             # Check for success=False pattern (tuple-style result)
@@ -7081,7 +7081,7 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
     the context conflicts that occur with nested agent.astream() calls.
     """
 
-    def __init__(self, writer: StreamWriter, config: RunnableConfig, log: logging.Logger):
+    def __init__(self, writer: StreamWriter, config: RunnableConfig, log: logging.Logger) -> None:
         super().__init__()
         self.writer = writer
         self.config = config
@@ -8113,7 +8113,7 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
 
         # Unwrap tuple format (success, data)
         # Tools return (bool, str) tuple - extract the data part
-        if isinstance(result, tuple) and len(result) == 2:  # noqa: PLR2004
+        if isinstance(result, tuple) and len(result) == 2:
             result = result[1]
             if isinstance(result, str):
                 try:

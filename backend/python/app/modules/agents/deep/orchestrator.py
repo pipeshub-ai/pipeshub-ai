@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -256,7 +256,7 @@ def _normalize_tasks(
     separate tasks (one per domain) to ensure proper tool isolation.
     """
     normalized: List[Dict[str, Any]] = []
-    available_domains = set(tool_groups.keys())
+    set(tool_groups.keys())
 
     for task_spec in raw_tasks:
         domains = task_spec.get("domains", [])

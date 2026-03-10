@@ -1,6 +1,6 @@
+import asyncio
 import json
 import logging
-import asyncio
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -14,19 +14,13 @@ from app.connectors.core.registry.auth_builder import (
     OAuthScopeConfig,
 )
 from app.connectors.core.registry.connector_builder import CommonFields
-from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.teams.teams import TeamsDataSource
-
-from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
-from msgraph.generated.models.recurrence_pattern import RecurrencePattern
-from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
-from msgraph.generated.models.recurrence_range import RecurrenceRange
-from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
 
 logger = logging.getLogger(__name__)
 
@@ -520,13 +514,6 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
         "dayOfMonth",
         "month",
     }
-    range_keys = {
-        "rangeType",
-        "startDate",
-        "endDate",
-        "numberOfOccurrences",
-        "recurrenceTimeZone",
-    }
 
     pattern: Dict[str, Any] = {}
     for key in pattern_keys:
@@ -772,10 +759,11 @@ class Teams:
 
         if hasattr(response_obj, "get_field_deserializers"):
             try:
+                import json as _json
+
                 from kiota_serialization_json.json_serialization_writer import (  # type: ignore
                     JsonSerializationWriter,
                 )
-                import json as _json
 
                 writer = JsonSerializationWriter()
                 writer.write_object_value(None, response_obj)
@@ -1223,7 +1211,7 @@ class Teams:
                 days=days,
                 top=top,
             )
-          
+
 
             if response.success:
 
@@ -1252,7 +1240,7 @@ class Teams:
 
         except Exception as e:
             return self._handle_error(e, "get user conversations")
-            
+
     @tool(
         app_name="teams",
         tool_name="get_user_channels",
@@ -1351,7 +1339,7 @@ class Teams:
             )
             if response.success:
                 serialized = self._serialize_response(response.data)
-                
+
                 meetings = []
                 if isinstance(serialized, dict):
                     raw_meetings = serialized.get("results")
@@ -1362,7 +1350,7 @@ class Teams:
                 for meeting in meetings:
                     if not isinstance(meeting, dict):
                         continue
-                    meeting_id = meeting.get("meeting_id") or meeting.get("online_meeting_id") 
+                    meeting_id = meeting.get("meeting_id") or meeting.get("online_meeting_id")
                     meeting["meeting_id"] = meeting_id
                     normalized_meetings.append(meeting)
 
@@ -1484,7 +1472,7 @@ class Teams:
     #     end_datetime: str,
     #     top: Optional[int] = 100,
     # ) -> tuple[bool, str]:
-    #     try:  
+    #     try:
     #         response = await self.client.teams_get_my_meetings_for_given_period(
     #             start_datetime=start_datetime,
     #             end_datetime=end_datetime,
@@ -1570,15 +1558,15 @@ class Teams:
 
             if not resp.success:
                 return False, json.dumps({"error": resp.error or "Failed to search calendar events"})
-            
+
             data = self._serialize_response(resp.data)
-            
+
             events = (
                 data.get("value", []) if isinstance(data, dict)
                 else (data if isinstance(data, list) else [])
             )
 
-            
+
 
             return True, json.dumps({
                 "results": events,
@@ -1626,7 +1614,7 @@ class Teams:
         Preferred: meeting_id (direct call, no resolution).
         Fallback:  join_url (skips one API call) or event_id (fetches event first).
         """
-        
+
         try:
             # Step 1: Resolve to online meeting ID
             resolved_meeting_id = meeting_id
@@ -1646,7 +1634,7 @@ class Teams:
                     )
                 })
 
-            
+
 
             # Step 2: List transcripts
             list_resp = await self.client.me_list_online_meeting_transcripts(
@@ -1654,7 +1642,7 @@ class Teams:
             )
             if not list_resp.success:
                 return False, json.dumps({"error": list_resp.error or "Failed to list transcripts"})
-            
+
             data = self._serialize_response(list_resp.data) if list_resp.data else {}
             transcript_items = (
                 data.get("value", []) if isinstance(data, dict)
@@ -1667,7 +1655,7 @@ class Teams:
                     "transcripts": [],
                 })
 
-            
+
 
             # Step 3: Fetch metadataContent for each transcript
             all_transcripts = []
@@ -1701,8 +1689,8 @@ class Teams:
                     "entries": parsed_entries,
                     "entry_count": len(parsed_entries),
                 })
-            
-            
+
+
             return True, json.dumps({
                 "meeting_id": resolved_meeting_id,
                 "transcripts": all_transcripts,
@@ -1775,7 +1763,7 @@ class Teams:
         """
         try:
             from urllib.parse import unquote
-            
+
             # Decode percent-encoded characters before passing to Graph filter
             decoded_url = unquote(join_url)
 
@@ -1787,7 +1775,7 @@ class Teams:
                 return None
 
             data = self._serialize_response(resp.data) if resp.data else {}
-            
+
             items = (
                 data.get("value") or data.get("results", [])
                 if isinstance(data, dict)
