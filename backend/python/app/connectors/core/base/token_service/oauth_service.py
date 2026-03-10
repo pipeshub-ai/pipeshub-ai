@@ -268,7 +268,7 @@ class OAuthProvider:
                 parsed_data = parse_qs(text_response, keep_blank_values=True)
                 token_data = {key: values[0] if values else None for key, values in parsed_data.items()}
                 # Convert string numbers to integers for expires_in if present
-                if 'expires_in' in token_data and token_data['expires_in']:
+                if token_data.get('expires_in'):
                     try:
                         token_data['expires_in'] = int(token_data['expires_in'])
                     except (ValueError, TypeError):
