@@ -37,6 +37,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -178,7 +179,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
             default_value=True,
         ))
         .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED", "COLLABORATION.CREATED", "COLLABORATION.ACCEPTED", "COLLABORATION.REMOVED"])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_agent_support(False)
         .with_sync_support(True)
