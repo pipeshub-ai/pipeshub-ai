@@ -63,7 +63,7 @@ def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
         pass
 
     try:
-        from langchain_openai import ChatOpenAI, AzureChatOpenAI
+        from langchain_openai import AzureChatOpenAI, ChatOpenAI
         if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)):
             return True
     except ImportError:

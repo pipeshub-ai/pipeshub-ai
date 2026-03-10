@@ -315,7 +315,6 @@ class DateCalculator:
     def parse_holiday_dates(self, text: str, year: Optional[int] = None) -> str:
         """Extract dates from raw text content."""
         import re
-        from datetime import datetime
 
         try:
             found_dates: list[dict] = []

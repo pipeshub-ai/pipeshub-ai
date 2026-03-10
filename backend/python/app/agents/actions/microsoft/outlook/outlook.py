@@ -1,16 +1,10 @@
-import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
-from datetime import datetime, timezone as tz, date
+from datetime import date, datetime
+from datetime import timezone as tz
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
-from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
-from msgraph.generated.models.recurrence_pattern import RecurrencePattern
-from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
-from msgraph.generated.models.recurrence_range import RecurrenceRange
-from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
 
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
@@ -21,11 +15,11 @@ from app.connectors.core.registry.auth_builder import (
     OAuthScopeConfig,
 )
 from app.connectors.core.registry.connector_builder import CommonFields
-from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsDataSource,
@@ -595,10 +589,11 @@ class Outlook:
         # placeholder paths like {{…events[0].id}} resolve correctly.
         if hasattr(response_obj, "get_field_deserializers"):
             try:
+                import json as _json
+
                 from kiota_serialization_json.json_serialization_writer import (  # type: ignore
                     JsonSerializationWriter,
                 )
-                import json as _json
 
                 writer = JsonSerializationWriter()
                 writer.write_object_value(None, response_obj)
@@ -728,7 +723,7 @@ class Outlook:
             # Step 1 – create draft
             create_response = await self.client.me_create_messages(request_body=message_body)
 
-            res_json = _response_json(create_response)
+            _response_json(create_response)
             if not create_response.success:
                 return False, json.dumps({
                     "error": create_response.error or "Failed to create email draft"
@@ -742,7 +737,7 @@ class Outlook:
 
             # Step 2 – send the draft
             send_response = await self.client.me_messages_message_send(message_id=message_id)
-            res_json = _response_json(send_response)
+            _response_json(send_response)
             if send_response.success:
                 # Build recipient summary for clarity
                 recipients_info = {
@@ -752,7 +747,7 @@ class Outlook:
                     recipients_info["cc"] = cc_recipients
                 if bcc_recipients:
                     recipients_info["bcc"] = bcc_recipients
-                
+
                 return True, json.dumps({
                     "message": "Email sent successfully",
                     "message_id": message_id,
@@ -803,7 +798,7 @@ class Outlook:
                 request_body={"comment": comment},
             )
             #print(f"Response: {response}")
-            res_json = _response_json(response)
+            _response_json(response)
             #print("--------------------------------")
             #print(f"Response success: {res_json}")
             #print("--------------------------------")
@@ -847,7 +842,7 @@ class Outlook:
                 request_body={"comment": comment},
             )
             #print(f"Response: {response}")
-            res_json = _response_json(response)
+            _response_json(response)
             #print("--------------------------------")
             #print(f"Response success: {res_json}")
             #print("--------------------------------")
@@ -902,7 +897,7 @@ class Outlook:
                 request_body=forward_body,
             )
             #print(f"Response: {response}")
-            res_json = _response_json(response)
+            _response_json(response)
             #print("--------------------------------")
             #print(f"Response success: {res_json}")
             #print("--------------------------------")
@@ -959,7 +954,7 @@ class Outlook:
                 orderby=orderby,
             )
             #print(f"Response: {response}")
-            res_json = _response_json(response)
+            _response_json(response)
             #print("--------------------------------")
             #print(f"Response success: {res_json}")
             #print("--------------------------------")
@@ -1011,7 +1006,7 @@ class Outlook:
         try:
             response = await self.client.me_get_message(message_id=message_id)
             #print(f"Response: {response}")
-            res_json = _response_json(response)
+            _response_json(response)
             #print("--------------------------------")
             #print(f"Response success: {res_json}")
             #print("--------------------------------")
@@ -1054,7 +1049,7 @@ class Outlook:
                 top=min(top or 20, 100),
             )
             #print(f"Response: {response}")
-            res_json = _response_json(response)
+            _response_json(response)
             #print("--------------------------------")
             #print(f"Response success: {res_json}")
             #print("--------------------------------")
@@ -1112,7 +1107,7 @@ class Outlook:
                 top=min(top or 10, 50),
             )
             #print(f"Response: {response}")
-            res_json = _response_json(response)
+            _response_json(response)
             # print("--------------------------------")
             # print(f"Response success: {res_json}")
             # print("--------------------------------")
@@ -1265,13 +1260,13 @@ class Outlook:
 
             if recurrence:
                 event_body["recurrence"] = _build_recurrence_body(recurrence)
-            
+
             #print("--------------------------------")
             #print(f"Event body: {event_body}")
             #print("--------------------------------")
             response = await self.client.me_calendar_create_events(request_body=event_body)
             #print(f"Response: {response}")
-            res_json = _response_json(response)
+            _response_json(response)
             #print("--------------------------------")
             #print(f"Response success: {res_json}")
             #print("--------------------------------")
@@ -1311,7 +1306,7 @@ class Outlook:
         try:
             response = await self.client.me_calendar_get_events(event_id=event_id)
             #print(f"Response: {response}")
-            res_json = _response_json(response)
+            _response_json(response)
             #print("--------------------------------")
             #print(f"Response success: {res_json}")
             #print("--------------------------------")
@@ -1595,7 +1590,7 @@ class Outlook:
 
         except Exception as e:
             return self._handle_error(e, "get recurring events ending")
-    
+
     @tool(
         app_name="outlook",
         tool_name="get_free_time_slots",
@@ -1691,7 +1686,7 @@ class Outlook:
 
             for i, status in enumerate(availability_view):
                 slot_start = range_start + (i * interval_delta)
-                slot_end = slot_start + interval_delta
+                slot_start + interval_delta
                 is_free = status in FREE_STATUSES
 
                 if is_free:
@@ -2047,7 +2042,7 @@ class Outlook:
 
         except Exception as e:
             return self._handle_error(e, "delete recurring event occurrence")
-            
+
     # Online Meetings & Transcripts tools
     # ------------------------------------------------------------------
 
@@ -2294,7 +2289,7 @@ class Outlook:
                 return result
             return None
 
-        except Exception as e:
+        except Exception:
             return None
 
 

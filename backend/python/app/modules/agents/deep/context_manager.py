@@ -13,12 +13,12 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
-    from app.modules.agents.deep.state import DeepAgentState, SubAgentTask
+    from app.modules.agents.deep.state import SubAgentTask
 
 logger = logging.getLogger(__name__)
 
