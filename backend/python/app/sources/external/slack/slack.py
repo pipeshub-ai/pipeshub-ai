@@ -16,7 +16,7 @@ class SlackDataSource:
     def __init__(self, client: SlackClient) -> None:
         self.client = client.get_web_client()
 
-    async def _handle_slack_response(self, response: Any) -> SlackResponse:  # noqa: ANN401
+    async def _handle_slack_response(self, response: Any) -> SlackResponse:
         """Handle Slack API response and convert to standardized format"""
         try:
             if not response:

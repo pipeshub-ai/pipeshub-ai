@@ -1635,15 +1635,15 @@ async def delete_toolset_instance(
     try:
         graph_provider = _get_graph_provider(request)
         agent_names = await graph_provider.check_toolset_instance_in_use(instance_id)
-        
+
         # Validate that agent_names is a list (defensive programming)
         if not isinstance(agent_names, list):
             logger.error(f"check_toolset_instance_in_use returned unexpected type: {type(agent_names)} for instance {instance_id}")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Cannot delete toolset instance: Invalid response from agent usage check. Please try again or contact support."
+                detail="Cannot delete toolset instance: Invalid response from agent usage check. Please try again or contact support."
             )
-        
+
         # Explicit check: if any agents are using this instance, block deletion
         # ToolsetInUseError will automatically be handled by FastAPI (it's an HTTPException)
         if agent_names and len(agent_names) > 0:
@@ -1652,7 +1652,7 @@ async def delete_toolset_instance(
                 toolset_name=instance.get('instanceName', instance_id),
                 agent_names=agent_names
             )
-        
+
         logger.info(f"✅ Agent usage check passed for instance {instance_id}: no agents found using this toolset")
     except HTTPException:
         # Let HTTPException (including ToolsetInUseError) propagate - FastAPI handles it automatically
@@ -1662,7 +1662,7 @@ async def delete_toolset_instance(
         # FAIL-CLOSED: Block deletion if we cannot verify (prevent accidental deletion)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Cannot delete toolset instance: Unable to verify if it's in use by agents. Please try again or contact support."
+            detail="Cannot delete toolset instance: Unable to verify if it's in use by agents. Please try again or contact support."
         )
 
     # Cancel all refresh tasks for this instance BEFORE deleting credentials
@@ -1686,7 +1686,7 @@ async def delete_toolset_instance(
     try:
         prefix = _get_instance_users_prefix(instance_id)
         user_keys = await config_service.list_keys_in_directory(prefix)
-        
+
         if user_keys:
             # Validate that all keys are for this specific instance to prevent accidental deletion
             expected_prefix = f"/services/toolsets/{instance_id}/"
@@ -1704,19 +1704,19 @@ async def delete_toolset_instance(
                         logger.warning(f"Skipping invalid key format for instance {instance_id}: {key}")
                 else:
                     logger.warning(f"Skipping key that doesn't match expected prefix for instance {instance_id}: {key}")
-            
+
             # Delete all valid user credentials in parallel
             if valid_user_keys:
                 delete_tasks = [config_service.delete_config(key) for key in valid_user_keys]
                 delete_results = await asyncio.gather(*delete_tasks, return_exceptions=True)
-                
+
                 # Count successful deletions
                 for i, result in enumerate(delete_results):
                     if isinstance(result, Exception):
                         logger.warning(f"Failed to delete credential {valid_user_keys[i]}: {result}")
                     elif result:
                         deleted_credentials_count += 1
-                
+
                 if deleted_credentials_count > 0:
                     logger.info(f"Deleted {deleted_credentials_count} user credential(s) for instance {instance_id}")
     except Exception as e:
@@ -1738,7 +1738,7 @@ async def delete_toolset_instance(
     message = "Toolset instance deleted successfully."
     if deleted_credentials_count > 0:
         message += f" {deleted_credentials_count} user credential(s) were also deleted."
-    
+
     return {
         "status": "success",
         "message": message,
@@ -1931,7 +1931,7 @@ async def remove_toolset_credentials(
     user_id = user_context["user_id"]
 
     auth_path = _get_user_auth_path(instance_id, user_id)
-    
+
     # Cancel refresh task before deleting credentials to prevent errors
     try:
         from app.connectors.core.base.token_service.startup_service import (
@@ -1942,7 +1942,7 @@ async def remove_toolset_credentials(
             refresh_service.cancel_refresh_task(auth_path)
     except Exception as e:
         logger.warning(f"Could not cancel refresh task for {auth_path}: {e}")
-    
+
     try:
         await config_service.delete_config(auth_path)
     except Exception as e:
@@ -1974,7 +1974,7 @@ async def reauthenticate_toolset_instance(
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
 
     auth_path = _get_user_auth_path(instance_id, user_id)
-    
+
     # Cancel refresh task before deleting credentials to prevent errors
     try:
         from app.connectors.core.base.token_service.startup_service import (
@@ -1985,7 +1985,7 @@ async def reauthenticate_toolset_instance(
             refresh_service.cancel_refresh_task(auth_path)
     except Exception as e:
         logger.warning(f"Could not cancel refresh task for {auth_path}: {e}")
-    
+
     try:
         await config_service.delete_config(auth_path)
     except Exception as e:

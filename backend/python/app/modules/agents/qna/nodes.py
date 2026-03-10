@@ -5262,7 +5262,7 @@ async def respond_node(
                 if _raw_answer:
                     try:
                         from app.utils.citations import (
-                            normalize_citations_and_chunks_for_agent as _ncc_agent,  # noqa: PLC0415
+                            normalize_citations_and_chunks_for_agent as _ncc_agent,
                         )
                         _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [])
                         if _enriched:
@@ -5537,7 +5537,7 @@ def _build_tool_results_context(
 
             parts.append(f"### {tool_name}\n")
             parts.append(f"```json\n{content_str}\n```\n\n")
-    
+
 
 
     parts.append("\n---\n## 📝 RESPONSE INSTRUCTIONS\n\n")
@@ -6211,7 +6211,7 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
 
         # Unwrap tuple format (success, data)
         # Tools return (bool, str) tuple - extract the data part
-        if isinstance(result, tuple) and len(result) == 2:  # noqa: PLR2004
+        if isinstance(result, tuple) and len(result) == 2:
             result = result[1]
             if isinstance(result, str):
                 try:

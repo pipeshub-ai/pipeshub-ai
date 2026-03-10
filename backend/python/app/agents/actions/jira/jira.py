@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import traceback
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -708,7 +708,7 @@ class Jira:
 
         # Fields to always remove (system metadata, empty values, redundant data)
         fields_to_remove = []
-        
+
         # Fields to simplify (extract only essential info from nested objects)
         fields_to_simplify = {}
 
@@ -895,23 +895,23 @@ class Jira:
         """
         if not site_url or not isinstance(issue, dict):
             return
-        
+
         fields = issue.get("fields", {})
         if not isinstance(fields, dict):
             return
-        
+
         # Helper to add URL to an issue reference object
         def add_url_to_issue_ref(issue_ref: Any) -> None:
             """Add URL to an issue reference if it has a key."""
             if isinstance(issue_ref, dict) and issue_ref.get("key"):
                 issue_key = issue_ref["key"]
                 issue_ref["url"] = f"{site_url}/browse/{issue_key}"
-        
+
         # Add URL to parent field if it exists and has a key
         parent = fields.get("parent")
         if parent:
             add_url_to_issue_ref(parent)
-        
+
         # Check all fields for issue references
         # Epic Links and other issue-referencing custom fields typically contain
         # an issue object with a "key" field
@@ -920,7 +920,7 @@ class Jira:
             # Skip standard fields that we've already handled (parent) or that aren't issue references
             if field_key in ["parent", "key", "id", "self", "url"]:
                 continue
-            
+
             # Check if this field contains an issue reference
             # Issue references are dicts with a "key" field (like Epic Links)
             if field_value is not None:
