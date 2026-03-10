@@ -9,16 +9,28 @@ Full lifecycle integration tests for all supported Pipeshub storage connectors (
 
 ## Table of contents
 
-- [Prerequisites](#prerequisites)
-- [Quick start (remote)](#quick-start-remote)
-- [Environment variables reference](#environment-variables-reference)
-- [Setup: step-by-step](#setup-step-by-step)
-- [Running tests](#running-tests)
-- [Test lifecycle](#test-lifecycle)
-- [Local runs](#local-runs)
-- [Sample data](#sample-data)
-- [Key files](#key-files)
-- [Troubleshooting](#troubleshooting)
+- [Integration Tests](#integration-tests)
+  - [Table of contents](#table-of-contents)
+  - [Prerequisites](#prerequisites)
+  - [Quick start (remote)](#quick-start-remote)
+  - [Environment variables reference](#environment-variables-reference)
+    - [Where to put them](#where-to-put-them)
+    - [Core (required for all runs)](#core-required-for-all-runs)
+    - [Authentication (Pipeshub API)](#authentication-pipeshub-api)
+    - [Neo4j (graph validation)](#neo4j-graph-validation)
+    - [Storage credentials (per connector)](#storage-credentials-per-connector)
+    - [Sample data (optional)](#sample-data-optional)
+  - [Setup: step-by-step](#setup-step-by-step)
+    - [1. Clone and enter the repo](#1-clone-and-enter-the-repo)
+    - [2. Create virtualenv and install deps](#2-create-virtualenv-and-install-deps)
+    - [3. Create env files](#3-create-env-files)
+    - [4. Run tests](#4-run-tests)
+  - [Running tests](#running-tests)
+  - [Test lifecycle](#test-lifecycle)
+  - [Local runs](#local-runs)
+  - [Sample data](#sample-data)
+  - [Key files](#key-files)
+  - [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -86,14 +98,13 @@ Do not commit `.env.local` or `.env.prod` — they contain secrets. Use `.env.lo
 
 | Variable                      | Required when        | Purpose |
 |------------------------------|----------------------|---------|
-| `CLIENT_ID`                   | Remote; or Local (if not using test user) | OAuth2 client ID for client_credentials grant. |
-| `CLIENT_SECRET`               | Remote; or Local (if not using test user) | OAuth2 client secret. |
-| `PIPESHUB_TEST_USER_EMAIL`    | Local only (optional) | Org admin email; used to create OAuth app when `CLIENT_ID`/`CLIENT_SECRET` are empty. |
-| `PIPESHUB_TEST_USER_PASSWORD` | Local only (optional) | Org admin password. |
-| `PIPESHUB_USER_BEARER_TOKEN`  | Optional (remote)    | Pre-obtained JWT. Session validation may require it for remote runs; the HTTP client uses `CLIENT_ID`/`CLIENT_SECRET` for tokens. |
+| `CLIENT_ID`                   | Prod (remote)        | OAuth2 client ID for client_credentials grant. |
+| `CLIENT_SECRET`               | Prod (remote)        | OAuth2 client secret. |
+| `PIPESHUB_TEST_USER_EMAIL`    | Local (when not using pre-set client creds) | Org admin email; used to create OAuth app and set CLIENT_ID/CLIENT_SECRET for the run. |
+| `PIPESHUB_TEST_USER_PASSWORD` | Local (when not using pre-set client creds) | Org admin password. |
 
-- **Remote:** You must set `CLIENT_ID` and `CLIENT_SECRET` (from the test org’s OAuth app). The client uses them to get an access token via `POST /api/v1/oauth2/token`. If the session-start warning asks for `PIPESHUB_USER_BEARER_TOKEN`, add a valid JWT to `.env` as well.
-- **Local:** Either set `CLIENT_ID` and `CLIENT_SECRET`, or leave them empty and set `PIPESHUB_TEST_USER_EMAIL` and `PIPESHUB_TEST_USER_PASSWORD`; the suite will create an OAuth app and set `CLIENT_ID`/`CLIENT_SECRET` for the run.
+- **Prod (remote):** Use **CLIENT_ID** and **CLIENT_SECRET** from the test org’s OAuth app. The client gets an access token via `POST /api/v1/oauth2/token`.
+- **Local:** Use **PIPESHUB_TEST_USER_EMAIL** and **PIPESHUB_TEST_USER_PASSWORD** (org admin). The suite creates an OAuth app and sets CLIENT_ID/CLIENT_SECRET for the run. Alternatively, set CLIENT_ID and CLIENT_SECRET in `.env.local` and leave email/password empty.
 
 ---
 
@@ -107,6 +118,8 @@ Do not commit `.env.local` or `.env.prod` — they contain secrets. Use `.env.lo
 | `TEST_NEO4J_DATABASE`  | No       | Database name (default: `neo4j`). |
 
 Use `TEST_NEO4J_*` in both `.env.local` and `.env.prod`; the Neo4j driver fixture reads these directly.
+
+**Note:** The graph assertion helper `get_record_parent_path()` (in `helper/graph_assertions.py`) uses the APOC procedure `apoc.text.join`. The current connector tests do not use it. If you add tests that call this helper, ensure your Neo4j instance has the [APOC plugin](https://neo4j.com/docs/apoc/current/) installed.
 
 ---
 
@@ -164,7 +177,7 @@ pip install -e ".[dev]"
 
 - Copy `.env.prod.example` to `.env.prod` and set:
   - `PIPESHUB_BASE_URL=https://test.pipeshub.com`
-  - `CLIENT_ID`, `CLIENT_SECRET` (and optionally `PIPESHUB_USER_BEARER_TOKEN`)
+  - `CLIENT_ID`, `CLIENT_SECRET` (required for prod)
   - `TEST_NEO4J_URI`, `TEST_NEO4J_USERNAME`, `TEST_NEO4J_PASSWORD` (and `TEST_NEO4J_DATABASE` if needed)
   - Storage credentials for each connector you run (see tables above).
 
@@ -211,7 +224,7 @@ pytest -m integration -v --tb=long                 # longer tracebacks
 pytest -m "integration and not slow" -v             # exclude slow
 ```
 
-Reports are written to `integration-tests/reports/` with a timestamped filename (e.g. `INTEGRATION_TEST_REPORT_2025-03-09_14-30-45.md`) so you can keep and compare multiple runs.
+After each run, an **HTML** report is written to `integration-tests/reports/` with a timestamped filename, e.g. `INTEGRATION_TEST_REPORT_2025-03-09_14-30-45.html`. Open it when debugging: verdict summary, pass/fail/skip counts, **parsed root cause** per failure, **cascade hints** when a later ordered test fails because shared state was never set (e.g. `KeyError: connector_id`), **full tracebacks**, optional captured stdout/stderr, and tables of all results by suite with durations. Keep multiple runs to compare over time.
 
 ---
 
@@ -273,7 +286,8 @@ Tests clone the [pipeshub-ai/integration-test](https://github.com/pipeshub-ai/in
 | `sample-data/sample_data.py` | Clones sample-data repo and returns path to files. |
 | `connectors/conftest.py` | Session fixtures: client, Neo4j driver, sample_data_root, storage helpers. |
 | `connectors/*/` | Per-connector lifecycle test modules. |
-| `reports/INTEGRATION_TEST_REPORT_<timestamp>.md` | One report per run (timestamp in filename; all kept for comparison). |
+| `helper/integration_report.py` | Builds the HTML report (root cause parsing, cascade hints, full tracebacks). |
+| `reports/INTEGRATION_TEST_REPORT_<timestamp>.html` | HTML report per run (only report artifact). |
 
 ---
 

@@ -86,6 +86,10 @@ class TestGCSFullLifecycle:
                 _state["rename_source_key"] = key
                 _state["rename_source_name"] = Path(key).name
                 break
+        assert _state.get("rename_source_key"), (
+            "No file object key after upload; rename/move require at least one file. "
+            "Ensure sample_data_root has files."
+        )
 
     @pytest.mark.order(3)
     def test_03_init_connector(self, pipeshub_client: PipeshubClient) -> None:
@@ -126,7 +130,7 @@ class TestGCSFullLifecycle:
         )
 
         full_count = count_records(neo4j_driver, connector_id)
-        _state["full_sync_count"] = full_count
+        _state["full_sync_count"] = full_count  # used by rename/move wait conditions
 
         assert_min_records(neo4j_driver, connector_id, uploaded)
         assert_record_groups_and_edges(
@@ -167,8 +171,7 @@ class TestGCSFullLifecycle:
     ) -> None:
         connector_id = _state["connector_id"]
         old_key = _state.get("rename_source_key")
-        if not old_key:
-            pytest.skip("No source key for rename test")
+        assert old_key, "rename_source_key missing — test_02 must set it after upload."
 
         old_name = Path(old_key).name
         new_name = f"renamed-{old_name}"
@@ -202,8 +205,7 @@ class TestGCSFullLifecycle:
     ) -> None:
         connector_id = _state["connector_id"]
         old_key = _state.get("move_source_key")
-        if not old_key:
-            pytest.skip("No source key for move test")
+        assert old_key, "move_source_key missing — test_07 must complete rename first."
 
         move_name = _state["move_source_name"]
         new_key = f"moved-folder/{move_name}"
@@ -214,9 +216,10 @@ class TestGCSFullLifecycle:
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
+        min_records = _state.get("full_sync_count", 1)
         pipeshub_client.wait_for_sync(
             connector_id,
-            check_fn=lambda: count_records(neo4j_driver, connector_id) >= count_before,
+            check_fn=lambda: count_records(neo4j_driver, connector_id) >= min_records,
             timeout=120,
             poll_interval=10,
             description="move sync",

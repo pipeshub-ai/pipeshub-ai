@@ -242,6 +242,28 @@ def assert_record_paths_contain(
             )
 
 
+def record_path_or_name_contains(
+    driver: Driver, connector_id: str, substring: str
+) -> bool:
+    """
+    Return True if at least one Record for this connector has path or name containing
+    *substring*. Uses a single Cypher query with no limit, so safe for large graphs.
+
+    Useful as a wait condition (e.g. after rename/move) before asserting.
+    """
+    cypher = """
+    MATCH (r:Record {connectorId: $cid})
+    OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(f:File)
+    WITH r, coalesce(r.recordName, r.name) AS name, f.path AS path
+    WHERE (path IS NOT NULL AND path CONTAINS $sub) OR (name IS NOT NULL AND name CONTAINS $sub)
+    RETURN count(*) AS c
+    """
+    with driver.session() as session:
+        result = session.run(cypher, cid=connector_id, sub=substring)
+        rec = result.single()
+        return int(rec["c"]) > 0 if rec else False
+
+
 def record_paths_or_names_contain(
     driver: Driver,
     connector_id: str,
@@ -252,12 +274,8 @@ def record_paths_or_names_contain(
 
     Useful as a wait condition (e.g. after rename) before asserting.
     """
-    pairs = fetch_record_paths(driver, connector_id, limit=1000)
-    names = fetch_record_names(driver, connector_id)
     for substring in substrings:
-        in_paths = any(p is not None and substring in p for p, _ in pairs)
-        in_names = any(n is not None and substring in n for n in names)
-        if not (in_paths or in_names):
+        if not record_path_or_name_contains(driver, connector_id, substring):
             return False
     return True
 
@@ -270,16 +288,12 @@ def assert_record_paths_or_names_contain(
     """
     Assert that for each expected substring, at least one Record's path or name contains it.
 
-    This is useful for rename/move validations where some connectors may encode the
-    filename in the path or in a name-like property.
+    Uses the same count-based query as record_path_or_name_contains so it stays consistent
+    with the wait condition and works when the graph has many records (no limit).
     """
-    pairs = fetch_record_paths(driver, connector_id, limit=1000)
-    names = fetch_record_names(driver, connector_id)
     for substring in expected_substrings:
-        in_paths = any(p is not None and substring in p for p, _ in pairs)
-        in_names = any(n is not None and substring in n for n in names)
-        if not (in_paths or in_names):
-            preview = pairs[:20]
+        if not record_path_or_name_contains(driver, connector_id, substring):
+            preview = fetch_record_paths(driver, connector_id, limit=20)
             raise AssertionError(
                 f"No Record path or name for connector {connector_id} contained substring {substring!r}. "
                 f"Sample (path, name) pairs: {preview}"
@@ -337,42 +351,70 @@ def assert_no_orphan_records(
         )
 
 
-def assert_all_records_cleaned(driver: Driver, connector_id: str) -> None:
+def count_any_nodes_with_connector_id(driver: Driver, connector_id: str) -> int:
     """
-    Assert zero Records, zero RecordGroups, and zero edges for a connector.
+    Count any node that still carries this connectorId (Record, RecordGroup, etc.).
+    Used to catch leftover nodes after delete that edge-only counts might miss.
+    """
+    return _run_single_int(
+        driver,
+        "MATCH (n {connectorId: $cid}) RETURN count(n) AS c",
+        cid=connector_id,
+    )
 
-    The underlying cleanup is asynchronous, so we poll for a short period
-    before asserting.
+
+def assert_connector_graph_fully_cleaned(
+    driver: Driver, connector_id: str, timeout: int = 180
+) -> None:
+    """
+    Strict cleanup assertion after connector delete.
+
+    Polls until every graph metric for this connector is zero, or fails with
+    a full snapshot. No silent pass — residual nodes/edges mean cleanup failed.
+    A persistent failure here indicates the backend is not removing graph data
+    when a connector is deleted; fix connector-delete cleanup, not the test.
+
+    Args:
+        driver: Neo4j driver.
+        connector_id: Connector instance id.
+        timeout: Seconds to wait for full cleanup (default 180).
     """
     import time
 
-    timeout = 120
     poll_interval = 5
     deadline = time.time() + timeout
+    last_summary: Dict[str, int] = {}
 
-    while True:
-        records = count_records(driver, connector_id)
-        groups = count_record_groups(driver, connector_id)
-        belongs = count_record_group_edges(driver, connector_id)
-
-        if records == 0 and groups == 0 and belongs == 0:
+    while time.time() < deadline:
+        last_summary = graph_summary(driver, connector_id)
+        last_summary["any_nodes_with_connector_id"] = count_any_nodes_with_connector_id(
+            driver, connector_id
+        )
+        if all(v == 0 for v in last_summary.values()):
+            logger.info(
+                "Graph fully cleaned for connector %s (all counts zero).",
+                connector_id,
+            )
             return
-
-        if time.time() >= deadline:
-            break
-
         time.sleep(poll_interval)
 
-    if records or groups or belongs:
-        logger.warning(
-            "Connector %s still has residual graph data after cleanup wait: "
-            "records=%s, record_groups=%s, belongs_to_edges=%s",
-            connector_id,
-            records,
-            groups,
-            belongs,
-        )
-    # Do not fail the test here; just warn. Cleanup is best-effort and may lag.
+    # Fail with full detail — tests must not pass if graph still has this connector
+    raise AssertionError(
+        f"Connector {connector_id} graph not fully cleaned after {timeout}s. "
+        f"All counts must be zero after delete. Remaining: {last_summary}. "
+        "Fix backend cleanup or increase timeout; do not ignore residual graph data."
+    )
+
+
+def assert_all_records_cleaned(
+    driver: Driver, connector_id: str, timeout: int = 180
+) -> None:
+    """
+    Assert zero Records, RecordGroups, and all counted edge types for a connector.
+
+    Delegates to assert_connector_graph_fully_cleaned (strict — fails if anything remains).
+    """
+    assert_connector_graph_fully_cleaned(driver, connector_id, timeout=timeout)
 
 
 def assert_record_count_unchanged(

@@ -1,10 +1,11 @@
 import logging
 import os
 import sys
+import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import List
 
 import pytest
 from dotenv import load_dotenv
@@ -15,8 +16,12 @@ _REPORTS_DIR = _THIS_DIR / "reports"
 if str(_HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(_HELPER_DIR))
 
+from integration_report import TestReportEntry, write_html_report  # noqa: E402
 from local_auth import obtain_local_oauth_credentials  # noqa: E402
 from pipeshub_client import PipeshubClient  # noqa: E402
+
+# Module-level ref so pytest_runtest_logreport can append even when report.config is missing (e.g. some pytest versions)
+_integration_test_reports: List[TestReportEntry] = []
 
 
 def _load_env() -> None:
@@ -77,9 +82,9 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
     """
     Pytest hook to validate that critical env vars are present.
 
-    For local mode (PIPESHUB_TEST_ENV=local): require PIPESHUB_BASE_URL, TEST_NEO4J_*,
+    Prod (PIPESHUB_TEST_ENV=prod): require PIPESHUB_BASE_URL, CLIENT_ID, CLIENT_SECRET, TEST_NEO4J_*.
+    Local (PIPESHUB_TEST_ENV=local): require PIPESHUB_BASE_URL, TEST_NEO4J_*,
     and either (CLIENT_ID + CLIENT_SECRET) or (PIPESHUB_TEST_USER_EMAIL + PIPESHUB_TEST_USER_PASSWORD).
-    For non-local: require PIPESHUB_BASE_URL, PIPESHUB_USER_BEARER_TOKEN, TEST_NEO4J_*.
     """
     test_env = os.getenv("PIPESHUB_TEST_ENV", "").strip().lower()
     env_file = ".env.prod" if test_env == "prod" else (".env.local" if test_env == "local" else "none")
@@ -106,14 +111,16 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
         has_test_user = os.getenv("PIPESHUB_TEST_USER_EMAIL") and os.getenv(
             "PIPESHUB_TEST_USER_PASSWORD"
         )
-        has_bearer = bool((os.getenv("PIPESHUB_USER_BEARER_TOKEN") or "").strip())
-        if not has_creds and not has_test_user and not has_bearer:
+        if not has_creds and not has_test_user:
             missing.append(
-                "CLIENT_ID+CLIENT_SECRET or PIPESHUB_TEST_USER_* or PIPESHUB_USER_BEARER_TOKEN"
+                "CLIENT_ID+CLIENT_SECRET or PIPESHUB_TEST_USER_EMAIL+PIPESHUB_TEST_USER_PASSWORD"
             )
     else:
-        if not os.getenv("PIPESHUB_USER_BEARER_TOKEN"):
-            missing.append("PIPESHUB_USER_BEARER_TOKEN")
+        # Prod: use OAuth2 client_credentials (CLIENT_ID + CLIENT_SECRET)
+        if not os.getenv("CLIENT_ID"):
+            missing.append("CLIENT_ID")
+        if not os.getenv("CLIENT_SECRET"):
+            missing.append("CLIENT_SECRET")
         for key in ["TEST_NEO4J_URI", "TEST_NEO4J_USERNAME", "TEST_NEO4J_PASSWORD"]:
             if not os.getenv(key):
                 missing.append(key)
@@ -128,77 +135,83 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
 
 def pytest_configure(config: pytest.Config) -> None:
     """Initialize list to collect test outcomes for the report."""
-    config._integration_test_reports = []  # type: ignore[attr-defined]
+    global _integration_test_reports
+    _integration_test_reports = []
+    config._integration_test_reports = _integration_test_reports  # type: ignore[attr-defined]
+    config._integration_session_start = time.monotonic()  # type: ignore[attr-defined]
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    """Collect pass/fail/skip for each test so we can write the report."""
+    """Collect pass/fail/skip + full failure text and duration for HTML report."""
     if report.when != "call":
         return
     config = getattr(report, "config", None)
-    reports: List[Tuple[str, str, Any]] = getattr(
-        config, "_integration_test_reports", None
+    reports: List[TestReportEntry] = (
+        getattr(config, "_integration_test_reports", None) if config else None
     )
     if reports is None:
-        return
+        reports = _integration_test_reports
     longrepr = getattr(report, "longrepr", None)
     longreprtext = getattr(report, "longreprtext", None)
     if longreprtext:
-        err_snippet = longreprtext.strip()[:800]
+        full_text = longreprtext.strip()
     elif longrepr is not None:
-        err_snippet = str(longrepr).strip()[:800]
+        full_text = str(longrepr).strip()
     else:
-        err_snippet = None
-    reports.append((report.nodeid, report.outcome, err_snippet))
+        full_text = ""
+
+    duration = float(getattr(report, "duration", 0) or 0)
+    outcome = report.outcome
+    err_full = full_text if outcome == "failed" and full_text else None
+
+    stdout_captured = None
+    stderr_captured = None
+    for name, content in getattr(report, "sections", []) or []:
+        if name == "Captured stdout call" or name == "Captured stdout":
+            stdout_captured = (stdout_captured or "") + content
+        elif name == "Captured stderr call" or name == "Captured stderr":
+            stderr_captured = (stderr_captured or "") + content
+
+    reports.append(
+        TestReportEntry(
+            nodeid=report.nodeid,
+            outcome=outcome,
+            duration=duration,
+            err_full=err_full,
+            stdout_captured=stdout_captured,
+            stderr_captured=stderr_captured,
+        )
+    )
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Write integration test report to reports/ with a timestamped filename."""
-    reports: List[Tuple[str, str, Any]] = getattr(
-        session.config, "_integration_test_reports", [],
+    """Write integration test HTML report under reports/ with timestamp."""
+    reports: List[TestReportEntry] = getattr(
+        session.config, "_integration_test_reports", None,
     )
-    passed = sum(1 for _, outcome, _ in reports if outcome == "passed")
-    failed = sum(1 for _, outcome, _ in reports if outcome == "failed")
-    skipped = sum(1 for _, outcome, _ in reports if outcome == "skipped")
-    total = len(reports)
+    if reports is None:
+        reports = _integration_test_reports
     env_label = "local" if os.getenv("PIPESHUB_TEST_ENV") == "local" else "remote"
     base_url = os.getenv("PIPESHUB_BASE_URL", "")
     now = datetime.now(timezone.utc)
     timestamp = now.strftime("%Y-%m-%d %H:%M:%S UTC")
     timestamp_file = now.strftime("%Y-%m-%d_%H-%M-%S")
     _REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = _REPORTS_DIR / f"INTEGRATION_TEST_REPORT_{timestamp_file}.md"
-    lines = [
-        "# Integration Test Report",
-        "",
-        f"**Generated:** {timestamp}",
-        f"**Environment:** {env_label}",
-        f"**Base URL:** {base_url or '(not set)'}",
-        "",
-        "## Summary",
-        "",
-        "| Result | Count |",
-        "|--------|-------|",
-        f"| Passed | {passed} |",
-        f"| Failed | {failed} |",
-        f"| Skipped | {skipped} |",
-        f"| **Total** | **{total}** |",
-        "",
-        f"**Exit status:** {exitstatus} (0 = success)",
-        "",
-    ]
-    failed_items = [(n, s) for n, o, s in reports if o == "failed"]
-    if failed_items:
-        lines.append("## Failed tests")
-        lines.append("")
-        for nodeid, err_snippet in failed_items:
-            lines.append(f"- `{nodeid}`")
-            if err_snippet:
-                lines.append("  ```")
-                for line in (err_snippet or "").strip().split("\n")[:10]:
-                    lines.append(f"  {line}")
-                lines.append("  ```")
-        lines.append("")
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+
+    session_wall_s = None
+    start = getattr(session.config, "_integration_session_start", None)
+    if start is not None:
+        session_wall_s = time.monotonic() - start
+
+    report_path_html = _REPORTS_DIR / f"INTEGRATION_TEST_REPORT_{timestamp_file}.html"
+    write_html_report(
+        reports,
+        report_path_html,
+        timestamp_title=timestamp,
+        timestamp_file=timestamp_file,
+        env_label=env_label,
+        base_url=base_url or "(not set)",
+        exitstatus=exitstatus,
+        session_wall_s=session_wall_s,
+    )
 
