@@ -86,6 +86,9 @@ class TestAzureFilesFullLifecycle:
                 _state["rename_source_key"] = key
                 _state["rename_source_name"] = Path(key).name
                 break
+        assert _state.get("rename_source_key"), (
+            "No file key after upload; rename/move require at least one file."
+        )
 
     @pytest.mark.order(3)
     def test_03_init_connector(self, pipeshub_client: PipeshubClient) -> None:
@@ -171,8 +174,7 @@ class TestAzureFilesFullLifecycle:
     ) -> None:
         connector_id = _state["connector_id"]
         old_key = _state.get("rename_source_key")
-        if not old_key:
-            pytest.skip("No source key for rename test")
+        assert old_key, "rename_source_key missing — test_02 must set it after upload."
 
         old_name = Path(old_key).name
         new_name = f"renamed-{old_name}"
@@ -206,8 +208,7 @@ class TestAzureFilesFullLifecycle:
     ) -> None:
         connector_id = _state["connector_id"]
         old_key = _state.get("move_source_key")
-        if not old_key:
-            pytest.skip("No source key for move test")
+        assert old_key, "move_source_key missing — test_07 must complete rename first."
 
         move_name = _state["move_source_name"]
         new_key = f"moved-folder/{move_name}"
@@ -218,9 +219,12 @@ class TestAzureFilesFullLifecycle:
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
+        # Wait until moved file is visible in graph
         pipeshub_client.wait_for_sync(
             connector_id,
-            check_fn=lambda: count_records(neo4j_driver, connector_id) >= count_before,
+            check_fn=lambda: record_paths_or_names_contain(
+                neo4j_driver, connector_id, [move_name]
+            ),
             timeout=120,
             poll_interval=10,
             description="move sync",
@@ -245,8 +249,8 @@ class TestAzureFilesFullLifecycle:
     ) -> None:
         connector_id = _state["connector_id"]
         pipeshub_client.delete_connector(connector_id)
-        pipeshub_client.wait(10)
-        assert_all_records_cleaned(neo4j_driver, connector_id)
+        pipeshub_client.wait(15)
+        assert_all_records_cleaned(neo4j_driver, connector_id, timeout=360)
         logger.info("✅ Connector deleted, graph cleaned for %s", connector_id)
 
     @pytest.mark.order(11)

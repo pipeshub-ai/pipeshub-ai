@@ -42,6 +42,7 @@ from graph_assertions import (  # type: ignore[import-not-found]  # noqa: E402
     count_records,
     count_record_groups,
     graph_summary,
+    record_paths_or_names_contain,
 )
 from pipeshub_client import (  # type: ignore[import-not-found]  # noqa: E402
     PipeshubClient,
@@ -92,14 +93,17 @@ class TestS3FullLifecycle:
         assert count > 0, "Expected at least 1 file in sample data"
         _state["uploaded_count"] = count
 
-        # Pick a file for rename/move tests later
+        # Pick a file for rename/move tests later — required; no skip later
         objects = s3_storage.list_objects(_BUCKET_NAME)
-        # Find a non-directory key
         for key in objects:
             if not key.endswith("/"):
                 _state["rename_source_key"] = key
                 _state["rename_source_name"] = Path(key).name
                 break
+        assert _state.get("rename_source_key"), (
+            "No file object key found after upload; rename/move steps require at least one "
+            "non-directory object. Ensure sample_data_root has files and upload_directory uploaded them."
+        )
 
     # ------------------------------------------------------------------ #
     # 3. Create connector instance
@@ -232,8 +236,10 @@ class TestS3FullLifecycle:
         """Rename a file in S3, sync, and validate graph reflects the change."""
         connector_id = _state["connector_id"]
         old_key = _state.get("rename_source_key")
-        if not old_key:
-            pytest.skip("No source key found for rename test")
+        assert old_key, (
+            "rename_source_key missing — test_02 must set it after upload. "
+            "Do not skip; fix sample data or upload so at least one file key exists."
+        )
 
         old_name = Path(old_key).name
         new_name = f"renamed-{old_name}"
@@ -253,10 +259,12 @@ class TestS3FullLifecycle:
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        # Wait for sync to process
+        # Wait for sync to process (new name visible in graph)
         pipeshub_client.wait_for_sync(
             connector_id,
-            check_fn=lambda: count_records(neo4j_driver, connector_id) >= count_before,
+            check_fn=lambda: record_paths_or_names_contain(
+                neo4j_driver, connector_id, [new_name]
+            ),
             timeout=120,
             poll_interval=10,
             description="rename sync",
@@ -283,8 +291,10 @@ class TestS3FullLifecycle:
         """Move a file to a different prefix, sync, and validate graph."""
         connector_id = _state["connector_id"]
         old_key = _state.get("move_source_key")
-        if not old_key:
-            pytest.skip("No source key found for move test")
+        assert old_key, (
+            "move_source_key missing — test_07 must complete rename first. "
+            "Do not skip; fix rename step or ordering."
+        )
 
         move_name = _state["move_source_name"]
         new_key = f"moved-folder/{move_name}"
@@ -299,9 +309,12 @@ class TestS3FullLifecycle:
         pipeshub_client.wait(3)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
+        # Wait until moved file is visible in graph
         pipeshub_client.wait_for_sync(
             connector_id,
-            check_fn=lambda: count_records(neo4j_driver, connector_id) >= count_before,
+            check_fn=lambda: record_paths_or_names_contain(
+                neo4j_driver, connector_id, [move_name]
+            ),
             timeout=120,
             poll_interval=10,
             description="move sync",
