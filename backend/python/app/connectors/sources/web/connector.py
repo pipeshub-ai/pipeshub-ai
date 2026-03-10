@@ -735,6 +735,23 @@ class WebConnector(BaseConnector):
                     connector_id=self.connector_id,
                     external_record_id=external_id,
                 )
+
+                # Migration compatibility: old records may have been saved WITHOUT a trailing slash.
+                # If not found by the new normalized id, fall back to the legacy (no-slash) form.
+                if not existing:
+                    legacy_external_id = external_id.rstrip('/')
+                    if legacy_external_id != external_id:
+                        existing = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=legacy_external_id,
+                        )
+
+                        if existing:
+                            self.logger.info(
+                                f"🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
+                                f"will migrate external_record_id to {external_id}"
+                            )
+
                 record_id = existing.id if existing else str(uuid.uuid4())
 
                 file_record = FileRecord(
@@ -952,7 +969,26 @@ class WebConnector(BaseConnector):
             external_id = self._ensure_trailing_slash(final_url)
 
             record_id = None
-            existing_record = await self.data_entities_processor.get_record_by_external_id(connector_id=self.connector_id, external_record_id=external_id)
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=external_id
+            )
+
+            # Migration compatibility: old records may have been saved WITHOUT a trailing slash.
+            # If not found by the new normalized id, fall back to the legacy (no-slash) form.
+            legacy_lookup = False
+            if not existing_record:
+                legacy_external_id = external_id.rstrip('/')
+                if legacy_external_id != external_id:
+                    existing_record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id, external_record_id=legacy_external_id
+                    )
+                    if existing_record:
+                        legacy_lookup = True
+                        self.logger.info(
+                            f"🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
+                            f"will migrate external_record_id to {external_id}"
+                        )
+
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
             # Get title and clean content for HTML
@@ -989,19 +1025,24 @@ class WebConnector(BaseConnector):
                     parsed = urlparse(final_url)
                     title = parsed.netloc or final_url
 
+            # If the parent resolves to the netloc root there is no parent record
+            parent_url = self._get_parent_url(final_url)
+            if parent_url and urlparse(parent_url).path in ("", "/"):
+                parent_url = None
+            
             if existing_record:
-                if existing_record.record_name != title:
+                if legacy_lookup:
+                    # Force metadata update to migrate external_record_id to the normalized form
+                    metadata_changed = True
+                elif existing_record.record_name != title:
+                    metadata_changed = True
+                elif existing_record.parent_external_record_id != parent_url:
                     metadata_changed = True
                 if existing_record.external_revision_id != content_md5_hash:
                     content_changed = True
                 is_updated = metadata_changed or content_changed
             else:
                 is_new = True
-
-            # If the parent resolves to the netloc root there is no parent record
-            parent_url = self._get_parent_url(final_url)
-            if parent_url and urlparse(parent_url).path in ("", "/"):
-                parent_url = None
 
             # Create FileRecord
             file_record = FileRecord(
