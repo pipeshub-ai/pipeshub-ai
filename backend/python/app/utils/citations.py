@@ -27,7 +27,7 @@ class ChatDocCitation:
 def extract_start_end_text(snippet: Optional[str]) -> Tuple[str, str]:
     if not snippet:
         return "", ""
-    
+
     PATTERN = re.compile(r"(?<!\S)[A-Za-z0-9.',;:]+(?:[ ][A-Za-z0-9.',;:]+)+(?!\S)")
 
     # --- Find start_text: first matching segment ---

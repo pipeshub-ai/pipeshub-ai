@@ -49,7 +49,7 @@ class ChatTogether(BaseChatOpenAI):
         return "together-chat"
 
     def _get_ls_params(
-        self, stop: Optional[List[str]] = None, **kwargs: Any  # noqa: ANN401
+        self, stop: Optional[List[str]] = None, **kwargs: Any
     ) -> LangSmithParams:
         """Get the parameters used to invoke the model."""
         params = super()._get_ls_params(stop=stop, **kwargs)

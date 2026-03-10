@@ -404,7 +404,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             source_updated_at = int(parse_timestamp(modified_time)) if modified_time else timestamp_ms
 
             # Get file extension
-            file_extension = metadata.get("fileExtension", None)
+            file_extension = metadata.get("fileExtension")
             if not file_extension:
                 file_name = metadata.get("name", "")
                 if "." in file_name:
@@ -421,7 +421,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 record_group_type=RecordGroupType.DRIVE.value,
                 external_record_group_id=drive_id,
                 external_record_id=str(file_id),
-                external_revision_id=metadata.get("headRevisionId") or metadata.get("version", None),
+                external_revision_id=metadata.get("headRevisionId") or metadata.get("version"),
                 parent_external_record_id=parent_external_record_id if parent_external_record_id != drive_id else None,
                 parent_record_type=RecordType.FILE if parent_external_record_id != drive_id else None,
                 version=0 if is_new else (existing_record.version + 1 if existing_record else 0),
@@ -432,19 +432,19 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 updated_at=timestamp_ms,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
-                weburl=metadata.get("webViewLink", None),
+                weburl=metadata.get("webViewLink"),
                 mime_type=mime_type if mime_type else MimeTypes.UNKNOWN.value,
                 is_file=is_file,
                 size_in_bytes=int(metadata.get("size", 0) or 0),
                 extension=file_extension,
-                path=metadata.get("path", None),
-                etag=metadata.get("etag", None),
-                ctag=metadata.get("ctag", None),
-                quick_xor_hash=metadata.get("quickXorHash", None),
-                crc32_hash=metadata.get("crc32Hash", None),
-                sha1_hash=metadata.get("sha1Checksum", None),
-                sha256_hash=metadata.get("sha256Checksum", None),
-                md5_hash=metadata.get("md5Checksum", None),
+                path=metadata.get("path"),
+                etag=metadata.get("etag"),
+                ctag=metadata.get("ctag"),
+                quick_xor_hash=metadata.get("quickXorHash"),
+                crc32_hash=metadata.get("crc32Hash"),
+                sha1_hash=metadata.get("sha1Checksum"),
+                sha256_hash=metadata.get("sha256Checksum"),
+                md5_hash=metadata.get("md5Checksum"),
                 is_shared=is_shared,
             )
 
@@ -597,7 +597,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         # 5. For non-Google docs, filter by file extension
         # Get the file extension from the metadata
         # Try fileExtension field first, then extract from name
-        file_extension = metadata.get("fileExtension", None)
+        file_extension = metadata.get("fileExtension")
         if not file_extension:
             file_name = metadata.get("name", "")
             if "." in file_name:
