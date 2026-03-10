@@ -176,7 +176,7 @@ class DataSourceEntitiesProcessor:
                     size_in_bytes=None,
                     weburl=parent_external_id,
                     path=None,  # Will be updated when real directory is synced
-                    indexing_status=IndexingStatus.NOT_STARTED.value,
+                    indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
                 )
 
             return FileRecord(

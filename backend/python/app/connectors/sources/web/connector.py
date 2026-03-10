@@ -725,10 +725,8 @@ class WebConnector(BaseConnector):
                 # name = URL without scheme  (e.g. "developer.mozilla.org/en-US/")
                 record_name = parsed.netloc + prefix_path
 
-                # Resolve parent URL one level up; if it resolves to the netloc root there is no parent record
+                # Resolve parent URL one level up (returns None when parent would be the domain root)
                 parent_url = self._get_parent_url(ancestor_url)
-                if parent_url and urlparse(parent_url).path in ("", "/"):
-                    parent_url = None
 
                 # Upsert-safe id resolution
                 existing = await self.data_entities_processor.get_record_by_external_id(
@@ -802,9 +800,16 @@ class WebConnector(BaseConnector):
                     f"for start URL: {start_url}"
                 )
 
-        except Exception as e:
+        except ValueError as e:
+            # Raised by urlparse/urlunparse when start_url is structurally invalid
             self.logger.error(
-                f"❌ Failed to create ancestor placeholder records for {start_url}: {e}",
+                f"❌ Invalid URL while building ancestor placeholders for {start_url}: {e}",
+                exc_info=True,
+            )
+        except Exception as e:
+            # Covers data-store transaction failures and Kafka messaging errors
+            self.logger.error(
+                f"❌ Persistence error while upserting ancestor placeholder records for {start_url}: {e}",
                 exc_info=True,
             )
 
@@ -1025,10 +1030,8 @@ class WebConnector(BaseConnector):
                     parsed = urlparse(final_url)
                     title = parsed.netloc or final_url
 
-            # If the parent resolves to the netloc root there is no parent record
+            # Resolve parent URL (returns None when parent would be the domain root)
             parent_url = self._get_parent_url(final_url)
-            if parent_url and urlparse(parent_url).path in ("", "/"):
-                parent_url = None
 
             if existing_record:
                 if legacy_lookup:
@@ -1411,18 +1414,25 @@ class WebConnector(BaseConnector):
             if '.' not in last_segment:  # no file extension → treat as a page URL
                 path = parsed.path.rstrip('/') + '/'
                 return urlunparse((parsed.scheme, parsed.netloc, path, '', '', ''))
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error in _ensure_trailing_slash for url '{url}': {e}")
+
         return url
 
     def _get_parent_url(self, url: str) -> Optional[str]:
         """Derive the parent URL by stripping the last non-empty path segment.
+
+        Returns ``None`` when the URL is already at the domain root or when
+        the resolved parent path would itself be the root (``/``), so callers
+        never need to perform that check themselves.
         """
         parsed = urlparse(url)
         path = parsed.path.rstrip('/')
         if not path or '/' not in path:
             return None  # Already at root, no parent
         parent_path = path.rsplit('/', 1)[0] + '/'
+        if parent_path == '/':
+            return None  # Parent is the domain root — no parent record exists
         return urlunparse((parsed.scheme, parsed.netloc, parent_path, '', '', ''))
 
     @classmethod
