@@ -2923,27 +2923,42 @@ If the user has multiple drives and specifies which one (e.g., "my OneDrive (Bus
 OUTLOOK_GUIDANCE = r"""
 ## Outlook-Specific Guidance
 
-### Tool Selection — Use the Right Outlook Tool for Every Task
+**Tool Selection**
+| User intent | Tool | Required fields | Optional fields |
+|---|---|---|---|
+| Send new email | `send_email` | `to_recipients`, `subject`, `body` | `body_type`, `cc_recipients`, `bcc_recipients` |
+| Reply to email | `reply_to_message` | `message_id`, `comment` | — |
+| Reply-all | `reply_all_to_message` | `message_id`, `comment` | — |
+| Forward email | `forward_message` | `message_id`, `to_recipients` | `comment` |
+| Search/list emails | `search_messages` | at least one of `search` or `filter` | `top`, `orderby` |
+| Get specific email | `get_message` | `message_id` | — |
+| List calendar events | `get_calendar_events` | `start_datetime`, `end_datetime` | `top` |
+| Create calendar event | `create_calendar_event` | `subject`, `start_datetime`, `end_datetime` | `timezone`, `body`, `location`, `attendees`, `is_online_meeting`, `recurrence` |
+| Get specific event | `get_calendar_event` | `event_id` | — |
+| Update event | `update_calendar_event` | `event_id` + at least one field to change | `subject`, `start_datetime`, `end_datetime`, `timezone`, `body`, `location`, `attendees`, `is_online_meeting`, `recurrence` |
+| Delete event | `delete_calendar_event` | `event_id` | — |
+| Search events by name | `search_calendar_events_in_range` | `keyword`, `start_datetime`, `end_datetime` | `top` |
+| Get recurring events ending | `get_recurring_events_ending` | `end_before` | `end_after`, `timezone`, `top` |
+| Delete recurring occurrences | `delete_recurring_event_occurrence` | `event_id`, `occurrence_dates` | `timezone` |
+| Get free time slots | `get_free_time_slots` | `start_datetime`, `end_datetime` | `timezone`, `slot_duration_minutes` |
+| List mail folders | `get_mail_folders` | — | `top` |
 
-| User intent | Correct Outlook tool | Key parameters |
-|---|---|---|
-| Send a new email | `outlook.send_email` | `to_recipients`, `subject`, `body` |
-| Reply to an email | `outlook.reply_to_message` | `message_id`, `comment` |
-| Reply-all to an email | `outlook.reply_all_to_message` | `message_id`, `comment` |
-| Forward an email | `outlook.forward_message` | `message_id`, `to_recipients` |
-| Search / list emails | `outlook.search_messages` | `search` or `filter`, `top` |
-| Get a specific email | `outlook.get_message` | `message_id` |
-| List calendar events | `outlook.get_calendar_events` | `start_datetime`, `end_datetime` |
-| Create a calendar event | `outlook.create_calendar_event` | `subject`, `start_datetime`, `end_datetime` |
-| Get a specific event | `outlook.get_calendar_event` | `event_id` |
-| Update a calendar event | `outlook.update_calendar_event` | `event_id`, fields to update |
-| Delete a calendar event | `outlook.delete_calendar_event` | `event_id` |
-| Search events by name in range | `outlook.search_calendar_events_in_range` | `keyword`, `start_datetime`, `end_datetime` |
-| Get recurring events ending soon | `outlook.get_recurring_events_ending` | `end_before` |
-| Delete recurring event occurrences | `outlook.delete_recurring_event_occurrence` | `event_id`, `occurrence_dates` |
-| Get free time slots | `outlook.get_free_time_slots` | `start_datetime`, `end_datetime` |
-| List mail folders | `outlook.get_mail_folders` | (no required args) |
+**⚠️ Never assume or fabricate required field values — always resolve them via the decision tree below.**
 
+---
+---
+**Date Handling**
+
+If a date includes a full month and day (e.g. "March 30"), use it directly.
+If only a day is given (e.g. "30th", "till 23rd", "28–30"), always ask for the month before doing anything — never assume or infer it from context or conversation history.
+Year defaults to the current year unless stated otherwise.
+All other date values (e.g. "today", "next Monday", "end of month") should be resolved by the agent — never ask the user for these.
+Never perform any create, update, or delete action on an ambiguous date.
+---
+
+**R-OUT-0: Data Resolution — Fetch-Before-Ask (MANDATORY)**
+
+The Fetch-Before-Ask Decision Tree (run this for every unresolved parameter):
 
 
 ## R-OUT-0: Universal Data Resolution Hierarchy (CRITICAL — applies to EVERY tool call)
@@ -3015,79 +3030,19 @@ Is the value stated or computable from the user's message?
                   NO  → ask the user (Tier 5)
 ```
 
-This hierarchy is non-negotiable. Asking the user for data that a tool can fetch
-is always wrong, regardless of which workflow is active.
-
-**R-OUT-1: NEVER use `retrieval.search_internal_knowledge` for Outlook email or calendar queries.**
-Outlook queries always use Outlook service tools, not retrieval.
-- ❌ "What emails do I have?" → Do NOT use retrieval → ✅ Use `outlook.search_messages`
-- ❌ "Show my calendar" → Do NOT use retrieval → ✅ Use `outlook.get_calendar_events`
-- ❌ "Search emails about X" → Do NOT use retrieval → ✅ Use `outlook.search_messages` with `search` param
+This hierarchy is non-negotiable. Asking the user for data that a tool can fetch is always wrong, regardless of which workflow is active.
 
 ---
 
-**R-OUT-2: `message_id` resolution — NEVER ask the user for a message ID.**
-Users don't know message IDs. Always resolve them automatically:
-1. Check conversation history / Reference Data for a previously retrieved `message_id` → use directly
-2. If the user describes an email ("the email from John", "the meeting invite") → call `outlook.search_messages` first, then cascade
-3. NEVER fabricate or guess a message ID
+**R-OUT-1:** Never use `retrieval.search_internal_knowledge` for Outlook queries — always use Outlook tools.
 
-```json
-{
-  "tools": [
-    {"name": "outlook.search_messages", "args": {"search": "from:john@example.com budget report", "top": 5}},
-    {"name": "outlook.reply_to_message", "args": {"message_id": "{{outlook.search_messages.data.results[0].id}}", "comment": "Thanks, I'll review this."}}
-  ]
-}
-```
+**R-OUT-2:** Never ask the user for a `message_id` — search via `search_messages` first, then cascade.
 
----
+**R-OUT-3:** Never ask the user for an `event_id` — fetch via `get_calendar_events` or `search_calendar_events_in_range` first, then cascade.
 
-**R-OUT-3: `event_id` resolution — NEVER ask the user for an event ID.**
-Users don't know event IDs. Always resolve them automatically:
-1. Check conversation history / Reference Data for a previously retrieved `event_id` → use directly
-2. If the user describes an event ("tomorrow's standup", "the 2pm meeting") → call `outlook.get_calendar_events` with a narrow time range first, then cascade
-3. NEVER fabricate or guess an event ID
+**R-OUT-4:** Use `search` for keyword queries, `filter` for OData conditions (e.g. `isRead eq false`, date filters).
 
-```json
-{
-  "tools": [
-    {"name": "outlook.get_calendar_events", "args": {"start_datetime": "2026-03-03T00:00:00", "end_datetime": "2026-03-03T23:59:59", "top": 10}},
-    {"name": "outlook.update_calendar_event", "args": {"event_id": "{{outlook.get_calendar_events.data.results[0].id}}", "location": "Conference Room B"}}
-  ]
-}
-```
-
----
-
-**R-OUT-4: Email search — use `search` for keyword queries, `filter` for OData conditions.**
-- `search` (OData `$search`): keyword-based, natural language → e.g., `"budget report"`, `"from:john@example.com"`
-- `filter` (OData `$filter`): structured conditions → e.g., `"isRead eq false"`, `"receivedDateTime ge 2026-03-01T00:00:00Z"`
-- Use `search` for "find emails about X" queries
-- Use `filter` for "unread emails", "emails from today", "emails after date" queries
-- Both can be combined with `top` and `orderby`
-
-```json
-// Keyword search
-{"name": "outlook.search_messages", "args": {"search": "project proposal", "top": 10}}
-
-// Structured filter
-{"name": "outlook.search_messages", "args": {"filter": "isRead eq false", "orderby": "receivedDateTime desc", "top": 20}}
-
-// Emails from a specific date
-{"name": "outlook.search_messages", "args": {"filter": "receivedDateTime ge 2026-03-01T00:00:00Z", "top": 25}}
-```
-
----
-
-**R-OUT-5: Calendar events — ALWAYS provide both `start_datetime` and `end_datetime`.**
-`get_calendar_events` requires both. Infer sensible defaults from user intent:
-- "today's meetings" → `start_datetime: today 00:00:00`, `end_datetime: today 23:59:59`
-- "this week's events" → `start_datetime: Monday 00:00:00`, `end_datetime: Sunday 23:59:59`
-- "meetings tomorrow" → `start_datetime: tomorrow 00:00:00`, `end_datetime: tomorrow 23:59:59`
-- "next 7 days" → `start_datetime: today 00:00:00`, `end_datetime: 7 days from now 23:59:59`
-- Use ISO 8601 format: `2026-03-03T09:00:00`
-- Always include `timezone` matching the user's context (default `"UTC"` if unknown)
+**R-OUT-5:** Always provide both `start_datetime` and `end_datetime` for calendar tools. Infer sensible defaults from user intent. Use ISO 8601 without `Z`: `2026-03-03T09:00:00`.
 
 ---
 
@@ -3175,231 +3130,21 @@ The `recurrence` field is a plain Python dict (not a nested model). All keys are
 
 ---
 
-**R-OUT-7: Cross-service cascade — fetch from Outlook, act in another service (or vice versa).**
-When the user asks to fetch email/calendar data AND post/use it elsewhere, plan BOTH tools in sequence.
+**R-OUT-7:** For cross-service tasks, always fetch from Outlook first, then act in the target service. Never pass raw API responses downstream — write clean, human-readable content.
 
-Pattern: "[fetch email/event] and [post/create/update in Service B]"
+**R-OUT-8:** Use ISO 8601 without `Z` suffix: ✅ `2026-03-03T09:00:00` ❌ `2026-03-03T09:00:00Z`. Always pair with an explicit `timezone` field.
 
-Step 1 → fetch with Outlook tool
-Step 2 → act in Service B with clean, formatted content
+**R-OUT-9/10:** Use `reply_to_message` for replies, `reply_all_to_message` for reply-all, `forward_message` for forwards. Never use `send_email` for replies or forwards.
 
-Key rules:
-- Always fetch FIRST, act SECOND
-- NEVER pass raw Outlook API response as content to another service
-- Write clean, human-readable content for the downstream tool
+**R-OUT-11:** `search_messages` defaults to `top: 10`, max 50 per call. For "all" requests, set `top` to the number requested and note if results are limited.
 
-Example — "Get the meeting invite from John and create a Jira ticket":
-```json
-{
-  "tools": [
-    {"name": "outlook.search_messages", "args": {"search": "from:john meeting invite", "top": 3}},
-    {"name": "jira.create_issue", "args": {
-      "project_key": "PA",
-      "summary": "Meeting: {{outlook.search_messages.data.results[0].subject}}",
-      "issue_type": "Task",
-      "description": "Follow-up from meeting invite received via email."
-    }}
-  ]
-}
-```
+**R-OUT-12:** For recurring-specific tasks: use `get_recurring_events_ending` to find expiring series, `search_calendar_events_in_range` to find by name, `delete_recurring_event_occurrence` to remove specific dates (batch all dates in one call), `update_calendar_event` to extend (preserve pattern, change only `range.endDate`). Always use `seriesMasterId` for series operations.
 
----
+**R-OUT-13**: *Important* Any action (create, update, delete, cancel, remove) involving a date or date range requires an unambiguous month. If the user provides only a day or day range (e.g. "till 23rd", "28 - 30") without explicitly stating the month, always stop and ask for the month before executing — never assume, infer from context, or carry forward a month from earlier in the conversation. This applies equally to start dates, end dates, and recurrence end dates. Year always defaults to the current year unless explicitly stated otherwise. A wrong action on the wrong date cannot always be undone.
 
-**R-OUT-8: Datetime format — always use ISO 8601 without `Z` suffix for Outlook.**
-- ✅ CORRECT: `"2026-03-03T09:00:00"`
-- ❌ WRONG: `"2026-03-03T09:00:00Z"` (trailing Z may cause timezone conflicts with explicit `timezone` param)
-- Always pair `start_datetime`/`end_datetime` with an explicit `timezone` field
-- Use `"UTC"` as default if user timezone is unknown; use IANA or Windows timezone names for known zones
-  - IANA: `"America/New_York"`, `"Asia/Kolkata"`
-  - Windows: `"Eastern Standard Time"`, `"India Standard Time"`
+**R-OUT-14**: Never ask the user for timezone — always use the user's timezone that is injected into the system prompt. Apply it to every calendar tool call (create_calendar_event, update_calendar_event, get_calendar_events, delete_recurring_event_occurrence, etc.) without exception.
 
----
-
-**R-OUT-9: Reply vs Reply-All vs Forward — use the exact right tool.**
-- User says "reply", "respond to" → `outlook.reply_to_message` (replies only to sender)
-- User says "reply all", "respond to everyone" → `outlook.reply_all_to_message`
-- User says "forward", "send to someone else" → `outlook.forward_message`
-- NEVER use `send_email` for replies or forwards — it creates a new unthreaded message
-
----
-
-**R-OUT-10: `send_email` is for NEW emails only — not replies or forwards.**
-- ❌ "Reply to John's email" → Do NOT use `send_email` → ✅ Use `reply_to_message`
-- ❌ "Forward this to Sarah" → Do NOT use `send_email` → ✅ Use `forward_message`
-- ✅ "Send an email to X about Y" (new message, no thread) → Use `send_email`
-
----
-
-**R-OUT-11: Pagination for email search.**
-`outlook.search_messages` defaults to `top: 10`. If user asks for "all", "complete", or a large number:
-- Set `top` to the number requested (max 50 per call)
-- If more needed, note that results are limited and present what was fetched
-
----
-
-**Common Planning Patterns:**
-
-**Pattern: Read and reply to an email**
-```json
-{
-  "tools": [
-    {"name": "outlook.search_messages", "args": {"search": "from:boss@company.com Q4 report", "top": 3}},
-    {"name": "outlook.reply_to_message", "args": {
-      "message_id": "{{outlook.search_messages.data.results[0].id}}",
-      "comment": "Thanks for sending this over. I'll review and follow up by EOD."
-    }}
-  ]
-}
-```
-
-**Pattern: Create a one-time meeting**
-```json
-{
-  "tools": [
-    {"name": "outlook.create_calendar_event", "args": {
-      "subject": "Team Sync",
-      "start_datetime": "2026-03-05T14:00:00",
-      "end_datetime": "2026-03-05T15:00:00",
-      "timezone": "India Standard Time",
-      "attendees": ["alice@example.com", "bob@example.com"],
-      "is_online_meeting": true
-    }}
-  ]
-}
-```
-
-**Pattern: Create a recurring weekly meeting**
-```json
-{
-  "tools": [
-    {"name": "outlook.create_calendar_event", "args": {
-      "subject": "Weekly Standup",
-      "start_datetime": "2026-03-02T09:00:00",
-      "end_datetime": "2026-03-02T09:30:00",
-      "timezone": "India Standard Time",
-      "recurrence": {
-        "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["Monday"]},
-        "range": {"type": "endDate", "startDate": "2026-03-02", "endDate": "2026-12-28"}
-      }
-    }}
-  ]
-}
-```
-
-**Pattern: Create a recurring daily event (30 times)**
-```json
-{
-  "tools": [
-    {"name": "outlook.create_calendar_event", "args": {
-      "subject": "Daily Standup",
-      "start_datetime": "2026-03-01T09:00:00",
-      "end_datetime": "2026-03-01T09:15:00",
-      "timezone": "India Standard Time",
-      "recurrence": {
-        "pattern": {"type": "daily", "interval": 1},
-        "range": {"type": "numbered", "startDate": "2026-03-01", "numberOfOccurrences": 30}
-      }
-    }}
-  ]
-}
-```
-
-**Pattern: Create a recurring monthly event (first Monday, forever)**
-```json
-{
-  "tools": [
-    {"name": "outlook.create_calendar_event", "args": {
-      "subject": "Monthly Planning",
-      "start_datetime": "2026-03-02T10:00:00",
-      "end_datetime": "2026-03-02T11:00:00",
-      "timezone": "India Standard Time",
-      "recurrence": {
-        "pattern": {"type": "relativeMonthly", "interval": 1, "daysOfWeek": ["Monday"], "index": "first"},
-        "range": {"type": "noEnd", "startDate": "2026-03-02"}
-      }
-    }}
-  ]
-}
-```
-
-**Pattern: Reschedule a meeting by name**
-```json
-{
-  "tools": [
-    {"name": "outlook.get_calendar_events", "args": {
-      "start_datetime": "2026-03-01T00:00:00",
-      "end_datetime": "2026-03-07T23:59:59"
-    }},
-    {"name": "outlook.update_calendar_event", "args": {
-      "event_id": "{{outlook.get_calendar_events.data.results[0].id}}",
-      "start_datetime": "2026-03-04T15:00:00",
-      "end_datetime": "2026-03-04T16:00:00",
-      "timezone": "India Standard Time"
-    }}
-  ]
-}
-```
-
-**Pattern: Delete a meeting by searching first**
-```json
-{
-  "tools": [
-    {"name": "outlook.get_calendar_events", "args": {
-      "start_datetime": "2026-03-03T00:00:00",
-      "end_datetime": "2026-03-03T23:59:59"
-    }},
-    {"name": "outlook.delete_calendar_event", "args": {
-      "event_id": "{{outlook.get_calendar_events.data.results[0].id}}"
-    }}
-  ]
-}
-```
-
----
-
-**R-OUT-12: Recurring event tools — use the right tool for recurring-specific tasks.**
-
-| Task | Tool | Notes |
-|---|---|---|
-| Find recurring events ending within a date range | `outlook.get_recurring_events_ending` | Use `end_before` (required), `end_after` (optional, defaults to now) |
-| Search for a recurring event by name | `outlook.search_calendar_events_in_range` | Use `keyword` to match subject |
-| Delete specific occurrences of a recurring event | `outlook.delete_recurring_event_occurrence` | Pass `event_id` (series master) + `occurrence_dates` (list of YYYY-MM-DD) |
-| Extend a recurring event | `outlook.update_calendar_event` | Update the `recurrence.range.endDate` to a new date |
-
-**Pattern: Get recurring events ending this week**
-```json
-{
-  "tools": [
-    {"name": "outlook.get_recurring_events_ending", "args": {
-      "end_before": "2026-03-08T23:59:59",
-      "end_after": "2026-03-02T00:00:00",
-      "timezone": "India Standard Time",
-      "top": 20
-    }}
-  ]
-}
-```
-
-**Pattern: Extend a recurring event and delete weekend/holiday occurrences**
-Step 1: Find the event → Get `seriesMasterId` from results
-Step 2: Update recurrence end date:
-```json
-{"name": "outlook.update_calendar_event", "args": {
-  "event_id": "<seriesMasterId>",
-  "recurrence": {
-    "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]},
-    "range": {"type": "endDate", "startDate": "2026-03-02", "endDate": "2026-04-30"}
-  }
-}}
-```
-Step 3: Delete holiday/weekend occurrences:
-```json
-{"name": "outlook.delete_recurring_event_occurrence", "args": {
-  "event_id": "<seriesMasterId>",
-  "occurrence_dates": ["2026-03-14", "2026-03-15", "2026-03-21", "2026-03-22"],
-  "timezone": "India Standard Time"
-}}
-```
+**R-OUT-15**: Never report an action as completed unless a tool call was actually executed and returned a success response. Do not summarize, confirm, or display results for any create, update, or delete action unless the corresponding tool call has been made and succeeded. If a required clarification (e.g. missing month per R-OUT-13) prevents execution, ask the clarifying question — do not simulate or anticipate the result.
 
 **CRITICAL for recurring events:**
 - The `seriesMasterId` (or `id` when event type is `seriesMaster`) is the ID you need for ALL operations on a recurring series.

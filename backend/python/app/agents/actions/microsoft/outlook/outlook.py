@@ -1,16 +1,14 @@
-import asyncio
+import contextlib
 import json
 import logging
-from datetime import datetime, timedelta, timezone
-from datetime import datetime, timezone as tz, date
+from collections import OrderedDict
+from datetime import date, datetime, timedelta
+from datetime import timezone as dt_timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote
 
+from kiota_serialization_json.json_serialization_writer import JsonSerializationWriter
 from pydantic import BaseModel, Field
-from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
-from msgraph.generated.models.recurrence_pattern import RecurrencePattern
-from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
-from msgraph.generated.models.recurrence_range import RecurrenceRange
-from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
 
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
@@ -21,11 +19,11 @@ from app.connectors.core.registry.auth_builder import (
     OAuthScopeConfig,
 )
 from app.connectors.core.registry.connector_builder import CommonFields
-from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import AuthField, DocumentationLink
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsDataSource,
@@ -48,14 +46,11 @@ def _serialize_graph_obj(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_serialize_graph_obj(item) for item in obj]
     if isinstance(obj, dict):
-        return {k: _serialize_graph_obj(v) for k, v in obj.items()}
+        return {key: _serialize_graph_obj(value) for key, value in obj.items()}
 
     # Kiota Parsable objects expose get_field_deserializers()
     if hasattr(obj, "get_field_deserializers"):
         try:
-            from kiota_serialization_json.json_serialization_writer import (  # type: ignore
-                JsonSerializationWriter,
-            )
             writer = JsonSerializationWriter()
             writer.write_object_value(None, obj)
             content = writer.get_serialized_content()
@@ -68,10 +63,10 @@ def _serialize_graph_obj(obj: Any) -> Any:
             pass
 
         try:
-            bs = getattr(obj, "backing_store", None)
-            if bs is not None and hasattr(bs, "enumerate_"):
+            backing_store_ref = getattr(obj, "backing_store", None)
+            if backing_store_ref is not None and hasattr(backing_store_ref, "enumerate_"):
                 result: Dict[str, Any] = {}
-                for key, value in bs.enumerate_():
+                for key, value in backing_store_ref.enumerate_():
                     if not str(key).startswith("_"):
                         try:
                             result[key] = _serialize_graph_obj(value)
@@ -79,12 +74,12 @@ def _serialize_graph_obj(obj: Any) -> Any:
                             result[key] = str(value)
                 additional = getattr(obj, "additional_data", None)
                 if isinstance(additional, dict):
-                    for k, v in additional.items():
-                        if k not in result:
+                    for key, value in additional.items():
+                        if key not in result:
                             try:
-                                result[k] = _serialize_graph_obj(v)
+                                result[key] = _serialize_graph_obj(value)
                             except Exception:
-                                result[k] = str(v)
+                                result[key] = str(value)
                 if result:
                     return result
         except Exception:
@@ -97,22 +92,22 @@ def _serialize_graph_obj(obj: Any) -> Any:
         obj_dict = {}
 
     result = {}
-    for k, v in obj_dict.items():
-        if k.startswith("_"):
+    for key, value in obj_dict.items():
+        if key.startswith("_"):
             continue
         try:
-            result[k] = _serialize_graph_obj(v)
+            result[key] = _serialize_graph_obj(value)
         except Exception:
-            result[k] = str(v)
+            result[key] = str(value)
 
     additional = getattr(obj, "additional_data", None)
     if isinstance(additional, dict):
-        for k, v in additional.items():
-            if k not in result:
+        for key, value in additional.items():
+            if key not in result:
                 try:
-                    result[k] = _serialize_graph_obj(v)
+                    result[key] = _serialize_graph_obj(value)
                 except Exception:
-                    result[k] = str(v)
+                    result[key] = str(value)
 
     return result if result else str(obj)
 
@@ -131,26 +126,11 @@ def _normalize_odata(data: Any) -> Any:
 
 
 def _response_data(response: object) -> Any:
-    """Serialize response.data the same way _response_json does. Returns Python dict/list/None."""
+    """Serialize response.data the same way _response_data does. Returns Python dict/list/None."""
     data = getattr(response, "data", None)
     if data is None:
         return None
     return _normalize_odata(_serialize_graph_obj(data))
-
-
-def _response_json(response: object) -> str:
-    """Serialize an OneDriveResponse to JSON, handling Kiota SDK objects in data."""
-    out: Dict[str, Any] = {"success": getattr(response, "success", False)}
-    data = _response_data(response)
-    if data is not None:
-        out["data"] = data
-    error = getattr(response, "error", None)
-    if error is not None:
-        out["error"] = error
-    message = getattr(response, "message", None)
-    if message is not None:
-        out["message"] = message
-    return json.dumps(out)
 
 @staticmethod
 def _status_label(status_char: str) -> str:
@@ -261,24 +241,6 @@ class CreateCalendarEventInput(BaseModel):
         ),
     )
 
-class GetFreeTimeSlotsInput(BaseModel):
-    """Schema for fetching free time slots within a time frame."""
-    start_datetime: str = Field(
-        description="Start of time frame to check (ISO 8601, e.g. '2026-03-01T09:00:00').",
-    )
-    end_datetime: str = Field(
-        description="End of time frame to check (ISO 8601, e.g. '2026-03-01T18:00:00').",
-    )
-    timezone: str = Field(
-        default="UTC",
-        description="Windows timezone name. E.g. 'India Standard Time'.",
-    )
-    slot_duration_minutes: int = Field(
-        default=30,
-        description="Minimum duration of a free slot in minutes.",
-        ge=15,
-        le=480,
-    )
 
 class DeleteRecurringEventOccurrencesInput(BaseModel):
     """Schema for deleting multiple occurrences of a recurring event."""
@@ -292,6 +254,7 @@ class DeleteRecurringEventOccurrencesInput(BaseModel):
         default="UTC",
         description="Windows timezone name. E.g. 'India Standard Time'.",
     )
+
 
 class GetCalendarEventInput(BaseModel):
     """Schema for getting a specific calendar event"""
@@ -371,6 +334,35 @@ class GetMeetingTranscriptsInput(BaseModel):
         ),
     )
 
+
+class GetRecurringEventsInput(BaseModel):
+    """Schema for fetching all recurring events with occurrences in a date range."""
+    start_date: Optional[str] = Field(
+        default=None,
+        description=(
+            "Start of the date range in ISO 8601 format (e.g. '2026-03-09T00:00:00Z'). "
+            "Defaults to now if not provided."
+        ),
+    )
+    end_date: Optional[str] = Field(
+        default=None,
+        description=(
+            "End of the date range in ISO 8601 format (e.g. '2026-04-08T23:59:59Z'). "
+            "Defaults to 30 days from now if not provided."
+        ),
+    )
+    timezone: str = Field(
+        default="UTC",
+        description="Windows timezone name for returned datetimes. E.g. 'India Standard Time'.",
+    )
+    top: int = Field(
+        default=50,
+        description="Maximum number of recurring event series to return (1–100).",
+        ge=1,
+        le=100,
+    )
+
+
 class GetRecurringEventsEndingInput(BaseModel):
     """Schema for fetching recurring events ending within a time frame."""
     end_before: str = Field(
@@ -397,6 +389,7 @@ class GetRecurringEventsEndingInput(BaseModel):
         ge=1,
         le=50,
     )
+
 
 class GetMailFoldersInput(BaseModel):
     """Schema for getting mail folders"""
@@ -586,7 +579,7 @@ class Outlook:
         if isinstance(response_obj, list):
             return [Outlook._serialize_response(item) for item in response_obj]
         if isinstance(response_obj, dict):
-            return {k: Outlook._serialize_response(v) for k, v in response_obj.items()}
+            return {key: Outlook._serialize_response(value) for key, value in response_obj.items()}
 
         # ── Kiota Parsable objects ────────────────────────────────────────────
         # Kiota models implement get_field_deserializers() as part of the
@@ -595,17 +588,12 @@ class Outlook:
         # placeholder paths like {{…events[0].id}} resolve correctly.
         if hasattr(response_obj, "get_field_deserializers"):
             try:
-                from kiota_serialization_json.json_serialization_writer import (  # type: ignore
-                    JsonSerializationWriter,
-                )
-                import json as _json
-
                 writer = JsonSerializationWriter()
                 writer.write_object_value(None, response_obj)
                 content = writer.get_serialized_content()
                 if content:
                     raw = content.decode("utf-8") if isinstance(content, bytes) else content
-                    parsed = _json.loads(raw)
+                    parsed = json.loads(raw)
                     if isinstance(parsed, dict) and parsed:
                         return parsed
             except Exception:
@@ -624,12 +612,12 @@ class Outlook:
                                 result[key] = str(value)
                     additional = getattr(response_obj, "additional_data", None)
                     if isinstance(additional, dict):
-                        for k, v in additional.items():
-                            if k not in result:
+                        for key, value in additional.items():
+                            if key not in result:
                                 try:
-                                    result[k] = Outlook._serialize_response(v)
+                                    result[key] = Outlook._serialize_response(value)
                                 except Exception:
-                                    result[k] = str(v)
+                                    result[key] = str(value)
                     if result:
                         return result
             except Exception:
@@ -642,22 +630,22 @@ class Outlook:
             obj_dict = {}
 
         result = {}
-        for k, v in obj_dict.items():
-            if k.startswith("_"):
+        for key, value in obj_dict.items():
+            if key.startswith("_"):
                 continue
             try:
-                result[k] = Outlook._serialize_response(v)
+                result[key] = Outlook._serialize_response(value)
             except Exception:
-                result[k] = str(v)
+                result[key] = str(value)
 
         additional = getattr(response_obj, "additional_data", None)
         if isinstance(additional, dict):
-            for k, v in additional.items():
-                if k not in result:
+            for key, value in additional.items():
+                if key not in result:
                     try:
-                        result[k] = Outlook._serialize_response(v)
+                        result[key] = Outlook._serialize_response(value)
                     except Exception:
-                        result[k] = str(v)
+                        result[key] = str(value)
 
         return result if result else str(response_obj)
 
@@ -728,7 +716,6 @@ class Outlook:
             # Step 1 – create draft
             create_response = await self.client.me_create_messages(request_body=message_body)
 
-            res_json = _response_json(create_response)
             if not create_response.success:
                 return False, json.dumps({
                     "error": create_response.error or "Failed to create email draft"
@@ -742,7 +729,6 @@ class Outlook:
 
             # Step 2 – send the draft
             send_response = await self.client.me_messages_message_send(message_id=message_id)
-            res_json = _response_json(send_response)
             if send_response.success:
                 # Build recipient summary for clarity
                 recipients_info = {
@@ -752,7 +738,7 @@ class Outlook:
                     recipients_info["cc"] = cc_recipients
                 if bcc_recipients:
                     recipients_info["bcc"] = bcc_recipients
-                
+
                 return True, json.dumps({
                     "message": "Email sent successfully",
                     "message_id": message_id,
@@ -802,11 +788,6 @@ class Outlook:
                 message_id=message_id,
                 request_body={"comment": comment},
             )
-            #print(f"Response: {response}")
-            res_json = _response_json(response)
-            #print("--------------------------------")
-            #print(f"Response success: {res_json}")
-            #print("--------------------------------")
             if response.success:
                 return True, json.dumps({"message": "Reply sent successfully"})
             else:
@@ -846,11 +827,6 @@ class Outlook:
                 message_id=message_id,
                 request_body={"comment": comment},
             )
-            #print(f"Response: {response}")
-            res_json = _response_json(response)
-            #print("--------------------------------")
-            #print(f"Response success: {res_json}")
-            #print("--------------------------------")
             if response.success:
                 return True, json.dumps({"message": "Reply-all sent successfully"})
             else:
@@ -901,11 +877,6 @@ class Outlook:
                 message_id=message_id,
                 request_body=forward_body,
             )
-            #print(f"Response: {response}")
-            res_json = _response_json(response)
-            #print("--------------------------------")
-            #print(f"Response success: {res_json}")
-            #print("--------------------------------")
             if response.success:
                 return True, json.dumps({"message": "Email forwarded successfully"})
             else:
@@ -958,11 +929,6 @@ class Outlook:
                 top=min(top or 10, 50),
                 orderby=orderby,
             )
-            #print(f"Response: {response}")
-            res_json = _response_json(response)
-            #print("--------------------------------")
-            #print(f"Response success: {res_json}")
-            #print("--------------------------------")
             if response.success:
                 data = _response_data(response)
                 raw = (data.get("value") or data.get("results")) if isinstance(data, dict) else (data if isinstance(data, list) else [])
@@ -1010,11 +976,6 @@ class Outlook:
         """
         try:
             response = await self.client.me_get_message(message_id=message_id)
-            #print(f"Response: {response}")
-            res_json = _response_json(response)
-            #print("--------------------------------")
-            #print(f"Response success: {res_json}")
-            #print("--------------------------------")
             if response.success:
                 data = _response_data(response)
                 return True, json.dumps(data) if data is not None else json.dumps({"error": "No data"})
@@ -1053,11 +1014,6 @@ class Outlook:
             response = await self.client.me_list_mail_folders(
                 top=min(top or 20, 100),
             )
-            #print(f"Response: {response}")
-            res_json = _response_json(response)
-            #print("--------------------------------")
-            #print(f"Response success: {res_json}")
-            #print("--------------------------------")
             if response.success:
                 data = _response_data(response)
                 raw = (data.get("value") or data.get("results")) if isinstance(data, dict) else (data if isinstance(data, list) else [])
@@ -1111,11 +1067,6 @@ class Outlook:
                 endDateTime=end_datetime,
                 top=min(top or 10, 50),
             )
-            #print(f"Response: {response}")
-            res_json = _response_json(response)
-            # print("--------------------------------")
-            # print(f"Response success: {res_json}")
-            # print("--------------------------------")
             if response.success:
                 data = _response_data(response)
                 raw = (data.get("value") or data.get("results")) if isinstance(data, dict) else (data if isinstance(data, list) else [])
@@ -1179,9 +1130,6 @@ class Outlook:
                 data = _response_data(response)
                 raw = (data.get("value") or data.get("results")) if isinstance(data, dict) else (data if isinstance(data, list) else [])
                 events = raw if isinstance(raw, list) else []
-                #print("--------------------------------")
-                #print(f"Events: {events}")
-                #print("--------------------------------")
 
                 return True, json.dumps({
                     "results": events,
@@ -1230,16 +1178,16 @@ class Outlook:
     ) -> tuple[bool, str]:
         """Create a calendar event in Outlook."""
         try:
-            tz = timezone or "UTC"
+            event_timezone = timezone or "UTC"
             event_body: Dict[str, Any] = {
                 "subject": subject,
                 "start": {
                     "dateTime": start_datetime,
-                    "timeZone": tz,
+                    "timeZone": event_timezone,
                 },
                 "end": {
                     "dateTime": end_datetime,
-                    "timeZone": tz,
+                    "timeZone": event_timezone,
                 },
                 "isOnlineMeeting": bool(is_online_meeting),
             }
@@ -1265,18 +1213,10 @@ class Outlook:
 
             if recurrence:
                 event_body["recurrence"] = _build_recurrence_body(recurrence)
-            
-            #print("--------------------------------")
-            #print(f"Event body: {event_body}")
-            #print("--------------------------------")
             response = await self.client.me_calendar_create_events(request_body=event_body)
-            #print(f"Response: {response}")
-            res_json = _response_json(response)
-            #print("--------------------------------")
-            #print(f"Response success: {res_json}")
-            #print("--------------------------------")
+            data = _response_data(response)
             if response.success:
-                return True, _response_json(response)
+                return True, json.dumps(data)
             else:
                 return False, json.dumps({"error": response.error or "Failed to create calendar event"})
         except Exception as e:
@@ -1310,11 +1250,6 @@ class Outlook:
         """Get details of a specific Outlook calendar event."""
         try:
             response = await self.client.me_calendar_get_events(event_id=event_id)
-            #print(f"Response: {response}")
-            res_json = _response_json(response)
-            #print("--------------------------------")
-            #print(f"Response success: {res_json}")
-            #print("--------------------------------")
             if response.success:
                 data = _response_data(response)
                 return True, json.dumps(data) if data is not None else json.dumps({"error": "No data"})
@@ -1378,11 +1313,11 @@ class Outlook:
                 location = str(location)
             if attendees is not None:
                 _normalized: List[str] = []
-                for a in attendees:
-                    if isinstance(a, str) and a.strip():
-                        _normalized.append(a.strip())
-                    elif isinstance(a, dict):
-                        addr = a.get("emailAddress")
+                for attendee_item in attendees:
+                    if isinstance(attendee_item, str) and attendee_item.strip():
+                        _normalized.append(attendee_item.strip())
+                    elif isinstance(attendee_item, dict):
+                        addr = attendee_item.get("emailAddress")
                         if isinstance(addr, dict):
                             email = addr.get("address")
                             if isinstance(email, str) and email.strip():
@@ -1396,16 +1331,16 @@ class Outlook:
             if subject is not None:
                 event_body["subject"] = subject
 
-            tz = timezone or "UTC"
+            event_timezone = timezone or "UTC"
             if start_datetime is not None:
                 event_body["start"] = {
                     "dateTime": start_datetime,
-                    "timeZone": tz,
+                    "timeZone": event_timezone,
                 }
             if end_datetime is not None:
                 event_body["end"] = {
                     "dateTime": end_datetime,
-                    "timeZone": tz,
+                    "timeZone": event_timezone,
                 }
 
             if body is not None:
@@ -1442,7 +1377,7 @@ class Outlook:
                 update_scope=update_scope,
             )
             if response.success:
-                data = _response_json(response)
+                data = _response_data(response)
                 return True, json.dumps({
                     "message": "Calendar event updated successfully",
                     "event_id": event_id,
@@ -1494,6 +1429,128 @@ class Outlook:
 
     @tool(
         app_name="outlook",
+        tool_name="get_recurring_events",
+        description=(
+            "Get all recurring calendar events that have occurrences in a date range "
+            "(defaults to the next 30 days). Returns each recurring series with its "
+            "upcoming occurrences grouped together. Unlike get_recurring_events_ending, "
+            "this returns ALL recurring events active in the window, not just those "
+            "whose series is ending."
+        ),
+        args_schema=GetRecurringEventsInput,
+        when_to_use=[
+            "User wants to see all their recurring events or meetings",
+            "User asks what recurring meetings they have coming up",
+            "User wants to list recurring calendar events in a date range",
+            "User wants to know which meetings repeat on their calendar",
+        ],
+        when_not_to_use=[
+            "User wants all events including non-recurring (use get_calendar_events)",
+            "User only wants recurring events that are ending soon (use get_recurring_events_ending)",
+            "User wants to create or update an event",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show me all my recurring meetings",
+            "What recurring events do I have in the next month?",
+            "List all repeating meetings on my calendar",
+            "Which meetings recur this week?",
+        ],
+        category=ToolCategory.CALENDAR,
+    )
+    async def get_recurring_events(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        timezone: str = "UTC",
+        top: int = 10,
+    ) -> tuple[bool, str]:
+        """Get all recurring events with occurrences in a date range (default: next 30 days)."""
+        try:
+            top = min(top or 10, 50)
+            now = datetime.now(dt_timezone.utc)
+            range_start = start_date or now.strftime("%Y-%m-%dT%H:%M:%SZ")
+            range_end = end_date or (now + timedelta(days=30)).strftime("%Y-%m-%dT23:59:59Z")
+
+            series_map: dict = OrderedDict()
+            page_size = 50
+            skip = 0
+            max_pages = 5
+
+            for _ in range(max_pages):
+                resp = await self.client.me_calendar_list_calendar_view(
+                    startDateTime=range_start,
+                    endDateTime=range_end,
+                    top=page_size,
+                    skip=skip,
+                )
+                if not resp.success:
+                    return False, json.dumps({
+                        "error": resp.error or "Failed to fetch calendar view"
+                    })
+
+                data = _response_data(resp)
+                events = (
+                    data.get("value", []) if isinstance(data, dict)
+                    else (data if isinstance(data, list) else [])
+                )
+
+                for event in events:
+                    if not isinstance(event, dict):
+                        continue
+                    event_type = event.get("type", "")
+                    series_id = event.get("seriesMasterId")
+
+                    if event_type == "seriesMaster":
+                        series_id = event.get("id")
+                    elif event_type != "occurrence":
+                        continue
+
+                    if not series_id:
+                        continue
+
+                    if series_id not in series_map:
+                        series_map[series_id] = {
+                            "seriesMasterId": series_id,
+                            "subject": event.get("subject"),
+                            "organizer": event.get("organizer"),
+                            "recurrence": event.get("recurrence"),
+                            "isOnlineMeeting": event.get("isOnlineMeeting"),
+                            "onlineMeeting": event.get("onlineMeeting"),
+                            "location": event.get("location"),
+                            "occurrences": [],
+                        }
+
+                    series_map[series_id]["occurrences"].append({
+                        "id": event.get("id"),
+                        "start": event.get("start"),
+                        "end": event.get("end"),
+                        "subject": event.get("subject"),
+                        "isCancelled": event.get("isCancelled", False),
+                    })
+
+                if len(events) < page_size or len(series_map) >= top:
+                    break
+                skip += page_size
+
+            results = list(series_map.values())[:top]
+
+            return True, json.dumps({
+                "results": results,
+                "count": len(results),
+                "total_occurrences": sum(len(series["occurrences"]) for series in results),
+                "range": {
+                    "start": range_start,
+                    "end": range_end,
+                    "timezone": timezone,
+                },
+            })
+
+        except Exception as e:
+            return self._handle_error(e, "get recurring events")
+
+    @tool(
+        app_name="outlook",
         tool_name="get_recurring_events_ending",
         description=(
             "Get recurring calendar events whose recurrence series ends within a "
@@ -1527,7 +1584,8 @@ class Outlook:
         top: int = 10,
     ) -> tuple[bool, str]:
         try:
-            now = datetime.now(tz.utc)
+            top = min(top or 10, 50)
+            now = datetime.now(dt_timezone.utc)
             range_start = end_after or now.strftime("%Y-%m-%dT%H:%M:%SZ")
             range_end = end_before
 
@@ -1540,9 +1598,19 @@ class Outlook:
             if dt_range_start > dt_range_end:
                 return False, json.dumps({"error": "end_after must be before end_before."})
 
-            # ── Step 1: Paginate all seriesMaster events ──────────────────────────
-            all_series_masters = []
-            page_size, max_pages, skip = 50, 20, 0
+            def get_end_date(event: dict) -> Optional[date]:
+                rec_range = (event.get("recurrence") or {}).get("range", {})
+                if rec_range.get("type") not in ("endDate",):
+                    return None
+                try:
+                    return date.fromisoformat(rec_range["endDate"])
+                except (KeyError, ValueError):
+                    return None
+
+            matched: list = []
+            page_size = 50
+            skip = 0
+            max_pages = 5
 
             for _ in range(max_pages):
                 resp = await self.client.me_list_series_master_events(
@@ -1551,495 +1619,270 @@ class Outlook:
                 if not resp.success:
                     return False, json.dumps({"error": resp.error or "Failed to fetch recurring events"})
 
-                data   = _response_data(resp)
+                data = _response_data(resp)
                 events = data.get("value", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
 
-                all_series_masters.extend(events)
-                if len(events) < page_size:
+                if not events:
+                    break
+
+                for event in events:
+                    if not isinstance(event, dict):
+                        continue
+                    end_date = get_end_date(event)
+                    if end_date is not None and dt_range_start <= end_date <= dt_range_end:
+                        matched.append({**event, "_recurrenceEndDate": end_date.isoformat()})
+
+                if len(events) < page_size or len(matched) >= top:
                     break
                 skip += page_size
 
-            if not all_series_masters:
+            if not matched:
                 return True, json.dumps({
                     "results": [], "count": 0,
                     "message": "No recurring events found.",
                     "range": {"end_after": range_start, "end_before": range_end},
                 })
 
-            # ── Step 2: Filter on recurrence.range.endDate ────────────────────────
-            def get_end_date(ev: dict) -> Optional[date]:
-                rec_range = (ev.get("recurrence") or {}).get("range", {})
-                if rec_range.get("type") not in ("endDate",):
-                    return None
-                try:
-                    return date.fromisoformat(rec_range["endDate"])
-                except (KeyError, ValueError):
-                    return None
-
-            matched = sorted(
-                (
-                    {**ev, "_recurrenceEndDate": (end_date := get_end_date(ev)).isoformat()}
-                    for ev in all_series_masters
-                    if isinstance(ev, dict)
-                    and (end_date := get_end_date(ev)) is not None
-                    and dt_range_start <= end_date <= dt_range_end
-                ),
-                key=lambda e: e["_recurrenceEndDate"],
-            )[:top]
+            matched.sort(key=lambda event: event["_recurrenceEndDate"])
+            results = matched[:top]
 
             return True, json.dumps({
-                "results": matched,
-                "count":   len(matched),
-                "range":   {"end_after": range_start, "end_before": range_end},
+                "results": results,
+                "count": len(results),
+                "range": {"end_after": range_start, "end_before": range_end},
             })
 
         except Exception as e:
             return self._handle_error(e, "get recurring events ending")
-    
+
     @tool(
         app_name="outlook",
-        tool_name="get_free_time_slots",
+        tool_name="delete_recurring_event_occurrence",
         description=(
-            "Get the user's free (available) time slots within a given time frame. "
-            "Returns gaps between calendar events as free slots."
+            "Take a list of dates and delete the occurrences of the recurring event on those dates."
         ),
-        args_schema=GetFreeTimeSlotsInput,
+        args_schema=DeleteRecurringEventOccurrencesInput,
         when_to_use=[
-            "User wants to know when they are free in a time period",
-            "User asks for available slots for a meeting",
-            "User wants to find gaps between their meetings",
-            "User wants to schedule something and needs to know availability",
+            "User wants to cancel one or more occurrences of a recurring meeting",
+            "User wants to skip a recurring meeting on specific dates",
+            "User wants to delete instances without affecting the whole series",
         ],
         when_not_to_use=[
-            "User wants to see their events (use get_calendar_events)",
-            "User wants to create a meeting (use create_calendar_event)",
+            "User wants to delete the entire series (use delete_calendar_event)",
+            "User wants to update the occurrence (use update_calendar_event)",
+            "User wants to skip weekends/holidays on all future occurrences (use update_recurring_event_with_exclusion)",
         ],
-        primary_intent=ToolIntent.SEARCH,
+        primary_intent=ToolIntent.ACTION,
         typical_queries=[
-            "When am I free today?",
-            "Find me a free 1 hour slot tomorrow",
-            "What are my available slots this afternoon?",
-            "Am I free between 2pm and 5pm today?",
+            "Cancel the standup on March 10 and March 17",
+            "Skip the catchup meeting this Friday and next Friday",
+            "Delete the March 25 and April 1 occurrences of my weekly sync",
+            "Delete the occurrences of the recurring event on Holidays",
+            "Delete the occurrences of the recurring event on weekends",
         ],
+        llm_description=(
+            "Used when deleting the occurrences of the recurring event on specific dates. "
+            "Takes a list of dates and deletes the occurrences of the recurring event on those dates."
+        ),
         category=ToolCategory.CALENDAR,
     )
-    async def get_free_time_slots(
-        self,
-        start_datetime: str,
-        end_datetime: str,
-        timezone: str = "UTC",
-        slot_duration_minutes: int = 30,
-    ) -> tuple[bool, str]:
-        try:
-            from datetime import datetime, timedelta
-
-            #print(f"[get_free_time_slots] range={start_datetime!r}..{end_datetime!r}, tz={timezone!r}, slot={slot_duration_minutes}min")
-
-            # Graph API supports only 15, 30, 60 for availabilityViewInterval
-            interval_minutes = 60 if slot_duration_minutes >= 60 else 30 if slot_duration_minutes >= 30 else 15
-            #print(f"[get_free_time_slots] using availabilityViewInterval={interval_minutes}min")
-
-            resp = await self.client.me_get_schedule(
-                start_datetime=start_datetime,
-                end_datetime=end_datetime,
-                timezone=timezone,
-                availability_view_interval=interval_minutes,
-            )
-
-            if not resp.success:
-                return False, json.dumps({"error": resp.error or "Failed to fetch schedule"})
-
-            data = _response_data(resp)
-            schedules = (
-                data.get("value", []) if isinstance(data, dict)
-                else (data if isinstance(data, list) else [])
-            )
-
-            if not schedules:
-                return False, json.dumps({"error": "No schedule data returned."})
-
-            schedule = schedules[0] if isinstance(schedules, list) else schedules
-            if not isinstance(schedule, dict):
-                return False, json.dumps({"error": "Unexpected schedule format."})
-
-            availability_view = schedule.get("availabilityView", "")
-            #print(f"[get_free_time_slots] availabilityView={availability_view!r} (len={len(availability_view)})")
-
-            if not availability_view:
-                return False, json.dumps({"error": "No availabilityView returned from Graph API."})
-
-            # Compute actual interval from availabilityView length vs requested range
-            # This handles cases where Graph returns a different granularity than requested
-            def _parse_dt_naive(s: str) -> datetime:
-                return datetime.fromisoformat(s[:19])  # "YYYY-MM-DDTHH:MM:SS", no tz
-
-            range_start = _parse_dt_naive(start_datetime)
-            range_end = _parse_dt_naive(end_datetime)
-            total_minutes = int((range_end - range_start).total_seconds() / 60)
-            actual_interval_minutes = total_minutes // len(availability_view)
-
-            #print(f"[get_free_time_slots] total_minutes={total_minutes}, slots={len(availability_view)}, actual_interval={actual_interval_minutes}min")
-
-            interval_delta = timedelta(minutes=actual_interval_minutes)
-            slot_delta = timedelta(minutes=slot_duration_minutes)
-            FREE_STATUSES = {"0"}
-
-            free_slots = []
-            busy_periods = []
-            current_free_start = None
-            current_busy_start = None
-
-            for i, status in enumerate(availability_view):
-                slot_start = range_start + (i * interval_delta)
-                slot_end = slot_start + interval_delta
-                is_free = status in FREE_STATUSES
-
-                if is_free:
-                    if current_busy_start is not None:
-                        busy_periods.append({
-                            "start": current_busy_start.isoformat(),
-                            "end": slot_start.isoformat(),
-                            "duration_minutes": int((slot_start - current_busy_start).total_seconds() / 60),
-                            "status": _status_label(availability_view[i - 1]),
-                            "timezone": timezone,
-                        })
-                        current_busy_start = None
-                    if current_free_start is None:
-                        current_free_start = slot_start
-                else:
-                    if current_free_start is not None:
-                        gap_duration = slot_start - current_free_start
-                        if gap_duration >= slot_delta:
-                            free_slots.append({
-                                "start": current_free_start.isoformat(),
-                                "end": slot_start.isoformat(),
-                                "duration_minutes": int(gap_duration.total_seconds() / 60),
-                                "timezone": timezone,
-                            })
-                        current_free_start = None
-                    if current_busy_start is None:
-                        current_busy_start = slot_start
-
-            # Close trailing free window
-            if current_free_start is not None:
-                gap_duration = range_end - current_free_start
-                if gap_duration >= slot_delta:
-                    free_slots.append({
-                        "start": current_free_start.isoformat(),
-                        "end": range_end.isoformat(),
-                        "duration_minutes": int(gap_duration.total_seconds() / 60),
-                        "timezone": timezone,
-                    })
-
-            # Close trailing busy window
-            if current_busy_start is not None:
-                busy_periods.append({
-                    "start": current_busy_start.isoformat(),
-                    "end": range_end.isoformat(),
-                    "duration_minutes": int((range_end - current_busy_start).total_seconds() / 60),
-                    "status": _status_label(availability_view[-1]),
-                    "timezone": timezone,
-                })
-
-            #print(f"[get_free_time_slots] free_slots={len(free_slots)}, busy_periods={len(busy_periods)}")
-
-            return True, json.dumps({
-                "free_slots": free_slots,
-                "count": len(free_slots),
-                "busy_periods": busy_periods,
-                "range": {
-                    "start": start_datetime,
-                    "end": end_datetime,
-                    "timezone": timezone,
-                },
-                "slot_duration_minutes": slot_duration_minutes,
-                "actual_interval_minutes": actual_interval_minutes,
-                "availability_view": availability_view,
-            })
-
-        except Exception as e:
-            #print(f"[get_free_time_slots] exception: {e!r}")
-            return self._handle_error(e, "get free time slots")
-
-    @tool(
-            app_name="outlook",
-            tool_name="delete_recurring_event_occurrence",
-            description=(
-                "Take a list of dates and delete the occurrences of the recurring event on those dates."
-            ),
-            args_schema=DeleteRecurringEventOccurrencesInput,
-            when_to_use=[
-                "User wants to cancel one or more occurrences of a recurring meeting",
-                "User wants to skip a recurring meeting on specific dates",
-                "User wants to delete instances without affecting the whole series",
-            ],
-            when_not_to_use=[
-                "User wants to delete the entire series (use delete_calendar_event)",
-                "User wants to update the occurrence (use update_calendar_event)",
-                "User wants to skip weekends/holidays on all future occurrences (use update_recurring_event_with_exclusion)",
-            ],
-            primary_intent=ToolIntent.ACTION,
-            typical_queries=[
-                "Cancel the standup on March 10 and March 17",
-                "Skip the catchup meeting this Friday and next Friday",
-                "Delete the March 25 and April 1 occurrences of my weekly sync",
-                "Delete the occurrences of the recurring event on Holidays",
-                "Delete the occurrences of the recurring event on weekends",
-            ],
-            llm_description=(
-                "Used when deleting the occurrences of the recurring event on specific dates. "
-                "Takes a list of dates and deletes the occurrences of the recurring event on those dates."
-            ),
-            category=ToolCategory.CALENDAR,
-        )
     async def delete_recurring_event_occurrence(
         self,
         event_id: str,
         occurrence_dates: List[str],
         timezone: str = "UTC",
     ) -> tuple[bool, str]:
-        """Delete multiple occurrences of a recurring event on specific dates.
-
-        Optimizations applied:
-        1. Concurrent chunk fetching for occurrences (read-only, safe)
-        2. Enhanced trailing block detection — trims as many dates as possible
-           via a single end-date update instead of individual deletes
-        3. Sequential deletion with per-request timeout for remaining dates
-        4. Retry once on 412 conflicts (re-fetch occurrence ID and retry)
+        """Delete specific occurrences of a recurring event by date.
+        Strategy: fetch ALL occurrences from series start to end, find the last
+        occurrence NOT in the delete list, update end date ONLY if the series end
+        date falls within the deletion range, then delete remaining occurrences.
         """
         try:
-            import asyncio
-            from datetime import date, timedelta
+            # ── 1. Normalize, deduplicate, sort ──────────────────────────────
+            target_dates = sorted({date_str.strip() for date_str in occurrence_dates})
+            if not target_dates:
+                return False, json.dumps({"error": "No occurrence dates provided."})
 
-            # ── Normalise & deduplicate ───────────────────────────────────────
-            target_dates = sorted({d.strip() for d in occurrence_dates})
-            target_set   = set(target_dates)
-            parsed_dates = [date.fromisoformat(d) for d in target_dates]
+            parsed_targets: List[date] = []
+            for date_string in target_dates:
+                try:
+                    parsed_targets.append(date.fromisoformat(date_string))
+                except ValueError:
+                    return False, json.dumps({"error": f"Invalid date format: {date_string}"})
 
-            if not parsed_dates:
-                return True, json.dumps({
-                    "success": True, "series_master_id": event_id,
-                    "deleted": [], "not_found": [], "errors": [],
-                    "summary": {"requested": 0, "deleted": 0, "trimmed_via_end_date": 0, "not_found": 0, "failed": 0},
+            # ── 2. Fetch series master for recurrence range ──────────────────
+            master_resp = await self.client.me_calendar_get_events(event_id=event_id)
+            if not master_resp or not master_resp.success:
+                return False, json.dumps({
+                    "error": (master_resp.error if master_resp else None)
+                    or "Failed to fetch series master",
                 })
 
-            range_start = min(parsed_dates)
-            range_end   = max(parsed_dates)
+            master_data = _response_data(master_resp)
+            master_event = master_data if isinstance(master_data, dict) else {}
+            recurrence = master_event.get("recurrence") or {}
+            rec_range = recurrence.get("range") or {}
 
-            # ── Fetch series master ───────────────────────────────────────────
-            master_resp = await self.client.me_calendar_get_events(event_id=event_id)
+            series_start: Optional[date] = None
+            series_end: Optional[date] = None
+            if rec_range.get("startDate"):
+                with contextlib.suppress(ValueError):
+                    series_start = date.fromisoformat(rec_range["startDate"])
+            if rec_range.get("type") == "endDate" and rec_range.get("endDate"):
+                with contextlib.suppress(ValueError):
+                    series_end = date.fromisoformat(rec_range["endDate"])
 
-            # ── Fetch ALL occurrences in chunks (CONCURRENT — read-only) ──────
-            CHUNK_DAYS = 31
-            chunks: list[tuple[str, str]] = []
-            cs = range_start - timedelta(days=1)
-            ce_limit = range_end + timedelta(days=1)
-            while cs < ce_limit:
-                ce = min(cs + timedelta(days=CHUNK_DAYS), ce_limit)
-                chunks.append((cs.isoformat(), ce.isoformat()))
-                cs = ce
+            # ── 3. Drop dates outside the series scope ───────────────────────
+            valid_dates: List[str] = []
+            out_of_scope: List[str] = []
+            for d_str, d_parsed in zip(target_dates, parsed_targets):
+                if (series_start and d_parsed < series_start) or (
+                    series_end and d_parsed > series_end
+                ):
+                    out_of_scope.append(d_str)
+                else:
+                    valid_dates.append(d_str)
 
-            logger.info(
-                f"delete_recurring_event_occurrence: fetching occurrences in "
-                f"{len(chunks)} chunk(s) for {len(target_dates)} target dates "
-                f"({range_start} → {range_end})"
+            if not valid_dates:
+                return True, json.dumps({
+                    "success": True,
+                    "series_master_id": event_id,
+                    "deleted": [],
+                    "out_of_scope": out_of_scope,
+                    "errors": [],
+                    "summary": {
+                        "requested": len(target_dates),
+                        "deleted": 0,
+                        "trimmed_via_end_date": 0,
+                        "out_of_scope": len(out_of_scope),
+                        "failed": 0,
+                    },
+                })
+
+            delete_set = set(valid_dates)
+
+            # ── 4. Fetch ALL occurrences from series start to series end ─────
+            # We must fetch the full series, not just the target window, so we
+            # can correctly identify the true last kept occurrence across the
+            # entire series — not just within the deletion window.
+            fetch_start = (
+                (series_start - timedelta(days=1)).isoformat()
+                if series_start
+                else (date.fromisoformat(valid_dates[0]) - timedelta(days=1)).isoformat()
+            )
+            fetch_end = (
+                (series_end + timedelta(days=1)).isoformat()
+                if series_end
+                else (date.fromisoformat(valid_dates[-1]) + timedelta(days=1)).isoformat()
             )
 
-            async def _fetch_chunk(start_iso: str, end_iso: str) -> list:
-                try:
-                    resp = await asyncio.wait_for(
-                        self.client.me_list_event_occurrences(
-                            event_id=event_id,
-                            start_date=start_iso,
-                            end_date=end_iso,
-                            timezone=timezone,
-                        ),
-                        timeout=30.0,
-                    )
-                    if resp.success:
-                        occ_data = _response_data(resp)
-                        return (
-                            occ_data.get("value", []) if isinstance(occ_data, dict)
-                            else (occ_data if isinstance(occ_data, list) else [])
-                        )
-                except asyncio.TimeoutError:
-                    logger.warning(f"Timeout fetching chunk {start_iso} → {end_iso}")
-                except Exception as e:
-                    logger.warning(f"Error fetching chunk {start_iso} → {end_iso}: {e}")
-                return []
+            occurrences_resp = await self.client.me_list_event_occurrences(
+                event_id=event_id,
+                start_date=fetch_start,
+                end_date=fetch_end,
+                timezone=timezone,
+            )
+            if not occurrences_resp.success:
+                return False, json.dumps({
+                    "error": occurrences_resp.error or "Failed to fetch occurrences",
+                })
 
-            chunk_results = await asyncio.gather(*[_fetch_chunk(s, e) for s, e in chunks])
+            occ_data = _response_data(occurrences_resp)
+            occurrences = (
+                occ_data.get("value", []) if isinstance(occ_data, dict)
+                else (occ_data if isinstance(occ_data, list) else [])
+            )
 
-            all_occurrences = []
-            for r in chunk_results:
-                all_occurrences.extend(r)
-
-            logger.info(f"Fetched {len(all_occurrences)} occurrences across {len(chunks)} chunks")
-
-            # ── Build date → occurrence mapping ───────────────────────────────
             date_to_occ: Dict[str, Any] = {}
-            for occ in all_occurrences:
-                if isinstance(occ, dict) and occ.get("start", {}).get("dateTime"):
-                    occ_date = occ["start"]["dateTime"][:10]
-                    if occ_date not in date_to_occ:
-                        date_to_occ[occ_date] = occ
+            for occurrence in occurrences:
+                if isinstance(occurrence, dict) and occurrence.get("start", {}).get("dateTime"):
+                    date_to_occ[occurrence["start"]["dateTime"][:10]] = occurrence
+            all_occ_dates = sorted(date_to_occ.keys())
 
-            not_found = [d for d in target_dates if d not in date_to_occ]
-
-            # ── Resolve series metadata ───────────────────────────────────────
-            series_end_date: Optional[date] = None
-            series_recurrence: Optional[Dict] = None
-
-            if master_resp and master_resp.success:
-                master_data = _response_data(master_resp)
-                master_event = master_data if isinstance(master_data, dict) else {}
-                recurrence = master_event.get("recurrence") or {}
-                rec_range  = recurrence.get("range") or {}
-                series_recurrence = recurrence
-                if rec_range.get("type") == "endDate" and rec_range.get("endDate"):
-                    try:
-                        series_end_date = date.fromisoformat(rec_range["endDate"])
-                    except ValueError:
-                        pass
-
-            # ── ENHANCED trailing block optimization ──────────────────────────
-            # Walk backwards from the series end date. Every date that is either:
-            #   a) in the target set (needs deletion), OR
-            #   b) not in date_to_occ (already deleted / no occurrence exists)
-            # can be "trimmed" by moving the end date back.
-            # Stop at the first date that is NOT in target AND HAS an occurrence
-            # (i.e., a date the user wants to KEEP).
-            trailing_block: List[str] = []
-
-            if series_end_date and series_recurrence:
-                check_date = series_end_date
-                earliest_target = range_start
-
-                while check_date >= earliest_target:
-                    d_str = check_date.isoformat()
-
-                    if d_str in target_set:
-                        # This date is targeted for deletion → part of trailing block
-                        trailing_block.append(d_str)
-                    elif d_str not in date_to_occ:
-                        # No occurrence exists on this date (already deleted or
-                        # never existed, e.g., event doesn't recur on this day)
-                        # → can safely skip over it
-                        pass
-                    else:
-                        # This date HAS an occurrence AND is NOT targeted
-                        # → user wants to keep it → trailing block ends here
-                        break
-
-                    check_date -= timedelta(days=1)
-
-                trailing_block = list(reversed(trailing_block))
-
-            use_end_date_update = bool(trailing_block) and series_recurrence is not None
+            # ── 5. Update end date ONLY if series end falls in deletion range ─
+            # Example: series ends 2024-05-19, delete list has 2024-05-18 and
+            # 2024-05-19 → end date must move. But if the series ends 2024-06-01
+            # and we're only deleting 2024-05-18 and 2024-05-19, no end date
+            # update is needed — just delete those occurrences individually.
+            last_kept: Optional[str] = None
+            for occ_date in reversed(all_occ_dates):
+                if occ_date not in delete_set:
+                    last_kept = occ_date
+                    break
 
             end_date_result: Optional[Dict] = None
-            to_delete_individually = target_dates
+            trimmed_dates: List[str] = []
 
-            if use_end_date_update:
-                trailing_set = set(trailing_block)
-                to_delete_individually = [d for d in target_dates if d not in trailing_set]
+            series_end_in_delete_range = (
+                series_end is not None
+                and series_end.isoformat() in delete_set
+            )
 
-                # New end date = day before the earliest date in the trailing block
-                new_end_date = (date.fromisoformat(trailing_block[0]) - timedelta(days=1)).isoformat()
-
+            if series_end_in_delete_range and recurrence and last_kept:
+                date.fromisoformat(last_kept)
+                # Collect all occurrences after last_kept that are in the delete
+                # set — these get implicitly removed by shrinking the end date
+                trimmed_dates = [
+                    occ_date
+                    for occ_date in all_occ_dates
+                    if occ_date > last_kept and occ_date in delete_set
+                ]
                 updated_recurrence = {
-                    **series_recurrence,
-                    "range": {
-                        **series_recurrence.get("range", {}),
-                        "endDate": new_end_date,
-                    },
+                    **recurrence,
+                    "range": {**rec_range, "endDate": last_kept},
                 }
-
                 update_resp = await self.client.me_calendar_update_events(
                     event_id=event_id,
                     request_body={"recurrence": updated_recurrence},
                 )
-
                 end_date_result = {
-                    "optimisation": "end_date_updated",
-                    "previous_end_date": series_end_date.isoformat() if series_end_date else None,
-                    "new_end_date": new_end_date,
-                    "occurrences_trimmed": len(trailing_block),
+                    "previous_end_date": series_end.isoformat(),
+                    "new_end_date": last_kept,
+                    "occurrences_trimmed": trimmed_dates,
                     "success": update_resp.success,
                     "error": None if update_resp.success else update_resp.error,
                 }
+                # Remove trimmed dates from delete_set — no need to delete individually
+                delete_set -= set(trimmed_dates)
 
-                logger.info(
-                    f"Enhanced trailing block: trimmed {len(trailing_block)} occurrences "
-                    f"via end-date update ({series_end_date} → {new_end_date}). "
-                    f"Remaining to delete individually: {len(to_delete_individually)}"
-                )
+            # ── 6. Delete remaining occurrences individually ─────────────────
+            deleted: list = []
+            delete_errors: list = []
+            not_found: list = []
 
-            # ── Delete remaining occurrences SEQUENTIALLY ─────────────────────
-            # Must be sequential — concurrent deletes cause HTTP 412 conflicts
-            # because each deletion changes the series changeKey.
-            deleted = []
-            delete_errors = []
-
-            dates_to_delete = [d for d in to_delete_individually if d in date_to_occ]
-
-            if dates_to_delete:
-                logger.info(f"Deleting {len(dates_to_delete)} occurrences sequentially")
-
-            for target_date_str in dates_to_delete:
-                occ = date_to_occ[target_date_str]
-                occ_id = occ.get("id")
-
-                try:
-                    resp = await asyncio.wait_for(
-                        self.client.me_calendar_delete_events(event_id=occ_id),
-                        timeout=15.0,
-                    )
-                    if resp.success:
-                        deleted.append({
-                            "date": target_date_str,
-                            "event_id": occ_id,
-                            "subject": occ.get("subject", ""),
-                        })
-                    else:
-                        delete_errors.append({
-                            "date": target_date_str,
-                            "event_id": occ_id,
-                            "error": resp.error,
-                        })
-                except asyncio.TimeoutError:
-                    delete_errors.append({
-                        "date": target_date_str,
-                        "event_id": occ_id,
-                        "error": "Timeout after 15s",
+            for target_date in sorted(delete_set):
+                occurrence = date_to_occ.get(target_date)
+                if not occurrence:
+                    not_found.append(target_date)
+                    continue
+                occurrence_id = occurrence.get("id")
+                delete_resp = await self.client.me_calendar_delete_events(event_id=occurrence_id)
+                if delete_resp.success:
+                    deleted.append({
+                        "date": target_date,
+                        "event_id": occurrence_id,
+                        "subject": occurrence.get("subject", ""),
                     })
-                except Exception as e:
+                else:
                     delete_errors.append({
-                        "date": target_date_str,
-                        "event_id": occ_id,
-                        "error": str(e),
+                        "date": target_date,
+                        "event_id": occurrence_id,
+                        "error": delete_resp.error,
                     })
-
-            trimmed_count = len(trailing_block) if use_end_date_update else 0
-
-            logger.info(
-                f"delete_recurring_event_occurrence complete: "
-                f"requested={len(target_dates)}, deleted={len(deleted)}, "
-                f"trimmed={trimmed_count}, "
-                f"not_found={len(not_found)}, errors={len(delete_errors)}"
-            )
 
             return True, json.dumps({
                 "success": True,
                 "series_master_id": event_id,
                 "deleted": deleted,
                 "not_found": not_found,
+                "out_of_scope": out_of_scope,
                 "errors": delete_errors,
                 **({"end_date_update": end_date_result} if end_date_result else {}),
                 "summary": {
                     "requested": len(target_dates),
                     "deleted": len(deleted),
-                    "trimmed_via_end_date": trimmed_count,
+                    "trimmed_via_end_date": len(trimmed_dates),
+                    "out_of_scope": len(out_of_scope),
                     "not_found": len(not_found),
                     "failed": len(delete_errors),
                 },
@@ -2047,91 +1890,11 @@ class Outlook:
 
         except Exception as e:
             return self._handle_error(e, "delete recurring event occurrence")
-            
-    # Online Meetings & Transcripts tools
+
+
     # ------------------------------------------------------------------
-
-    # @tool(
-    #     app_name="outlook",
-    #     tool_name="list_online_meetings",
-    #     description=(
-    #         "List Microsoft Teams / online meetings for the signed-in user. "
-    #         "Uses the same calendar events datasource as get_calendar_event and returns "
-    #         "only events that are online meetings. For date range filtering use "
-    #         "get_calendar_events instead."
-    #     ),
-    #     args_schema=ListOnlineMeetingsInput,
-    #     when_to_use=[
-    #         "User wants to see their online or Teams meetings",
-    #         "User asks what Teams meetings they have",
-    #         "User wants to find a specific online meeting by its join URL",
-    #     ],
-    #     when_not_to_use=[
-    #         "User wants calendar events in a date range (use get_calendar_events)",
-    #         "User wants to filter meetings by date/time (use get_calendar_events)",
-    #         "User wants to create a meeting (use create_calendar_event)",
-    #         "No Outlook/Teams/meeting mention",
-    #     ],
-    #     primary_intent=ToolIntent.SEARCH,
-    #     typical_queries=[
-    #         "List my Teams meetings",
-    #         "Show my online meetings",
-    #         "Find my recent Teams calls",
-    #     ],
-    #     category=ToolCategory.CALENDAR,
-    # )
-    # async def list_online_meetings(
-    #     self,
-    #     filter: Optional[str] = None,
-    #     top: Optional[int] = 10,
-    # ) -> tuple[bool, str]:
-    #     """List online meetings for the signed-in user from calendar events."""
-    #     try:
-    #         # Use same datasource as get_calendar_event: calendar view (calendar events)
-    #         now = datetime.now(timezone.utc)
-    #         start_dt = (now - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    #         end_dt = (now + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    #         # Do not pass filter to calendar view: Event type has no JoinWebUrl (that's
-    #         # for /me/onlineMeetings). We filter to online meetings in code below.
-    #         response = await self.client.me_calendar_list_calendar_view(
-    #             startDateTime=start_dt,
-    #             endDateTime=end_dt,
-    #             top=min(top or 10, 50),
-    #         )
-    #         if not response.success:
-    #             return False, json.dumps({"error": response.error or "Failed to list calendar events"})
-
-    #         data = _response_data(response)
-    #         if isinstance(data, dict):
-    #             raw = data.get("value") or data.get("results") or []
-    #         elif isinstance(data, list):
-    #             raw = data
-    #         else:
-    #             raw = []
-    #         all_events = raw if isinstance(raw, list) else []
-
-    #         def is_online_meeting(ev: Any) -> bool:
-    #             if not isinstance(ev, dict):
-    #                 return False
-    #             if ev.get("isOnlineMeeting") is True:
-    #                 return True
-    #             if ev.get("onlineMeeting") is not None:
-    #                 return True
-    #             return False
-
-    #         meetings = [ev for ev in all_events if is_online_meeting(ev)]
-
-    #         # Include "results" so placeholders like {{outlook.list_online_meetings.data.results[0].id}} resolve
-    #         payload: Dict[str, Any] = {
-    #             "meetings": meetings,
-    #             "results": meetings,
-    #             "count": len(meetings),
-    #         }
-    #         payload["data"] = {"results": meetings, "count": len(meetings)}
-    #         return True, json.dumps(payload)
-    #     except Exception as e:
-    #         return self._handle_error(e, "list online meetings")
+    # Transcripts tools
+    # ------------------------------------------------------------------
 
     @tool(
         app_name="outlook",
@@ -2264,8 +2027,7 @@ class Outlook:
         try:
             # Path A: join_url provided directly — skip event fetch
             if join_url:
-                result = await self._online_meeting_id_from_join_url(join_url)
-                return result
+                return await self._online_meeting_id_from_join_url(join_url)
 
             # Path B: event_id provided — fetch event to extract joinUrl
             if event_id:
@@ -2273,28 +2035,22 @@ class Outlook:
                 if not ev_resp.success:
                     return None
 
-                ev = _response_data(ev_resp)
-                if not isinstance(ev, dict):
+                event_data = _response_data(ev_resp)
+                if not isinstance(event_data, dict):
                     return None
 
-                om = ev.get("onlineMeeting") or ev.get("online_meeting")
-                if not isinstance(om, dict):
+                online_meeting_data = event_data.get("onlineMeeting")
+                if not isinstance(online_meeting_data, dict):
                     return None
 
-                extracted_join_url = (
-                    om.get("joinWebUrl")
-                    or om.get("joinUrl")
-                    or om.get("join_web_url")
-                    or om.get("join_url")
-                )
+                extracted_join_url = online_meeting_data.get("joinUrl")
                 if not extracted_join_url or not isinstance(extracted_join_url, str):
                     return None
 
-                result = await self._online_meeting_id_from_join_url(extracted_join_url)
-                return result
+                return await self._online_meeting_id_from_join_url(extracted_join_url)
             return None
 
-        except Exception as e:
+        except Exception:
             return None
 
 
@@ -2302,11 +2058,11 @@ class Outlook:
         """Resolve a Teams joinWebUrl to an online meeting ID.
 
         GET /me/onlineMeetings?$filter=JoinWebUrl eq '{join_url}'
-        NOTE: join_url must be URL-decoded before filtering — Graph API 
+        NOTE: join_url must be URL-decoded before filtering — Graph API
         returns 400 if the URL contains percent-encoded characters.
         """
         try:
-            from urllib.parse import unquote
+
             decoded_url = unquote(join_url)
             safe_url = decoded_url.replace("'", "''")
             resp = await self.client.me_list_online_meetings(
