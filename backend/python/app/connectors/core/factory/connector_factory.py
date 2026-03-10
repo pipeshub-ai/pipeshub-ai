@@ -18,6 +18,7 @@ from app.connectors.core.registry.connector import (
     SlidesConnector,
     ZendeskConnector,
 )
+from app.connectors.core.sync.task_manager import sync_task_manager
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
@@ -30,6 +31,7 @@ from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
+from app.connectors.sources.github.connector import GithubConnector
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
 )
@@ -49,6 +51,7 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
 from app.connectors.sources.minio.connector import MinIOConnector
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.notion.connector import NotionConnector
+from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
 from app.connectors.sources.web.connector import WebConnector
@@ -75,7 +78,9 @@ class ConnectorFactory:
         "nextcloud": NextcloudConnector,
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
+        "rss": RSSConnector,
         "bookstack": BookStackConnector,
+        "github": GithubConnector,
         "s3": S3Connector,
         "minio": MinIOConnector,
         "gcs": GCSConnector,
@@ -221,8 +226,7 @@ class ConnectorFactory:
 
         if connector:
             try:
-                import asyncio
-                asyncio.create_task(connector.run_sync())
+                await sync_task_manager.start_sync(connector_id, connector.run_sync())
                 logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector
             except Exception as e:

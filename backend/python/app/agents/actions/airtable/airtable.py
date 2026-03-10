@@ -7,12 +7,121 @@ from typing import Coroutine, Dict, List, Optional, Tuple
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.airtable.airtable import AirtableClient
 from app.sources.external.airtable.airtable import AirtableDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_records",
+        description="Create records in a table",
+        parameters=[
+            {"name": "base_id", "type": "string", "description": "Base ID", "required": True},
+            {"name": "table_name", "type": "string", "description": "Table name", "required": True},
+            {"name": "records", "type": "array", "description": "Records to create", "required": True}
+        ],
+        tags=["records", "create"]
+    ),
+    ToolDefinition(
+        name="get_record",
+        description="Get a record by ID",
+        parameters=[
+            {"name": "base_id", "type": "string", "description": "Base ID", "required": True},
+            {"name": "table_name", "type": "string", "description": "Table name", "required": True},
+            {"name": "record_id", "type": "string", "description": "Record ID", "required": True}
+        ],
+        tags=["records", "read"]
+    ),
+    ToolDefinition(
+        name="list_records",
+        description="List records in a table",
+        parameters=[
+            {"name": "base_id", "type": "string", "description": "Base ID", "required": True},
+            {"name": "table_name", "type": "string", "description": "Table name", "required": True}
+        ],
+        tags=["records", "list"]
+    ),
+    ToolDefinition(
+        name="update_records",
+        description="Update records in a table",
+        parameters=[
+            {"name": "base_id", "type": "string", "description": "Base ID", "required": True},
+            {"name": "table_name", "type": "string", "description": "Table name", "required": True},
+            {"name": "records", "type": "array", "description": "Records to update", "required": True}
+        ],
+        tags=["records", "update"]
+    ),
+    ToolDefinition(
+        name="delete_records",
+        description="Delete records from a table",
+        parameters=[
+            {"name": "base_id", "type": "string", "description": "Base ID", "required": True},
+            {"name": "table_name", "type": "string", "description": "Table name", "required": True},
+            {"name": "record_ids", "type": "array", "description": "Record IDs to delete", "required": True}
+        ],
+        tags=["records", "delete"]
+    ),
+    ToolDefinition(
+        name="search_records",
+        description="Search records in a table",
+        parameters=[
+            {"name": "base_id", "type": "string", "description": "Base ID", "required": True},
+            {"name": "table_name", "type": "string", "description": "Table name", "required": True},
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["records", "search"]
+    ),
+]
 
+
+# Register Airtable toolset
+@ToolsetBuilder("Airtable")\
+    .in_group("Database")\
+    .with_description("Airtable integration for database and record management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Airtable",
+            authorize_url="https://airtable.com/oauth2/v1/authorize",
+            token_url="https://airtable.com/oauth2/v1/token",
+            redirect_uri="toolsets/oauth/callback/airtable",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "data.records:read",
+                    "data.records:write",
+                    "schema.bases:read"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Airtable OAuth App"),
+                CommonFields.client_secret("Airtable OAuth App")
+            ],
+            icon_path="/assets/icons/connectors/airtable.svg",
+            app_group="Database",
+            app_description="Airtable OAuth application for agent integration"
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("Airtable Personal Access Token", "pat_your-token-here")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/airtable.svg"))\
+    .build_decorator()
 class Airtable:
     """Airtable tools exposed to agents using AirtableDataSource.
 

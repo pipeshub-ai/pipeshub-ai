@@ -6,6 +6,7 @@ import robotIcon from '@iconify-icons/mdi/robot';
 import closeIcon from '@iconify-icons/mdi/close';
 import { useState, useEffect } from 'react';
 import updateIcon from '@iconify-icons/mdi/update';
+import refreshIcon from '@iconify-icons/mdi/refresh';
 import accountIcon from '@iconify-icons/mdi/account';
 import clockIcon from '@iconify-icons/mdi/clock-outline';
 import emailIcon from '@iconify-icons/mdi/email-outline';
@@ -90,6 +91,7 @@ export default function RecordDetails() {
   const [summaryLoading, setSummaryLoading] = useState<boolean>(false);
   const [actionMenuAnchor, setActionMenuAnchor] = useState(null);
   const isActionMenuOpen = Boolean(actionMenuAnchor);
+  const [forceReindexDialogOpen, setForceReindexDialogOpen] = useState(false);
 
   const handleActionMenuOpen = (event: any) => {
     setActionMenuAnchor(event.currentTarget);
@@ -140,25 +142,34 @@ export default function RecordDetails() {
     navigate('/collections');
   };
 
-  const handleRetryIndexing = async (recId: string) => {
+  const performReindex = async (recId: string) => {
     try {
-      const response = await axios.post(
-        `${CONFIG.backendUrl}/api/v1/knowledgeBase/reindex/record/${recId}`
-      );
+      const response = await KnowledgeBaseAPI.reindexRecord(recId, false, 0);
       setSnackbar({
         open: true,
-        message: response.data.success 
-          ? 'File indexing started' 
-          : response.data.reason || 'Failed to start reindexing',
-        severity: response.data.success ? 'success' : 'error',
+        message: response.success
+          ? 'File indexing started'
+          : response.reason || 'Failed to start reindexing',
+        severity: response.success ? 'success' : 'error',
       });
+      if (response.success) {
+        refreshRecordData();
+      }
     } catch (error: any) {
-      console.log('error in re indexing', error);
+      console.error('Error reindexing', error);
       setSnackbar({
         open: true,
         message: error.response?.data?.reason || error.message || 'Failed to start reindexing',
         severity: 'error',
       });
+    }
+  };
+
+  const handleRetryIndexing = (recId: string) => {
+    if (recordData?.record?.indexingStatus === 'COMPLETED') {
+      setForceReindexDialogOpen(true);
+    } else {
+      performReindex(recId);
     }
   };
 
@@ -991,7 +1002,7 @@ export default function RecordDetails() {
                               overflow: 'auto',
                             }}
                           >
-                            {record._key}
+                            {record.id}
                           </Typography>
                         </Box>
                       </Stack>
@@ -1762,10 +1773,66 @@ export default function RecordDetails() {
             open={isDeleteDialogOpen}
             onClose={() => setIsDeleteDialogOpen(false)}
             onRecordDeleted={handleDeleteRecord}
-            recordId={record._key}
+            recordId={record.id}
             recordName={record.recordName}
           />
         )}
+
+        {/* Force reindexing confirmation (when status is COMPLETED) */}
+        <Dialog
+          open={forceReindexDialogOpen}
+          onClose={() => setForceReindexDialogOpen(false)}
+          maxWidth="sm"
+          fullWidth
+          PaperProps={{ sx: { borderRadius: 2 } }}
+        >
+          <Box sx={{ p: 3, pb: 2, borderBottom: `1px solid ${theme.palette.divider}` }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+              <Icon icon={refreshIcon} style={{ fontSize: 24, color: theme.palette.info.main }} />
+              <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                Force reindexing confirmation
+              </Typography>
+            </Box>
+          </Box>
+          <Box sx={{ p: 3 }}>
+            <Alert severity="info" sx={{ mb: 2 }}>
+              <Typography variant="body2">
+                This document is already indexed. Force reindexing will reprocess it and may incur additional processing.
+              </Typography>
+            </Alert>
+            <Typography variant="body2" color="text.secondary">
+              Reindex <strong>&quot;{recordData?.record?.recordName ?? ''}&quot;</strong>?
+            </Typography>
+          </Box>
+          <Box
+            sx={{
+              p: 2,
+              px: 3,
+              borderTop: `1px solid ${theme.palette.divider}`,
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: 1,
+            }}
+          >
+            <Button variant="outlined" onClick={() => setForceReindexDialogOpen(false)} sx={{ borderRadius: 1.5, textTransform: 'none', px: 3 }}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={() => {
+                if (recordId) {
+                  performReindex(recordId);
+                  setForceReindexDialogOpen(false);
+                }
+              }}
+              startIcon={<Icon icon={refreshIcon} />}
+              sx={{ borderRadius: 1.5, textTransform: 'none', px: 3 }}
+            >
+              Force reindexing
+            </Button>
+          </Box>
+        </Dialog>
       </Box>
 
       <Dialog
@@ -2147,16 +2214,16 @@ export default function RecordDetails() {
           {/* Chat Interface */}
           <Box sx={{ flexGrow: 1 }}>
             <RecordSalesAgent
-              key={record._id} // Force new instance when record changes
+              key={record.id} // Force new instance when record changes
               initialContext={{
-                recordId: record._id,
+                recordId: record.id,
                 recordName: record.recordName,
                 recordType: record.recordType,
                 departments: record.departments?.map((d) => d.name),
                 modules: record.modules?.map((m) => m.name),
                 categories: record.appSpecificRecordType?.map((t) => t.name),
               }}
-              recordId={record._id}
+              recordId={record.id}
               containerStyle={{ height: '100%' }}
             />
           </Box>

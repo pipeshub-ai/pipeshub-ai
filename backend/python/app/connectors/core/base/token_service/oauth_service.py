@@ -7,12 +7,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 from aiohttp import ClientSession
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.key_value_store import KeyValueStore
 
 
 class GrantType(Enum):
@@ -44,11 +44,54 @@ class OAuthConfig:
     grant_type: GrantType = GrantType.AUTHORIZATION_CODE
     additional_params: Dict[str, Any] = field(default_factory=dict)
     token_access_type: Optional[str] = None
+    scope_parameter_name: str = "scope"  # Parameter name for scopes in authorization URL (e.g., "scope", "user_scope", "resource")
+    token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
 
     def generate_state(self) -> str:
         """Generate random state for CSRF protection"""
         self.state = secrets.token_urlsafe(32)
         return self.state
+
+    def normalize_token_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize token response if token_response_path is configured.
+        Args:
+            response: Raw token response from OAuth provider
+
+        Returns:
+            Normalized token dictionary compatible with OAuthToken.from_dict()
+        """
+        if not self.token_response_path:
+            return response
+
+        # Extract from nested path (e.g., response["authed_user"])
+        nested_data = response.get(self.token_response_path)
+        if not isinstance(nested_data, dict):
+            # Fallback to top-level if path doesn't exist (backward compatible)
+            return response
+
+        # Start with nested data (this is where the token should be)
+        normalized = nested_data.copy()
+
+        # Ensure access_token exists - check nested first, then top-level as fallback
+        if "access_token" not in normalized:
+            # Try top-level as fallback
+            if "access_token" in response:
+                normalized["access_token"] = response["access_token"]
+            else:
+                # If still not found, return original response to avoid breaking
+                return response
+
+        # Merge other useful fields from top-level if not in nested
+        for field_name in ["scope", "token_type", "expires_in", "refresh_token", "refresh_token_expires_in"]:
+            if field_name not in normalized and field_name in response:
+                normalized[field_name] = response[field_name]
+
+        # Extract team_id from team.id if present (Slack-specific)
+        if "team" in response and isinstance(response.get("team"), dict):
+            normalized["team_id"] = response["team"].get("id")
+
+        return normalized
 
 
 @dataclass
@@ -100,6 +143,8 @@ class OAuthToken:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'OAuthToken':
         """Create token from dictionary, filtering out unknown fields"""
+        # Make a shallow copy to avoid mutating the caller's dict
+        data = dict(data)
         if 'created_at' in data and isinstance(data['created_at'], str):
             data['created_at'] = datetime.fromisoformat(data['created_at'])
         # Filter to only known fields to handle varying OAuth provider responses
@@ -111,9 +156,9 @@ class OAuthToken:
 class OAuthProvider:
     """OAuth Provider for handling OAuth 2.0 flows"""
 
-    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, credentials_path: str, connector_name: Optional[str] = None) -> None:
+    def __init__(self, config: OAuthConfig, configuration_service: ConfigurationService, credentials_path: str, connector_name: Optional[str] = None) -> None:
         self.config = config
-        self.key_value_store = key_value_store
+        self.configuration_service = configuration_service
         self._session: Optional[ClientSession] = None
         self.credentials_path = credentials_path
         self.token = None
@@ -149,8 +194,10 @@ class OAuthProvider:
             "state": state
         }
 
+        # Use configurable scope parameter name (defaults to "scope")
+        scope_param_name = getattr(self.config, 'scope_parameter_name', 'scope')
         if self.config.scope:
-            params["scope"] = self.config.scope
+            params[scope_param_name] = self.config.scope
 
         params.update(self.config.additional_params)
         params.update(kwargs)
@@ -207,7 +254,24 @@ class OAuthProvider:
                 raise Exception(error_msg)
 
             response.raise_for_status()
-            return await response.json()
+            # Handle both JSON and form-encoded responses
+            content_type = response.headers.get('Content-Type', '').lower()
+            if 'application/json' in content_type:
+                token_data = await response.json()
+                return token_data
+            elif 'application/x-www-form-urlencoded' in content_type or 'text/plain' in content_type:
+                text_response = await response.text()
+                parsed_data = parse_qs(text_response, keep_blank_values=True)
+                token_data = {key: values[0] if values else None for key, values in parsed_data.items()}
+                # Convert string numbers to integers for expires_in if present
+                if 'expires_in' in token_data and token_data['expires_in']:
+                    try:
+                        token_data['expires_in'] = int(token_data['expires_in'])
+                    except (ValueError, TypeError):
+                        pass
+                return token_data
+            else:
+                return await response.json()
 
     async def exchange_code_for_token(self, code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> OAuthToken:
         # Note: State validation is handled in handle_callback, not here
@@ -223,7 +287,16 @@ class OAuthProvider:
             data["code_verifier"] = code_verifier
 
         token_data = await self._make_token_request(data)
-        token = OAuthToken.from_dict(token_data)
+        # Normalize only if configured (backward compatible)
+        normalized_data = self.config.normalize_token_response(token_data)
+
+        # Ensure access_token exists after normalization
+        if "access_token" not in normalized_data:
+            raise ValueError(
+                "OAuth token response missing required 'access_token' field. "
+            )
+
+        token = OAuthToken.from_dict(normalized_data)
         return token
 
     async def refresh_access_token(self, refresh_token: str) -> OAuthToken:
@@ -244,8 +317,10 @@ class OAuthProvider:
                 raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. {error_str}")
             raise
 
+        # Normalize only if configured (backward compatible)
+        normalized_data = self.config.normalize_token_response(token_data)
         # Create new token with current timestamp
-        token = OAuthToken.from_dict(token_data)
+        token = OAuthToken.from_dict(normalized_data)
 
         # Handle different OAuth providers:
         # - Google: doesn't return refresh_token on refresh, so preserve the old one
@@ -258,13 +333,13 @@ class OAuthProvider:
             token.refresh_token = refresh_token
 
         # Update the stored credentials with the new token
-        config = await self.key_value_store.get_key(self.credentials_path)
+        config = await self.configuration_service.get_config(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
 
         # Store the new token (which includes the new refresh_token if provided)
         config['credentials'] = token.to_dict()
-        await self.key_value_store.create_key(self.credentials_path, config)
+        await self.configuration_service.set_config(self.credentials_path, config)
 
         return token
 
@@ -284,11 +359,11 @@ class OAuthProvider:
     async def revoke_token(self) -> bool:
         """Revoke access token"""
         # Default implementation - override in specific providers
-        config = await self.key_value_store.get_key(self.credentials_path)
+        config = await self.configuration_service.get_config(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
         config['credentials'] = None
-        await self.key_value_store.create_key(self.credentials_path, config)
+        await self.configuration_service.set_config(self.credentials_path, config)
         return True
 
 
@@ -319,18 +394,18 @@ class OAuthProvider:
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256"
             })
-        config = await self.key_value_store.get_key(self.credentials_path)
+        config = await self.configuration_service.get_config(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
         # Replace entire oauth session data - this clears any old state, codes, etc.
         # This is important for re-authentication to ensure fresh start
         config['oauth'] = session_data
 
-        await self.key_value_store.create_key(self.credentials_path, config)
+        await self.configuration_service.set_config(self.credentials_path, config)
         return self._get_authorization_url(state=state, **extra)
 
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
-        config = await self.key_value_store.get_key(self.credentials_path)
+        config = await self.configuration_service.get_config(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
 
@@ -394,7 +469,7 @@ class OAuthProvider:
                 "used_codes": used_codes  # Keep used codes to prevent replay attacks
             }
 
-            await self.key_value_store.create_key(self.credentials_path, config)
+            await self.configuration_service.set_config(self.credentials_path, config)
 
             return token
         except Exception:
@@ -402,5 +477,5 @@ class OAuthProvider:
             used_codes.append(code)
             oauth_data["used_codes"] = used_codes
             config['oauth'] = oauth_data
-            await self.key_value_store.create_key(self.credentials_path, config)
+            await self.configuration_service.set_config(self.credentials_path, config)
             raise

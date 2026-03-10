@@ -75,9 +75,14 @@ export interface AppConfig {
   // OAuth Provider config
   oauthIssuer: string;
   oauthBackendUrl: string;
+  mcpScopes: string[];
 
   // Domain check config
   skipDomainCheck: boolean;
+
+  // Rate limit config
+  maxRequestsPerMinute: number;
+  maxOAuthClientRequestsPerMinute: number;
 }
 
 export const loadAppConfig = async (): Promise<AppConfig> => {
@@ -119,8 +124,17 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     // OAuth Provider config - initialize first, then get
     oauthIssuer: (await configService.initializeOAuthIssuer(), await configService.getOAuthIssuer()),
     oauthBackendUrl: await configService.getOAuthBackendUrl(),
+    mcpScopes: await configService.getMcpScopes(),
 
     // Domain check config - when true, skip domain matching and use first available org
     skipDomainCheck: process.env.SKIP_DOMAIN_CHECK === 'true',
+
+    // Rate limit config
+    maxRequestsPerMinute: process.env.MAX_REQUESTS_PER_MINUTE
+      ? parseInt(process.env.MAX_REQUESTS_PER_MINUTE, 10)
+      : 1000,
+    maxOAuthClientRequestsPerMinute: process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE
+      ? parseInt(process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE, 10)
+      : 1000,
   };
 };

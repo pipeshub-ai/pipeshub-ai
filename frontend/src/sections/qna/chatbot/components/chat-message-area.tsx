@@ -3,9 +3,10 @@ import type { CustomCitation, FormattedMessage } from 'src/types/chat-bot';
 import { Icon } from '@iconify/react';
 import arrowUpIcon from '@iconify-icons/mdi/arrow-up';
 import arrowDownIcon from '@iconify-icons/mdi/arrow-down';
+import contentSaveIcon from '@iconify-icons/mdi/content-save-outline';
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
 
-import { Box, Fade, Stack, alpha, Tooltip, useTheme, Typography, IconButton } from '@mui/material';
+import { Box, Fade, Stack, alpha, Tooltip, useTheme, Typography, IconButton, LinearProgress } from '@mui/material';
 
 import ChatMessage from './chat-message';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
@@ -50,6 +51,85 @@ type MessageWithControlsProps = {
   onRegenerate: (messageId: string) => Promise<void>;
   showRegenerate: boolean;
 };
+
+const MetadataSavingIndicator = React.memo(() => {
+  const theme = useTheme();
+
+  return (
+    <Fade in timeout={300}>
+      <Box
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 0.75,
+          px: 1.5,
+          py: 0.75,
+          borderRadius: '8px',
+          bgcolor: alpha(theme.palette.info.main, 0.08),
+          border: `1px solid ${alpha(theme.palette.info.main, 0.2)}`,
+          transition: 'all 0.2s ease',
+          '@keyframes pulse': {
+            '0%, 100%': {
+              opacity: 1,
+            },
+            '50%': {
+              opacity: 0.6,
+            },
+          },
+          '@keyframes shimmer': {
+            '0%': {
+              transform: 'translateX(-100%)',
+            },
+            '100%': {
+              transform: 'translateX(250%)',
+            },
+          },
+        }}
+      >
+        <Icon
+          icon={contentSaveIcon}
+          width={18}
+          height={18}
+          style={{
+            color: theme.palette.info.main,
+            animation: 'pulse 1.5s ease-in-out infinite',
+          }}
+        />
+        <Typography
+          variant="caption"
+          sx={{
+            fontSize: '0.8rem',
+            fontWeight: 500,
+            color: theme.palette.info.main,
+            letterSpacing: '0.01em',
+          }}
+        >
+          Saving metadata...
+        </Typography>
+        <Box
+          sx={{
+            width: 60,
+            height: 2,
+            borderRadius: 1,
+            bgcolor: alpha(theme.palette.info.main, 0.2),
+            overflow: 'hidden',
+            position: 'relative',
+            '&::after': {
+              content: '""',
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              height: '100%',
+              width: '60%',
+              bgcolor: theme.palette.info.main,
+              animation: 'shimmer 1.5s ease-in-out infinite',
+            },
+          }}
+        />
+      </Box>
+    </Fade>
+  );
+});
 
 const ProcessingIndicator = React.memo(
   ({ displayText, isCreating = false }: ProcessingIndicatorProps) => {
@@ -242,7 +322,15 @@ const ChatMessagesArea = ({
     };
   }, [hasStreamingContent, isLoading, shouldAutoScroll, scrollToBottomSmooth, messages]);
 
+  const isMetadataSaving = useMemo(
+    () => isStatusVisible && currentStatus?.toLowerCase().includes('saving metadata'),
+    [isStatusVisible, currentStatus]
+  );
+
   const shouldShowLoadingIndicator = useMemo(() => {
+    // Don't show generic loading indicator for metadata saving (we show inline indicator instead)
+    if (isMetadataSaving) return false;
+
     // Always show status if we have a specific status message
     if (isStatusVisible && currentStatus) return true;
 
@@ -271,6 +359,7 @@ const ChatMessagesArea = ({
     isCreatingConversation,
     isNavigatingToConversation,
     isLoading,
+    isMetadataSaving,
   ]);
 
   const indicatorText = useMemo(() => {
@@ -313,18 +402,54 @@ const ChatMessagesArea = ({
         sx={{ flexGrow: 1, overflow: 'auto', p: 3, ...scrollableStyles }}
       >
         <Box sx={{ flexGrow: 1 }}>
-          {displayMessages.map((message, index) => (
-            <MessageWithControls
-              key={message.id}
-              message={message}
-              index={index}
-              onRegenerate={onRegenerateMessage}
-              onFeedbackSubmit={onFeedbackSubmit}
-              conversationId={conversationId}
-              showRegenerate={canRegenerateMessage(message)}
-              onViewPdf={onViewPdf}
-            />
-          ))}
+          {displayMessages.map((message, index) => {
+            const isLastMessage = index === displayMessages.length - 1;
+            const isLastBotMessage = message.type === 'bot' && isLastMessage;
+            // Only show metadata indicator after last bot message if NOT streaming
+            // (when streaming, we show it separately after all messages)
+            const showMetadataAfterMessage = isLastBotMessage && isMetadataSaving && !hasStreamingContent;
+            
+            return (
+              <Box key={message.id}>
+                <MessageWithControls
+                  message={message}
+                  index={index}
+                  onRegenerate={onRegenerateMessage}
+                  onFeedbackSubmit={onFeedbackSubmit}
+                  conversationId={conversationId}
+                  showRegenerate={canRegenerateMessage(message)}
+                  onViewPdf={onViewPdf}
+                />
+                {showMetadataAfterMessage && (
+                  <Box 
+                    sx={{ 
+                      display: 'flex', 
+                      justifyContent: 'flex-start', 
+                      pl: { xs: 4, sm: 7 },
+                      mb: 1,
+                      mt: -0.5,
+                    }}
+                  >
+                    <MetadataSavingIndicator />
+                  </Box>
+                )}
+              </Box>
+            );
+          })}
+          {/* Show metadata indicator when streaming (only once, after all messages) */}
+          {hasStreamingContent && isMetadataSaving && (
+            <Box 
+              sx={{ 
+                display: 'flex', 
+                justifyContent: 'flex-start', 
+                pl: { xs: 4, sm: 4 },
+                mb: 1,
+                mt: 0.5,
+              }}
+            >
+              <MetadataSavingIndicator />
+            </Box>
+          )}
           {shouldShowLoadingIndicator && indicatorText && (
             <Box sx={{ mt: 1, mb: 4 }}>
               <ProcessingIndicator displayText={indicatorText} isCreating={isCreationLoading} />

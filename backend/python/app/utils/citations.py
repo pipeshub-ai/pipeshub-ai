@@ -18,6 +18,7 @@ class ChatDocCitation:
     chunkindex: int
 
 
+
 def fix_json_string(json_str) -> str:
     """Fix control characters in JSON string values without parsing."""
     result = ""

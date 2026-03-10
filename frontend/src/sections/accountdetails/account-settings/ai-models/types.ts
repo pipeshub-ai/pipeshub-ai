@@ -13,6 +13,7 @@ export interface ConfiguredModel {
   isMultimodal?: boolean;
   isReasoning?: boolean;
   contextLength?: number;
+  modelFriendlyName?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -35,6 +36,7 @@ export interface ModelData {
   isDefault?: boolean;
   contextLength?: number;
   name?: string;
+  modelFriendlyName?: string;
 }
 
 export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [

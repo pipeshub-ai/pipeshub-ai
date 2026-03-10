@@ -803,45 +803,62 @@ class SharePointConnector(BaseConnector):
                     self.logger.warning(f"⚠️ Root site access failed: {root_error}. Continuing with site search...")
 
             # Get all sites using search
-            async with self.rate_limiter:
-                try:
+            # Pagination: fetch all sites using nextLink (same pattern as groups/users)
+            total_found = 0
+            existing_site_ids = {s.id for s in sites}
+            try:
+                async with self.rate_limiter:
                     search_results = await self._safe_api_call(
                         self.client.sites.get()
                     )
-                    if search_results and search_results.value:
-                        for site in search_results.value:
-                            self.logger.debug(f"Checking site: '{site.display_name or site.name}' - URL: '{site.web_url}'")
-                            self.logger.debug(f"exclude_onedrive_sites: {self.filters.get('exclude_onedrive_sites')}")
-                            parsed_url = urllib.parse.urlparse(site.web_url)
-                            hostname = parsed_url.hostname
-                            contains_onedrive = (
-                                hostname is not None and
-                                re.fullmatch(r"[a-zA-Z0-9-]+-my\.sharepoint\.com", hostname)
+
+                while True:
+                    if not search_results or not getattr(search_results, 'value', None):
+                        if total_found == 0:
+                            self.logger.info("No additional sites found from search endpoint")
+                        break
+                    for site in search_results.value:
+                        self.logger.debug(f"Checking site: '{site.display_name or site.name}' - URL: '{site.web_url}'")
+                        self.logger.debug(f"exclude_onedrive_sites: {self.filters.get('exclude_onedrive_sites')}")
+                        parsed_url = urllib.parse.urlparse(site.web_url)
+                        hostname = parsed_url.hostname
+                        contains_onedrive = (
+                            hostname is not None and
+                            re.fullmatch(r"[a-zA-Z0-9-]+-my\.sharepoint\.com", hostname)
+                        )
+                        if contains_onedrive:
+                            self.logger.debug(f"Hostname matches expected OneDrive pattern: {bool(contains_onedrive)}")
+
+                        if self.filters.get('exclude_onedrive_sites') and contains_onedrive:
+                            self.logger.debug(f"Skipping OneDrive site: '{site.display_name or site.name}'")
+                            continue
+
+                        self.logger.debug(f"Site found: '{site.display_name or site.name}' - ID: '{site.id}'")
+                        # Avoid duplicates
+                        if site.id not in existing_site_ids:
+                            sites.append(site)
+                            existing_site_ids.add(site.id)
+                            self.site_cache[site.id] = SiteMetadata(
+                                site_id=site.id,
+                                site_url=site.web_url,
+                                site_name=site.display_name or site.name,
+                                is_root=False,
+                                created_at=site.created_date_time,
+                                updated_at=site.last_modified_date_time
                             )
-                            if contains_onedrive:
-                                self.logger.debug(f"Hostname matches expected OneDrive pattern: {bool(contains_onedrive)}")
-
-                            if self.filters.get('exclude_onedrive_sites') and contains_onedrive:
-                                self.logger.debug(f"Skipping OneDrive site: '{site.display_name or site.name}'")
-                                continue
-
-                            self.logger.debug(f"Site found: '{site.display_name or site.name}' - ID: '{site.id}'")
-                            # Avoid duplicates
-                            if not any(existing_site.id == site.id for existing_site in sites):
-                                sites.append(site)
-                                self.site_cache[site.id] = SiteMetadata(
-                                    site_id=site.id,
-                                    site_url=site.web_url,
-                                    site_name=site.display_name or site.name,
-                                    is_root=False,
-                                    created_at=site.created_date_time,
-                                    updated_at=site.last_modified_date_time
-                                )
-                        self.logger.info(f"Found {len(search_results.value)} additional sites from search")
+                            total_found += 1
+                    # Pagination: follow nextLink using the same pattern as groups/users
+                    if hasattr(search_results, 'odata_next_link') and search_results.odata_next_link:
+                        self.logger.info(f"Following nextLink for more sites (found {total_found} so far)...")
+                        async with self.rate_limiter:
+                            search_results = await self._safe_api_call(
+                                self.client.sites.with_url(search_results.odata_next_link).get()
+                            )
                     else:
-                        self.logger.info("No additional sites found from search endpoint")
-                except Exception as search_error:
-                    self.logger.warning(f"⚠️ Site search failed: {search_error}. Continuing with available sites...")
+                        break
+                self.logger.info(f"Found {total_found} additional sites from search (pagination)")
+            except Exception as search_error:
+                self.logger.warning(f"⚠️ Site search failed: {search_error}. Continuing with available sites...")
 
             # Get subsites for each site (optional)
             subsite_count = 0
@@ -4518,8 +4535,10 @@ class SharePointConnector(BaseConnector):
                             continue
 
                         # === FILTERING LOGIC ===
-                        # 1. Must have "DocumentLibrary" in summary (skip GenericList, Events, etc.)
-                        if 'DocumentLibrary' not in summary:
+                        # 1. Must be a document library: summary contains 'DocumentLibrary',
+                        #    or summary is empty (treat as document library by default)
+                        is_document_library = 'DocumentLibrary' in summary or not summary
+                        if not is_document_library:
                             continue
                         # 2. Skip SharePoint Lists (URL contains /Lists/)
                         if '/Lists/' in web_url:

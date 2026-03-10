@@ -1,0 +1,51 @@
+# Route Coverage Checker Configuration
+# =====================================
+# Route files and mount paths are auto-discovered from app.ts and globbed
+# route files. Only overrides and edge cases need manual config here.
+
+# Mount path -> spec prefix overrides
+# When the Express mount path (after stripping /api/v1) differs from the
+# OpenAPI spec path prefix. Format: "/mount-segment": "/spec-segment"
+mount_to_spec_overrides:
+
+# Inline middleware routes not using the factory pattern.
+# These are mounted directly in app.ts (e.g., raw proxies).
+# Format: path: [METHODS]
+inline_routes: {}
+
+# Internal service-to-service routes that use scoped token auth and should not
+# appear in the public OpenAPI spec. Format: [METHOD, path]
+internal_routes:
+  - ["POST", "/mail/emails/sendEmail"]
+  - ["POST", "/slack/events"]
+  - ["GET", "/users/email/exists"]
+
+# Known discrepancies between code and spec that are acceptable.
+# These are pre-existing issues that should be cleaned up over time.
+# Format: [METHOD, path]
+known_missing:
+  - ["PATCH", "/users/{id}/email"]
+  # storageConfig in code is a single POST, spec splits into #s3/#azureBlob/#local
+  - ["POST", "/configurationManager/storageConfig"]
+  # Connector config routes not yet documented in spec
+  - ["GET", "/configurationManager/connectors/atlassian/config"]
+  - ["POST", "/configurationManager/connectors/atlassian/config"]
+  - ["GET", "/configurationManager/connectors/googleWorkspaceCredentials"]
+  - ["POST", "/configurationManager/connectors/googleWorkspaceCredentials"]
+  - ["GET", "/configurationManager/connectors/googleWorkspaceOauthConfig"]
+  - ["POST", "/configurationManager/connectors/googleWorkspaceOauthConfig"]
+  - ["GET", "/configurationManager/connectors/onedrive/config"]
+  - ["POST", "/configurationManager/connectors/onedrive/config"]
+  - ["GET", "/configurationManager/connectors/sharepoint/config"]
+  - ["POST", "/configurationManager/connectors/sharepoint/config"]
+  # Document/storage routes not yet documented in spec
+  - ["POST", "/document/placeholder"]
+  - ["POST", "/document/upload"]
+  - ["DELETE", "/document/{documentId}"]
+  - ["GET", "/document/{documentId}"]
+  - ["GET", "/document/{documentId}/buffer"]
+  - ["PUT", "/document/{documentId}/buffer"]
+  - ["POST", "/document/{documentId}/directUpload"]
+  - ["GET", "/document/{documentId}/isModified"]
+  - ["POST", "/document/{documentId}/rollBack"]
+  - ["POST", "/document/{documentId}/uploadNextVersion"]

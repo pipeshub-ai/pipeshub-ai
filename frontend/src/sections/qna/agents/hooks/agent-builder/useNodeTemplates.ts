@@ -2,7 +2,7 @@
 import { useMemo } from 'react';
 import brainIcon from '@iconify-icons/mdi/brain';
 import chatIcon from '@iconify-icons/mdi/chat';
-import databaseIcon from '@iconify-icons/mdi/database';
+import collectionIcon from '@iconify-icons/mdi/folder-multiple';
 import emailIcon from '@iconify-icons/mdi/email';
 import apiIcon from '@iconify-icons/mdi/api';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
@@ -55,7 +55,7 @@ export const useAgentBuilderNodeTemplates = (
       type: `connector-group-${connector._key}`,
       label: normalizeDisplayName(connector.name),
       description: `${connector.type} connector instance - Use in Tools or Knowledge`,
-      icon: databaseIcon, // Will be overridden by dynamic icon in sidebar
+      icon: collectionIcon, // Will be overridden by dynamic icon in sidebar
       defaultConfig: {
         id: connector._key,
         name: connector.name,
@@ -79,6 +79,7 @@ export const useAgentBuilderNodeTemplates = (
         icon: sparklesIcon,
         defaultConfig: {
           systemPrompt: 'You are a helpful assistant.',
+          instructions: '',
           startMessage: 'Hello! I am ready to assist you. How can I help you today?',
           routing: 'auto',
           allowMultipleLLMs: true,
@@ -101,12 +102,14 @@ export const useAgentBuilderNodeTemplates = (
       // LLM Nodes - Generated from available models
       ...availableModels.map((model: any) => {
         const modelName = model.modelName || 'Unknown Model';
-        const normalizedName = modelName
-          .trim();
+        const modelFriendlyName = model.modelFriendlyName;
+        // Use friendly name for display, fallback to modelName
+        const displayName = modelFriendlyName || modelName;
+        const normalizedName = displayName.trim();
         
         // Create unique type identifier using provider and modelName to avoid conflicts
-        const uniqueTypeId = `${model.provider}-${modelName}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
-        
+        const uniqueTypeId = `${model.provider}-${model.modelKey}-${model.modelName}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+
         return {
           type: `llm-${uniqueTypeId}`,
           label: normalizedName,
@@ -115,6 +118,7 @@ export const useAgentBuilderNodeTemplates = (
           defaultConfig: {
             modelKey: model.modelKey,
             modelName: model.modelName,
+            modelFriendlyName,
             provider: model.provider,
             modelType: model.modelType,
             temperature: 0.7,
@@ -198,12 +202,21 @@ export const useAgentBuilderNodeTemplates = (
       // Knowledge Base Group Node
       {
         type: 'kb-group',
-        label: 'Knowledge Bases',
-        description: `All knowledge bases (${availableKnowledgeBases.length} KBs)`,
-        icon: databaseIcon,
+        label: 'Collections',
+        description: `All collections (${availableKnowledgeBases.length} collections)`,
+        icon: collectionIcon,
         defaultConfig: {
-          knowledgeBases: availableKnowledgeBases.map((k) => ({ id: k.id, name: k.name })),
+          knowledgeBases: availableKnowledgeBases.map((k) => ({ 
+            id: k.id, 
+            name: k.name,
+            connectorId: k.connectorId, // KB connector instance ID from KB document
+          })),
           selectedKBs: availableKnowledgeBases.map((kb) => kb.id), // All KBs selected by default
+          // Store connectorId mapping for each KB
+          kbConnectorIds: availableKnowledgeBases.reduce((acc, kb) => {
+            acc[kb.id] = kb.connectorId; // Map KB ID to its connector instance ID
+            return acc;
+          }, {} as Record<string, string>),
         },
         inputs: ['query'],
         outputs: ['context'],
@@ -213,12 +226,13 @@ export const useAgentBuilderNodeTemplates = (
       // Individual Knowledge Base Nodes (for granular control)
       ...availableKnowledgeBases.map((kb) => ({
         type: `kb-${kb.id}`,
-        label: `KB: ${truncateText(kb.name, 20)}`,
-        description: truncateText(`Knowledge base for information retrieval`, 40),
-        icon: databaseIcon,
+        label: `${truncateText(kb.name, 20)}`,
+        description: truncateText(`Collection for information retrieval`, 40),
+        icon: collectionIcon,
         defaultConfig: {
-          kbId: kb.id,
+          kbId: kb.id, // KB ID (record group ID)
           kbName: kb.name,
+          connectorInstanceId: kb.connectorId, // KB connector instance ID from KB document (e.g., "knowledgeBase_orgId")
         },
         inputs: ['query'],
         outputs: ['context'],

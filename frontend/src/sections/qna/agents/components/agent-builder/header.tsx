@@ -18,6 +18,8 @@ import {
   useMediaQuery,
   ButtonGroup,
   Chip,
+  FormControlLabel,
+  Switch,
 } from '@mui/material';
 import { Icon } from '@iconify/react';
 import saveIcon from '@iconify-icons/mdi/content-save';
@@ -46,6 +48,10 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
   setTemplateDialogOpen,
   templatesLoading,
   agentId,
+  shareWithOrg,
+  setShareWithOrg,
+  hasToolsets,
+  isReadOnly = false,
 }) => {
   const theme = useTheme();
   const [shareAgentDialogOpen, setShareAgentDialogOpen] = useState(false);
@@ -187,7 +193,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
       {/* Mobile Status Indicator */}
       {isMobile && (
         <Chip
-          label={editingAgent ? 'Editing' : 'Creating'}
+          label={editingAgent ? (isReadOnly ? 'Viewing' : 'Editing') : 'Creating'}
           size="small"
           sx={{
             height: 28,
@@ -209,6 +215,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
         label="Agent Name"
         value={agentName || ''}
         onChange={(e) => setAgentName(e.target.value)}
+        disabled={isReadOnly}
         size="small"
         placeholder={isMobile ? 'Agent name...' : 'Enter agent name...'}
         sx={{
@@ -250,10 +257,55 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
 
       <Box sx={{ flexGrow: 1 }} />
 
+      {/* Share with Org Toggle */}
+      {!isMobile && (
+        <Tooltip
+          title={
+            shareWithOrg
+              ? 'Click to stop sharing this agent with the entire organization'
+              : 'Share this agent with all members of your organization (not allowed when toolsets are configured)'
+          }
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={shareWithOrg}
+                  onChange={(e) => {
+                    setShareWithOrg(e.target.checked);
+                  }}
+                  disabled={saving || isReadOnly}
+                  size="small"
+                  color="primary"
+                />
+              }
+              label={
+                <Typography
+                  variant="caption"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.75rem',
+                    color: hasToolsets
+                      ? theme.palette.text.disabled
+                      : shareWithOrg
+                      ? theme.palette.primary.main
+                      : theme.palette.text.secondary,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {isTablet ? 'Share Org' : 'Share with Org'}
+                </Typography>
+              }
+              sx={{ mr: 0, ml: 0 }}
+            />
+          </Box>
+        </Tooltip>
+      )}
+
       {/* Action Buttons - Responsive layout */}
       <Stack direction="row" spacing={1} alignItems="center">
         {/* Premium Template Button */}
-        {!isMobile && (
+        {/* {!isMobile && (
           <Tooltip title="Use Template">
             <Button
               variant="outlined"
@@ -295,10 +347,10 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
               {!isTablet && (templatesLoading ? 'Loading...' : 'Template')}
             </Button>
           </Tooltip>
-        )}
+        )} */}
 
         {/* Premium Share Button */}
-        {editingAgent && (
+        {/* {editingAgent && (
           <Tooltip title="Share Agent">
             <Button
               variant="outlined"
@@ -334,7 +386,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
               {!isMobile && 'Share'}
             </Button>
           </Tooltip>
-        )}
+        )} */}
 
         {/* Premium Action Buttons */}
         <Stack direction="row" spacing={1.5} alignItems="center">
@@ -372,58 +424,75 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
           )}
 
           {/* Premium Save/Update Button */}
-          <Button
-            variant="contained"
-            startIcon={
-              saving ? (
-                <CircularProgress size={14} color="inherit" />
-              ) : (
-                <Icon icon={saveIcon} width={16} height={16} />
-              )
-            }
-            onClick={onSave}
-            disabled={saving}
-            sx={{
-              height: 38,
-              px: isMobile ? 2 : 2.5,
-              borderRadius: 1.5,
-              fontSize: '0.8125rem',
-              fontWeight: 600,
-              textTransform: 'none',
-              backgroundColor: editingAgent ? theme.palette.warning.main : theme.palette.primary.main,
-              color: 'white',
-              boxShadow: isDark 
-                ? `0 2px 8px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.3)}`
-                : `0 2px 8px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.2)}`,
-              transition: 'all 0.2s ease',
-              '&:hover': {
-                backgroundColor: editingAgent ? theme.palette.warning.dark : theme.palette.primary.dark,
-                transform: 'translateY(-1px)',
+          {isReadOnly ? (
+            <Button
+              variant="outlined"
+              disabled
+              sx={{
+                height: 38,
+                px: isMobile ? 2 : 2.5,
+                borderRadius: 1.5,
+                fontSize: '0.8125rem',
+                fontWeight: 600,
+                textTransform: 'none',
+              }}
+            >
+              View Only
+            </Button>
+          ) : (
+            <Button
+              variant="contained"
+              startIcon={
+                saving ? (
+                  <CircularProgress size={14} color="inherit" />
+                ) : (
+                  <Icon icon={saveIcon} width={16} height={16} />
+                )
+              }
+              onClick={onSave}
+              disabled={saving}
+              sx={{
+                height: 38,
+                px: isMobile ? 2 : 2.5,
+                borderRadius: 1.5,
+                fontSize: '0.8125rem',
+                fontWeight: 600,
+                textTransform: 'none',
+                backgroundColor: editingAgent ? theme.palette.warning.main : theme.palette.primary.main,
+                color: 'white',
                 boxShadow: isDark 
-                  ? `0 4px 12px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.4)}`
-                  : `0 4px 12px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.3)}`,
-              },
-              '&:disabled': {
-                backgroundColor: theme.palette.action.disabledBackground,
-                color: theme.palette.action.disabled,
-                boxShadow: 'none',
-              },
-            }}
-          >
-            {isMobile
-              ? saving
-                ? '...'
-                : editingAgent
-                  ? 'Update'
-                  : 'Save'
-              : saving
-                ? editingAgent
-                  ? 'Updating...'
-                  : 'Saving...'
-                : editingAgent
-                  ? 'Update Agent'
-                  : 'Save Agent'}
-          </Button>
+                  ? `0 2px 8px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.3)}`
+                  : `0 2px 8px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.2)}`,
+                transition: 'all 0.2s ease',
+                '&:hover': {
+                  backgroundColor: editingAgent ? theme.palette.warning.dark : theme.palette.primary.dark,
+                  transform: 'translateY(-1px)',
+                  boxShadow: isDark 
+                    ? `0 4px 12px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.4)}`
+                    : `0 4px 12px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.3)}`,
+                },
+                '&:disabled': {
+                  backgroundColor: theme.palette.action.disabledBackground,
+                  color: theme.palette.action.disabled,
+                  boxShadow: 'none',
+                },
+              }}
+            >
+              {isMobile
+                ? saving
+                  ? '...'
+                  : editingAgent
+                    ? 'Update'
+                    : 'Save'
+                : saving
+                  ? editingAgent
+                    ? 'Updating...'
+                    : 'Saving...'
+                  : editingAgent
+                    ? 'Update Agent'
+                    : 'Save Agent'}
+            </Button>
+          )}
         </Stack>
       </Stack>
 

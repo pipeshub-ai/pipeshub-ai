@@ -103,7 +103,7 @@ export const getConnectorIconPath = (data: NodeData): string | null =>
  */
 export const getDefaultIconForNodeType = (nodeType: string): string => {
   if (isToolNode(nodeType)) return '/assets/icons/connectors/default.svg';
-  if (isKnowledgeAppNode(nodeType)) return '/assets/icons/connectors/default.svg';
+  if (isKnowledgeAppNode(nodeType)) return '/assets/icons/connectors/collections-gray.svg';
   if (isLLMNode(nodeType)) return '/assets/icons/models/default.svg';
   return '/assets/icons/default.svg';
 };

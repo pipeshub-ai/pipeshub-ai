@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express'
 import { Container } from 'inversify'
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware'
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware'
+import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
 import { OAuthProviderController } from '../controller/oauth.provider.controller'
 import { OIDCProviderController } from '../controller/oid.provider.controller'
 import { Logger } from '../../../libs/services/logger.service'
@@ -41,6 +42,9 @@ export function createOAuthProviderRouter(container: Container): Router {
     frontendUrl,
   )
 
+  // RFC 9700 / RFC 7662: Rate limit token, revocation, and introspection endpoints
+  const oauthTokenRateLimiter = createOAuthClientRateLimiter(logger, appConfig.maxOAuthClientRequestsPerMinute)
+
   /**
    * GET /authorize
    * Authorization endpoint - initiates OAuth flow
@@ -71,9 +75,11 @@ export function createOAuthProviderRouter(container: Container): Router {
    * POST /token
    * Token endpoint - exchanges auth code or credentials for tokens
    * No authentication required (client authenticates via credentials)
+   * Rate limited
    */
   router.post(
     '/token',
+    oauthTokenRateLimiter,
     ValidationMiddleware.validate(tokenSchema),
     (req: Request, res: Response, next: NextFunction) =>
       controller.token(req, res, next),
@@ -82,9 +88,11 @@ export function createOAuthProviderRouter(container: Container): Router {
   /**
    * POST /revoke
    * Revocation endpoint - revokes access or refresh tokens
+   * Rate limited
    */
   router.post(
     '/revoke',
+    oauthTokenRateLimiter,
     ValidationMiddleware.validate(revokeSchema),
     (req: Request, res: Response, next: NextFunction) =>
       controller.revoke(req, res, next),
@@ -93,9 +101,11 @@ export function createOAuthProviderRouter(container: Container): Router {
   /**
    * POST /introspect
    * Token introspection endpoint
+   * Rate limited
    */
   router.post(
     '/introspect',
+    oauthTokenRateLimiter,
     ValidationMiddleware.validate(introspectSchema),
     (req: Request, res: Response, next: NextFunction) =>
       controller.introspect(req, res, next),

@@ -93,6 +93,58 @@ const rsAvailable = process.env.REPLICA_SET_AVAILABLE === 'true';
 const AI_SERVICE_UNAVAILABLE_MESSAGE =
   'AI Service is currently unavailable. Please check your network connection or try again later.';
 
+const hydrateScopedRequestAsUser = async (
+  req: AuthenticatedServiceRequest | AuthenticatedUserRequest,
+  appConfig: AppConfig,
+): Promise<void> => {
+  const existingUser = (req as AuthenticatedUserRequest).user as
+    | Record<string, any>
+    | undefined;
+  if (existingUser?.userId && existingUser?.orgId) {
+    return;
+  }
+
+  const email = (req as AuthenticatedServiceRequest).tokenPayload?.email;
+  if (!email) {
+    throw new UnauthorizedError('Email not found in scoped token');
+  }
+
+  const user = await Users.findOne({
+    email,
+    isDeleted: false,
+  });
+  
+  
+  if (!user) {
+    throw new NotFoundError('User not found, create an account on the Pipeshub platform first.');
+  }
+
+  const authTokenService = new AuthTokenService(
+    appConfig.jwtSecret,
+    appConfig.scopedJwtSecret,
+  );
+
+  const jwtToken = authTokenService.generateToken({
+    userId: user._id,
+    orgId: user.orgId,
+    email: user.email,
+    fullName: user.fullName,
+    mobile: user.mobile,
+    userSlug: user.slug,
+  });
+
+  req.headers.authorization = `Bearer ${jwtToken}`;
+
+  (req as AuthenticatedUserRequest).user = {
+    userId: user._id,
+    orgId: user.orgId,
+    email: user.email,
+    fullName: user.fullName,
+    mobile: user.mobile,
+    userSlug: user.slug,
+  };
+};
+
   const handleBackendError = (error: any, operation: string): Error => {
     // Network/connection failure handling first
     if (
@@ -180,12 +232,7 @@ export const streamChat =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-      
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -251,6 +298,7 @@ export const streamChat =
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
       };
 
@@ -491,6 +539,21 @@ export const streamChat =
     }
   };
 
+export const streamChatInternal =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      await hydrateScopedRequestAsUser(req, appConfig);
+      await streamChat(appConfig)(req as AuthenticatedUserRequest, res);
+    } catch (error) {
+      next(error);
+    }
+  };
+
 export const createConversation =
   (appConfig: AppConfig) =>
   async (
@@ -620,6 +683,7 @@ export const createConversation =
           // New fields for multi-model support
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
+          modelFriendlyName: req.body.modelFriendlyName || null,
           chatMode: req.body.chatMode || 'quick',
         },
       };
@@ -1156,12 +1220,7 @@ export const addMessageStream =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-      
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -1278,6 +1337,7 @@ export const addMessageStream =
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
       };
 
@@ -1666,6 +1726,21 @@ export const addMessageStream =
       if (session) {
         session.endSession();
       }
+    }
+  };
+
+export const addMessageStreamInternal =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      await hydrateScopedRequestAsUser(req, appConfig);
+      await addMessageStream(appConfig)(req as AuthenticatedUserRequest, res);
+    } catch (error) {
+      next(error);
     }
   };
 
@@ -2513,6 +2588,7 @@ async function regenerateAnswersInternal(
       // New fields for multi-model support
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,
+      modelFriendlyName: req.body.modelFriendlyName || null,
       chatMode: req.body.chatMode || 'quick',
     };
 
@@ -4578,12 +4654,7 @@ export const unshareAgent =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -4652,9 +4723,12 @@ export const unshareAgent =
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
         tools: req.body.tools || [],
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: req.body.chatMode || 'auto',
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
+        timezone: req.body.timezone || null,
+        currentTime: req.body.currentTime || null,
       };
 
       logger.info('aiPayload', aiPayload);
@@ -4883,6 +4957,24 @@ export const unshareAgent =
     }
   };
 
+export const streamAgentConversationInternal =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      await hydrateScopedRequestAsUser(req, appConfig);
+      await streamAgentConversation(appConfig)(
+        req as AuthenticatedUserRequest,
+        res,
+      );
+    } catch (error) {
+      next(error);
+    }
+  };
+
 export const createAgentConversation =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -4943,7 +5035,10 @@ export const createAgentConversation =
           // New fields for multi-model support
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
-          chatMode: req.body.chatMode || 'quick',
+          modelFriendlyName: req.body.modelFriendlyName || null,
+          chatMode: req.body.chatMode || 'auto',
+          timezone: req.body.timezone || null,
+          currentTime: req.body.currentTime || null,
         },
       };
 
@@ -5229,7 +5324,9 @@ export const createAgentConversation =
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
-            chatMode: req.body.chatMode || 'quick',
+            chatMode: req.body.chatMode || 'auto',
+            timezone: req.body.timezone || null,
+            currentTime: req.body.currentTime || null,
           },
         };
         try {
@@ -5441,12 +5538,7 @@ export const addMessageStreamToAgentConversation =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-      
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -5565,7 +5657,10 @@ export const addMessageStreamToAgentConversation =
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
-        chatMode: req.body.chatMode || 'quick',
+        modelFriendlyName: req.body.modelFriendlyName || null,
+        chatMode: req.body.chatMode || 'auto',
+        timezone: req.body.timezone || null,
+        currentTime: req.body.currentTime || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -5936,6 +6031,24 @@ export const addMessageStreamToAgentConversation =
       if (session) {
         session.endSession();
       }
+    }
+  };
+
+export const addMessageStreamToAgentConversationInternal =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      await hydrateScopedRequestAsUser(req, appConfig);
+      await addMessageStreamToAgentConversation(appConfig)(
+        req as AuthenticatedUserRequest,
+        res,
+      );
+    } catch (error) {
+      next(error);
     }
   };
 

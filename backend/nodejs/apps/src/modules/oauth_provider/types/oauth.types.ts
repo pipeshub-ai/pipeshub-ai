@@ -1,15 +1,18 @@
 // Token Payload
 export interface OAuthTokenPayload {
-  sub: string
+  userId: string
+  orgId: string
   iss: string
-  aud: string
   exp: number
   iat: number
   jti: string
   scope: string
   client_id: string
-  org_id: string
-  token_type: 'access' | 'refresh'
+  tokenType: 'oauth'
+  isRefreshToken?: true
+  fullName?: string
+  accountType?: string
+  createdBy?: string
 }
 
 // Generated Tokens Response
@@ -82,15 +85,14 @@ export interface IntrospectResponse {
   exp?: number
   iat?: number
   nbf?: number
-  sub?: string
-  aud?: string
+  user_id?: string
   iss?: string
   jti?: string
 }
 
 // UserInfo Response (OIDC)
 export interface UserInfoResponse {
-  sub: string
+  user_id: string
   name?: string
   given_name?: string
   family_name?: string
@@ -104,7 +106,7 @@ export interface UserInfoResponse {
 export interface CreateOAuthAppRequest {
   name: string
   description?: string
-  redirectUris: string[]
+  redirectUris?: string[]
   allowedGrantTypes?: string[]
   allowedScopes: string[]
   homepageUrl?: string
@@ -191,6 +193,15 @@ export interface OAuthErrorResponse {
   error_description?: string
   error_uri?: string
   state?: string
+}
+
+// OAuth Protected Resource Metadata (RFC 9728)
+export interface OAuthProtectedResourceMetadata {
+  resource: string
+  authorization_servers: string[]
+  scopes_supported: string[]
+  bearer_methods_supported: string[]
+  resource_documentation?: string
 }
 
 // OIDC Discovery Response

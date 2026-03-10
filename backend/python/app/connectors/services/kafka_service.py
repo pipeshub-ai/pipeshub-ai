@@ -142,7 +142,6 @@ class KafkaService:
                     "recordName": event_data.get("recordName"),
                     "recordType": event_data.get("recordType"),
                     "version": event_data.get("recordVersion", 0),
-                    "signedUrlRoute": event_data.get("signedUrlRoute"),
                     "connectorName": event_data.get("connectorName"),
                     "origin": event_data.get("origin"),
                     "extension": event_data.get("extension"),

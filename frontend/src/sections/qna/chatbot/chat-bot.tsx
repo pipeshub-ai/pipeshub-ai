@@ -35,6 +35,7 @@ import { CONFIG } from 'src/config-global';
 import { ORIGIN } from 'src/sections/knowledgebase/constants/knowledge-search';
 import { useConnectors } from 'src/sections/accountdetails/connectors/context';
 import { KnowledgeBaseAPI } from 'src/sections/knowledgebase/services/api';
+import { getExtensionFromMimeType } from 'src/sections/knowledgebase/utils/utils';
 
 import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 import ChatInput from './components/chat-input';
@@ -580,6 +581,8 @@ const getEngagingStatusMessage = (event: string, data: any): string | null => {
     }
     case 'connected':
       return '🔌 Connected and processing...';
+    case 'metadata':
+      return '💾 Saving metadata...';
     case 'query_transformed':
     case 'results_ready':
       return null;
@@ -819,10 +822,10 @@ const ChatInterface = () => {
     }
 
     // Set model from conversation if available
-    if (conversationModelInfo.modelName) {
+    if (conversationModelInfo.modelName && conversationModelInfo.modelKey) {
       // Try to find matching model by modelName first
       let matchingModel = models.find(
-        (m) => m.modelName === conversationModelInfo.modelName
+        (m) => m.modelName === conversationModelInfo.modelName && m.modelKey === conversationModelInfo.modelKey
       );
 
       // If not found by name, try by modelKey
@@ -1044,6 +1047,11 @@ const ChatInterface = () => {
                 data.citations || []
               );
             }
+            break;
+
+          case 'metadata':
+            // Status message is already handled by getEngagingStatusMessage above
+            // This event indicates metadata is being saved, so we keep the status visible
             break;
 
           case 'complete': {
@@ -1316,6 +1324,9 @@ const ChatInterface = () => {
             query: trimmedInput,
             modelKey: currentModel?.modelKey,
             modelName: currentModel?.modelName,
+            modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
+              ? currentModel.modelFriendlyName.trim() 
+              : undefined,
             chatMode: chatMode || currentMode?.id,
             filters: filters || currentFiltersValue,
           },
@@ -1693,9 +1704,12 @@ const ChatInterface = () => {
       const { externalRecordId } = record;
       const fileName = record.recordName;
 
+      const extension = getExtensionFromMimeType(record.mimeType || '') || citationMeta?.extension || record.fileRecord?.extension || '';
       try {
         let params: any = {};
-        if (['pptx', 'ppt'].includes(citationMeta?.extension)) {
+        const isPowerPoint = ['pptx', 'ppt'].includes(extension);
+        const isGoogleSlides = record?.mimeType === 'application/vnd.google-apps.presentation';
+        if (isPowerPoint || isGoogleSlides) {
           params = {
             convertTo: 'application/pdf',
           };
@@ -1813,7 +1827,9 @@ const ChatInterface = () => {
     setIsTextFile(['txt'].includes(citationMeta?.extension));
     setIsImage(['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(citationMeta?.extension));
     setIsExcel(isExcelOrCSV);
-    setIsPdf(['pptx', 'ppt', 'pdf'].includes(citationMeta?.extension));
+
+    const extension = getExtensionFromMimeType(citationMeta?.mimeType || '') || citationMeta?.extension || '';
+    setIsPdf(['pptx', 'ppt', 'pdf'].includes(extension));
 
     setTimeout(() => {
       setIsViewerReady(true);
@@ -1966,6 +1982,9 @@ const ChatInterface = () => {
               filters: currentFiltersValue,
               modelKey: currentModel?.modelKey,
               modelName: currentModel?.modelName,
+              modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
+                ? currentModel.modelFriendlyName.trim() 
+                : undefined,
               chatMode: currentMode?.id || 'standard',
             }),
             signal: controller.signal,

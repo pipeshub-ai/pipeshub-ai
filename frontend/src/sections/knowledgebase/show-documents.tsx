@@ -543,7 +543,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     try {
       setIsDownloading(true);
       // Always use record._key - the backend handles both KB and connector records via unified stream API
-      await KnowledgeBaseAPI.handleDownloadDocument(record._key, recordName);
+      await KnowledgeBaseAPI.handleDownloadDocument(record.id, recordName);
     } catch (error) {
       console.error('Failed to download document:', error);
       setSnackbar({
@@ -572,7 +572,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     }));
 
     try {
-      const recordId = record._key;
+      const recordId = record.id;
 
       if (!record) {
         console.error('Record not found for ID:', recordId);
@@ -589,16 +589,22 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
 
       let loadedFileBuffer: ArrayBuffer | null = null;
 
+      // Check if conversion is needed (declare before try block for use after)
+      const isPowerPoint = extension && ['pptx', 'ppt'].includes(extension);
+      const isGoogleSlides = mimeType === 'application/vnd.google-apps.presentation';
+
       // Unified streaming - use stream/record API for both KB and connector records
       try {
         setViewerState((prev) => ({ ...prev, loadingStep: 'Downloading document...' }));
 
         let params: { convertTo?: string } = {};
 
-        // Handle PowerPoint files - request PDF conversion
-        if (record?.fileRecord && ['pptx', 'ppt'].includes(record?.fileRecord?.extension)) {
+        // Use the extension already declared above (line 498)
+        const sizeInBytes = record.fileRecord?.sizeInBytes || record.sizeInBytes || 0;
+        // Handle PowerPoint files and Google Slides - request PDF conversion
+        if (isPowerPoint || isGoogleSlides) {
           params = { convertTo: 'application/pdf' };
-          if (record.fileRecord.sizeInBytes / 1048576 > MAX_FILE_SIZE_MB) {
+          if ( sizeInBytes && sizeInBytes / 1048576 > MAX_FILE_SIZE_MB) {
             throw new Error('Large file size, redirecting to web page');
           }
         }

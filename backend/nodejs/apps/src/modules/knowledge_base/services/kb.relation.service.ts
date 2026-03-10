@@ -285,7 +285,7 @@ export class RecordRelationService {
         orgId: reindexPayload.orgId,
         connector: connectorNormalized,
         connectorId: reindexPayload.connectorId,
-        statusFilters: ['FAILED'],
+        statusFilters: reindexPayload.statusFilters || ['FAILED'],
       };
 
       const event: SyncEvent = {
@@ -356,6 +356,7 @@ export class RecordRelationService {
       origin: resyncConnectorEventPayload.origin,
       connector: connectorName,
       connectorId: resyncConnectorEventPayload.connectorId,
+      fullSync: resyncConnectorEventPayload.fullSync,
       createdAtTimestamp: Date.now().toString(),
       updatedAtTimestamp: Date.now().toString(),
       sourceCreatedAtTimestamp: Date.now().toString(),

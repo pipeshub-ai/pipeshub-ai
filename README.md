@@ -172,9 +172,9 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - **LangChain** - Framework for LLM pipelines
 - **LangGraph** – State graph for LLM workflows
 - **Qdrant** - Vector similarity search engine
-- **ArangoDB** - Multi-model graph/document database
+- **Neo4j**/**ArangoDB** - Graph database
 - **Kafka** - Distributed event streaming platform
-- **Redis** - In-memory caching and messaging
+- **Redis** - In-memory caching, messaging and key-value configuration store
 - **Celery** - Distributed task queue system
 - **Docling** - Document parsing and extraction toolkit
 - **PyMuPDF** - PDF processing library

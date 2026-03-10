@@ -1,4 +1,5 @@
 import base64
+import html
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -243,6 +244,9 @@ class OutlookConnector(BaseConnector):
         self._user_cache: Dict[str, str] = {}  # email -> source_user_id mapping
         self._user_cache_timestamp: Optional[int] = None
         self._user_cache_ttl: int = 3600  # 1 hour TTL in seconds
+
+        # Group cache for web URL construction
+        self._group_cache: Dict[str, Dict[str, str]] = {}  # group_id -> {'mail': ..., 'mailNickname': ...}
 
         self.email_delta_sync_point = SyncPoint(
             connector_id=self.connector_id,
@@ -570,6 +574,15 @@ class OutlookConnector(BaseConnector):
                         description=self._safe_get_attr(group, 'description'),
                     )
 
+                    # Cache group mail properties for URL construction
+                    group_mail = self._safe_get_attr(group, 'mail')
+                    group_mail_nickname = self._safe_get_attr(group, 'mail_nickname') or self._safe_get_attr(group, 'mailNickname')
+                    if group_id and group_mail and group_mail_nickname:
+                        self._group_cache[group_id] = {
+                            'mail': group_mail,
+                            'mailNickname': group_mail_nickname
+                        }
+
                     # Create RecordGroup for group mailbox
                     group_record_group = self._transform_group_to_record_group(group)
 
@@ -654,7 +667,7 @@ class OutlookConnector(BaseConnector):
             while True:
                 response = await self.external_users_client.groups_list_groups(
                     next_url=next_url,
-                    select=['id', 'displayName', 'description', 'mail', 'groupTypes', 'createdDateTime']
+                    select=['id', 'displayName', 'description', 'mail', 'mailNickname', 'groupTypes', 'createdDateTime']
                 )
 
                 if not response.success:
@@ -1076,6 +1089,14 @@ class OutlookConnector(BaseConnector):
             # Get thread ID from the thread object
             thread_id = self._safe_get_attr(thread, 'id')
 
+            # Group conversations don't have individual recipients - access is controlled by group membership
+            to_emails = []
+            cc_emails = []
+
+            # Construct web URL for group conversation
+            group_id = group.source_user_group_id
+            weburl = await self._construct_group_mail_weburl(group_id)
+
             # Create MailRecord for the post
             mail_record = MailRecord(
                 id=record_id,
@@ -1089,13 +1110,14 @@ class OutlookConnector(BaseConnector):
                 connector_id=self.connector_id,
                 source_created_at=self._parse_datetime(self._safe_get_attr(post, 'received_date_time')),
                 source_updated_at=self._parse_datetime(self._safe_get_attr(post, 'received_date_time')),
+                weburl=weburl,
                 mime_type=MimeTypes.HTML.value,
-                external_record_group_id=group.source_user_group_id,
+                external_record_group_id=group_id,
                 record_group_type=RecordGroupType.GROUP_MAILBOX,
                 subject=thread_topic or 'Group Conversation',
                 from_email=sender_email,
-                to_emails=[],
-                cc_emails=[],
+                to_emails=to_emails,
+                cc_emails=cc_emails,
                 bcc_emails=[],
                 thread_id=thread_id,
                 is_parent=False,
@@ -2047,6 +2069,7 @@ class OutlookConnector(BaseConnector):
             # Track unique emails
             processed_emails = set()
             inbox_owner_email_lower = inbox_owner_email.lower()
+            owner_found = False
 
             # Process individual recipients
             for recipient in all_recipients:
@@ -2055,8 +2078,10 @@ class OutlookConnector(BaseConnector):
                     if email_address and email_address not in processed_emails:
                         processed_emails.add(email_address)
 
+                        # Inbox owner always gets OWNER permission, others get READ
                         if email_address.lower() == inbox_owner_email_lower:
                             permission_type = PermissionType.OWNER
+                            owner_found = True
                         else:
                             permission_type = PermissionType.READ
 
@@ -2070,6 +2095,15 @@ class OutlookConnector(BaseConnector):
                 except Exception as e:
                     self.logger.warning(f"Failed to extract email from recipient {recipient}: {e}")
                     continue
+
+            # If inbox owner not found in recipients, add OWNER permission
+            if not owner_found and inbox_owner_email:
+                owner_permission = Permission(
+                    email=inbox_owner_email,
+                    type=PermissionType.OWNER,
+                    entity_type=EntityType.USER,
+                )
+                permissions.append(owner_permission)
 
             return permissions
 
@@ -2246,6 +2280,41 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
 
+    def _augment_email_html_with_metadata(self, email_body: str, record: MailRecord) -> str:
+        """Augment email HTML with searchable recipient metadata.
+
+        Prepends a hidden div containing email metadata (from, to, cc, bcc, subject)
+        to the HTML content. This makes recipient information searchable while keeping
+        the original email HTML intact and visually unaffected.
+
+        Args:
+            email_body: Original HTML content from email body
+            record: MailRecord containing metadata (from, to, cc, bcc, subject)
+
+        Returns:
+            HTML string with prepended metadata div
+        """
+        metadata_parts = {
+            "From": record.from_email,
+            "To": ", ".join(record.to_emails) if record.to_emails else None,
+            "CC": ", ".join(record.cc_emails) if record.cc_emails else None,
+            "BCC": ", ".join(record.bcc_emails) if record.bcc_emails else None,
+            "Subject": record.subject,
+        }
+
+        metadata_lines = [
+            f"{key}: {html.escape(value)}"
+            for key, value in metadata_parts.items()
+            if value
+        ]
+
+        if metadata_lines:
+            metadata_content = "<br>\n".join(metadata_lines)
+            metadata_div = f'<div style="display:none;" class="email-metadata">{metadata_content}</div>\n'
+            return metadata_div + email_body
+
+        return email_body
+
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream record content (email or attachment)."""
         try:
@@ -2280,6 +2349,9 @@ class OutlookConnector(BaseConnector):
                 body_obj = self._safe_get_attr(post, 'body')
                 post_body = self._safe_get_attr(body_obj, 'content', '') if body_obj else ''
 
+                # Augment with metadata for indexing
+                if isinstance(record, MailRecord):
+                    post_body = self._augment_email_html_with_metadata(post_body, record)
                 async def generate_post() -> AsyncGenerator[bytes, None]:
                     yield post_body.encode('utf-8')
 
@@ -2334,7 +2406,9 @@ class OutlookConnector(BaseConnector):
                 message = await self._get_message_by_id_external(user_id, record.external_record_id)
                 body_obj = self._safe_get_attr(message, 'body')
                 email_body = self._safe_get_attr(body_obj, 'content', '') if body_obj else ''
-
+                # Augment with recipient metadata for indexing
+                if isinstance(record, MailRecord):
+                    email_body = self._augment_email_html_with_metadata(email_body, record)
                 async def generate_email() -> AsyncGenerator[bytes, None]:
                     yield email_body.encode('utf-8')
 
@@ -3086,6 +3160,62 @@ class OutlookConnector(BaseConnector):
         except Exception:
             return ""
 
+    async def _construct_group_mail_weburl(self, group_id: str) -> Optional[str]:
+        """
+        Construct web URL for group mail from cached group data or by fetching from API.
+        Format: https://outlook.office365.com/groups/{domain}/{mailNickname}/mail
+
+        Args:
+            group_id: Group ID to look up
+
+        Returns:
+            Constructed web URL or None if data not available
+        """
+        group_data = self._group_cache.get(group_id)
+
+        # If not cached, fetch from API
+        if not group_data:
+            if not self.external_users_client:
+                return None
+
+            try:
+                response = await self.external_users_client.groups_group_get_group(
+                    group_id=group_id,
+                    select=['mail', 'mailNickname']
+                )
+
+                if not response.success or not response.data:
+                    return None
+
+                # Cache the result for future use
+                group_data = {
+                    'mail': self._safe_get_attr(response.data, 'mail'),
+                    'mailNickname': self._safe_get_attr(response.data, 'mail_nickname') or self._safe_get_attr(response.data, 'mailNickname')
+                }
+
+                if group_data['mail'] and group_data['mailNickname']:
+                    self._group_cache[group_id] = group_data
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch group data for {group_id}: {e}")
+                return None
+
+        mail = group_data.get('mail')
+        mail_nickname = group_data.get('mailNickname')
+
+        if not mail or not mail_nickname:
+            return None
+
+        try:
+            # Extract domain from email address
+            if '@' not in mail:
+                return None
+            domain = mail.split('@')[1]
+
+            # Construct URL
+            return f"https://outlook.office365.com/groups/{domain}/{mail_nickname}/mail"
+        except Exception as e:
+            self.logger.warning(f"Failed to construct group mail weburl for group {group_id}: {e}")
+            return None
 
     @classmethod
     async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> 'OutlookConnector':
