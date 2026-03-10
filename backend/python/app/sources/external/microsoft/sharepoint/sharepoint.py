@@ -1,12 +1,29 @@
+import base64
+import io
 import json
 import logging
+import os
+import re
+import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
+from urllib.parse import quote
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
 )
+from kiota_abstractions.method import Method  # type: ignore
+from kiota_abstractions.request_information import RequestInformation  # type: ignore
+from msgraph.generated.models.drive_item import DriveItem  # type: ignore
+from msgraph.generated.models.drive_item_collection_response import (  # type: ignore
+    DriveItemCollectionResponse,
+)
+from msgraph.generated.models.notebook import Notebook  # type: ignore
+from msgraph.generated.models.onenote_page import OnenotePage  # type: ignore
+from msgraph.generated.models.onenote_section import OnenoteSection  # type: ignore
 from msgraph.generated.models.entity_type import EntityType  # type: ignore
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError  # type: ignore
+from msgraph.generated.models.site_page import SitePage  # type: ignore
 from msgraph.generated.models.search_query import SearchQuery  # type: ignore
 from msgraph.generated.models.search_request import SearchRequest  # type: ignore
 from msgraph.generated.models.sort_property import SortProperty  # type: ignore
@@ -610,12 +627,6 @@ class SharePointDataSource:
             SharePointResponse with data={"items": List[Dict], "count": int}
         """
         try:
-            from kiota_abstractions.method import Method  # type: ignore
-            from kiota_abstractions.request_information import RequestInformation  # type: ignore
-            from msgraph.generated.models.drive_item_collection_response import (  # type: ignore
-                DriveItemCollectionResponse,
-            )
-
             capped_top = min(top, 50)
 
             # Build the URL.
@@ -921,10 +932,6 @@ class SharePointDataSource:
             SharePointResponse with folder metadata
         """
         try:
-            from kiota_abstractions.method import Method  # type: ignore
-            from kiota_abstractions.request_information import RequestInformation  # type: ignore
-            from msgraph.generated.models.drive_item import DriveItem  # type: ignore
-
             if parent_folder_id:
                 url = (
                     f"https://graph.microsoft.com/v1.0"
@@ -988,12 +995,6 @@ class SharePointDataSource:
             SharePointResponse with document metadata (id, name, webUrl, etc.)
         """
         try:
-            import io
-            import zipfile
-            from kiota_abstractions.method import Method  # type: ignore
-            from kiota_abstractions.request_information import RequestInformation  # type: ignore
-            from msgraph.generated.models.drive_item import DriveItem  # type: ignore
-
             safe_name = name.strip()
             if safe_name.lower().endswith(".docx"):
                 safe_name = safe_name[:-5]
@@ -1116,13 +1117,6 @@ class SharePointDataSource:
             SharePointResponse with notebook metadata and optionally section/page metadata
         """
         try:
-            from msgraph.generated.models.notebook import Notebook  # type: ignore
-            from msgraph.generated.models.onenote_section import OnenoteSection  # type: ignore
-            from msgraph.generated.models.o_data_errors.o_data_error import ODataError  # type: ignore
-            from kiota_abstractions.method import Method  # type: ignore
-            from kiota_abstractions.request_information import RequestInformation  # type: ignore
-            from msgraph.generated.models.onenote_page import OnenotePage  # type: ignore
-
             # ── Step 1: Create notebook ──────────────────────────────────────
             # Use the fluent SDK API so Kiota automatically handles error mapping,
             # serialization and the compound site ID format correctly.
@@ -1169,8 +1163,6 @@ class SharePointDataSource:
             # which the fluent API does not support natively — use raw RequestInformation.
             # Compound site_id must be URL-encoded so path parsing does not produce error 20143.
             if section_id and (page_title or page_content_html):
-                from urllib.parse import quote
-
                 title = page_title or name
                 body_html = page_content_html or ""
                 html_content = (
@@ -1191,13 +1183,12 @@ class SharePointDataSource:
                 page_ri.content = html_content.encode("utf-8")
                 page_ri.headers.try_add("Content-Type", "text/html")
 
-                from msgraph.generated.models.o_data_errors.o_data_error import ODataError as _ODE  # type: ignore
                 page_response = await self.client.request_adapter.send_async(
                     page_ri,
                     OnenotePage,
                     {
-                        "4XX": _ODE,
-                        "5XX": _ODE,
+                        "4XX": ODataError,
+                        "5XX": ODataError,
                     },
                 )
                 page_id = getattr(page_response, "id", None) if page_response else None
@@ -1246,10 +1237,6 @@ class SharePointDataSource:
             SharePointResponse with the item metadata dict
         """
         try:
-            from kiota_abstractions.method import Method  # type: ignore
-            from kiota_abstractions.request_information import RequestInformation  # type: ignore
-            from msgraph.generated.models.drive_item import DriveItem  # type: ignore
-
             url = (
                 f"https://graph.microsoft.com/v1.0"
                 f"/drives/{drive_id}/items/{item_id}"
@@ -1314,16 +1301,12 @@ class SharePointDataSource:
             SharePointResponse with data={"content": str, "encoding": str, ...}
         """
         try:
-            from kiota_abstractions.method import Method  # type: ignore
-            from kiota_abstractions.request_information import RequestInformation  # type: ignore
-
             # Decide whether to request the HTML-converted version
             use_html_conversion = False
             if mime_type and mime_type in self._OFFICE_CONVERTIBLE_MIMES:
                 use_html_conversion = True
             elif file_name:
-                import os as _os
-                ext = _os.path.splitext(file_name)[1].lower()
+                ext = os.path.splitext(file_name)[1].lower()
                 if ext in self._OFFICE_CONVERTIBLE_EXTS:
                     use_html_conversion = True
 
@@ -1416,7 +1399,6 @@ class SharePointDataSource:
                     continue
 
             # Binary fallback — return base64
-            import base64
             b64 = base64.b64encode(chunk).decode("ascii")
             return SharePointResponse(
                 success=True,
@@ -1540,12 +1522,6 @@ class SharePointDataSource:
             or success=False with error message.
         """
         try:
-            from urllib.parse import quote
-
-            from kiota_abstractions.method import Method  # type: ignore
-            from kiota_abstractions.request_information import RequestInformation  # type: ignore
-            from msgraph.generated.models.site_page import SitePage  # type: ignore
-
             encoded_site_id = quote(site_id, safe="")
             encoded_page_id = quote(page_id, safe="")
             ri = RequestInformation()
@@ -1564,6 +1540,193 @@ class SharePointDataSource:
             return SharePointResponse(success=True, data=response)
         except Exception as e:
             logger.error(f"❌ get_site_page_with_canvas failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    def _site_page_post_response_to_dict(self, response: Any) -> Dict[str, Any]:
+        """Best-effort dict from Kiota SitePage POST response for agents."""
+        if response is None:
+            return {}
+        if isinstance(response, dict):
+            return dict(response)
+        out: Dict[str, Any] = {}
+        for attr in ("id", "title", "name"):
+            val = getattr(response, attr, None)
+            if val is not None:
+                out[attr] = val
+        web_url = getattr(response, "web_url", None) or getattr(response, "webUrl", None)
+        if web_url is not None:
+            out["webUrl"] = web_url
+            out["web_url"] = web_url
+        additional = getattr(response, "additional_data", None) or {}
+        if isinstance(additional, dict):
+            for k, v in additional.items():
+                if k not in out:
+                    out[k] = v
+        return out
+
+    async def _publish_site_page(
+        self, site_id: str, page_id: str
+    ) -> tuple[bool, Optional[str]]:
+        """POST .../microsoft.graph.sitePage/publish. Returns (True, None) or (False, error_msg)."""
+        try:
+            encoded_site_id = quote(site_id, safe="")
+            pub_ri = RequestInformation()
+            pub_ri.http_method = Method.POST
+            pub_ri.url_template = (
+                f"https://graph.microsoft.com/v1.0/sites/{encoded_site_id}"
+                f"/pages/{page_id}/microsoft.graph.sitePage/publish"
+            )
+            pub_ri.path_parameters = {}
+            pub_ri.content = b"{}"
+            pub_ri.headers.try_add("Content-Type", "application/json")
+            await self.client.request_adapter.send_no_response_content_async(pub_ri, {})
+            return True, None
+        except Exception as e:
+            return False, str(e)
+
+    async def create_site_page(
+        self,
+        site_id: str,
+        title: str,
+        content_html: str,
+        publish: bool = False,
+    ) -> SharePointResponse:
+        """Create a modern SitePage with one text web part; optional publish.
+
+        POST /sites/{site-id}/pages then POST .../microsoft.graph.sitePage/publish
+        when publish=True. Uses URL-encoded site_id for publish (compound IDs).
+        """
+        try:
+            slug = re.sub(r"[^a-z0-9-]", "-", title.lower()).strip("-")
+            slug = re.sub(r"-+", "-", slug) or "page"
+
+            body = SitePage()
+            body.additional_data = {
+                "@odata.type": "#microsoft.graph.sitePage",
+                "title": title,
+                "name": f"{slug}.aspx",
+                "pageLayout": "article",
+                "canvasLayout": {
+                    "horizontalSections": [
+                        {
+                            "layout": "oneColumn",
+                            "id": "1",
+                            "columns": [
+                                {
+                                    "id": "1",
+                                    "width": 12,
+                                    "webparts": [
+                                        {
+                                            "@odata.type": "#microsoft.graph.textWebPart",
+                                            "innerHtml": content_html,
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                },
+            }
+
+            logger.info(f"📍 create_site_page: '{title}' in site {site_id}")
+            response = await self.client.sites.by_site_id(site_id).pages.post(body)
+            page_data = self._site_page_post_response_to_dict(response)
+            page_id = page_data.get("id")
+
+            published = False
+            publish_error: Optional[str] = None
+            if publish and page_id:
+                published, publish_error = await self._publish_site_page(site_id, page_id)
+                if published:
+                    logger.info(f"✅ create_site_page published (id={page_id})")
+                else:
+                    logger.warning(f"⚠️ create_site_page publish failed: {publish_error}")
+
+            page_data["published"] = published
+            if publish_error:
+                page_data["publish_error"] = publish_error
+            return SharePointResponse(success=True, data=page_data, message=f"Page '{title}' created")
+        except Exception as e:
+            logger.error(f"❌ create_site_page failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    async def update_site_page(
+        self,
+        site_id: str,
+        page_id: str,
+        title: Optional[str] = None,
+        content_html: Optional[str] = None,
+        publish: bool = False,
+    ) -> SharePointResponse:
+        """PATCH page as microsoft.graph.sitePage; optional publish.
+
+        PATCH /sites/{site-id}/pages/{page-id}/microsoft.graph.sitePage
+        Typed SDK path missing for cast; uses RequestInformation + encoded site_id.
+        """
+        if title is None and content_html is None:
+            return SharePointResponse(
+                success=False,
+                error="At least one of title or content_html must be provided",
+            )
+        try:
+            patch_data: Dict[str, Any] = {"@odata.type": "#microsoft.graph.sitePage"}
+            if title is not None:
+                patch_data["title"] = title
+            if content_html is not None:
+                patch_data["canvasLayout"] = {
+                    "horizontalSections": [
+                        {
+                            "layout": "oneColumn",
+                            "id": "1",
+                            "columns": [
+                                {
+                                    "id": "1",
+                                    "width": 12,
+                                    "webparts": [
+                                        {
+                                            "@odata.type": "#microsoft.graph.textWebPart",
+                                            "innerHtml": content_html,
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                }
+
+            encoded_site_id = quote(site_id, safe="")
+            logger.info(f"📍 update_site_page: {page_id} in site {site_id}")
+            patch_ri = RequestInformation()
+            patch_ri.http_method = Method.PATCH
+            patch_ri.url_template = (
+                f"https://graph.microsoft.com/v1.0/sites/{encoded_site_id}"
+                f"/pages/{page_id}/microsoft.graph.sitePage"
+            )
+            patch_ri.path_parameters = {}
+            patch_ri.content = json.dumps(patch_data).encode("utf-8")
+            patch_ri.headers.try_add("Content-Type", "application/json")
+            await self.client.request_adapter.send_no_response_content_async(patch_ri, {})
+
+            published = False
+            publish_error: Optional[str] = None
+            if publish:
+                published, publish_error = await self._publish_site_page(site_id, page_id)
+                if published:
+                    logger.info(f"✅ update_site_page published (id={page_id})")
+                else:
+                    logger.warning(f"⚠️ update_site_page publish failed: {publish_error}")
+
+            data: Dict[str, Any] = {
+                "page_id": page_id,
+                "published": published,
+            }
+            if title is not None:
+                data["title"] = title
+            if publish_error:
+                data["publish_error"] = publish_error
+            return SharePointResponse(success=True, data=data, message="Page updated")
+        except Exception as e:
+            logger.error(f"❌ update_site_page failed: {e}")
             return SharePointResponse(success=False, error=str(e))
 
     # ========== SITES OPERATIONS (17 methods) ==========
