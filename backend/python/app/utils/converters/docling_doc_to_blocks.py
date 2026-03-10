@@ -236,7 +236,7 @@ class DoclingDocToBlocksConverter():
                     index=len(blocks),
                     type=BlockType.IMAGE,
                     format=DataFormat.BASE64,
-                    data=item.get("image",None ),
+                    data=item.get("image"),
                     comments=[],
                     source_creation_date=None,
                     source_update_date=None,

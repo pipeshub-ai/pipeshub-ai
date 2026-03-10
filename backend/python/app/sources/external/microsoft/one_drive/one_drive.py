@@ -2,7 +2,6 @@
 
 import json
 import logging
-from dataclasses import asdict
 from typing import Any, Dict, List, Mapping, Optional
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore

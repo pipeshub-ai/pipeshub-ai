@@ -22,7 +22,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -276,7 +276,7 @@ def _collect_tool_results(state: DeepAgentState, log: logging.Logger) -> List[Di
     3. Only include raw results when analyses are missing or very short
     """
     completed = state.get("completed_tasks") or []
-    analyses = state.get("sub_agent_analyses") or []
+    state.get("sub_agent_analyses") or []
 
     # Build set of domains that already have comprehensive data in analyses.
     covered_domains: set = set()

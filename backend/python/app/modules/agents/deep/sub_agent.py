@@ -22,7 +22,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -215,7 +215,7 @@ async def _execute_single_sub_agent(
     otherwise uses the standard ReAct agent execution.
     """
     task_id = task.get("task_id", "unknown")
-    task_desc = task.get("description", "")
+    task.get("description", "")
     start_time = time.perf_counter()
 
     log.info("Starting sub-agent: %s", task_id)
@@ -1025,7 +1025,7 @@ def _detect_status(result_content: Any) -> str:
 class _ToolCallBudget:
     """Shared counter that limits tool calls within a single sub-agent."""
 
-    def __init__(self, max_calls: int):
+    def __init__(self, max_calls: int) -> None:
         self.max_calls = max_calls
         self.count = 0
 
@@ -1214,7 +1214,7 @@ def _build_sub_agent_tool_guidance(
     This is app-agnostic — it reads tool names and descriptions dynamically
     rather than hardcoding per-domain guidance. Works for any app/service.
     """
-    domains = {d.lower() for d in task.get("domains", [])}
+    {d.lower() for d in task.get("domains", [])}
     tool_names = task.get("tools", [])
 
     parts = []
@@ -1316,7 +1316,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
         config: RunnableConfig,
         log: logging.Logger,
         task_id: str,
-    ):
+    ) -> None:
         super().__init__()
         self.writer = writer
         self.config = config
@@ -1334,7 +1334,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
         finally:
             var_child_runnable_config.reset(token)
 
-    async def on_tool_start(self, serialized, input_str, *, run_id, **kwargs):
+    async def on_tool_start(self, serialized, input_str, *, run_id, **kwargs) -> None:
         tool_name = serialized.get("name", kwargs.get("name", "unknown"))
         self._tool_names[str(run_id)] = tool_name
         display = tool_name.replace("_", " ").title()
@@ -1343,7 +1343,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
             "data": {"status": "executing", "message": f"Executing {display}..."},
         })
 
-    async def on_tool_end(self, output, *, run_id, **kwargs):
+    async def on_tool_end(self, output, *, run_id, **kwargs) -> None:
         tool_name = self._tool_names.pop(str(run_id), "unknown")
         status = _detect_status(output)
         # Collect tool results for partial recovery on timeout
@@ -1357,7 +1357,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
             "data": {"tool": tool_name, "status": status},
         })
 
-    async def on_tool_error(self, error, *, run_id, **kwargs):
+    async def on_tool_error(self, error, *, run_id, **kwargs) -> None:
         tool_name = self._tool_names.pop(str(run_id), "unknown")
         self._write({
             "event": "status",

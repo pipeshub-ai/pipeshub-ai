@@ -76,8 +76,8 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
     """
     Factory function to create the tool with runtime dependencies injected.
     """
-    @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
-    async def fetch_full_record_tool(record_ids: List[str], reason: str = "Fetching full record content for comprehensive answer") -> Dict[str, Any]:
+    @tool("fetch_full_records", args_schema=FetchFullRecordArgs)
+    async def fetch_full_records_tool(record_ids: List[str], reason: str = "Fetching full record content for comprehensive answer") -> Dict[str, Any]:
         """
         Retrieve the complete content of multiple records (all blocks/groups) for better answering.
         Pass all record IDs at once instead of making multiple separate calls.
@@ -97,7 +97,7 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
             # Return error as dict
             return {"ok": False, "error": f"Failed to fetch records: {str(e)}"}
 
-    return fetch_full_record_tool
+    return fetch_full_records_tool
 
 
 def create_record_for_fetch_block_group(record: Dict[str, Any],block_group: Dict[str, Any],blocks: List[Dict[str, Any]]) -> Dict[str, Any]:

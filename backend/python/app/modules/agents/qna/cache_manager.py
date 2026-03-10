@@ -45,7 +45,7 @@ SIMILARITY_THRESHOLD = 0.9  # 90% similar queries can share cache
 class CacheEntry:
     """A single cache entry with metadata."""
 
-    def __init__(self, key: str, value: Any, ttl: int) -> None:  # noqa: ANN401
+    def __init__(self, key: str, value: Any, ttl: int) -> None:
         self.key = key
         self.value = value
         self.created_at = time.time()
@@ -57,7 +57,7 @@ class CacheEntry:
         """Check if entry is expired."""
         return (time.time() - self.created_at) > self.ttl
 
-    def access(self) -> Any:  # noqa: ANN401
+    def access(self) -> Any:
         """Access the entry (updates stats)."""
         self.hits += 1
         self.last_accessed = time.time()
@@ -88,7 +88,7 @@ class LRUCacheWithTTL:
         self.total_misses = 0
         self.logger = logging.getLogger(__name__)
 
-    def get(self, key: str) -> Optional[Any]:  # noqa: ANN401
+    def get(self, key: str) -> Optional[Any]:
         """Get value from cache."""
         if key not in self.cache:
             self.total_misses += 1
@@ -108,7 +108,7 @@ class LRUCacheWithTTL:
         self.total_hits += 1
         return entry.access()
 
-    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:  # noqa: ANN401
+    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
         """Set value in cache."""
         if ttl is None:
             ttl = self.default_ttl
@@ -228,7 +228,7 @@ class CacheManager:
         combined = f"{tool_name}|{args_str}"
         return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
-    def get_tool_result(self, tool_name: str, args: Dict) -> Optional[Any]:  # noqa: ANN401
+    def get_tool_result(self, tool_name: str, args: Dict) -> Optional[Any]:
         """Get cached tool result if available."""
         # Only cache idempotent tools
         idempotent_tools = [
@@ -248,7 +248,7 @@ class CacheManager:
 
         return None
 
-    def set_tool_result(self, tool_name: str, args: Dict, result: Any) -> None:  # noqa: ANN401
+    def set_tool_result(self, tool_name: str, args: Dict, result: Any) -> None:
         """Cache tool result."""
         # Only cache successful results
         if isinstance(result, tuple) and len(result) == _TUPLE_SUCCESS_RESULT_LENGTH:
