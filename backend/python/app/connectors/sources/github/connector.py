@@ -572,7 +572,7 @@ class GithubConnector(BaseConnector):
             parent_record_type = None
             issue_type = "issue"
             parent_issue_ul: Dict = getattr(issue, "raw_data", {})
-            parent_issue_url = parent_issue_ul.get("parent_issue_url", None)
+            parent_issue_url = parent_issue_ul.get("parent_issue_url")
             if parent_issue_url:
                 parent_external_id = parent_issue_url
                 parent_record_type = RecordType.TICKET

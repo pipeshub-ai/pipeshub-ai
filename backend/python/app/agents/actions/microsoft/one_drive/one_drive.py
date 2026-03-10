@@ -2,9 +2,6 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from msgraph.generated.drives.item.items.item.checkin.checkin_post_request_body import (  # type: ignore
-    CheckinPostRequestBody,
-)
 from msgraph.generated.models.drive_item import DriveItem  # type: ignore
 from msgraph.generated.models.folder import Folder  # type: ignore
 from msgraph.generated.models.item_reference import ItemReference  # type: ignore
@@ -19,11 +16,11 @@ from app.connectors.core.registry.auth_builder import (
     OAuthScopeConfig,
 )
 from app.connectors.core.registry.connector_builder import CommonFields
-from app.connectors.core.registry.types import AuthField
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.connectors.core.registry.types import AuthField
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSource
 
@@ -340,7 +337,7 @@ class OneDrive:
             None
         """
         self.client = OneDriveDataSource(client)
-    
+
 
     def _serialize_response(response_obj: Any) -> Any:
         """Recursively convert a Graph SDK response object to a JSON-serialisable dict.
@@ -368,10 +365,11 @@ class OneDrive:
         # placeholder paths like {{…events[0].id}} resolve correctly.
         if hasattr(response_obj, "get_field_deserializers"):
             try:
+                import json as _json
+
                 from kiota_serialization_json.json_serialization_writer import (  # type: ignore
                     JsonSerializationWriter,
                 )
-                import json as _json
 
                 writer = JsonSerializationWriter()
                 writer.write_object_value(None, response_obj)

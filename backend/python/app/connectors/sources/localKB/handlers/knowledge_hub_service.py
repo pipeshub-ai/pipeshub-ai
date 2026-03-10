@@ -797,9 +797,9 @@ class KnowledgeHubService:
         # Extract ID - prefer 'id' field, fallback to '_key' or parse from '_id'
         doc_id = doc.get('id')
         if not isinstance(doc_id, str) or not doc_id.strip():
-            if '_key' in doc and doc['_key']:
+            if doc.get('_key'):
                 doc_id = doc['_key']
-            elif '_id' in doc and doc['_id']:
+            elif doc.get('_id'):
                 _id_value = doc['_id']
                 if isinstance(_id_value, str) and '/' in _id_value:
                     doc_id = _id_value.split('/', 1)[1]

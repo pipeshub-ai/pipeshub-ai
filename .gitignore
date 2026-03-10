@@ -184,4 +184,5 @@ backend/python/cleanup.ps1
 pyrightconfig.json
 .claude/settings.local.json
 CLAUDE.md
+CLAUDE.md
 nul

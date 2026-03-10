@@ -1076,22 +1076,22 @@ class ToolsetTokenRefreshService:
         """
         cancelled_count = 0
         instance_prefix = f"/services/toolsets/{instance_id}/"
-        
+
         # Find all tasks that match this instance prefix
         tasks_to_cancel = [
-            config_path for config_path in self._refresh_tasks.keys()
+            config_path for config_path in self._refresh_tasks
             if config_path.startswith(instance_prefix)
         ]
-        
+
         for config_path in tasks_to_cancel:
             self._cancel_existing_refresh_task(config_path)
             cancelled_count += 1
-        
+
         if cancelled_count > 0:
             self.logger.info(
                 f"⏹️ Cancelled {cancelled_count} refresh task(s) for instance {instance_id}"
             )
-        
+
         return cancelled_count
 
     def _create_refresh_task(
