@@ -42,7 +42,7 @@ class ResponseTransformer:
             .clean()
     """
 
-    def __init__(self, data: Any) -> None:  # noqa: ANN401
+    def __init__(self, data: Any) -> None:
         """Initialize with data to transform.
 
         Args:
@@ -84,7 +84,7 @@ class ResponseTransformer:
         self._keep_fields.extend(field_paths)
         return self
 
-    def clean(self) -> Any:  # noqa: ANN401
+    def clean(self) -> Any:
         """Transform the data and return transformed result.
 
         Returns:
@@ -95,7 +95,7 @@ class ResponseTransformer:
 
         return self._clean_recursive(self.data, "")
 
-    def _clean_recursive(self, data: Any, base_path: str) -> Any:  # noqa: ANN401
+    def _clean_recursive(self, data: Any, base_path: str) -> Any:
         """Recursively transform data structure based on patterns.
 
         Args:

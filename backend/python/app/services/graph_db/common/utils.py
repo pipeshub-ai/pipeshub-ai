@@ -22,7 +22,7 @@ def build_connector_stats_response(
     Returns:
         Formatted stats response dictionary
     """
-    indexing_status_counts = {s: 0 for s in statuses}
+    indexing_status_counts = dict.fromkeys(statuses, 0)
     record_type_counts: Dict[str, Dict[str, Any]] = {}
     total = 0
 
@@ -38,7 +38,7 @@ def build_connector_stats_response(
                 record_type_counts[rt] = {
                     "recordType": rt,
                     "total": 0,
-                    "indexingStatus": {s: 0 for s in statuses},
+                    "indexingStatus": dict.fromkeys(statuses, 0),
                 }
             record_type_counts[rt]["total"] += cnt
             if st in statuses:

@@ -8,7 +8,7 @@ reducing LLM confusion and improving accuracy.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Set, Union
 
 if TYPE_CHECKING:
     from app.modules.agents.deep.state import DeepAgentState, SubAgentTask

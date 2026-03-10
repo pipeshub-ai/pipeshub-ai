@@ -342,17 +342,17 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
 
     # Get user-defined system prompt or use default
     system_prompt = chat_query.get("systemPrompt", "You are an enterprise questions answering expert")
-    instructions = chat_query.get("instructions", None)
-    timezone = chat_query.get("timezone", None)
-    current_time = chat_query.get("currentTime", None)
-    output_file_path = chat_query.get("outputFilePath", None)
+    instructions = chat_query.get("instructions")
+    timezone = chat_query.get("timezone")
+    current_time = chat_query.get("currentTime")
+    output_file_path = chat_query.get("outputFilePath")
 
     # Get toolsets and knowledge from the new graph-based format
     toolsets = chat_query.get("toolsets", [])  # Array of toolset objects with tools
     knowledge = chat_query.get("knowledge", [])  # Array of knowledge objects with connectorId, filters
 
     # Extract tools list from toolsets for the planner
-    tools = _extract_tools_from_toolsets(toolsets) if toolsets else chat_query.get("tools", None)
+    tools = _extract_tools_from_toolsets(toolsets) if toolsets else chat_query.get("tools")
 
     # Build tool-to-toolset mapping for looking up configs during execution
     tool_to_toolset_map = _build_tool_to_toolset_map(toolsets) if toolsets else {}

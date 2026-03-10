@@ -3,10 +3,31 @@
 import json
 import logging
 from dataclasses import asdict
+from datetime import date
 from typing import Any, Dict, List, Literal, Mapping, Optional
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
+)
+from msgraph.generated.models.attendee import Attendee  # type: ignore
+from msgraph.generated.models.attendee_type import AttendeeType  # type: ignore
+from msgraph.generated.models.body_type import BodyType  # type: ignore
+from msgraph.generated.models.date_time_time_zone import (
+    DateTimeTimeZone,  # type: ignore
+)
+from msgraph.generated.models.email_address import EmailAddress  # type: ignore
+from msgraph.generated.models.event import Event  # type: ignore
+from msgraph.generated.models.item_body import ItemBody  # type: ignore
+from msgraph.generated.models.location import Location  # type: ignore
+from msgraph.generated.models.message import Message  # type: ignore
+from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
+from msgraph.generated.models.recipient import Recipient  # type: ignore
+from msgraph.generated.models.recurrence_pattern import RecurrencePattern
+from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
+from msgraph.generated.models.recurrence_range import RecurrenceRange
+from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
+from msgraph.generated.users.item.calendar.calendar_view.calendar_view_request_builder import (  # type: ignore
+    CalendarViewRequestBuilder,
 )
 from msgraph.generated.users.item.calendars.calendars_request_builder import (  # type: ignore
     CalendarsRequestBuilder,
@@ -20,46 +41,32 @@ from msgraph.generated.users.item.contacts.contacts_request_builder import (  # 
 from msgraph.generated.users.item.events.events_request_builder import (  # type: ignore
     EventsRequestBuilder,
 )
+from msgraph.generated.users.item.events.item.instances.instances_request_builder import (
+    InstancesRequestBuilder,
+)
 from msgraph.generated.users.item.mail_folders.item.messages.delta.delta_request_builder import (  # type: ignore
     DeltaRequestBuilder,
 )
 from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import (  # type: ignore
     MailFoldersRequestBuilder,
 )
-from msgraph.generated.users.item.events.item.instances.instances_request_builder import (
-    InstancesRequestBuilder,
+from msgraph.generated.users.item.messages.item.forward.forward_post_request_body import (
+    ForwardPostRequestBody,  # type: ignore
 )
-
-from datetime import date
+from msgraph.generated.users.item.messages.item.reply.reply_post_request_body import (
+    ReplyPostRequestBody,  # type: ignore
+)
+from msgraph.generated.users.item.messages.item.reply_all.reply_all_post_request_body import (
+    ReplyAllPostRequestBody,  # type: ignore
+)
 
 # Import MS Graph specific query parameter classes for Outlook
 from msgraph.generated.users.item.messages.messages_request_builder import (  # type: ignore
     MessagesRequestBuilder,
 )
-from kiota_abstractions.headers_collection import HeadersCollection
 
 from app.sources.client.microsoft.microsoft import MSGraphClient
-from msgraph.generated.models.message import Message  # type: ignore
-from msgraph.generated.models.item_body import ItemBody  # type: ignore
-from msgraph.generated.models.body_type import BodyType  # type: ignore
-from msgraph.generated.models.recipient import Recipient  # type: ignore
-from msgraph.generated.models.email_address import EmailAddress  # type: ignore
-from msgraph.generated.models.event import Event  # type: ignore
-from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone  # type: ignore
-from msgraph.generated.models.location import Location  # type: ignore
-from msgraph.generated.models.attendee import Attendee  # type: ignore
-from msgraph.generated.models.attendee_type import AttendeeType  # type: ignore
-from msgraph.generated.users.item.messages.item.reply.reply_post_request_body import ReplyPostRequestBody  # type: ignore
-from msgraph.generated.users.item.messages.item.reply_all.reply_all_post_request_body import ReplyAllPostRequestBody  # type: ignore
-from msgraph.generated.users.item.messages.item.forward.forward_post_request_body import ForwardPostRequestBody  # type: ignore
-from msgraph.generated.users.item.calendar.calendar_view.calendar_view_request_builder import (  # type: ignore
-    CalendarViewRequestBuilder,
-)
-from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
-from msgraph.generated.models.recurrence_pattern import RecurrencePattern
-from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
-from msgraph.generated.models.recurrence_range import RecurrenceRange
-from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
+
 
 # Outlook-specific response wrapper
 class OutlookCalendarContactsResponse:
@@ -199,6 +206,7 @@ def _dict_to_event(data: dict) -> Event:
             event.recurrence = rec
         elif isinstance(rec, dict):
             from datetime import date
+
             from msgraph.generated.models.day_of_week import DayOfWeek
             from msgraph.generated.models.week_index import WeekIndex
 
@@ -7192,7 +7200,7 @@ class OutlookCalendarContactsDataSource:
             # Verify client has me property before making the call
             if not hasattr(self.client, 'me'):
                 raise AttributeError("Graph client does not have 'me' property. Client may not be properly initialized for delegated authentication.")
-            
+
             if not hasattr(self.client.me, 'messages'):
                 raise AttributeError("Graph client 'me' does not have 'messages' property. This may indicate a permissions or configuration issue.")
 
@@ -53653,7 +53661,9 @@ class OutlookCalendarContactsDataSource:
         Outlook operation: GET /me/events?$filter=type eq 'seriesMaster'
         """
         try:
-            from msgraph.generated.users.item.events.events_request_builder import EventsRequestBuilder
+            from msgraph.generated.users.item.events.events_request_builder import (
+                EventsRequestBuilder,
+            )
 
             query_params = EventsRequestBuilder.EventsRequestBuilderGetQueryParameters(
                 filter="type eq 'seriesMaster'",
@@ -53695,7 +53705,9 @@ class OutlookCalendarContactsDataSource:
                         and start/dateTime ge '{start}' and end/dateTime le '{end}'
         """
         try:
-            from msgraph.generated.users.item.events.events_request_builder import EventsRequestBuilder
+            from msgraph.generated.users.item.events.events_request_builder import (
+                EventsRequestBuilder,
+            )
 
             safe_keyword = keyword.strip().replace("'", "''")
 
@@ -53742,10 +53754,10 @@ class OutlookCalendarContactsDataSource:
         Outlook operation: POST /me/calendar/getSchedule
         """
         try:
+            from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
             from msgraph.generated.users.item.calendar.get_schedule.get_schedule_post_request_body import (
                 GetSchedulePostRequestBody,
             )
-            from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
 
             # Fetch the signed-in user's email to pass as the schedule request target
             me_resp = await self.client.me.get()

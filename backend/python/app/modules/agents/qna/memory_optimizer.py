@@ -68,11 +68,11 @@ def prune_state(state: ChatState, logger: Optional[logging.Logger] = None) -> Ch
         "search_results"  # Keep only final_results
     ]
     for field in intermediate_fields:
-        if field in state and state[field]:
+        if state.get(field):
             state[field] = []
 
     # 4. Compress query analysis (keep only essential)
-    if "query_analysis" in state and state["query_analysis"]:
+    if state.get("query_analysis"):
         analysis = state["query_analysis"]
         state["query_analysis"] = {
             "is_complex": analysis.get("is_complex", False),
@@ -331,11 +331,11 @@ def auto_optimize_state(state: ChatState, logger: Optional[logging.Logger] = Non
         state = prune_state(state, logger)
 
         # Compress documents
-        if "final_results" in state and state["final_results"]:
+        if state.get("final_results"):
             state["final_results"] = compress_documents(state["final_results"], logger)
 
         # Optimize messages
-        if "messages" in state and state["messages"]:
+        if state.get("messages"):
             state["messages"] = optimize_messages(state["messages"], logger)
 
         if logger:

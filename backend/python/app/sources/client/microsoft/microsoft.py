@@ -7,7 +7,9 @@ from typing import Any, Dict, List, Optional
 from app.config.configuration_service import ConfigurationService
 
 try:
-    from azure.identity import ClientSecretCredential as SyncClientSecretCredential  # type: ignore
+    from azure.identity import (
+        ClientSecretCredential as SyncClientSecretCredential,  # type: ignore
+    )
     from azure.identity.aio import ClientSecretCredential  #type: ignore
     from kiota_authentication_azure.azure_identity_authentication_provider import (  #type: ignore
         AzureIdentityAuthenticationProvider,
@@ -427,8 +429,9 @@ class MSGraphClient(IClient):
         # Use MSAL ConfidentialClientApplication for token management
         # -----------------------------------------------------------------
         try:
-            import msal  # type: ignore
             import time as _time
+
+            import msal  # type: ignore
 
             # Scopes the token was originally granted for
             stored_scope = credentials_config.get("scope", "")
@@ -492,8 +495,8 @@ class MSGraphClient(IClient):
                             )
                         else:
                             logger.error(
-                                f"❌ MSAL token refresh returned invalid placeholder token. "
-                                f"Falling back to stored access token."
+                                "❌ MSAL token refresh returned invalid placeholder token. "
+                                "Falling back to stored access token."
                             )
                     else:
                         error = result.get("error", "unknown")
@@ -507,7 +510,7 @@ class MSGraphClient(IClient):
                         f"⚠️ MSAL refresh call failed: {msal_err}. "
                         f"Falling back to stored access token."
                     )
-            
+
             # Final validation of the token we'll actually use
             final_token_str = str(final_access_token).strip()
             if not final_token_str or final_token_str.lower() in [
@@ -526,7 +529,7 @@ class MSGraphClient(IClient):
                     f"The token (stored or refreshed) appears to be a placeholder value: '{final_token_str[:50]}...'. "
                     f"Please re-authenticate the toolset by going to Settings > Toolsets and completing the OAuth flow again."
                 )
-            
+
             # Log token info for debugging (first/last few chars only for security)
             token_preview = f"{final_token_str[:10]}...{final_token_str[-10:]}" if len(final_token_str) > 20 else "***"
             logger.debug(

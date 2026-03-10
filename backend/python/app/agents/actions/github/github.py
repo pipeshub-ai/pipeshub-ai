@@ -1035,12 +1035,12 @@ class GitHub:
                 max_diff_lines=max_diff_lines,
                 context_lines=context_lines,
             )
-            
+
             return self._handle_response(
                 response,
                 "Pull request file changes fetched successfully"
             )
-            
+
         except Exception as e:
             logger.error(f"Error getting pull request file changes: {e}")
             return False, json.dumps({"error": str(e)})

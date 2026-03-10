@@ -1117,7 +1117,7 @@ Record blocks (sorted):\n\n"""
                     data = corresponding_block_group.get("data", {})
 
                     if block_type == GroupType.TABLE.value:
-                        table_summary = data.get("table_summary", "") if isinstance(data, dict) else str(data)
+                        data.get("table_summary", "") if isinstance(data, dict) else str(data)
 
                         # Get block indices from children (handle both old and new formats)
                         children = corresponding_block_group.get("children")
