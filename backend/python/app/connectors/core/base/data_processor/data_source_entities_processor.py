@@ -21,6 +21,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
+    Connectors,
     FileRecord,
     IndexingStatus,
     LinkPublicStatus,
@@ -165,6 +166,19 @@ class DataSourceEntitiesProcessor:
         # Map RecordType to appropriate Record class
         if parent_record_type == RecordType.FILE:
             file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
+            # for web connector the placeholder record will be a file of type HTML
+            if record.connector_name == Connectors.WEB:
+                return FileRecord(
+                    **file_params,
+                    is_file=True,
+                    extension=None,
+                    mime_type=MimeTypes.HTML.value,
+                    size_in_bytes=None,
+                    weburl="",  # Will be updated when real directory is synced
+                    path=None,  # Will be updated when real directory is synced
+                    indexing_status=IndexingStatus.NOT_STARTED.value,
+                )
+
             return FileRecord(
                 **file_params,
                 is_file=False,
@@ -1335,8 +1349,7 @@ class DataSourceEntitiesProcessor:
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
         async with self.data_store_provider.transaction() as tx_store:
-            record = await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
-            return record
+            return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
 
     async def on_user_group_member_removed(
         self,
