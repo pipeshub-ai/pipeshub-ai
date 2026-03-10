@@ -746,7 +746,7 @@ class WebConnector(BaseConnector):
 
                         if existing:
                             self.logger.info(
-                                f"🔄 \n\n\n\n\n Found legacy record (no trailing slash) for {legacy_external_id}, "
+                                f"🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
                                 f"will migrate external_record_id to {external_id}"
                             )
 
@@ -990,7 +990,7 @@ class WebConnector(BaseConnector):
                     if existing_record:
                         legacy_lookup = True
                         self.logger.info(
-                            f"\n\n\n\n\n🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
+                            f"🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
                             f"will migrate external_record_id to {external_id}"
                         )
 
