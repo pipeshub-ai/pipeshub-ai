@@ -166,7 +166,7 @@ class WebApp(App):
             display_name="Crawl Type",
             field_type="SELECT",
             required=True,
-            default_value="single",
+            default_value="recursive",
             options=["single", "recursive"],
             description="Choose whether to crawl a single page or recursively crawl linked pages"
         ))
@@ -207,6 +207,14 @@ class WebApp(App):
             required=False,
             default_value="false",
             description="Follow links to external domains"
+        ))
+        .add_sync_custom_field(CustomField(
+            name="restrict_to_start_path",
+            display_name="Restrict to Start Path",
+            field_type="BOOLEAN",
+            required=False,
+            default_value="true",
+            description="Only crawl URLs within the same path as the starting URL (prevents crawling parent directories)"
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(CommonFields.file_extension_filter())
@@ -287,6 +295,8 @@ class WebConnector(BaseConnector):
         self.max_depth: int = 3
         self.max_pages: int = 100
         self.follow_external: bool = False
+        self.restrict_to_start_path: bool = True
+        self.start_path_prefix: str = "/"
 
         # Crawling state
         self.visited_urls: Set[str] = set()
@@ -312,6 +322,8 @@ class WebConnector(BaseConnector):
             self.max_size_mb = config_values["max_size_mb"]
             self.follow_external = config_values["follow_external"]
             self.base_domain = config_values["base_domain"]
+            self.restrict_to_start_path = config_values["restrict_to_start_path"]
+            self.start_path_prefix = config_values["start_path_prefix"]
 
             # Initialize aiohttp session with realistic browser headers
             # These headers mimic a real Chrome browser to avoid being blocked by websites
@@ -369,7 +381,7 @@ class WebConnector(BaseConnector):
             - max_pages: int
             - follow_external: bool
             - base_domain: str
-
+            - restrict_to_start_path: bool
         Raises:
             ValueError: If config is invalid or missing required fields
         """
@@ -399,6 +411,16 @@ class WebConnector(BaseConnector):
             max_pages = int(sync_config.get("max_pages") or 1000)
             max_size_mb = int(sync_config.get("max_size_mb") or 10)
             follow_external = sync_config.get("follow_external", False)
+            restrict_to_start_path = sync_config.get("restrict_to_start_path", True)
+
+            # restrict_to_start_path implies staying on the starting domain,
+            # so follow_external must be False — override with a warning.
+            if restrict_to_start_path and follow_external:
+                self.logger.warning(
+                    "⚠️ 'restrict_to_start_path' is enabled — overriding 'follow_external' to False "
+                    "(cannot follow external links while restricting to the start path)"
+                )
+                follow_external = False
 
             # Validate max_pages and max_depth
             if max_pages > 1000:
@@ -424,6 +446,16 @@ class WebConnector(BaseConnector):
             parsed_url = urlparse(url)
             base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
 
+            # Compute the path prefix to prevent crawling parent paths.
+            # If the start URL ends with '/', use it as-is (it's already a directory).
+            # Otherwise, use the directory portion (up to and including the last '/').
+            start_path = parsed_url.path
+            if start_path.endswith('/'):
+                start_path_prefix = start_path
+            else:
+                parent = start_path.rsplit('/', 1)[0]
+                start_path_prefix = (parent + '/') if parent else '/'
+
             return {
                 "url": url,
                 "crawl_type": crawl_type,
@@ -432,6 +464,8 @@ class WebConnector(BaseConnector):
                 "max_size_mb": max_size_mb,
                 "follow_external": follow_external,
                 "base_domain": base_domain,
+                "restrict_to_start_path": restrict_to_start_path,
+                "start_path_prefix": start_path_prefix,
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch and parse config: {e}")
@@ -551,6 +585,7 @@ class WebConnector(BaseConnector):
             new_max_size_mb = config_values["max_size_mb"]
             new_follow_external = config_values["follow_external"]
             new_base_domain = config_values["base_domain"]
+            new_restrict_to_start_path = config_values["restrict_to_start_path"]
 
             if new_base_domain != self.base_domain:
                 self.logger.error(f"❌ Cannot change base domain from {self.base_domain} to {new_base_domain}. Please create a new connector for {new_base_domain}")
@@ -571,7 +606,9 @@ class WebConnector(BaseConnector):
             if new_follow_external != self.follow_external:
                 self.logger.info("🔄 Follow external changed from %s to %s", self.follow_external, new_follow_external)
                 self.follow_external = new_follow_external
-
+            if new_restrict_to_start_path != self.restrict_to_start_path:
+                self.logger.info(f"🔄 Restrict to start path changed from {self.restrict_to_start_path} to {new_restrict_to_start_path}")
+                self.restrict_to_start_path = new_restrict_to_start_path
 
         except Exception as e:
             self.logger.error(f"❌ Failed to reload config: {e}", exc_info=True)
@@ -815,9 +852,7 @@ class WebConnector(BaseConnector):
                     soup = BeautifulSoup(content_bytes, "html.parser")
                     title = self._extract_title(soup, final_url)
 
-                    # Remove script and style elements
-                    for script in soup(["script", "style", "noscript", "iframe"]):
-                        script.decompose()
+                    self._remove_unwanted_tags(soup)
 
                     # Get text content
                     text_content = soup.get_text(separator="\n", strip=True)
@@ -1004,6 +1039,12 @@ class WebConnector(BaseConnector):
             # Check domain restrictions
             if not self.follow_external and parsed.netloc != base_parsed.netloc:
                 return False
+
+            # Prevent upward path traversal.
+            if self.restrict_to_start_path and self.url:
+                decoded_path = unquote(parsed.path)
+                if not decoded_path.startswith(self.start_path_prefix):
+                    return False
 
             return True
 
@@ -1367,12 +1408,43 @@ class WebConnector(BaseConnector):
 
         return ''.join(result)
 
-    # ==================== HTML Processing Helpers ====================
-
     def _remove_unwanted_tags(self, soup: BeautifulSoup) -> None:
-        """Remove script, style, noscript, and iframe tags from the soup."""
-        for tag in soup(["script", "style", "noscript", "iframe"]):
+        """
+        Remove all non-content tags and structural noise (nav, sidebars, etc.)
+        """
+
+        # 1. Technical & Invisible Noise
+        # These are tags that never contain user-facing article content.
+        technical_tags = [
+            "script", "style", "noscript", "iframe", "meta",
+            "base", "link", "canvas"
+        ]
+
+        # 2. Functional/Interactive Noise
+        # UI elements that don't represent the text content of the page.
+        ui_tags = ["button", "form", "input", "select", "textarea", "label"]
+
+        # 3. Structural/Navigational Noise
+        structural_tags = ["nav"]
+
+        # Combine and decompose
+        for tag in soup(technical_tags + ui_tags + structural_tags):
             tag.decompose()
+
+        # 4. Common CSS Selectors (Class/ID Noise)
+        # These catch elements on sites that don't use semantic tags.
+        # Covers sidebars, menus, ads, and common 'skip' links.
+        unwanted_selectors = [
+            ".sidebar", "#sidebar", ".menu", ".nav", ".navigation",
+            ".ads", ".promo", ".banner", ".popup", ".modal",
+            ".toc", ".table-of-contents", ".breadcrumb",
+            ".pagination", ".share-buttons", ".social-media",
+            "a[href='#content']", "a.skip-to-content", ".edit-page-link"
+        ]
+
+        for selector in unwanted_selectors:
+            for match in soup.select(selector):
+                match.decompose()
 
     def _remove_image_tags(self, soup: BeautifulSoup) -> None:
         """Remove all image and SVG tags from the soup."""
@@ -1716,6 +1788,111 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"⚠️ Failed to parse/clean HTML: {e}")
             raise
+
+    # ==================== Retryable Fetch Method ====================
+
+    async def _fetch_with_retry(
+        self,
+        url: str,
+        headers: dict,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 10.0,
+    ) -> bytes:
+        """
+        Fetch a URL with exponential backoff retry for transient errors.
+
+        Args:
+            url: The URL to fetch
+            headers: Request headers
+            max_retries: Maximum number of retry attempts
+            base_delay: Initial delay in seconds before first retry
+            max_delay: Maximum delay cap in seconds
+
+        Returns:
+            The response content as bytes
+
+        Raises:
+            HTTPException: On non-retryable HTTP errors or after exhausting retries
+        """
+
+        for attempt in range(max_retries + 1):
+            try:
+                async with self.session.get(url, headers=headers) as response:
+                    # Non-retryable client errors — fail immediately
+                    if (
+                        response.status >= HttpStatusCode.BAD_REQUEST.value
+                        and response.status not in RETRYABLE_STATUS_CODES
+                    ):
+                        raise HTTPException(
+                            status_code=response.status,
+                            detail=f"HTTP {response.status} for {url}",
+                        )
+
+                    # Retryable status codes
+                    if response.status in RETRYABLE_STATUS_CODES:
+                        if attempt == max_retries:
+                            raise HTTPException(
+                                status_code=response.status,
+                                detail=f"HTTP {response.status} for {url} after {max_retries} retries",
+                            )
+
+                        delay = self._calculate_retry_delay(
+                            attempt, base_delay, max_delay,
+                            retry_after=response.headers.get("Retry-After"),
+                        )
+                        self.logger.warning(
+                            f"\n\n\n⚠️ Retryable HTTP {response.status} for {url}. "
+                            f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                    # Success
+                    return await response.read()
+
+            except RETRYABLE_EXCEPTIONS as e:
+                if attempt == max_retries:
+                    self.logger.error(
+                        f"❌ Failed to fetch {url} after {max_retries} retries: {e}"
+                    )
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_GATEWAY.value,
+                        detail=f"Failed to fetch {url} after {max_retries} retries: {e}",
+                    ) from e
+
+                delay = self._calculate_retry_delay(attempt, base_delay, max_delay)
+                self.logger.warning(
+                    f"⚠️ Connection error for {url}: {e}. "
+                    f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
+                )
+                await asyncio.sleep(delay)
+
+        # Should not be reached, but just in case
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_GATEWAY.value,
+            detail=f"Failed to fetch {url} after {max_retries} retries",
+        )
+
+    @staticmethod
+    def _calculate_retry_delay(
+        attempt: int,
+        base_delay: float,
+        max_delay: float,
+        retry_after: Optional[str] = None,
+    ) -> float:
+        """
+        Calculate delay using exponential backoff with jitter,
+        respecting Retry-After header if present.
+        """
+        if retry_after:
+            try:
+                return min(float(retry_after), max_delay)
+            except (ValueError, TypeError):
+                pass
+
+        delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+        return min(delay, max_delay)
 
     # ==================== Main Stream Record Method ====================
 

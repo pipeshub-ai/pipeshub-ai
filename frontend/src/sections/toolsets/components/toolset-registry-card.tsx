@@ -264,7 +264,8 @@ const ToolsetRegistryCard = ({ toolset, isConfigured = false, isAdmin = false, o
           onClose={() => setConfigOpen(false)}
           onSuccess={() => {
             setConfigOpen(false);
-            // Refresh both tabs since creating a toolset affects "My Toolsets" tab
+            // Refresh both tabs since creating a toolset instance affects "My Toolsets" tab
+            // The new instance should appear in "My Toolsets" tab
             if (onRefresh) {
               onRefresh(false, true); // showLoader=false, forceRefreshBoth=true
             }

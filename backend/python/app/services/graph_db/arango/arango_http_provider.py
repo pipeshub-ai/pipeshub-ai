@@ -15840,7 +15840,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def delete_parent_child_edge_to_record(
         self,
         record_id: str,
-        collection: str,
         transaction: Optional[str] = None
     ) -> int:
         """
@@ -15867,7 +15866,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "record_id": record_id,
-                    "@record_relations": collection,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 },
                 txn_id=transaction
             )
@@ -17637,43 +17636,47 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Error in get_organization_users: {str(e)}", exc_info=True)
             return [], 0
 
-    async def check_toolset_in_use(self, toolset_name: str, user_id: str, transaction: Optional[str] = None) -> List[str]:
+    async def check_toolset_instance_in_use(self, instance_id: str, transaction: Optional[str] = None) -> List[str]:
         """
-        Check if a toolset is currently in use by any active agents.
+        Check if a toolset instance is currently in use by any active agents.
+
+        This method finds all toolset nodes with the given instanceId and checks
+        if any non-deleted agents are using them.
 
         Args:
-            toolset_name: Normalized toolset name
-            user_id: User ID who owns the toolset
+            instance_id: Toolset instance ID to check
             transaction: Optional transaction ID
 
         Returns:
-            List of agent names that are using the toolset. Empty list if not in use.
+            List of agent names that are using the toolset instance. Empty list if not in use.
         """
         try:
-            # Find toolset nodes
+            # Find all toolset nodes with the given instanceId
             toolset_query = f"""
             FOR ts IN {CollectionNames.AGENT_TOOLSETS.value}
-                FILTER ts.name == @name AND ts.userId == @user_id
+                FILTER ts.instanceId == @instance_id
                 RETURN ts._id
             """
             toolset_ids = await self.http_client.execute_aql(toolset_query, bind_vars={
-                "name": toolset_name,
-                "user_id": user_id
+                "instance_id": instance_id
             }, txn_id=transaction)
 
             # Handle None or empty results
             if not toolset_ids:
                 return []
 
-            # Check for active agents using this toolset
+            # Check for active agents using these toolset nodes, filtering by org_id
             agent_query = f"""
             FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
                 FILTER edge._to IN @toolset_ids
                 LET agent = DOCUMENT(edge._from)
-                FILTER agent != null AND agent.isDeleted != true AND agent.deleted != true
+                FILTER agent != null 
+                    AND agent.isDeleted != true 
                 RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
             """
-            agents = await self.http_client.execute_aql(agent_query, bind_vars={"toolset_ids": toolset_ids}, txn_id=transaction)
+            agents = await self.http_client.execute_aql(agent_query, bind_vars={
+                "toolset_ids": toolset_ids,
+            }, txn_id=transaction)
 
             # Handle None or empty results, and filter out any None values
             if agents:
@@ -17683,7 +17686,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return []
 
         except Exception as e:
-            self.logger.error(f"Failed to check toolset usage: {str(e)}")
+            self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
     async def get_agent(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
@@ -18204,96 +18207,114 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             agent_doc_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
 
-            # Step 1: Delete agent -> knowledge edges (AGENT_HAS_KNOWLEDGE)
+            # Step 1: Delete agent -> knowledge edges and collect the _to IDs
             delete_knowledge_edges_query = f"""
             FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
                 FILTER edge._from == @agent_doc_id
                 REMOVE edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
-                RETURN OLD
+                RETURN OLD._to
             """
 
-            deleted_knowledge_edges = await self.execute_query(
+            knowledge_ids = await self.execute_query(
                 delete_knowledge_edges_query,
                 bind_vars={"agent_doc_id": agent_doc_id},
                 transaction=transaction
             )
 
-            if deleted_knowledge_edges:
-                edges_deleted += len(deleted_knowledge_edges)
+            if knowledge_ids:
+                edges_deleted += len(knowledge_ids)
 
-                # Step 2: Delete knowledge nodes (AGENT_KNOWLEDGE)
-                knowledge_ids = [edge['_to'] for edge in deleted_knowledge_edges]
-                if knowledge_ids:
-                    delete_knowledge_query = f"""
-                    FOR knowledge_id IN @knowledge_ids
-                        LET knowledge = DOCUMENT(knowledge_id)
-                        FILTER knowledge != null
-                        REMOVE knowledge IN {CollectionNames.AGENT_KNOWLEDGE.value}
-                        RETURN OLD
-                    """
+                # Step 2: Delete orphaned knowledge nodes (no remaining edges pointing to them)
+                delete_orphaned_knowledge_query = f"""
+                FOR kid IN @knowledge_ids
+                    LET remaining = FIRST(
+                        FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                            FILTER edge._to == kid
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER remaining == null
+                    REMOVE PARSE_IDENTIFIER(kid).key IN {CollectionNames.AGENT_KNOWLEDGE.value}
+                    RETURN OLD
+                """
 
-                    deleted_knowledge = await self.execute_query(
-                        delete_knowledge_query,
-                        bind_vars={"knowledge_ids": knowledge_ids},
-                        transaction=transaction
+                deleted_knowledge = await self.execute_query(
+                    delete_orphaned_knowledge_query,
+                    bind_vars={"knowledge_ids": knowledge_ids},
+                    transaction=transaction
+                )
+
+                if deleted_knowledge:
+                    knowledge_deleted = len(deleted_knowledge)
+
+                skipped = len(knowledge_ids) - knowledge_deleted
+                if skipped > 0:
+                    self.logger.warning(
+                        f"Skipped {skipped} knowledge node(s) still referenced by other agents for agent {agent_id}"
                     )
 
-                    if deleted_knowledge:
-                        knowledge_deleted = len(deleted_knowledge)
-
-            # Step 3: Find toolsets connected to agent
-            find_toolset_edges_query = f"""
+            # Step 3: Find toolsets connected to this agent
+            find_toolset_ids_query = f"""
             FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
                 FILTER edge._from == @agent_doc_id
                 RETURN edge._to
             """
 
             toolset_ids = await self.execute_query(
-                find_toolset_edges_query,
+                find_toolset_ids_query,
                 bind_vars={"agent_doc_id": agent_doc_id},
                 transaction=transaction
             )
 
             if toolset_ids:
-                # Step 4: Delete toolset -> tool edges (TOOLSET_HAS_TOOL)
+                # Step 4: Delete toolset -> tool edges and collect the _to IDs
                 delete_tool_edges_query = f"""
-                FOR toolset_id IN @toolset_ids
+                FOR tsid IN @toolset_ids
                     FOR edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
-                        FILTER edge._from == toolset_id
+                        FILTER edge._from == tsid
                         REMOVE edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
-                        RETURN OLD
+                        RETURN OLD._to
                 """
 
-                deleted_tool_edges = await self.execute_query(
+                tool_ids = await self.execute_query(
                     delete_tool_edges_query,
                     bind_vars={"toolset_ids": toolset_ids},
                     transaction=transaction
                 )
 
-                if deleted_tool_edges:
-                    edges_deleted += len(deleted_tool_edges)
+                if tool_ids:
+                    edges_deleted += len(tool_ids)
 
-                    # Step 5: Delete tool nodes (AGENT_TOOLS)
-                    tool_ids = [edge['_to'] for edge in deleted_tool_edges]
-                    if tool_ids:
-                        delete_tools_query = f"""
-                        FOR tool_id IN @tool_ids
-                            LET tool = DOCUMENT(tool_id)
-                            FILTER tool != null
-                            REMOVE tool IN {CollectionNames.AGENT_TOOLS.value}
-                            RETURN OLD
-                        """
+                    # Step 5: Delete orphaned tool nodes
+                    delete_orphaned_tools_query = f"""
+                    FOR tid IN @tool_ids
+                        LET remaining = FIRST(
+                            FOR edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
+                                FILTER edge._to == tid
+                                LIMIT 1
+                                RETURN 1
+                        )
+                        FILTER remaining == null
+                        REMOVE PARSE_IDENTIFIER(tid).key IN {CollectionNames.AGENT_TOOLS.value}
+                        RETURN OLD
+                    """
 
-                        deleted_tools = await self.execute_query(
-                            delete_tools_query,
-                            bind_vars={"tool_ids": tool_ids},
-                            transaction=transaction
+                    deleted_tools = await self.execute_query(
+                        delete_orphaned_tools_query,
+                        bind_vars={"tool_ids": tool_ids},
+                        transaction=transaction
+                    )
+
+                    if deleted_tools:
+                        tools_deleted = len(deleted_tools)
+
+                    skipped = len(tool_ids) - tools_deleted
+                    if skipped > 0:
+                        self.logger.warning(
+                            f"Skipped {skipped} tool node(s) still referenced by other toolsets for agent {agent_id}"
                         )
 
-                        if deleted_tools:
-                            tools_deleted = len(deleted_tools)
-
-            # Step 6: Delete agent -> toolset edges (AGENT_HAS_TOOLSET)
+            # Step 6: Delete agent -> toolset edges
             delete_toolset_edges_query = f"""
             FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
                 FILTER edge._from == @agent_doc_id
@@ -18310,18 +18331,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if deleted_toolset_edges:
                 edges_deleted += len(deleted_toolset_edges)
 
-            # Step 7: Delete toolset nodes (AGENT_TOOLSETS)
+            # Step 7: Delete orphaned toolset nodes
             if toolset_ids:
-                delete_toolsets_query = f"""
-                FOR toolset_id IN @toolset_ids
-                    LET toolset = DOCUMENT(toolset_id)
-                    FILTER toolset != null
-                    REMOVE toolset IN {CollectionNames.AGENT_TOOLSETS.value}
+                delete_orphaned_toolsets_query = f"""
+                FOR tsid IN @toolset_ids
+                    LET remaining = FIRST(
+                        FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                            FILTER edge._to == tsid
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER remaining == null
+                    REMOVE PARSE_IDENTIFIER(tsid).key IN {CollectionNames.AGENT_TOOLSETS.value}
                     RETURN OLD
                 """
 
                 deleted_toolsets = await self.execute_query(
-                    delete_toolsets_query,
+                    delete_orphaned_toolsets_query,
                     bind_vars={"toolset_ids": toolset_ids},
                     transaction=transaction
                 )
@@ -18329,7 +18355,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if deleted_toolsets:
                     toolsets_deleted = len(deleted_toolsets)
 
-            # Step 8: Delete all permission edges (user, org, team)
+                skipped = len(toolset_ids) - toolsets_deleted
+                if skipped > 0:
+                    self.logger.warning(
+                        f"Skipped {skipped} toolset node(s) still referenced by other agents for agent {agent_id}"
+                    )
+
+            # Step 8: Delete all permission edges pointing to this agent
             delete_permissions_query = f"""
             FOR edge IN {CollectionNames.PERMISSION.value}
                 FILTER edge._to == @agent_doc_id

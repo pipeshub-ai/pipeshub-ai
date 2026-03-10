@@ -1435,6 +1435,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                 onClick: () => handleRetryIndexing(node.id),
               });
             }
+          } else if (node.nodeType === 'folder') {
+            menuActions.push({
+              label: 'Start indexing',
+              icon: refreshIcon,
+              color: theme.palette.warning.main,
+              onClick: () => handleRetryIndexingFolder(node.id),
+            });
           } else if (node.nodeType === 'recordGroup') {
             menuActions.push({
               label: 'Start indexing',

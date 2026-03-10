@@ -3,6 +3,40 @@ import { Request } from 'express';
 import { injectable } from 'inversify';
 import path from 'path';
 
+export enum LogLevel {
+  Debug = 'debug',
+  Info = 'info',
+  Warning = 'warning',
+  Error = 'error',
+}
+
+
+const customLevels = {
+  levels: {
+    error: 0,
+    warning: 1,
+    info: 2,
+    debug: 3,
+  },
+  colors: {
+    error: 'red',
+    warning: 'yellow',
+    info: 'green',
+    debug: 'green',
+  },
+};
+
+winston.addColors(customLevels.colors);
+
+export function getLogLevel(): LogLevel {
+  const level = process.env.LOG_LEVEL?.toLowerCase();
+  if (Object.values(LogLevel).includes(level as LogLevel)) {
+    return level as LogLevel;
+  }
+  return LogLevel.Info;
+}
+
+
 export interface LoggerConfig {
   service: string;
   level?: string;
@@ -59,13 +93,14 @@ export class Logger {
     );
 
     return winston.createLogger({
-      level: config?.level || process.env.LOG_LEVEL || 'info',
+      levels: customLevels.levels,
+      level: config?.level || getLogLevel(),
       format: logFormat,
       defaultMeta: this.defaultMeta,
       transports: [
         new winston.transports.File({
           filename: 'error.log',
-          level: 'error',
+          level: LogLevel.Error,
           format: winston.format.combine(logFormat, winston.format.json())
         }),
         new winston.transports.File({
@@ -119,7 +154,7 @@ export class Logger {
 
   static getInstance(config?: LoggerConfig): Logger {
     if (!Logger.instance) {
-      Logger.instance = new Logger(config || { service: 'default-service', level: 'info' });;
+      Logger.instance = new Logger(config || { service: 'default-service', level: LogLevel.Info });
     } else if (config) {
       Logger.instance.updateDefaultMeta({
         service: config.service,
@@ -183,19 +218,19 @@ export class Logger {
   }
 
   error(message: string, meta?: any) {
-    this.logWithLevel('error', message, meta);
+    this.logWithLevel(LogLevel.Error, message, meta);
   }
 
   warn(message: string, meta?: any) {
-    this.logWithLevel('warn', message, meta);
+    this.logWithLevel(LogLevel.Warning, message, meta);
   }
 
   info(message: string, meta?: any) {
-    this.logWithLevel('info', message, meta);
+    this.logWithLevel(LogLevel.Info, message, meta);
   }
 
   debug(message: string, meta?: any) {
-    this.logWithLevel('debug', message, meta);
+    this.logWithLevel(LogLevel.Debug, message, meta);
   }
 
   logRequest(req: Request, meta?: any) {

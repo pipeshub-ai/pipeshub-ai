@@ -49,11 +49,11 @@ import { processStreamingContentLegacy } from 'src/sections/qna/chatbot/utils/st
 import { useConnectors } from 'src/sections/accountdetails/connectors/hooks/use-connectors';
 import { ConversationStreamingState } from 'src/sections/qna/chatbot/chat-bot';
 import AgentApiService, { KnowledgeBase } from './services/api';
-import AgentChatInput from './components/agent-chat-input';
+import AgentChatInput, { ChatMode } from './components/agent-chat-input';
 import AgentChatSidebar from './components/agent-chat-sidebar';
 
 const DRAWER_WIDTH = 300;
-const QUICK_CHAT_MODE = 'quick';
+const AUTO_CHAT_MODE = 'auto';
 
 // Store messages per conversation
 interface ConversationMessages {
@@ -615,15 +615,27 @@ const AgentChat = () => {
   const [availableKBs, setAvailableKBs] = useState<KnowledgeBase[]>([]);
   // Model selection state
   const [selectedModel, setSelectedModel] = useState<Model | null>(availableModels[0]);
+  // Chat mode state
+  const [chatMode, setChatMode] = useState<ChatMode>('auto');
+  
+  // Ref to store persistent chatMode that survives new chat clicks
+  const persistentChatModeRef = useRef<ChatMode>('auto');
 
   // Refs to store latest values to avoid stale closures in callbacks
   const latestModelRef = useRef(selectedModel);
+  const latestChatModeRef = useRef<ChatMode>(chatMode);
   const availableModelsRef = useRef<Model[]>([]);
 
   // Update refs whenever values change
   useEffect(() => {
     latestModelRef.current = selectedModel;
   }, [selectedModel]);
+
+  useEffect(() => {
+    latestChatModeRef.current = chatMode;
+    // Update persistent ref whenever chatMode changes (user selection or conversation load)
+    persistentChatModeRef.current = chatMode;
+  }, [chatMode]);
 
   // Keep availableModels ref in sync
   useEffect(() => {
@@ -673,6 +685,22 @@ const AgentChat = () => {
       }
     }
   }, [availableModels.length, selectedChat, setModelFromConversation]);
+
+  // Restore chatMode from conversation when selecting an existing chat
+  // For new chats, preserve the persistent chatMode (don't reset to 'auto')
+  useEffect(() => {
+    if (selectedChat) {
+      const conversationModelInfo = (selectedChat as any).modelInfo;
+      if (conversationModelInfo?.chatMode) {
+        const conversationChatMode = conversationModelInfo.chatMode as ChatMode;
+        setChatMode(conversationChatMode);
+        persistentChatModeRef.current = conversationChatMode;
+      }
+    } else {
+      // When selectedChat is null (new chat), restore the persistent chatMode
+      setChatMode(persistentChatModeRef.current);
+    }
+  }, [selectedChat]);
 
   const { activeConnectors } = useConnectors();
   const navigate = useNavigate();
@@ -1208,7 +1236,7 @@ const AgentChat = () => {
       messageOverride?: string,
       modelKey?: string,
       modelName?: string,
-      chatMode?: string,
+      inputChatMode?: string,
       selectedTools?: string[], // app_name.tool_name format - PERSISTENT
       selectedKBs?: string[], // KB IDs - PERSISTENT
       selectedApps?: string[] // App names - PERSISTENT
@@ -1221,7 +1249,7 @@ const AgentChat = () => {
 
       // Use refs to get the latest values (prevents stale closures)
       const currentModel = latestModelRef.current;
-      const resolvedChatMode = chatMode || QUICK_CHAT_MODE;
+      const resolvedChatMode = inputChatMode || latestChatModeRef.current || AUTO_CHAT_MODE;
 
       const wasCreatingNewConversation = !currentConversationId;
       const conversationKey = getConversationKey(currentConversationId);
@@ -1368,7 +1396,7 @@ const AgentChat = () => {
     streamingManager.resetNewConversation();
     streamingManager.resetNavigationTracking();
 
-    // Reset all UI state
+    // Reset all UI state (chatMode will be preserved via persistentChatModeRef in useEffect)
     setCurrentConversationId(null);
     navigate(`/agents/${agentKey}`, { replace: true });
     setInputValue('');
@@ -1945,7 +1973,7 @@ const AgentChat = () => {
             body: JSON.stringify({
               modelName: currentModel?.modelName,
               modelProvider: currentModel?.provider,
-              chatMode: QUICK_CHAT_MODE,
+              chatMode: latestChatModeRef.current || AUTO_CHAT_MODE,
             }),
             signal: controller.signal,
           }
@@ -2116,6 +2144,8 @@ const AgentChat = () => {
               availableKBs={availableKBs}
               agent={agent}
               activeConnectors={activeConnectors}
+              chatMode={chatMode}
+              onChatModeChange={setChatMode}
             />
           </Box>
 

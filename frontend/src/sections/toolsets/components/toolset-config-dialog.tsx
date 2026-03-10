@@ -956,16 +956,17 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
         await ToolsetApiService.removeToolsetCredentials(idToUse);
         setSuccess('Credentials removed successfully');
         showLocalToast('Credentials removed successfully', 'success');
+        onSuccess(); // Refresh state without closing dialog
       } else {
         // Admin: delete entire instance
         await ToolsetApiService.deleteToolsetInstance(idToUse);
         setSuccess('Toolset instance deleted successfully');
         showLocalToast('Toolset instance deleted successfully', 'success');
-        // For delete, actually close the dialog
+        // Refresh the list before closing the dialog
+        onSuccess();
+        // For delete, close the dialog after a short delay to show success message
         setTimeout(() => { onClose(); }, 1000);
-        return;
       }
-      onSuccess(); // Refresh state without closing dialog
     } catch (err: any) {
       console.error('Failed to delete/remove toolset:', err);
       const errorMsg = err.response?.data?.detail || err.response?.data?.message || 'Failed to delete';

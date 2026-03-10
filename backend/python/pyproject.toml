@@ -133,6 +133,7 @@ dependencies = [
     "cloudscraper==1.2.71",
     "cryptography==44.0.1",
     "curl-cffi==0.14.0",
+    # "databricks-sdk>=0.85.0",
     "dependency-injector==4.44.0",
     "discord.py==2.6.3",
     "docling==2.60.0",
