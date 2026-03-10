@@ -166,18 +166,6 @@ class DataSourceEntitiesProcessor:
         # Map RecordType to appropriate Record class
         if parent_record_type == RecordType.FILE:
             file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
-            # for web connector the placeholder record will be a file of type HTML
-            if record.connector_name == Connectors.WEB:
-                return FileRecord(
-                    **file_params,
-                    is_file=True,
-                    extension=None,
-                    mime_type=MimeTypes.HTML.value,
-                    size_in_bytes=None,
-                    weburl=parent_external_id,
-                    path=None,  # Will be updated when real directory is synced
-                    indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
-                )
 
             return FileRecord(
                 **file_params,

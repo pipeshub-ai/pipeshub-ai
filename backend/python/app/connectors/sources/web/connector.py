@@ -431,9 +431,9 @@ class WebConnector(BaseConnector):
                 follow_external = False
 
             # Validate max_pages and max_depth
-            if max_pages > 1000:
+            if max_pages > 10000:
                 self.logger.warning("⚠️ WebPage max_pages is greater than 1000, setting to 1000")
-                max_pages = 1000
+                max_pages = 10000
             elif max_pages < 1:
                 self.logger.warning("⚠️ WebPage max_pages is less than 1, setting to 1")
                 max_pages = 1
