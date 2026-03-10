@@ -958,8 +958,8 @@ class WebConnector(BaseConnector):
             if self.base_domain and not self.follow_external:
                 final_netloc = urlparse(final_url).netloc
                 base_netloc = urlparse(self.base_domain).netloc
-                if final_netloc != base_netloc:
-                    self.logger.warning(
+                if final_netloc.lower() != base_netloc.lower():
+                    self.logger.debug(
                         f"⚠️ Skipping {url}: HTTP redirect crossed domain boundary "
                         f"({base_netloc} → {final_netloc})"
                     )
