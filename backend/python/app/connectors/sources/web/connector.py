@@ -171,7 +171,7 @@ class WebApp(App):
             display_name="Crawl Type",
             field_type="SELECT",
             required=True,
-            default_value="single",
+            default_value="recursive",
             options=["single", "recursive"],
             description="Choose whether to crawl a single page or recursively crawl linked pages"
         ))
@@ -202,6 +202,14 @@ class WebApp(App):
             required=False,
             default_value="false",
             description="Follow links to external domains"
+        ))
+        .add_sync_custom_field(CustomField(
+            name="restrict_to_start_path",
+            display_name="Restrict to Start Path",
+            field_type="BOOLEAN",
+            required=False,
+            default_value="true",
+            description="Only crawl URLs within the same path as the starting URL (prevents crawling parent directories)"
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(CommonFields.file_extension_filter())
@@ -282,6 +290,8 @@ class WebConnector(BaseConnector):
         self.max_depth: int = 3
         self.max_pages: int = 100
         self.follow_external: bool = False
+        self.restrict_to_start_path: bool = True
+        self.start_path_prefix: str = "/"
 
         # Crawling state
         self.visited_urls: Set[str] = set()
@@ -306,6 +316,8 @@ class WebConnector(BaseConnector):
             self.max_pages = config_values["max_pages"]
             self.follow_external = config_values["follow_external"]
             self.base_domain = config_values["base_domain"]
+            self.restrict_to_start_path = config_values["restrict_to_start_path"]
+            self.start_path_prefix = config_values["start_path_prefix"]
 
             # Initialize aiohttp session with realistic browser headers
             # These headers mimic a real Chrome browser to avoid being blocked by websites
@@ -363,7 +375,7 @@ class WebConnector(BaseConnector):
             - max_pages: int
             - follow_external: bool
             - base_domain: str
-
+            - restrict_to_start_path: bool
         Raises:
             ValueError: If config is invalid or missing required fields
         """
@@ -392,10 +404,30 @@ class WebConnector(BaseConnector):
             max_depth = int(sync_config.get("depth") or 3)
             max_pages = int(sync_config.get("max_pages") or 1000)
             follow_external = sync_config.get("follow_external", False)
+            restrict_to_start_path = sync_config.get("restrict_to_start_path", True)
+
+            # restrict_to_start_path implies staying on the starting domain,
+            # so follow_external must be False — override with a warning.
+            if restrict_to_start_path and follow_external:
+                self.logger.warning(
+                    "⚠️ 'restrict_to_start_path' is enabled — overriding 'follow_external' to False "
+                    "(cannot follow external links while restricting to the start path)"
+                )
+                follow_external = False
 
             # Parse base domain
             parsed_url = urlparse(url)
             base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+            # Compute the path prefix to prevent crawling parent paths.
+            # If the start URL ends with '/', use it as-is (it's already a directory).
+            # Otherwise, use the directory portion (up to and including the last '/').
+            start_path = parsed_url.path
+            if start_path.endswith('/'):
+                start_path_prefix = start_path
+            else:
+                parent = start_path.rsplit('/', 1)[0]
+                start_path_prefix = (parent + '/') if parent else '/'
 
             return {
                 "url": url,
@@ -404,6 +436,8 @@ class WebConnector(BaseConnector):
                 "max_pages": max_pages,
                 "follow_external": follow_external,
                 "base_domain": base_domain,
+                "restrict_to_start_path": restrict_to_start_path,
+                "start_path_prefix": start_path_prefix,
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch and parse config: {e}")
@@ -522,6 +556,7 @@ class WebConnector(BaseConnector):
             new_max_pages = config_values["max_pages"]
             new_follow_external = config_values["follow_external"]
             new_base_domain = config_values["base_domain"]
+            new_restrict_to_start_path = config_values["restrict_to_start_path"]
 
             if new_base_domain != self.base_domain:
                 self.logger.error(f"❌ Cannot change base domain from {self.base_domain} to {new_base_domain}. Please create a new connector for {new_base_domain}")
@@ -539,7 +574,9 @@ class WebConnector(BaseConnector):
             if new_follow_external != self.follow_external:
                 self.logger.info(f"🔄 Follow external changed from {self.follow_external} to {new_follow_external}")
                 self.follow_external = new_follow_external
-
+            if new_restrict_to_start_path != self.restrict_to_start_path:
+                self.logger.info(f"🔄 Restrict to start path changed from {self.restrict_to_start_path} to {new_restrict_to_start_path}")
+                self.restrict_to_start_path = new_restrict_to_start_path
 
         except Exception as e:
             self.logger.error(f"❌ Failed to reload config: {e}", exc_info=True)
@@ -943,6 +980,12 @@ class WebConnector(BaseConnector):
             # Check domain restrictions
             if not self.follow_external and parsed.netloc != base_parsed.netloc:
                 return False
+
+            # Prevent upward path traversal.
+            if self.restrict_to_start_path and self.url:
+                decoded_path = unquote(parsed.path)
+                if not decoded_path.startswith(self.start_path_prefix):
+                    return False
 
             return True
 
