@@ -2951,9 +2951,9 @@ OUTLOOK_GUIDANCE = r"""
 
 If a date includes a full month and day (e.g. "March 30"), use it directly.
 If only a day is given (e.g. "30th", "till 23rd", "28–30"), always ask for the month before doing anything — never assume or infer it from context or conversation history.
-Year defaults to the current year unless stated otherwise.
+Year always defaults to the current year — never ask the user for the year.
 All other date values (e.g. "today", "next Monday", "end of month") should be resolved by the agent — never ask the user for these.
-Never perform any create, update, or delete action on an ambiguous date.
+Never perform any create, update, or delete action on an ambiguous date
 ---
 
 **R-OUT-0: Data Resolution — Fetch-Before-Ask (MANDATORY)**
@@ -3140,7 +3140,8 @@ The `recurrence` field is a plain Python dict (not a nested model). All keys are
 
 **R-OUT-12:** For recurring-specific tasks: use `get_recurring_events_ending` to find expiring series, `search_calendar_events_in_range` to find by name, `delete_recurring_event_occurrence` to remove specific dates (batch all dates in one call), `update_calendar_event` to extend (preserve pattern, change only `range.endDate`). Always use `seriesMasterId` for series operations.
 
-**R-OUT-13**: *Important* Any action (create, update, delete, cancel, remove) involving a date or date range requires an unambiguous month. If the user provides only a day or day range (e.g. "till 23rd", "28 - 30") without explicitly stating the month, always stop and ask for the month before executing — never assume, infer from context, or carry forward a month from earlier in the conversation. This applies equally to start dates, end dates, and recurrence end dates. Year always defaults to the current year unless explicitly stated otherwise. A wrong action on the wrong date cannot always be undone.
+**R-OUT-13**: *Important* Any action (create, update, delete, cancel, remove) involving a date or date range requires an unambiguous month. If the user provides only a day or day range (e.g. "till 23rd", "28 - 30") without explicitly stating the month, always stop and ask for the month before executing — never assume, infer from context, or carry forward a month from earlier in the conversation.
+This applies equally to start dates, end dates, and recurrence end dates.A wrong action on the wrong date cannot always be undone.
 
 **R-OUT-14**: Never ask the user for timezone — always use the user's timezone that is injected into the system prompt. Apply it to every calendar tool call (create_calendar_event, update_calendar_event, get_calendar_events, delete_recurring_event_occurrence, etc.) without exception.
 

@@ -119,9 +119,8 @@ def _normalize_odata(data: Any) -> Any:
     commonly guess ``results``.  We keep ``value`` intact and add a
     ``results`` alias pointing to the same list so both paths work.
     """
-    if isinstance(data, dict):
-        if "value" in data and isinstance(data["value"], list) and "results" not in data:
-            data["results"] = data["value"]
+    if isinstance(data, dict) and "value" in data and isinstance(data["value"], list) and "results" not in data:
+        data["results"] = data["value"]
     return data
 
 
@@ -529,8 +528,7 @@ class Outlook:
         """Return a standardised error tuple."""
         error_msg = str(error).lower()
 
-        if isinstance(error, AttributeError):
-            if "client" in error_msg or "me" in error_msg:
+        if isinstance(error, AttributeError) and ("client" in error_msg or "me" in error_msg):
                 logger.error(
                     f"Outlook client not properly initialised – authentication may be required: {error}"
                 )
@@ -1703,6 +1701,11 @@ class Outlook:
             if not target_dates:
                 return False, json.dumps({"error": "No occurrence dates provided."})
 
+            logger.info(
+                "Deleting recurring event occurrences: event_id=%s, requested_dates=%d",
+                event_id, len(target_dates),
+            )
+
             parsed_targets: List[date] = []
             for date_string in target_dates:
                 try:
@@ -1742,6 +1745,12 @@ class Outlook:
                     out_of_scope.append(d_str)
                 else:
                     valid_dates.append(d_str)
+
+            if out_of_scope:
+                logger.info(
+                    "Out-of-scope dates skipped: %s (series range: %s to %s)",
+                    out_of_scope, series_start, series_end,
+                )
 
             if not valid_dates:
                 return True, json.dumps({
@@ -1819,9 +1828,10 @@ class Outlook:
             )
 
             if series_end_in_delete_range and recurrence and last_kept:
-                date.fromisoformat(last_kept)
-                # Collect all occurrences after last_kept that are in the delete
-                # set — these get implicitly removed by shrinking the end date
+                logger.info(
+                    "Applying end-date optimization: moving series end from %s to %s",
+                    series_end, last_kept,
+                )
                 trimmed_dates = [
                     occ_date
                     for occ_date in all_occ_dates
@@ -1869,6 +1879,14 @@ class Outlook:
                         "event_id": occurrence_id,
                         "error": delete_resp.error,
                     })
+
+            logger.info(
+                "Delete recurring occurrences complete: event_id=%s, "
+                "deleted=%d, trimmed_via_end_date=%d, out_of_scope=%d, "
+                "not_found=%d, failed=%d",
+                event_id, len(deleted), len(trimmed_dates),
+                len(out_of_scope), len(not_found), len(delete_errors),
+            )
 
             return True, json.dumps({
                 "success": True,
@@ -2093,8 +2111,8 @@ class Outlook:
     def _parse_metadata_json(meta_text: str) -> List[Dict[str, str]]:
         """Parse metadataContent (speaker diarization JSON lines) into entries."""
         entries: List[Dict[str, str]] = []
-        for line in meta_text.strip().splitlines():
-            line = line.strip()
+        for raw_line in meta_text.strip().splitlines():
+            line = raw_line.strip()
             if line.startswith("{"):
                 try:
                     obj = json.loads(line)
