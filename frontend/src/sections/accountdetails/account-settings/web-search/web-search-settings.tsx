@@ -2,7 +2,6 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Container,
-  Paper,
   Typography,
   Alert,
   Snackbar,
@@ -10,8 +9,9 @@ import {
   Button,
   Card,
   CardContent,
-  CardActions,
+  Avatar,
   Grid,
+  Tooltip,
   Chip,
   Dialog,
   DialogTitle,
@@ -35,6 +35,8 @@ import { Iconify } from 'src/components/iconify';
 import deleteIcon from '@iconify-icons/mdi/delete';
 import closeIcon from '@iconify-icons/mdi/close';
 import searchIcon from '@iconify-icons/mdi/magnify';
+import starIcon from '@iconify-icons/mdi/star';
+import pencilIcon from '@iconify-icons/mdi/pencil';
 import { webSearchService } from './services/web-search-config';
 import {
   AVAILABLE_WEB_SEARCH_PROVIDERS,
@@ -52,6 +54,7 @@ const ADDABLE_WEB_SEARCH_PROVIDERS = AVAILABLE_WEB_SEARCH_PROVIDERS.filter(
 
 function WebSearchSettings() {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
 
   const [configuredProviders, setConfiguredProviders] = useState<ConfiguredWebSearchProvider[]>([]);
   const [selectedProvider, setSelectedProvider] = useState<WebSearchProvider | null>(null);
@@ -60,6 +63,8 @@ function WebSearchSettings() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [providerToDelete, setProviderToDelete] = useState<ConfiguredWebSearchProvider | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [settingDefaultKey, setSettingDefaultKey] = useState<string | null>(null);
+  const [isSavingProvider, setIsSavingProvider] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -129,11 +134,13 @@ function WebSearchSettings() {
     setSelectedProvider(null);
     setEditingProvider(null);
     setFormData({});
+    setIsSavingProvider(false);
   };
 
   const handleSave = async () => {
-    if (!selectedProvider) return;
+    if (!selectedProvider || isSavingProvider) return;
 
+    setIsSavingProvider(true);
     try {
       const providerData: WebSearchProviderData = {
         provider: selectedProvider.id,
@@ -153,6 +160,8 @@ function WebSearchSettings() {
       loadConfiguredProviders();
     } catch (err: any) {
       setError(err.message || 'Failed to save provider');
+    } finally {
+      setIsSavingProvider(false);
     }
   };
 
@@ -165,7 +174,11 @@ function WebSearchSettings() {
     if (!providerToDelete) return;
     setIsDeleting(true);
     try {
+      const wasDefault = providerToDelete.isDefault;
       await webSearchService.deleteProvider(providerToDelete.providerKey);
+      if (wasDefault) {
+        await webSearchService.setDefaultProvider(DUCKDUCKGO_PROVIDER_ID);
+      }
       setSuccess('Provider deleted successfully');
       setDeleteDialogOpen(false);
       setProviderToDelete(null);
@@ -178,12 +191,15 @@ function WebSearchSettings() {
   };
 
   const handleSetDefault = async (providerKey: string) => {
+    setSettingDefaultKey(providerKey);
     try {
       await webSearchService.setDefaultProvider(providerKey);
       setSuccess('Default provider updated successfully');
       loadConfiguredProviders();
     } catch (err: any) {
       setError(err.message || 'Failed to set default provider');
+    } finally {
+      setSettingDefaultKey(null);
     }
   };
 
@@ -219,208 +235,587 @@ function WebSearchSettings() {
   };
 
   return (
-    <Container maxWidth="xl">
-      <Box sx={{ py: 3 }}>
-        <Typography variant="h4" gutterBottom>
-          Web Search Configuration
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          Configure web search providers for the chatbot to use when searching the web.
-        </Typography>
-
-        <Paper sx={{ p: 3, mb: 3 }}>
-          <Typography variant="h6" gutterBottom>
-            Web Search Mode Image Settings
-          </Typography>
-          <Divider sx={{ mb: 2 }} />
-          <Stack spacing={2}>
-            <FormControl component="fieldset">
-              <RadioGroup
-                value={webSearchSettings.includeImages ? 'include' : 'exclude'}
-                onChange={(event) =>
-                  setWebSearchSettings({
-                    ...webSearchSettings,
-                    includeImages: event.target.value === 'include',
-                  })
-                }
+    <Container maxWidth="xl" sx={{ py: 2 }}>
+      <Box
+        sx={{
+          borderRadius: 2,
+          backgroundColor: theme.palette.background.paper,
+          border: `1px solid ${theme.palette.divider}`,
+          overflow: 'hidden',
+        }}
+      >
+        {/* Header Section */}
+        <Box
+          sx={{
+            p: 3,
+            borderBottom: `1px solid ${theme.palette.divider}`,
+            backgroundColor: isDark
+              ? alpha(theme.palette.background.default, 0.3)
+              : alpha(theme.palette.grey[50], 0.5),
+          }}
+        >
+          <Stack direction="row" alignItems="center" spacing={1.5}>
+            <Box
+              sx={{
+                width: 40,
+                height: 40,
+                borderRadius: 1.5,
+                backgroundColor: alpha(theme.palette.primary.main, 0.1),
+                border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <Iconify
+                icon={searchIcon}
+                width={20}
+                height={20}
+                sx={{ color: theme.palette.primary.main }}
+              />
+            </Box>
+            <Box>
+              <Typography
+                variant="h5"
+                sx={{ fontWeight: 700, fontSize: '1.5rem', color: theme.palette.text.primary }}
               >
-                <FormControlLabel
-                  value="include"
-                  control={<Radio />}
-                  label="Send images to LLM"
-                />
-                <FormControlLabel
-                  value="exclude"
-                  control={<Radio />}
-                  label="Do not send images to LLM"
-                />
-              </RadioGroup>
-            </FormControl>
-
-            {webSearchSettings.includeImages && (
-              <>
-                <TextField
-                  label="Maximum input images per LLM call"
-                  type="number"
-                  value={maxImagesInput}
-                  onChange={(event) => setMaxImagesInput(event.target.value)}
-                  inputProps={{ min: 1, max: 500, step: 1 }}
-                  helperText="Enter a whole number between 1 and 500"
-                  sx={{ maxWidth: 320 }}
-                />
-                <Alert severity="warning">
-                  Including images may increase cost and add latency to web search queries.
-                </Alert>
-              </>
-            )}
-
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <Button
-                variant="contained"
-                onClick={handleSaveWebSearchSettings}
-                disabled={isLoading || isSavingSettings}
+                Web Search Configuration
+              </Typography>
+              <Typography
+                variant="body2"
+                sx={{ color: theme.palette.text.secondary, fontSize: '0.875rem' }}
               >
-                {isSavingSettings ? 'Saving...' : 'Save Image Settings'}
-              </Button>
+                Configure web search providers for the chatbot to use when searching the web.
+              </Typography>
             </Box>
           </Stack>
-        </Paper>
+        </Box>
 
-        {/* Configured Providers */}
-        <Paper sx={{ p: 3, mb: 3 }}>
-          <Typography variant="h6" gutterBottom>
-            Configured Providers
-          </Typography>
-          <Divider sx={{ mb: 2 }} />
-          {isLoading ? (
-            <Typography>Loading...</Typography>
-          ) : displayConfiguredProviders.length === 0 ? (
-            <Alert severity="info">
-              No providers configured yet. Add a provider below to get started.
-            </Alert>
-          ) : (
-            <Grid container spacing={2}>
-              {displayConfiguredProviders.map((configured) => {
-                const provider = AVAILABLE_WEB_SEARCH_PROVIDERS.find(
-                  (p) => p.id === configured.provider
-                );
-                const isDuckDuckGo = configured.provider === DUCKDUCKGO_PROVIDER_ID;
-                return (
-                  <Grid item xs={12} md={6} key={configured.providerKey}>
-                    <Card
-                      variant="outlined"
+        {/* Content Section */}
+        <Box sx={{ p: 3 }}>
+          <Stack spacing={3}>
+
+            {/* Image Settings Panel */}
+            <Box
+              sx={{
+                borderRadius: 2,
+                border: `1px solid ${theme.palette.divider}`,
+                overflow: 'hidden',
+              }}
+            >
+              <Box
+                sx={{
+                  px: 2.5,
+                  py: 1.5,
+                  borderBottom: `1px solid ${theme.palette.divider}`,
+                  backgroundColor: isDark
+                    ? alpha(theme.palette.background.default, 0.3)
+                    : alpha(theme.palette.grey[50], 0.5),
+                }}
+              >
+                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                  Image Settings
+                </Typography>
+                <Typography variant="caption" sx={{ color: theme.palette.text.secondary }}>
+                  Control whether images are sent to the LLM during web search
+                </Typography>
+              </Box>
+              <Box sx={{ p: 2.5 }}>
+                <Stack spacing={2}>
+                  <FormControl component="fieldset">
+                    <RadioGroup
+                      value={webSearchSettings.includeImages ? 'include' : 'exclude'}
+                      onChange={(event) =>
+                        setWebSearchSettings({
+                          ...webSearchSettings,
+                          includeImages: event.target.value === 'include',
+                        })
+                      }
+                    >
+                      <FormControlLabel
+                        value="include"
+                        control={<Radio size="small" />}
+                        label={
+                          <Typography variant="body2">Send images to LLM</Typography>
+                        }
+                      />
+                      <FormControlLabel
+                        value="exclude"
+                        control={<Radio size="small" />}
+                        label={
+                          <Typography variant="body2">Do not send images to LLM</Typography>
+                        }
+                      />
+                    </RadioGroup>
+                  </FormControl>
+
+                  {webSearchSettings.includeImages && (
+                    <>
+                      <TextField
+                        label="Maximum input images per LLM call"
+                        type="number"
+                        value={maxImagesInput}
+                        onChange={(event) => setMaxImagesInput(event.target.value)}
+                        inputProps={{ min: 1, max: 500, step: 1 }}
+                        helperText="Enter a whole number between 1 and 500"
+                        size="small"
+                        sx={{ maxWidth: 320 }}
+                      />
+                      <Alert severity="warning" sx={{ borderRadius: 1.5 }}>
+                        Including images may increase cost and add latency to web search queries.
+                      </Alert>
+                    </>
+                  )}
+
+                  <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <Button
+                      variant="contained"
+                      size="small"
+                      onClick={handleSaveWebSearchSettings}
+                      disabled={isLoading || isSavingSettings}
                       sx={{
-                        border: configured.isDefault
-                          ? `2px solid ${theme.palette.primary.main}`
-                          : undefined,
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        borderRadius: 1.5,
+                        px: 3,
+                        height: 36,
                       }}
                     >
-                      <CardContent>
-                        <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                          <Typography variant="h6" sx={{ flexGrow: 1 }}>
-                            {provider?.name || configured.provider}
-                          </Typography>
-                          {configured.isDefault && (
-                            <Chip label="Default" color="primary" size="small" />
-                          )}
-                        </Box>
-                        <Typography variant="body2" color="text.secondary">
-                          {provider?.description || 'Web search provider'}
-                        </Typography>
-                      </CardContent>
-                      <CardActions>
-                        {!isDuckDuckGo && (
-                          <Button size="small" onClick={() => handleEdit(configured)}>
-                            Edit
-                          </Button>
-                        )}
-                        {!configured.isDefault && (
-                          <Button
-                            size="small"
-                            onClick={() => handleSetDefault(configured.providerKey)}
-                          >
-                            Set as Default
-                          </Button>
-                        )}
-                        {!isDuckDuckGo && (
-                          <Button
-                            size="small"
-                            color="error"
-                            onClick={() => handleDeleteClick(configured)}
-                          >
-                            Delete
-                          </Button>
-                        )}
-                      </CardActions>
-                    </Card>
-                  </Grid>
-                );
-              })}
-            </Grid>
-          )}
-        </Paper>
+                      {isSavingSettings ? 'Saving...' : 'Save'}
+                    </Button>
+                  </Box>
+                </Stack>
+              </Box>
+            </Box>
 
-        {/* Available Providers */}
-        <Paper sx={{ p: 3 }}>
-          <Typography variant="h6" gutterBottom>
-            Available Providers
-          </Typography>
-          <Divider sx={{ mb: 2 }} />
-          <Grid container spacing={2}>
-            {ADDABLE_WEB_SEARCH_PROVIDERS.map((provider) => {
-              const isAlreadyConfigured = configuredProviders.some(
-                (c) => c.provider === provider.id
-              );
-              return (
-                <Grid item xs={12} sm={6} md={4} key={provider.id}>
-                  <Card
-                    variant="outlined"
-                    sx={{
-                      height: '100%',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      cursor: isAlreadyConfigured ? 'default' : 'pointer',
-                      opacity: isAlreadyConfigured ? 0.85 : 1,
-                      ...(!isAlreadyConfigured && {
-                        '&:hover': {
-                          borderColor: theme.palette.primary.main,
-                          boxShadow: theme.shadows[4],
-                        },
-                      }),
-                    }}
-                    onClick={() => !isAlreadyConfigured && handleProviderSelect(provider)}
-                  >
-                    <CardContent sx={{ flexGrow: 1 }}>
-                      <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
-                        <Typography variant="h6">{provider.name}</Typography>
-                        {provider.isPopular && (
-                          <Chip label="Popular" size="small" color="primary" />
-                        )}
-                      </Stack>
-                      <Typography variant="body2" color="text.secondary">
-                        {provider.description}
-                      </Typography>
-                    </CardContent>
-                    <CardActions>
-                      {isAlreadyConfigured ? (
-                        <Chip
-                          label="Already configured"
-                          size="small"
-                          color="success"
-                          variant="outlined"
-                        />
-                      ) : (
-                        <Button size="small" color="primary">
-                          Configure
-                        </Button>
-                      )}
-                    </CardActions>
-                  </Card>
+            {/* Configured Providers Panel */}
+            <Box
+              sx={{
+                borderRadius: 2,
+                border: `1px solid ${theme.palette.divider}`,
+                overflow: 'hidden',
+              }}
+            >
+              <Box
+                sx={{
+                  px: 2.5,
+                  py: 1.5,
+                  borderBottom: `1px solid ${theme.palette.divider}`,
+                  backgroundColor: isDark
+                    ? alpha(theme.palette.background.default, 0.3)
+                    : alpha(theme.palette.grey[50], 0.5),
+                }}
+              >
+                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                  Configured Providers
+                </Typography>
+                <Typography variant="caption" sx={{ color: theme.palette.text.secondary }}>
+                  Manage your active web search provider integrations
+                </Typography>
+              </Box>
+              <Box sx={{ p: 2.5 }}>
+                {isLoading ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Loading...
+                  </Typography>
+                ) : displayConfiguredProviders.length === 0 ? (
+                  <Alert severity="info" sx={{ borderRadius: 1.5 }}>
+                    No providers configured yet. Add a provider below to get started.
+                  </Alert>
+                ) : (
+                  <Grid container spacing={2.5}>
+                    {displayConfiguredProviders.map((configured) => {
+                      const provider = AVAILABLE_WEB_SEARCH_PROVIDERS.find(
+                        (p) => p.id === configured.provider
+                      );
+                      const isDuckDuckGo = configured.provider === DUCKDUCKGO_PROVIDER_ID;
+                      return (
+                        <Grid item xs={12} sm={6} md={4} lg={3} key={configured.providerKey}>
+                          <Card
+                            elevation={0}
+                            sx={{
+                              height: '100%',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              borderRadius: 2,
+                              border: configured.isDefault
+                                ? `1px solid ${alpha(theme.palette.primary.main, 0.5)}`
+                                : `1px solid ${theme.palette.divider}`,
+                              backgroundColor: theme.palette.background.paper,
+                              cursor: 'pointer',
+                              position: 'relative',
+                              transition: theme.transitions.create(
+                                ['transform', 'box-shadow', 'border-color'],
+                                {
+                                  duration: theme.transitions.duration.shorter,
+                                  easing: theme.transitions.easing.easeOut,
+                                }
+                              ),
+                              '&:hover': {
+                                transform: 'translateY(-2px)',
+                                borderColor: alpha(theme.palette.primary.main, 0.5),
+                                boxShadow: isDark
+                                  ? `0 8px 32px ${alpha('#000', 0.3)}`
+                                  : `0 8px 32px ${alpha(theme.palette.primary.main, 0.12)}`,
+                                '& .provider-avatar': { transform: 'scale(1.05)' },
+                              },
+                            }}
+                          >
+                            {/* Top-right status dot */}
+                            <Box
+                              sx={{
+                                position: 'absolute',
+                                top: 12,
+                                right: 12,
+                                width: 6,
+                                height: 6,
+                                borderRadius: '50%',
+                                backgroundColor: theme.palette.success.main,
+                                boxShadow: `0 0 0 2px ${theme.palette.background.paper}`,
+                              }}
+                            />
+
+                            <CardContent
+                              sx={{
+                                p: 2,
+                                display: 'flex',
+                                flexDirection: 'column',
+                                height: '100%',
+                                gap: 1.5,
+                                '&:last-child': { pb: 2 },
+                              }}
+                            >
+                              {/* Avatar + name */}
+                              <Stack spacing={1.5} alignItems="center">
+                                <Avatar
+                                  className="provider-avatar"
+                                  sx={{
+                                    width: 48,
+                                    height: 48,
+                                    backgroundColor: isDark
+                                      ? alpha(theme.palette.common.white, 0.9)
+                                      : alpha(theme.palette.grey[100], 0.8),
+                                    border: `1px solid ${theme.palette.divider}`,
+                                    transition: theme.transitions.create('transform'),
+                                  }}
+                                >
+                                  <Iconify
+                                    icon={searchIcon}
+                                    width={24}
+                                    height={24}
+                                    sx={{ color: theme.palette.primary.main }}
+                                  />
+                                </Avatar>
+                                <Box sx={{ textAlign: 'center', width: '100%' }}>
+                                  <Typography
+                                    variant="subtitle2"
+                                    sx={{ fontWeight: 600, color: theme.palette.text.primary, mb: 0.25, lineHeight: 1.2 }}
+                                  >
+                                    {provider?.name || configured.provider}
+                                  </Typography>
+                                  <Typography
+                                    variant="caption"
+                                    sx={{ color: theme.palette.text.secondary, fontSize: '0.6875rem' }}
+                                  >
+                                    Web Search
+                                  </Typography>
+                                </Box>
+                              </Stack>
+
+                              {/* Default chip OR Set as Default button */}
+                              <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                                {configured.isDefault ? (
+                                  <Chip
+                                    icon={<Iconify icon={starIcon} width={14} height={14} />}
+                                    label="Default"
+                                    size="small"
+                                    sx={{
+                                      height: 24,
+                                      fontSize: '0.75rem',
+                                      fontWeight: 500,
+                                      backgroundColor: isDark
+                                        ? alpha(theme.palette.primary.main, 0.8)
+                                        : alpha(theme.palette.primary.main, 0.1),
+                                      color: isDark ? theme.palette.background.paper : theme.palette.primary.main,
+                                      border: `1px solid ${alpha(theme.palette.primary.main, 0.2)}`,
+                                      '& .MuiChip-icon': { color: isDark ? theme.palette.background.paper : theme.palette.primary.main },
+                                    }}
+                                  />
+                                ) : (
+                                  <Button
+                                    fullWidth
+                                    variant="outlined"
+                                    size="small"
+                                    startIcon={
+                                      settingDefaultKey === configured.providerKey ? (
+                                        <CircularProgress size={14} color="inherit" />
+                                      ) : (
+                                        <Iconify icon={starIcon} width={14} height={14} />
+                                      )
+                                    }
+                                    onClick={() => handleSetDefault(configured.providerKey)}
+                                    disabled={settingDefaultKey !== null}
+                                    sx={{
+                                      height: 30,
+                                      borderRadius: 1.5,
+                                      textTransform: 'none',
+                                      fontWeight: 600,
+                                      fontSize: '0.75rem',
+                                      borderColor: alpha(theme.palette.primary.main, 0.3),
+                                      '&:hover': { borderColor: theme.palette.primary.main, backgroundColor: alpha(theme.palette.primary.main, 0.04) },
+                                    }}
+                                  >
+                                    Set as Default
+                                  </Button>
+                                )}
+                              </Box>
+
+                              {/* Bottom row */}
+                              {isDuckDuckGo ? (
+                                <Box
+                                  sx={{
+                                    mt: 'auto',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 0.75,
+                                    px: 1.5,
+                                    py: 1,
+                                    borderRadius: 1,
+                                    backgroundColor: isDark
+                                      ? alpha(theme.palette.background.default, 0.3)
+                                      : alpha(theme.palette.grey[50], 0.8),
+                                    border: `1px solid ${theme.palette.divider}`,
+                                  }}
+                                >
+                                  <Box sx={{ width: 4, height: 4, borderRadius: '50%', flexShrink: 0, backgroundColor: theme.palette.text.disabled }} />
+                                  <Typography variant="caption" sx={{ fontSize: '0.75rem', fontWeight: 500, color: theme.palette.text.secondary }}>
+                                    System provided
+                                  </Typography>
+                                </Box>
+                              ) : (
+                                <Stack direction="row" spacing={0.75} sx={{ mt: 'auto' }}>
+                                  <Button
+                                    fullWidth
+                                    variant="outlined"
+                                    size="small"
+                                    startIcon={<Iconify icon={pencilIcon} width={15} height={15} />}
+                                    onClick={() => handleEdit(configured)}
+                                    sx={{
+                                      height: 38,
+                                      borderRadius: 1.5,
+                                      textTransform: 'none',
+                                      fontWeight: 600,
+                                      fontSize: '0.8125rem',
+                                      borderColor: alpha(theme.palette.primary.main, 0.3),
+                                      '&:hover': { borderColor: theme.palette.primary.main, backgroundColor: alpha(theme.palette.primary.main, 0.04) },
+                                    }}
+                                  >
+                                    Edit
+                                  </Button>
+                                  <Tooltip title="Delete" arrow>
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => handleDeleteClick(configured)}
+                                      sx={{
+                                        width: 38,
+                                        height: 38,
+                                        flexShrink: 0,
+                                        borderRadius: 1.5,
+                                        border: `1px solid ${alpha(theme.palette.error.main, 0.3)}`,
+                                        color: theme.palette.error.main,
+                                        '&:hover': { backgroundColor: alpha(theme.palette.error.main, 0.04), borderColor: theme.palette.error.main },
+                                      }}
+                                    >
+                                      <Iconify icon={deleteIcon} width={16} height={16} />
+                                    </IconButton>
+                                  </Tooltip>
+                                </Stack>
+                              )}
+                            </CardContent>
+                          </Card>
+                        </Grid>
+                      );
+                    })}
+                  </Grid>
+                )}
+              </Box>
+            </Box>
+
+            {/* Available Providers Panel */}
+            <Box
+              sx={{
+                borderRadius: 2,
+                border: `1px solid ${theme.palette.divider}`,
+                overflow: 'hidden',
+              }}
+            >
+              <Box
+                sx={{
+                  px: 2.5,
+                  py: 1.5,
+                  borderBottom: `1px solid ${theme.palette.divider}`,
+                  backgroundColor: isDark
+                    ? alpha(theme.palette.background.default, 0.3)
+                    : alpha(theme.palette.grey[50], 0.5),
+                }}
+              >
+                <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                  Available Providers
+                </Typography>
+                <Typography variant="caption" sx={{ color: theme.palette.text.secondary }}>
+                  Add a new web search provider to your configuration
+                </Typography>
+              </Box>
+              <Box sx={{ p: 2.5 }}>
+                <Grid container spacing={2.5}>
+                  {ADDABLE_WEB_SEARCH_PROVIDERS.map((provider) => {
+                    const isAlreadyConfigured = configuredProviders.some(
+                      (c) => c.provider === provider.id
+                    );
+                    return (
+                      <Grid item xs={12} sm={6} md={4} lg={3} key={provider.id}>
+                        <Card
+                          elevation={0}
+                          sx={{
+                            height: '100%',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            borderRadius: 2,
+                            border: `1px solid ${theme.palette.divider}`,
+                            backgroundColor: theme.palette.background.paper,
+                            cursor: isAlreadyConfigured ? 'default' : 'pointer',
+                            position: 'relative',
+                            transition: theme.transitions.create(
+                              ['transform', 'box-shadow', 'border-color'],
+                              {
+                                duration: theme.transitions.duration.shorter,
+                                easing: theme.transitions.easing.easeOut,
+                              }
+                            ),
+                            ...(!isAlreadyConfigured && {
+                              '&:hover': {
+                                transform: 'translateY(-2px)',
+                                borderColor: alpha(theme.palette.primary.main, 0.5),
+                                boxShadow: isDark
+                                  ? `0 8px 32px ${alpha('#000', 0.3)}`
+                                  : `0 8px 32px ${alpha(theme.palette.primary.main, 0.12)}`,
+                                '& .provider-avatar': { transform: 'scale(1.05)' },
+                              },
+                            }),
+                          }}
+                          onClick={() => !isAlreadyConfigured && handleProviderSelect(provider)}
+                        >
+                          {/* Top-left badge */}
+                          {provider.isPopular && (
+                            <Box
+                              sx={{
+                                position: 'absolute',
+                                top: 8,
+                                left: 8,
+                                px: 0.75,
+                                py: 0.25,
+                                borderRadius: 0.75,
+                                fontSize: '0.6875rem',
+                                fontWeight: 600,
+                                color: theme.palette.success.main,
+                                backgroundColor: alpha(theme.palette.success.main, 0.08),
+                                border: `1px solid ${alpha(theme.palette.success.main, 0.2)}`,
+                              }}
+                            >
+                              Popular
+                            </Box>
+                          )}
+
+                          <CardContent
+                            sx={{
+                              p: 2,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              height: '100%',
+                              gap: 1.5,
+                              '&:last-child': { pb: 2 },
+                            }}
+                          >
+                            <Stack spacing={1.5} alignItems="center">
+                              <Avatar
+                                className="provider-avatar"
+                                sx={{
+                                  width: 48,
+                                  height: 48,
+                                  backgroundColor: isDark
+                                    ? alpha(theme.palette.common.white, 0.9)
+                                    : alpha(theme.palette.grey[100], 0.8),
+                                  border: `1px solid ${theme.palette.divider}`,
+                                  transition: theme.transitions.create('transform'),
+                                }}
+                              >
+                                <Iconify
+                                  icon={searchIcon}
+                                  width={24}
+                                  height={24}
+                                  sx={{ color: theme.palette.primary.main }}
+                                />
+                              </Avatar>
+                              <Box sx={{ textAlign: 'center', width: '100%' }}>
+                                <Typography
+                                  variant="subtitle2"
+                                  sx={{ fontWeight: 600, color: theme.palette.text.primary, mb: 0.25, lineHeight: 1.2 }}
+                                >
+                                  {provider.name}
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  sx={{ color: theme.palette.text.secondary, fontSize: '0.6875rem' }}
+                                >
+                                  Web Search
+                                </Typography>
+                              </Box>
+                            </Stack>
+
+                            {/* Description */}
+                            <Typography
+                              variant="caption"
+                              sx={{ color: theme.palette.text.secondary, fontSize: '0.75rem', textAlign: 'center', display: 'block' }}
+                            >
+                              {provider.description}
+                            </Typography>
+
+                            <Button
+                              fullWidth
+                              variant="outlined"
+                              size="small"
+                              disabled={isAlreadyConfigured}
+                              sx={{
+                                mt: 'auto',
+                                height: 38,
+                                borderRadius: 1.5,
+                                textTransform: 'none',
+                                fontWeight: 600,
+                                fontSize: '0.8125rem',
+                                ...(!isAlreadyConfigured && {
+                                  borderColor: alpha(theme.palette.primary.main, 0.3),
+                                  '&:hover': {
+                                    borderColor: theme.palette.primary.main,
+                                    backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                                  },
+                                }),
+                              }}
+                            >
+                              {isAlreadyConfigured ? 'Already Configured' : 'Configure'}
+                            </Button>
+                          </CardContent>
+                        </Card>
+                      </Grid>
+                    );
+                  })}
                 </Grid>
-              );
-            })}
-          </Grid>
-        </Paper>
+              </Box>
+            </Box>
+
+          </Stack>
+        </Box>
+      </Box>
 
         {/* Configuration Dialog */}
         <Dialog open={dialogOpen} onClose={handleDialogClose} maxWidth="sm" fullWidth>
@@ -488,8 +883,8 @@ function WebSearchSettings() {
           </DialogContent>
           <DialogActions>
             <Button onClick={handleDialogClose}>Cancel</Button>
-            <Button onClick={handleSave} variant="contained" color="primary">
-              {editingProvider ? 'Update' : 'Add'}
+            <Button onClick={handleSave} variant="contained" color="primary" disabled={isSavingProvider}>
+              {isSavingProvider ? 'Saving...' : editingProvider ? 'Update' : 'Add'}
             </Button>
           </DialogActions>
         </Dialog>
@@ -642,29 +1037,28 @@ function WebSearchSettings() {
           </DialogActions>
         </Dialog>
 
-        {/* Snackbars */}
-        <Snackbar
-          open={!!error}
-          autoHideDuration={6000}
-          onClose={() => setError(null)}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        >
-          <Alert severity="error" onClose={() => setError(null)}>
-            {error}
-          </Alert>
-        </Snackbar>
+      {/* Snackbars */}
+      <Snackbar
+        open={!!error}
+        autoHideDuration={6000}
+        onClose={() => setError(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      >
+        <Alert severity="error" onClose={() => setError(null)}>
+          {error}
+        </Alert>
+      </Snackbar>
 
-        <Snackbar
-          open={!!success}
-          autoHideDuration={3000}
-          onClose={() => setSuccess(null)}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        >
-          <Alert severity="success" onClose={() => setSuccess(null)}>
-            {success}
-          </Alert>
-        </Snackbar>
-      </Box>
+      <Snackbar
+        open={!!success}
+        autoHideDuration={3000}
+        onClose={() => setSuccess(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      >
+        <Alert severity="success" onClose={() => setSuccess(null)}>
+          {success}
+        </Alert>
+      </Snackbar>
     </Container>
   );
 };

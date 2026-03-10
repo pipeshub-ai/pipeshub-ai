@@ -950,7 +950,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(addWebSearchProviderSchema),
-    addWebSearchProvider(keyValueStoreService),
+    addWebSearchProvider(keyValueStoreService, appConfig),
   );
 
   /**
@@ -965,7 +965,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateWebSearchProviderSchema),
-    updateWebSearchProvider(keyValueStoreService),
+    updateWebSearchProvider(keyValueStoreService, appConfig),
   );
 
   /**
@@ -995,7 +995,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateDefaultWebSearchProviderSchema),
-    updateDefaultWebSearchProvider(keyValueStoreService),
+    updateDefaultWebSearchProvider(keyValueStoreService, appConfig),
   );
 
   router.get(

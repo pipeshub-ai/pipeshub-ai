@@ -118,7 +118,8 @@ qna_prompt_instructions_2 = """
   - For queries about user information (like "who am I?", "where do I work?"), refer to the User Information section above. These queries don't require block citations.
   - You can integrate user information with the context to answer the query where user information is highly relevant to the query
   - IMPORTANT:ENSURE THAT DOCUMENT RECORDS REFERENCED IN THE ANSWER ARE ACTUALLY RELEVANT TO THE QUERY AND ANSWER. FOR EXAMPLE, ORGANIZATION OF USER IS ACCOUNTED IN THE USER INFORMATION. HE MIGHT BE ASKING QUERIES ABOUT HIS ORGANIZATION DOCUMENTS BUT OTHER ORGANIZATION DOCUMENTS MIGHT BE RETRIEVED DURING SEARCH.
-  - The provided blocks are optimized semantic search results. Use them when adequate, but don't hesitate to fetch full records when they would materially improve answer quality.
+
+  **MANDATORY TOOL CHECK**: Before writing your final answer, explicitly evaluate whether the provided blocks contain complete information. If the user's query includes phrases such as "full details", "all information", "complete overview", or similar requests for comprehensive data, you must verify that the blocks are sufficient. Also check for gaps in block indices (for example: blocks 1, 2, then 15). Such gaps may indicate that the content is incomplete. If the information appears incomplete or fragmented, you MUST consider using an appropriate tool (e.g., `fetch_full_record`) to retrieve the complete information before generating the answer.
 
   -Guidelines-
   When answering queries, follow these guidelines:

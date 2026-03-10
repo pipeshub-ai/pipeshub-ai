@@ -2,7 +2,6 @@ import json
 from typing import Any, Dict, List, Optional
 
 import httpx
-from langchain_community.tools import DuckDuckGoSearchResults
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
@@ -20,10 +19,20 @@ class WebSearchArgs(BaseModel):
 
 def _search_with_duckduckgo(query: str, config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Search using DuckDuckGo (default, no API key needed)."""
-    search = DuckDuckGoSearchResults(num_results=10,output_format="json")
-    results = search.run(query)
-    results = json.loads(results)
-    return results
+    from ddgs import DDGS
+
+    backend = config.get("backend", "duckduckgo")
+    with DDGS() as ddgs:
+        raw_results = ddgs.text(
+            query,
+            max_results=10,
+            timelimit=None,
+            backend=backend,
+        )
+    return [
+        {"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")}
+        for r in (raw_results or [])
+    ]
 
 
 def _search_with_serper(query: str, config: Dict[str, Any]) -> List[Dict[str, Any]]:

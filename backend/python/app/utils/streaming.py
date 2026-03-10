@@ -668,8 +668,6 @@ async def execute_tool_calls(
         messages.append(HumanMessage(content="""Strictly follow the citation guidelines mentioned in the prompt above."""))
 
     logger.debug(f"[WEB_CITATIONS] execute_tool_calls: About to yield tool_execution_complete with {len(web_records)} web_records")
-    if web_records:
-        logger.debug(f"[WEB_CITATIONS] web_records being yielded: {[(wr.get('citation_id'), wr.get('url_number'), wr.get('block_index')) for wr in web_records]}")
 
     yield {
         "event": "tool_execution_complete",
@@ -1297,7 +1295,8 @@ async def stream_llm_response_with_tools(
 
     # Handle tool calls first if tools are provided (only in JSON mode)
     if tools and mode == "json":
-        logger.info("Tools Available to LLM: %s", tools)
+        tool_names = [tool.name for tool in tools]
+        logger.info("Tools Available to LLM: %s", tool_names)
         final_messages = messages.copy()
         tools_were_called = False
         try:

@@ -50,7 +50,7 @@ SKIP_TAGS = {              # tags whose subtree we ignore completely
 
 def _clean(text: str) -> str:
     """Collapse whitespace and strip."""
-    return re.sub(r"\s+", " ", text).strip()
+    return text.strip()
 
 
 def _resolve_url(src: str, base_url: str) -> str:
@@ -96,8 +96,8 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str],is_mu
     for child in node.children:
         # ── Plain text node ──────────────────────────────────────────────
         if isinstance(child, NavigableString):
-            text = _clean(str(child))
-            if text:
+            text = str(child)
+            if text.strip():      # skip pure-whitespace text nodes
                 buffer.append(text)
             continue
 
@@ -129,7 +129,7 @@ def _walk(node: Tag, base_url: str, blocks: list[Block], buffer: list[str],is_mu
         if tag_name in SPLIT_TAGS:
             _flush_buffer(buffer, blocks)
             # Collect all text inside this tag
-            inner = _clean(child.get_text(" ", strip=True))
+            inner = child.get_text("")
             if inner:
                 for chunk in _split_long_text(inner):
                     blocks.append(TextBlock(content=chunk))
@@ -156,19 +156,8 @@ def _flush_buffer(buffer: list[str], blocks: list[Block]) -> None:
     """Join buffered text fragments into one or more TextBlocks."""
     if not buffer:
         return
-    combined = _clean(" ".join(buffer))
+    combined = "".join(buffer)
     buffer.clear()
-
-    if len(combined) < MIN_TEXT_CHARS:
-        # Try to merge with the previous text block
-        if blocks and isinstance(blocks[-1], TextBlock):
-            merged = _clean(blocks[-1].content + " " + combined)
-            for chunk in _split_long_text(merged):
-                blocks[-1].content = chunk     # update last block in-place
-            return
-        elif combined:                         # keep even if short (standalone)
-            blocks.append(TextBlock(content=combined))
-        return
 
     for chunk in _split_long_text(combined):
         blocks.append(TextBlock(content=chunk))

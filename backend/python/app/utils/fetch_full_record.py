@@ -66,26 +66,30 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
     """
     @tool("fetch_full_record", args_schema=FetchFullRecordArgs)
     async def fetch_full_record_tool(record_ids: List[str], reason: str = "Fetching full record content for comprehensive answer") -> Dict[str, Any]:
-        """
-        Retrieve the complete content of multiple records for comprehensive answering.
+        """You have access to this tool called "fetch_full_record" that retrieves the complete content of multiple records.
 
-        WHEN TO USE:
+        **When to use:**
         - Provided blocks contain partial information with gaps in understanding
         - Need more context from specific records for a complete answer
         - Blocks suggest important information exists but isn't fully captured
-        - User asks for "full details", "complete overview", or "comprehensive summary"
-        - Encounter references to content that should be in records but isn't in blocks
+        - References to content that should be in records but isn't in provided blocks
+        - Query asks for comprehensive details ("full details", "complete overview", "all information")
+        - CRITICAL: If blocks seem incomplete or you're uncertain, USE THE TOOL rather than providing a partial answer
 
-        WHEN NOT TO USE:
-        - Provided blocks have sufficient information to answer completely
-        - Query is about user information (use User Information section instead)
-        - Simple factual queries already answered in blocks
+        **How to use:**
+        - Call this tool with a LIST of RecordIds: ["80b50ab4-b775-46bf-b061-f0241c0dfa19", "90c60bc5-c886-57cg-c172-g1352d1egb2a"]
+        - Provide a clear reason explaining why you need the full records
+        - The tool returns the complete content of all requested records including all blocks
+        - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
 
-        HOW TO USE:
-        - Pass ALL record IDs needed in a SINGLE call (not multiple separate calls)
-        - Provide clear reason explaining why full records are needed
-        - After receiving results, integrate seamlessly with existing blocks
-        - Continue citing sources appropriately
+        NOTE:
+        - **Balanced Tool Usage**: The provided blocks are optimized semantic search results. Use them when adequate, but don't hesitate to fetch full records when they would materially improve answer quality.
+
+        Tool Usage Strategy:
+        - **Tool call format:** When using the tool, explain your reasoning clearly in the "reason" parameter
+        - **Integration:** After receiving tool results, seamlessly integrate the information with existing blocks
+
+        For any query that cannot be answered with current blocks, attempt to use this tool
 
         Args:
             record_ids: List of recordIds (e.g., ["b541abcc-0bc9-42aa-8fc7-22ecfa12ef11"])
@@ -98,8 +102,7 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
             fetch_full_record(
                 record_ids=["80b50ab4-b775-46bf-b061-f0241c0dfa19","3c5357e0-1838-4b16-bbf4-9fb1f606bf4a"],
                 reason="Blocks only show summary; need full implementation details to answer how the feature works"
-            )
-        """
+            )"""
         try:
             result = await _fetch_multiple_records_impl(record_ids, virtual_record_id_to_result)
             return result

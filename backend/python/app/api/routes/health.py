@@ -32,6 +32,69 @@ def _load_test_image() -> str:
 TEST_IMAGE = _load_test_image()
 
 
+@router.post("/web-search-health-check")
+async def web_search_health_check(request: Request, provider_config: dict = Body(...)) -> JSONResponse:
+    """Health check endpoint to validate a web search provider configuration."""
+    provider = provider_config.get("provider", "duckduckgo")
+    try:
+        configuration = provider_config.get("configuration", {})
+
+        from app.utils.web_search_tool import (
+            _search_with_duckduckgo,
+            _search_with_serper,
+            _search_with_tavily,
+        )
+
+        provider_map = {
+            "duckduckgo": _search_with_duckduckgo,
+            "serper": _search_with_serper,
+            "tavily": _search_with_tavily,
+        }
+
+        search_func = provider_map.get(provider)
+        if not search_func:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "not healthy",
+                    "error": f"Unknown web search provider: {provider}",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+
+        await asyncio.wait_for(
+            asyncio.to_thread(search_func, "health check test", configuration),
+            timeout=30.0,
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "healthy",
+                "message": f"Web search provider '{provider}' is responding",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "not healthy",
+                "error": f"Web search health check timed out for provider '{provider}'",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "not healthy",
+                "error": f"Web search health check failed: {str(e)}",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+
+
 @router.post("/llm-health-check")
 async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)) -> JSONResponse:
     """Health check endpoint to validate user-provided LLM configurations"""

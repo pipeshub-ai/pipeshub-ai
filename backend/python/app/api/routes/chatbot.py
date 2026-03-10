@@ -282,6 +282,7 @@ async def askAIStream(
 
             # Process query inline with real-time status updates
             try:
+                original_query = query_info.query
                 # Get LLM based on user selection or fallback to default
                 llm, config, ai_models_config = await get_llm_for_chat(
                     config_service,
@@ -387,7 +388,7 @@ async def askAIStream(
                     messages.append({
                         "role": "user",
                         "content": Template(web_search_user_prompt).render(
-                            query=query_info.query,
+                            query=original_query,
                             mode=query_info.mode,
                         ),
                     })
@@ -471,7 +472,7 @@ async def askAIStream(
 
 
 
-                    content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger, query_info.mode)
+                    content = get_message_content(final_results, virtual_record_id_to_result, user_data, original_query, logger, query_info.mode)
                     messages.append({"role": "user", "content": content})
                     tools = [
                         create_fetch_full_record_tool(virtual_record_id_to_result),
