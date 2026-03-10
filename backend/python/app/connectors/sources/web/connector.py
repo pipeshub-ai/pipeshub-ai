@@ -954,6 +954,17 @@ class WebConnector(BaseConnector):
             final_url = result.final_url
             content_bytes = result.content_bytes
 
+            # Guard against HTTP redirects that silently cross a domain boundary.
+            if self.base_domain and not self.follow_external:
+                final_netloc = urlparse(final_url).netloc
+                base_netloc = urlparse(self.base_domain).netloc
+                if final_netloc != base_netloc:
+                    self.logger.warning(
+                        f"⚠️ Skipping {url}: HTTP redirect crossed domain boundary "
+                        f"({base_netloc} → {final_netloc})"
+                    )
+                    return None
+
             if len(content_bytes) > self.max_size_mb * 1024 * 1024:
                 size_mb = len(content_bytes) / (1024 * 1024)
                 self.logger.warning(
