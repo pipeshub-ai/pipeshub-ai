@@ -1578,9 +1578,9 @@ class DataSourceEntitiesProcessor:
         """
         # If no transaction provided, create one and recursively call with it
         if tx_store is None:
-            async with self.data_store_provider.transaction() as tx_store:
+            async with self.data_store_provider.transaction() as new_tx_store:
                 return await self.migrate_group_permissions_to_user(
-                    group_id, user_email, connector_id, tx_store
+                    group_id, user_email, connector_id, new_tx_store
                 )
 
         # Get the user object
