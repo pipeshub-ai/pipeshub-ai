@@ -1,13 +1,8 @@
 import json
 import logging
-import re
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
 
-from kiota_abstractions.method import Method  # type: ignore
-from kiota_abstractions.request_information import RequestInformation  # type: ignore
 from kiota_serialization_json.json_serialization_writer import JsonSerializationWriter  # type: ignore
-from msgraph.generated.models.site_page import SitePage  # type: ignore
 from msgraph.generated.sites.item.pages.pages_request_builder import PagesRequestBuilder  # type: ignore
 from pydantic import BaseModel, Field
 
@@ -36,100 +31,31 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class GetSitesInput(BaseModel):
-    """
-    Schema for listing SharePoint sites accessible to the user.
-    """
-    search: Optional[str] = Field(
-        default=None,
-        description=(
-            "KQL search query to filter sites. Examples: "
-            "'marketing' to find marketing sites, "
-            "'title:HR' to find HR sites, "
-            "'createdDateTime>=2024-01-01' to find recently created sites. "
-            "If not provided, returns all accessible sites."
-        )
-    )
-    top: Optional[int] = Field(
-        default=10,
-        description=(
-            "How many sites to return (default 10, max 50). "
-            "Use 50 when user says 'all sites', 'every site', or 'show all'. "
-            "Use the exact number when user says 'give me N sites'. "
-            "Use 10 (default) when no count is specified. "
-            "Maximum allowed: 50."
-        )
-    )
-    skip: Optional[int] = Field(
-        default=None,
-        description=(
-            "Number of sites to skip — use for pagination. "
-            "When user says 'next page' or 'show more', set skip to the number of sites already returned "
-            "(e.g. if previous call had top=10, set skip=10 to get the next 10)."
-        )
-    )
-    orderby: Optional[str] = Field(
-        default=None,
-        description=(
-            "Sort field and direction. Examples: "
-            "'createdDateTime desc' for recently created first, "
-            "'lastModifiedDateTime desc' for recently modified first, "
-            "'name asc' for alphabetical order."
-        )
-    )
-
+    """List SharePoint sites accessible to the user."""
+    search: Optional[str] = Field(default=None, description="KQL search query to filter sites (e.g. 'marketing', 'title:HR'). Omit for all sites.")
+    top: Optional[int] = Field(default=10, description="Max sites to return (default 10, max 50).")
+    skip: Optional[int] = Field(default=None, description="Sites to skip for pagination.")
+    orderby: Optional[str] = Field(default=None, description="Sort: 'createdDateTime desc', 'lastModifiedDateTime desc', 'name asc'.")
 
 class GetSiteInput(BaseModel):
-    """Schema for getting a specific site"""
-    site_id: str = Field(description="The SharePoint site ID (e.g. 'contoso.sharepoint.com,site-guid,web-guid')")
-
-
+    """Get a specific SharePoint site."""
+    site_id: str = Field(description="SharePoint site ID (e.g. contoso.sharepoint.com,site-guid,web-guid)")
 
 class GetPagesInput(BaseModel):
-    """Schema for listing pages in a site."""
-    site_id: str = Field(description="The SharePoint site ID")
-    top: Optional[int] = Field(default=10, description="Maximum number of pages to return (default 10, max 50)")
-
+    """List pages in a SharePoint site."""
+    site_id: str = Field(description="SharePoint site ID")
+    top: Optional[int] = Field(default=10, description="Max pages to return (default 10, max 50)")
 
 class GetPageInput(BaseModel):
-    """Schema for getting a single SharePoint page by ID."""
-    site_id: str = Field(description="The SharePoint site ID (from search_pages or get_pages results)")
-    page_id: str = Field(
-        description="The page ID (GUID) — use the 'page_id' field from search_pages or get_pages results"
-    )
-
+    """Get a single SharePoint page by ID."""
+    site_id: str = Field(description="SharePoint site ID (from search_pages or get_pages)")
+    page_id: str = Field(description="Page ID (GUID from search_pages or get_pages)")
 
 class SearchPagesInput(BaseModel):
-    """Schema for searching SharePoint pages across all sites by keyword.
-
-    Uses Microsoft Graph Search API with EntityType.ListItem filtered to
-    modern site pages — searches across ALL sites the user has access to without
-    needing to know the site first.
-
-    IMPORTANT — use this when:
-      - User asks for a page by name/keyword but you don't know which site or page_id
-      - User says 'find page X', 'show me the KT page', 'search for pages about Y'
-      - User wants to read/summarize a page by name: 'summarize the KT page', 'read the deployment guide'
-      - This is the FIRST step to get page_id before calling get_page for full content
-    """
-    query: str = Field(
-        description=(
-            "Keyword or phrase from the page name/title to search for. "
-            "Use the words the user mentioned as part of the page name. "
-            "Examples: 'pipeshub kt', 'onboarding', 'deployment guide', 'project overview'. "
-            "The search runs across ALL sites the user has access to."
-        )
-    )
-    top: Optional[int] = Field(
-        default=10,
-        description=(
-            "Maximum number of pages to return (default 10, max 50). "
-            "Use 50 for 'show all pages about X'."
-        )
-    )
-    skip: Optional[int] = Field(
-        default=None,
-        description="Number of results to skip for pagination (e.g. skip=10 for next page)"
-    )
+    """Search SharePoint pages by keyword across all sites (no site ID needed)."""
+    query: str = Field(description="Keyword or phrase from the page name/title (e.g. 'onboarding', 'deployment guide')")
+    top: Optional[int] = Field(default=10, description="Max pages to return (default 10, max 50).")
+    skip: Optional[int] = Field(default=None, description="Results to skip for pagination.")
 
 
 # ---------------------------------------------------------------------------
@@ -137,301 +63,73 @@ class SearchPagesInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ListDrivesInput(BaseModel):
-    """Schema for listing document libraries (drives) in a SharePoint site."""
-    site_id: str = Field(
-        description=(
-            "The SharePoint site ID (from get_sites results). "
-            "Format: 'contoso.sharepoint.com,<collection-guid>,<web-guid>'"
-        )
-    )
-    top: Optional[int] = Field(
-        default=10,
-        description="Maximum number of document libraries to return (default 10, max 50)"
-    )
-
+    """List document libraries (drives) in a SharePoint site."""
+    site_id: str = Field(description="SharePoint site ID (from get_sites)")
+    top: Optional[int] = Field(default=10, description="Max drives to return (default 10, max 50)")
 
 class ListFilesInput(BaseModel):
-    """Schema for listing files and folders inside SharePoint document libraries.
-
-    - Omit drive_id to list files from ALL document libraries in the site (recommended
-      when user says 'all documents', 'all files', 'list documents in this site').
-    - Provide drive_id to list only a specific document library.
-    - Provide folder_id to list the contents of a specific sub-folder (requires drive_id).
-    """
-    site_id: str = Field(description="The SharePoint site ID")
-    drive_id: Optional[str] = Field(
-        default=None,
-        description=(
-            "The document library (drive) ID — obtain from list_drives results. "
-            "OMIT this when user wants ALL documents in a site (will iterate all drives automatically). "
-            "Provide only when user specifies a particular document library. "
-            "Example: 'b!abc123...'"
-        )
-    )
-    folder_id: Optional[str] = Field(
-        default=None,
-        description=(
-            "Item ID of a sub-folder to list (requires drive_id). "
-            "If omitted, lists the root of the document library. "
-            "Use the 'id' field from a previous list_files result to navigate into a folder."
-        )
-    )
-    top: Optional[int] = Field(
-        default=10,
-        description=(
-            "Maximum number of items per drive to return (default 10, max 50). "
-            "When drive_id is omitted and all drives are iterated, this limit applies per drive."
-        )
-    )
+    """List files and folders in a site or a specific document library/folder."""
+    site_id: str = Field(description="SharePoint site ID")
+    drive_id: Optional[str] = Field(default=None, description="Drive ID from list_drives. Omit to list from all drives in the site.")
+    folder_id: Optional[str] = Field(default=None, description="Folder item ID to list inside (requires drive_id). Omit for drive root.")
+    top: Optional[int] = Field(default=10, description="Max items per drive (default 10, max 50)")
 
 class SearchFilesInput(BaseModel):
-    """Schema for finding a specific SharePoint file or document by name or keyword.
-
-    Uses the Microsoft Graph Search API (EntityType.DriveItem) to search
-    across ALL document libraries the user has access to — no drive ID needed.
-
-    Use this whenever the user refers to a specific file or document by name,
-    regardless of the verb they use:
-      - 'give me the assignment file'  → query='assignment'
-      - 'show the budget document'     → query='budget'
-    """
-    query: str = Field(
-        description=(
-            "The file name or keyword the user mentioned. "
-            "Extract the key noun/name from the user's request. "
-            "Searches across ALL document libraries the user has access to."
-        )
-    )
-    site_id: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional: restrict results to files in a specific site. "
-            "If not provided, searches ALL sites. "
-            "Provide the site_id from get_sites when user specifies a particular site."
-        )
-    )
-    top: Optional[int] = Field(
-        default=10,
-        description="Maximum number of results to return (default 10, max 50)"
-    )
-    skip: Optional[int] = Field(
-        default=None,
-        description="Number of results to skip for pagination (e.g. skip=10 for the next page)"
-    )
+    """Find a SharePoint file by name or keyword across all libraries."""
+    query: str = Field(description="File name or keyword (e.g. 'assignment', 'budget')")
+    site_id: Optional[str] = Field(default=None, description="Restrict to a specific site. Omit to search all sites.")
+    top: Optional[int] = Field(default=10, description="Max results (default 10, max 50)")
+    skip: Optional[int] = Field(default=None, description="Results to skip for pagination.")
 
 class GetFileMetadataInput(BaseModel):
-    """Schema for getting metadata of a specific SharePoint file or folder."""
-    site_id: str = Field(description="The SharePoint site ID")
-    drive_id: str = Field(
-        description=(
-            "The document library (drive) ID. "
-            "Obtain from list_drives or from the 'parentReference.driveId' field in search_files results."
-        )
-    )
-    item_id: str = Field(
-        description=(
-            "The DriveItem ID (GUID) of the file or folder. "
-            "Use the 'id' field from list_files or search_files results."
-        )
-    )
-
+    """Get metadata for a SharePoint file or folder."""
+    site_id: str = Field(description="SharePoint site ID")
+    drive_id: str = Field(description="Drive ID (from list_drives or search_files parentReference.driveId)")
+    item_id: str = Field(description="DriveItem ID (id from list_files or search_files)")
 
 class GetFileContentInput(BaseModel):
-    """Schema for downloading and reading the text content of a SharePoint file.
-
-    Works best for plain-text files: .txt, .csv, .md, .html, .json, .xml.
-    For binary Office/PDF files the content is returned as base64.
-    Always call get_file_metadata first to check the file's mimeType before downloading.
-    """
-    site_id: str = Field(description="The SharePoint site ID")
-    drive_id: str = Field(
-        description=(
-            "The document library (drive) ID. "
-            "Use 'parentReference.driveId' from search_files or list_files results."
-        )
-    )
-    item_id: str = Field(
-        description=(
-            "The DriveItem ID (GUID) of the file to download. "
-            "Use the 'id' field from list_files or search_files results."
-        )
-    )
-
+    """Download and read text content of a SharePoint file (plain text and Office docs as HTML)."""
+    site_id: str = Field(description="SharePoint site ID")
+    drive_id: str = Field(description="Drive ID (from list_files or search_files)")
+    item_id: str = Field(description="DriveItem ID (id from list_files or search_files)")
 
 class CreatePageInput(BaseModel):
-    """Schema for creating a new SharePoint modern site page.
-
-    Pages are created as modern SharePoint pages (SitePages) with a single
-    full-width text web part containing the provided HTML content.
-    Default is draft (publish=False). Only set publish=True when the user
-    explicitly says to publish, make it live, or go public; if they said
-    nothing about publishing, keep draft.
-    """
-    site_id: str = Field(description="The SharePoint site ID where the page will be created")
-    title: str = Field(description="Page title (also used to generate the .aspx filename)")
-    content_html: str = Field(
-        description=(
-            "Page body as HTML. Use standard HTML tags: "
-            "<h1>, <h2>, <h3>, <p>, <ul>, <li>, <ol>, <strong>, <em>, <br/>, <code>, <pre>. "
-            "Example: '<h1>Project Overview</h1><p>This page describes...</p><ul><li>Point 1</li></ul>'. "
-            "The content is placed in a full-width text web part on the page."
-        )
-    )
-    publish: Optional[bool] = Field(
-        default=False,
-        description=(
-            "Publishing: default False (draft). If the user did NOT say anything about publishing, "
-            "keep False. Set True ONLY when the user explicitly asks to 'publish', 'make it live', or 'go public'."
-        )
-    )
-
+    """Create a new SharePoint modern site page (draft by default)."""
+    site_id: str = Field(description="SharePoint site ID")
+    title: str = Field(description="Page title (used for .aspx filename)")
+    content_html: str = Field(description="Page body as HTML (e.g. <h1>, <p>, <ul>, <li>, <strong>)")
+    publish: Optional[bool] = Field(default=False, description="True to publish; default False (draft).")
 
 class UpdatePageInput(BaseModel):
-    """Schema for updating an existing SharePoint modern site page.
-
-    Provide title and/or content_html — at least one must be given.
-    Default is draft (publish=False). Only set publish=True when the user
-    explicitly says to publish or make it live; if they said nothing about
-    publishing, keep draft. Fetch the current page content first with get_page
-    if you need to merge content.
-    """
-    site_id: str = Field(description="The SharePoint site ID")
-    page_id: str = Field(
-        description=(
-            "The page ID (GUID) — obtain this from get_pages results "
-            "(e.g. 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx')"
-        )
-    )
-    title: Optional[str] = Field(
-        default=None,
-        description="New page title (optional — omit to keep the existing title)"
-    )
-    content_html: Optional[str] = Field(
-        default=None,
-        description=(
-            "New page content as HTML (optional — omit to keep existing content). "
-            "Use standard HTML tags: <h1>, <h2>, <p>, <ul>, <li>, <strong>, <em>, <br/>, <code>, <pre>. "
-            "This replaces the entire page body — call get_pages first if you need to merge with existing content."
-        )
-    )
-    publish: Optional[bool] = Field(
-        default=False,
-        description=(
-            "Publishing: default False (draft). If the user did NOT say anything about publishing, "
-            "keep False. Set True ONLY when the user explicitly asks to 'publish', 'make it live', or 'go public'."
-        )
-    )
-
+    """Update an existing SharePoint site page. Provide at least title or content_html."""
+    site_id: str = Field(description="SharePoint site ID")
+    page_id: str = Field(description="Page ID (GUID from get_pages or search_pages)")
+    title: Optional[str] = Field(default=None, description="New title (omit to keep current)")
+    content_html: Optional[str] = Field(default=None, description="New HTML body (omit to keep current; replaces entire body)")
+    publish: Optional[bool] = Field(default=False, description="True to publish; default False (draft).")
 
 class CreateFolderInput(BaseModel):
-    """Schema for creating a new folder in a SharePoint document library.
-
-    Use list_drives to get the drive_id, and optionally list_files to get
-    a parent_folder_id when creating inside a subfolder.
-    """
-    site_id: str = Field(
-        description=(
-            "The SharePoint site ID — used for context. "
-            "Format: 'contoso.sharepoint.com,<collection-guid>,<web-guid>'"
-        )
-    )
-    drive_id: str = Field(
-        description=(
-            "The document library (drive) ID where the folder will be created. "
-            "Obtain from list_drives results."
-        )
-    )
-    folder_name: str = Field(
-        description=(
-            "Name of the new folder to create. "
-            "If a folder with this name already exists, a unique name is generated automatically."
-        )
-    )
-    parent_folder_id: Optional[str] = Field(
-        default=None,
-        description=(
-            "Item ID of the parent folder to create inside (optional). "
-            "Omit to create in the root of the document library. "
-            "Use the 'id' field from list_files results to target a subfolder."
-        )
-    )
-
+    """Create a new folder in a SharePoint document library."""
+    site_id: str = Field(description="SharePoint site ID")
+    drive_id: str = Field(description="Drive ID (from list_drives)")
+    folder_name: str = Field(description="Name of the new folder (duplicate names get auto-renamed)")
+    parent_folder_id: Optional[str] = Field(default=None, description="Parent folder ID (from list_files). Omit for drive root.")
 
 class CreateWordDocumentInput(BaseModel):
-    """Schema for creating a new Word document (.docx) in a SharePoint document library.
-
-    The document is built in memory as a valid .docx and uploaded to SharePoint.
-    Optional plain-text content is inserted as paragraphs in the document body.
-    """
-    site_id: str = Field(
-        description="The SharePoint site ID."
-    )
-    drive_id: str = Field(
-        description=(
-            "The document library (drive) ID where the file will be created. "
-            "Obtain from list_drives results."
-        )
-    )
-    file_name: str = Field(
-        description=(
-            "Name of the new Word document (without the .docx extension — it is appended automatically). "
-            "Example: 'Meeting Notes' → creates 'Meeting Notes.docx'."
-        )
-    )
-    parent_folder_id: Optional[str] = Field(
-        default=None,
-        description=(
-            "Item ID of the folder to create the file inside (optional). "
-            "Omit to create in the root of the document library. "
-            "Use the 'id' field from list_files results to target a subfolder."
-        )
-    )
-    content_text: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional plain-text content to write into the document body. "
-            "Newlines are preserved as separate paragraphs. "
-            "Leave empty to create a blank document."
-        )
-    )
-
+    """Create a new Word document (.docx) in a SharePoint document library."""
+    site_id: str = Field(description="SharePoint site ID")
+    drive_id: str = Field(description="Drive ID (from list_drives)")
+    file_name: str = Field(description="Document name without .docx (e.g. 'Meeting Notes' → Meeting Notes.docx)")
+    parent_folder_id: Optional[str] = Field(default=None, description="Folder ID (from list_files). Omit for drive root.")
+    content_text: Optional[str] = Field(default=None, description="Optional plain-text body (newlines = paragraphs). Omit for blank doc.")
 
 class CreateOneNoteNotebookInput(BaseModel):
-    """Schema for creating a new OneNote notebook in a SharePoint site.
-
-    Optionally creates a first section and a first page with HTML content inside
-    that section in a single operation.
-    """
-    site_id: str = Field(
-        description="The SharePoint site ID where the notebook will be created."
-    )
-    notebook_name: str = Field(
-        description="Display name of the new OneNote notebook."
-    )
-    section_name: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional name for the first section to create inside the notebook. "
-            "A page can only be created if a section is also provided."
-        )
-    )
-    page_title: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional title for the first page to create inside the section. "
-            "Requires section_name to be provided. "
-            "Defaults to the notebook name if omitted."
-        )
-    )
-    page_content_html: Optional[str] = Field(
-        default=None,
-        description=(
-            "Optional HTML content for the body of the first page. "
-            "Requires section_name to be provided. "
-            "Use standard HTML tags: <h1>, <h2>, <p>, <ul>, <li>, <strong>, <em>, <br/>. "
-            "Example: '<h1>Introduction</h1><p>This notebook covers...</p>'"
-        )
-    )
+    """Create a OneNote notebook in a SharePoint site; optionally add first section and page."""
+    site_id: str = Field(description="SharePoint site ID")
+    notebook_name: str = Field(description="Display name of the notebook")
+    section_name: Optional[str] = Field(default=None, description="First section name (required if adding a page)")
+    page_title: Optional[str] = Field(default=None, description="First page title (requires section_name)")
+    page_content_html: Optional[str] = Field(default=None, description="First page HTML body (requires section_name)")
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +138,7 @@ class CreateOneNoteNotebookInput(BaseModel):
 
 @ToolsetBuilder("SharePoint")\
     .in_group("Microsoft 365")\
-    .with_description("SharePoint integration for sites, lists, and document management")\
+    .with_description("SharePoint sites, files, and pages")\
     .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
@@ -487,7 +185,7 @@ class CreateOneNoteNotebookInput(BaseModel):
             ],
             icon_path="/assets/icons/connectors/sharepoint.svg",
             app_group="Microsoft 365",
-            app_description="Microsoft SharePoint OAuth application for agent integration",
+            app_description="SharePoint OAuth for agents",
             documentation_links=[
                 DocumentationLink(
                     title="Create an Azure App Registration",
@@ -510,31 +208,10 @@ class CreateOneNoteNotebookInput(BaseModel):
     .configure(lambda builder: builder.with_icon("/assets/icons/connectors/sharepoint.svg"))\
     .build_decorator()
 class SharePoint:
-    """Microsoft SharePoint toolset for sites, lists, and document management.
-
-    Initialised with an MSGraphClient built via ``build_from_toolset`` which
-    uses delegated OAuth.  The data source (``SharePointDataSource``) is
-    constructed identically to the connector path.
-
-    Client chain:
-        MSGraphClient (from build_from_toolset)
-            → .get_client()  → _DelegatedGraphClient shim
-                → .get_ms_graph_service_client() → GraphServiceClient
-        SharePointDataSource(ms_graph_client)
-            → internally: self.client = client.get_client().get_ms_graph_service_client()
-            → all /sites/* Graph API calls go through self.client
-    """
+    """SharePoint toolset for sites, pages, and document management. Uses MSGraphClient and SharePointDataSource."""
 
     def __init__(self, client: MSGraphClient) -> None:
-        """Initialize the SharePoint toolset.
-
-        The data source is created in exactly the same way the connector
-        creates it — ``SharePointDataSource(client)`` — so every
-        method the connector can call is available here too.
-
-        Args:
-            client: Authenticated MSGraphClient instance (from build_from_toolset)
-        """
+        """Initialize with an authenticated MSGraphClient (from build_from_toolset)."""
         self.client = SharePointDataSource(client)
 
     # ------------------------------------------------------------------
@@ -707,29 +384,23 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="get_sites",
-        description="List SharePoint sites accessible to the user with search and pagination",
+        description="List SharePoint sites",
+        llm_description="List sites with optional KQL search, top/skip pagination; use get_site for one ID, search_pages for page by name.",
         args_schema=GetSitesInput,
         when_to_use=[
-            "User wants to list all SharePoint sites → set top=50",
-            "User mentions 'SharePoint' + wants sites",
-            "User wants to search for a specific site by name or keyword",
-            "User says 'show pages in [site name]' — use this first to get site_id, then get_pages",
-            "User wants a specific number of sites (e.g. 'show me 5 sites') → top=5",
-            "User wants to paginate — 'next page' / 'show more' → keep same top (max 50), increment skip by top",
+            "User wants to list or search SharePoint sites",
+            "User needs site_id before get_pages (e.g. pages in [site name])",
         ],
         when_not_to_use=[
-            "User wants a specific site by ID (use get_site)",
-            "User mentions a specific page by name (use search_pages directly, not this)",
+            "User has site_id already (use get_site)",
+            "User wants a page by name (use search_pages)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "List all SharePoint sites → top=50",
-            "Give me all sites → top=50",
-            "Show me 5 SharePoint sites → top=5",
-            "Show pages in Engineering site → STEP 1: get_sites(search='Engineering'), STEP 2: get_pages(site_id=result.sites[0].id)",
-            "Find SharePoint sites about marketing → search='marketing'",
-            "Show recently created sites → orderby='createdDateTime desc'",
+            "List all SharePoint sites",
+            "Find sites about marketing",
+            "Show pages in Engineering site → get_sites then get_pages",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -740,11 +411,8 @@ class SharePoint:
         skip: Optional[int] = None,
         orderby: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """List SharePoint sites accessible to the user.
-
-        Uses Microsoft Graph Search API (POST /search/query) which returns ALL sites
-        the user has access to, security-trimmed to their permissions.
-        Supports pagination via top/skip (default 10, max 50), KQL filtering via search, and sorting via orderby.
+        """
+        List SharePoint sites accessible to the user.
         """
         try:
             response = await self.client.list_sites_with_search_api(
@@ -781,23 +449,20 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="get_site",
-        description="Get details of a specific SharePoint site",
+        description="Get one site by ID",
+        llm_description="Get one site by site_id; use get_sites to list, get_pages/search_pages for pages.",
         args_schema=GetSiteInput,
         when_to_use=[
-            "User wants details about a specific SharePoint site",
-            "User has a site ID",
-            "User asks for site information",
+            "User has site_id and wants that site's details",
         ],
         when_not_to_use=[
-            "User wants to list all sites (use get_sites)",
-            "User wants pages (use get_pages)",
+            "User wants to list sites (use get_sites)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
             "Get site details",
             "Show site information",
-            "What's in this site?",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -822,27 +487,20 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="get_pages",
-        description="List ALL pages in a specific SharePoint site (returns page_id, title, webUrl)",
+        description="List all pages in a site",
+        llm_description="List all pages in a site (site_id); for one page by name use search_pages then get_page.",
         args_schema=GetPagesInput,
         when_to_use=[
-            "User wants to browse/list ALL pages in a site they mention by name",
-            "User says 'show all pages in the Engineering site' or 'list pages in [site name]'",
-            "Workflow: get_sites(search='site name') → get_pages(site_id=result.sites[0].id)",
-            "ONLY when user wants a complete page list, not to find a specific page",
+            "User wants a full page list for one site (has or can get site_id)",
         ],
         when_not_to_use=[
-            "User mentions a specific page by name — ALWAYS use search_pages instead",
-            "User wants to summarize/read a specific page — use search_pages, NOT this tool",
-            "User wants to find a particular page — use search_pages, NOT this tool",
-            "After search_pages — NEVER call this, search_pages already has page_id",
-            "User wants to list sites (use get_sites)",
+            "User names one page only (use search_pages then get_page)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "Show all pages in the Engineering site → get_sites(search='Engineering') then get_pages(site_id=result.sites[0].id)",
-            "What pages are available in this site?",
-            "List every SharePoint page in the Marketing site",
+            "List all pages in this site",
+            "What pages exist in the Marketing site?",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -851,9 +509,8 @@ class SharePoint:
         site_id: str,
         top: Optional[int] = 10,
     ) -> tuple[bool, str]:
-        """Get ALL pages from a SharePoint site (no filtering).
-
-        Uses GET /sites/{id}/pages which returns all modern pages in the site (default 10, max 50).
+        """
+        Get ALL pages from a SharePoint site (no filtering).
         If you need to find a specific page by keyword, use search_pages instead.
         """
         logger.info(f"📍 Getting all pages for site_id={site_id}, top={top}")
@@ -900,24 +557,20 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="get_page",
-        description="Get full HTML content and metadata of a SharePoint page for reading/summarization",
+        description="Read one page (HTML)",
+        llm_description="Get page HTML by site_id and page_id; use search_pages first if only name known; use before update_page to merge.",
         args_schema=GetPageInput,
         when_to_use=[
-            "After search_pages returns results with page_id, use this to get full HTML content",
-            "User wants to read/summarize a page AND you have page_id from search_pages",
-            "Need full page HTML content before updating (call before update_page)",
-            "ALWAYS use page_id directly from search_pages results - skip get_pages",
+            "User wants to read/summarize a page and you have site_id + page_id",
         ],
         when_not_to_use=[
-            "User mentions a page by name but no page_id yet — call search_pages first",
-            "User wants to list pages in a site (use get_pages)",
-            "User wants to find pages by keyword (use search_pages)",
+            "No page_id yet (use search_pages first)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "Summarize page workflow: search_pages(query='KT') → get_page(site_id=results[0].site_id, page_id=results[0].page_id)",
-            "Read page workflow: search_pages → get_page (use page_id from search results)",
+            "Summarize this page",
+            "Read the deployment guide page",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -938,7 +591,7 @@ class SharePoint:
                 return False, json.dumps({"error": response.error or "Failed to get page"})
             page_data = self._serialize_response(response.data)
 
-            if not page_data or page_data == str(response):
+            if not isinstance(page_data, dict) or not page_data.get("id"):
                 return False, json.dumps({"error": "Page not found or could not be serialized"})
 
             # Extract HTML content from webparts for easy consumption
@@ -966,28 +619,21 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="search_pages",
-        description="Search SharePoint pages by keyword across ALL sites — no site ID needed",
+        description="Search pages by keyword",
+        llm_description="Search pages by keyword across sites; returns page_id and site_id then call get_page for full content.",
         args_schema=SearchPagesInput,
         when_to_use=[
-            "User mentions ANY page by name/keyword without providing page_id",
-            "User says 'find the KT page', 'show me the deployment guide', 'search for pages about X'",
-            "User asks 'summarize the X page', 'read the Y page', 'show me the Z page'",
-            "CRITICAL: This is the ONLY tool needed to find pages - returns page_id directly",
-            "After this returns results, go DIRECTLY to get_page - skip get_pages entirely",
+            "User names or describes a page but has no page_id",
         ],
         when_not_to_use=[
-            "User already has page_id (use get_page directly)",
-            "User wants to browse ALL pages in a known site (use get_pages)",
-            "User wants site information (use get_sites or get_site)",
+            "User already has page_id (use get_page)",
+            "User wants every page in a site listed (use get_pages)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "Find the KT page → query='KT'",
-            "Show me the pipeshub KT page → query='pipeshub KT'",
-            "Summarize the KT page → STEP 1: search_pages(query='KT'), STEP 2: get_page(site_id=result.pages[0].site_id, page_id=result.pages[0].page_id)",
-            "Read the deployment guide → STEP 1: search_pages(query='deployment guide'), STEP 2: get_page with page_id from results",
-            "What does the onboarding page say? → STEP 1: search_pages(query='onboarding'), STEP 2: get_page",
+            "Find the KT page",
+            "Search pages for onboarding",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -997,15 +643,8 @@ class SharePoint:
         top: Optional[int] = 10,
         skip: Optional[int] = None,
     ) -> tuple[bool, str]:
-        """Search for SharePoint pages by keyword across all accessible sites.
-
-        Uses the Microsoft Graph Search API with EntityType.ListItem filtered
-        to modern site pages — this searches ALL sites the user has access to without
-        needing a site ID.
-
-        Returns page_id, site_id, title, web_url, and basic metadata for each matching page.
-        The page_id can be used DIRECTLY with get_page(site_id, page_id) to fetch full HTML content.
-        DO NOT call get_pages after this - you already have the page_id.
+        """
+        Search for SharePoint pages by keyword across all accessible sites.
         """
         try:
             response = await self.client.search_pages_with_search_api(
@@ -1048,25 +687,20 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="list_drives",
-        description="List document libraries (drives) in a SharePoint site",
+        description="List document libraries in a site",
+        llm_description="List document libraries for a site; for all files omit drive_id on list_files instead of chaining here.",
         args_schema=ListDrivesInput,
         when_to_use=[
-            "User explicitly asks what document libraries exist in a site",
-            "User asks 'what document libraries are in this site?', 'show me the drives', 'what libraries does this site have?'",
-            "User wants to pick a specific library to browse by name",
+            "User asks which document libraries/drives exist in a site",
         ],
         when_not_to_use=[
-            "User wants ALL documents/files in a site → use list_files(site_id) WITHOUT drive_id directly",
-            "User wants to find a specific file by keyword → use search_files",
-            "User wants pages not documents → use get_pages",
+            "User wants all files in site without naming a library (use list_files without drive_id)",
             "No SharePoint mention",
-            "NEVER call list_drives just to then pass drives[0].id to list_files — list_files handles all drives internally when drive_id is omitted",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "What document libraries are in this site? → list_drives(site_id=...)",
-            "Show me the drives in this site → list_drives(site_id=...)",
-            "NOTE: 'all documents in site X' → use list_files(site_id=...) directly, NOT list_drives first",
+            "What libraries are in this site?",
+            "List drives for this site",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -1139,27 +773,20 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="list_files",
-        description="List files from ALL document libraries in a site, or from a specific library/sub-folder",
+        description="List files in site or folder",
+        llm_description="List files; omit drive_id for all drives, add drive_id/folder_id to browse one path; use search_files to find by name.",
         args_schema=ListFilesInput,
         when_to_use=[
-            "User says 'all documents in [site]', 'list all files in this site', 'show me all documents' → omit drive_id",
-            "User wants to browse ALL files across every document library in a site → omit drive_id",
-            "User wants to browse a specific known document library → provide drive_id",
-            "User wants to navigate into a sub-folder → provide both drive_id and folder_id",
-            "ONLY use when user wants to browse/list files — use search_files to find a file by keyword",
+            "User wants to browse/list files (omit drive_id for all libraries)",
         ],
         when_not_to_use=[
-            "User wants to find a file by name/keyword — use search_files instead",
-            "User wants pages (use get_pages or search_pages)",
+            "User wants a file by name (use search_files)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "All documents in testing site → list_files(site_id=...) with NO drive_id",
-            "List all files in this site → list_files(site_id=...) with NO drive_id",
-            "Show me every document → list_files(site_id=...) with NO drive_id",
-            "List files in the Documents library → list_files(site_id, drive_id=...)",
-            "Show contents of this folder → list_files(site_id, drive_id=..., folder_id=...)",
+            "List all files in this site",
+            "Show folder contents",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -1170,15 +797,8 @@ class SharePoint:
         folder_id: Optional[str] = None,
         top: Optional[int] = 10,
     ) -> tuple[bool, str]:
-        """List files and folders from SharePoint document libraries.
-
-        - drive_id omitted: iterates ALL document libraries in the site and merges results (default 10, max 50).
-          Use this when user says 'all documents', 'all files', 'list documents in site X'.
-        - drive_id provided + folder_id omitted: lists root of that specific library.
-        - drive_id + folder_id provided: lists contents of that specific sub-folder.
-
-        Each item includes drive_name so you can tell which library it came from.
-        Use item['id'] + item['drive_id'] with get_file_content to read a file.
+        """
+        List files and folders from SharePoint document libraries.
         """
         try:
             capped_top = min(top or 10, 50)
@@ -1295,37 +915,21 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="search_files",
-        description="Find or retrieve a specific SharePoint file by name or keyword — use for ANY named file or document request regardless of verb",
+        description="Find a file by name or keyword",
+        llm_description="Find files by keyword; then get_file_content or get_file_metadata with id, drive_id, site_id from results.",
         args_schema=SearchFilesInput,
         when_to_use=[
-            "CRITICAL: Use whenever user mentions a specific file or document by name — regardless of verb",
-            "User says 'give me X file', 'give X document', 'give assignment file', 'give budget doc'",
-            "User says 'show me X file', 'show the report', 'show project plan'",
-            "User says 'get X file', 'get the KT document', 'get onboarding file'",
-            "User says 'open X', 'read X file', 'what is in X file', 'summarize X document'",
-            "User says 'find X', 'search for X', 'look for X file'",
-            "ANY time user refers to a specific named document without knowing where it is",
-            "User mentions a file name or document keyword — assignment, budget, report, KT, onboarding, etc.",
-            "FIRST tool to call when user wants a specific file — locate it, then use get_file_content to read it",
+            "User names or describes a file/document to find or read",
         ],
         when_not_to_use=[
-            "User wants ALL files/documents in a site or library with no specific name → use list_files",
-            "User wants to browse a library without a specific file in mind → use list_files",
-            "User wants SharePoint pages (not files/documents) → use search_pages",
+            "User wants to browse whole library with no name (use list_files)",
+            "User wants a page not a file (use search_pages)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "Give me the assignment file → search_files(query='assignment')",
-            "Give the budget document → search_files(query='budget')",
-            "Show me the KT file → search_files(query='KT')",
-            "Get the onboarding document → search_files(query='onboarding')",
-            "Open the project plan → search_files(query='project plan')",
-            "What is in the deployment guide → search_files(query='deployment guide')",
-            "Find the Q1 report → search_files(query='Q1 report')",
-            "Search for budget spreadsheet → search_files(query='budget spreadsheet')",
-            "Read the project plan → STEP 1: search_files(query='project plan'), STEP 2: get_file_content",
-            "Summarize the onboarding doc → STEP 1: search_files(query='onboarding'), STEP 2: get_file_content",
+            "Find the budget document",
+            "Get the onboarding file then read it",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -1336,14 +940,8 @@ class SharePoint:
         top: Optional[int] = 10,
         skip: Optional[int] = None,
     ) -> tuple[bool, str]:
-        """Search for SharePoint files by keyword across all accessible document libraries.
-
-        Uses the Microsoft Graph Search API (EntityType.DriveItem) to search ALL
-        document libraries the user has access to — no site or drive ID needed (default 10, max 50).
-
-        Returns each file's id, name, mimeType, size, webUrl, drive_id (parentReference.driveId),
-        and site_id (parentReference.siteId).
-        Use id + drive_id + site_id directly with get_file_content to read the file.
+        """
+        Search for SharePoint files by keyword across all accessible document libraries.
         """
         try:
             response = await self.client.search_files_with_search_api(
@@ -1367,7 +965,6 @@ class SharePoint:
                     site_id_val = parent_ref.get("siteId")
                     item_id_val = f.get("id")
                     normalized.append({
-                        # Primary fields (snake_case)
                         "id": item_id_val,
                         "name": f.get("name"),
                         "is_folder": f.get("isFolder", False),
@@ -1380,12 +977,9 @@ class SharePoint:
                         "site_id": site_id_val,
                         "parent_item_id": parent_ref.get("id"),
                         "parent_path": parent_ref.get("path"),
-                        # camelCase aliases — planner sometimes generates these
                         "driveId": drive_id_val,
                         "siteId": site_id_val,
                         "itemId": item_id_val,
-                        # Nested parentReference alias — planner sometimes uses
-                        # results[0].parentReference.driveId path
                         "parentReference": {
                             "driveId": drive_id_val,
                             "siteId": site_id_val,
@@ -1422,24 +1016,21 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="get_file_metadata",
-        description="Get detailed metadata for a specific SharePoint file or folder",
+        description="File or folder metadata",
+        llm_description="Get file/folder metadata (size, mimeType, dates); needs site_id, drive_id, item_id from search_files or list_files.",
         args_schema=GetFileMetadataInput,
         when_to_use=[
-            "User wants metadata of a specific file (size, type, dates, URL)",
-            "Before downloading a file: check mimeType to decide if content is readable as text",
-            "After search_files or list_files: user wants more details about a specific item",
+            "User wants file size, type, or dates; has site_id, drive_id, item_id",
         ],
         when_not_to_use=[
-            "User wants to read the actual file content (use get_file_content)",
-            "User wants to find a file by name (use search_files first)",
-            "User does not have item_id yet (use search_files or list_files first)",
+            "User wants file body (use get_file_content)",
+            "No item_id yet (use search_files or list_files)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "What are the details of this file? → get_file_metadata(site_id, drive_id, item_id)",
             "How big is this file?",
-            "When was this file last modified?",
+            "When was it last modified?",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -1502,26 +1093,21 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="get_file_content",
-        description="Download and read the text content of a SharePoint file. Supports Office documents (.docx, .xlsx, .pptx) by converting them to readable HTML automatically.",
+        description="Download file content as text/HTML",
+        llm_description="Read file content as text/HTML (Office converted); needs ids from search_files or list_files.",
         args_schema=GetFileContentInput,
         when_to_use=[
-            "User wants to read, summarize, or analyze the content of a SharePoint file",
-            "After search_files returns a file, use this to read its content",
-            "User says 'read the file', 'summarize this document', 'show me the content'",
-            "Works with text files (.txt, .csv, .md, .html, .json, .xml) AND Office documents (.docx, .xlsx, .pptx)",
+            "User wants to read or summarize file content; has ids from search_files or list_files",
         ],
         when_not_to_use=[
-            "User does not have item_id yet — call search_files or list_files first",
-            "User wants file metadata only (use get_file_metadata)",
-            "User wants SharePoint pages (use get_page)",
+            "No item_id yet (use search_files or list_files first)",
+            "User wants a page (use get_page)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "Read the project plan file → STEP 1: search_files(query='project plan'), STEP 2: get_file_content",
-            "Summarize the onboarding checklist → search_files → get_file_content",
-            "Show me the content of this Word document",
-            "What's in the jira_logs.docx file?",
+            "Read this document",
+            "Summarize the project plan file",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -1538,8 +1124,6 @@ class SharePoint:
         summarise them.  Plain-text files are returned as-is.
         """
         try:
-            # Fetch metadata first to get the mime_type and file name so we can
-            # decide whether to request the HTML-converted version.
             mime_type: Optional[str] = None
             file_name: Optional[str] = None
             try:
@@ -1612,27 +1196,20 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="create_page",
-        description="Create a new modern page in a SharePoint site. Default: draft (publish=False). Only pass publish=True when the user explicitly asks to publish.",
+        description="Create a SharePoint page",
+        llm_description="Create page from content_html; publish=False unless user asks to publish.",
         args_schema=CreatePageInput,
         when_to_use=[
-            "User wants to create a new SharePoint page",
-            "User says 'create a page in SharePoint' or 'add a page to this site'",
-            "User wants to write/author a page with content",
-            "If user did NOT say anything about publishing → use publish=False (draft)",
-            "If user explicitly says 'publish', 'make it live', 'go public' → use publish=True",
+            "User wants a new site page; publish=False unless they ask to publish",
         ],
         when_not_to_use=[
-            "User wants to update an existing page (use update_page)",
-            "User wants to read/list pages (use get_pages)",
-            "User wants to create a list item, not a page",
+            "User wants to edit existing page (use update_page)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
-            "Create a SharePoint page called 'Project Overview' (draft by default)",
-            "Add a new page to this site with the meeting notes",
-            "Create a page in SharePoint with this content and publish it (use publish=True)",
-            "Write a new site page about the deployment process",
+            "Create a page called Project Overview",
+            "Add a page and publish it",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -1643,130 +1220,57 @@ class SharePoint:
         content_html: str,
         publish: Optional[bool] = False,
     ) -> tuple[bool, str]:
-        """Create a new modern page in a SharePoint site.
-
-        Uses the Microsoft Graph API to create a SitePage with a single
-        full-width text web part containing the provided HTML content.
-        Default is draft (publish=False). If the user has not said anything
-        about publishing, do not pass publish=True — keep draft.
-
-        Content format — use standard HTML:
-          - Headings:  <h1>Title</h1>, <h2>Section</h2>
-          - Paragraph: <p>Text here.</p>
-          - Bold/italic: <strong>bold</strong>, <em>italic</em>
-          - Lists:     <ul><li>Item</li></ul>  /  <ol><li>Step</li></ol>
-          - Code:      <pre><code>code here</code></pre>
-          - Line break: <br/>
+        """
+        Create a new modern page in a SharePoint site.
         """
         try:
-            graph = self.client.client
-
-            # Build a URL-safe slug for the .aspx filename
-            slug = re.sub(r"[^a-z0-9-]", "-", title.lower()).strip("-")
-            slug = re.sub(r"-+", "-", slug) or "page"
-
-            # Build a SitePage object. Complex nested fields (canvasLayout)
-            # are passed through additional_data so Kiota serialises them as-is.
-            body = SitePage()
-            body.additional_data = {
-                "@odata.type": "#microsoft.graph.sitePage",
-                "title": title,
-                "name": f"{slug}.aspx",
-                "pageLayout": "article",
-                "canvasLayout": {
-                    "horizontalSections": [
-                        {
-                            "layout": "oneColumn",
-                            "id": "1",
-                            "columns": [
-                                {
-                                    "id": "1",
-                                    "width": 12,
-                                    "webparts": [
-                                        {
-                                            "@odata.type": "#microsoft.graph.textWebPart",
-                                            "innerHtml": content_html,
-                                        }
-                                    ],
-                                }
-                            ],
-                        }
-                    ]
-                },
-            }
-
-            logger.info(f"📍 Creating page '{title}' in site {site_id}")
-            response = await graph.sites.by_site_id(site_id).pages.post(body)
-
-            page_data = self._serialize_response(response)
-            page_id = page_data.get("id") if isinstance(page_data, dict) else None
-
-            published = False
-            publish_error = None
-            if publish and page_id:
-                try:
-                    ri = RequestInformation()
-                    ri.http_method = Method.POST
-                    ri.url_template = (
-                        "https://graph.microsoft.com/v1.0/sites/{site_id}"
-                        "/pages/{page_id}/microsoft.graph.sitePage/publish"
-                    )
-                    ri.path_parameters = {
-                        "site_id": site_id,
-                        "page_id": page_id,
-                    }
-                    ri.content = b"{}"
-                    ri.headers.try_add("Content-Type", "application/json")
-                    await graph.request_adapter.send_no_response_content_async(ri, {})
-                    published = True
-                    logger.info(f"✅ Page '{title}' published (id={page_id})")
-                except Exception as pub_err:
-                    publish_error = str(pub_err)
-                    logger.warning(f"⚠️ Page created but publish failed: {pub_err}")
-
-            web_url = (
-                page_data.get("webUrl") or page_data.get("web_url")
-                if isinstance(page_data, dict) else None
+            response = await self.client.create_site_page(
+                site_id=site_id,
+                title=title,
+                content_html=content_html,
+                publish=bool(publish),
             )
+            if not response.success:
+                return False, json.dumps({"error": response.error or "Failed to create page"})
+
+            page_data = response.data or {}
+            page_id = page_data.get("id")
+            published = page_data.get("published", False)
+            publish_error = page_data.get("publish_error")
+            # Avoid duplicating published/publish_error inside page payload
+            page_payload = {k: v for k, v in page_data.items() if k not in ("published", "publish_error")}
+            web_url = page_payload.get("webUrl") or page_payload.get("web_url")
 
             return True, json.dumps({
                 "message": f"Page '{title}' created {'and published ' if published else '(draft) '}successfully",
-                "page": page_data if isinstance(page_data, dict) else {},
+                "page": page_payload,
                 "page_id": page_id,
                 "title": title,
                 "published": published,
                 "web_url": web_url,
                 **({"publish_error": publish_error} if publish_error else {}),
             })
-
         except Exception as e:
             return self._handle_error(e, f"create page '{title}'")
 
     @tool(
         app_name="sharepoint",
         tool_name="update_page",
-        description="Update the title and/or content of an existing SharePoint site page. Default: draft (publish=False). Only pass publish=True when the user explicitly asks to publish.",
+        description="Update a SharePoint page",
+        llm_description="Update page by page_id with title and/or content_html; get_page first to merge; publish=False unless asked.",
         args_schema=UpdatePageInput,
         when_to_use=[
-            "User wants to edit or update an existing SharePoint page",
-            "User says 'update the page', 'edit this page', 'change the content of'",
-            "User wants to rename a SharePoint page",
-            "User wants to rewrite or append content to an existing page",
-            "If user did NOT say anything about publishing → use publish=False (draft)",
-            "If user explicitly says 'publish', 'make it live', 'go public' → use publish=True",
+            "User wants to edit/rename a page; needs page_id; publish=False unless asked",
         ],
         when_not_to_use=[
-            "User wants to create a brand-new page (use create_page)",
-            "User wants to read/list pages (use get_pages)",
-            "User does not have the page ID — call get_pages first to find it",
+            "New page (use create_page)",
+            "No page_id (use search_pages or get_pages)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
-            "Update the 'Project Overview' SharePoint page with new content (draft by default)",
-            "Edit the page and add a new section about deployment",
-            "Rename the SharePoint page to 'Q1 Planning' and publish (use publish=True)",
-            "Rewrite the content of this page",
+            "Update this page with new content",
+            "Rename the page and publish",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -1778,110 +1282,57 @@ class SharePoint:
         content_html: Optional[str] = None,
         publish: Optional[bool] = False,
     ) -> tuple[bool, str]:
-        """Update the title and/or content of an existing SharePoint modern page.
-
-        At least one of title or content_html must be provided.
-        Default is draft (publish=False). If the user has not said anything
-        about publishing, do not pass publish=True — keep draft.
-
-        To merge content with the existing page, call get_page first to
-        retrieve the current content, then pass the merged HTML here.
-
-        Content format — use standard HTML:
-          - Headings:  <h1>Title</h1>, <h2>Section</h2>
-          - Paragraph: <p>Text here.</p>
-          - Bold/italic: <strong>bold</strong>, <em>italic</em>
-          - Lists:     <ul><li>Item</li></ul>  /  <ol><li>Step</li></ol>
-          - Code:      <pre><code>code here</code></pre>
-          - Line break: <br/>
+        """
+        Update the title and/or content of an existing SharePoint modern page.
         """
         if title is None and content_html is None:
             return False, json.dumps({"error": "At least one of 'title' or 'content_html' must be provided"})
 
         try:
-            graph = self.client.client
+            response = await self.client.update_site_page(
+                site_id=site_id,
+                page_id=page_id,
+                title=title,
+                content_html=content_html,
+                publish=bool(publish),
+            )
+            if not response.success:
+                return False, json.dumps({"error": response.error or "Failed to update page"})
 
-            # Build the PATCH body — only include fields being changed
-            patch_data: Dict[str, Any] = {
-                "@odata.type": "#microsoft.graph.sitePage",
+            data = response.data or {}
+            published = data.get("published", False)
+            publish_error = data.get("publish_error")
+            page_data = {"page_id": page_id}
+            if title is not None:
+                page_data["title"] = title
+
+            # PATCH returns no body — fetch page to obtain webUrl for the success payload.
+            web_url: Optional[str] = None
+            try:
+                get_resp = await self.client.get_site_page_with_canvas(
+                    site_id=site_id, page_id=page_id
+                )
+                if get_resp.success and get_resp.data:
+                    serialized = self._serialize_response(get_resp.data)
+                    if isinstance(serialized, dict):
+                        web_url = serialized.get("webUrl") or serialized.get("web_url")
+            except Exception:
+                pass
+
+            payload: Dict[str, Any] = {
+                "message": f"Page updated {'and published ' if published else '(draft) '}successfully",
+                "page": page_data,
+                "page_id": page_id,
+                "published": published,
             }
             if title is not None:
-                patch_data["title"] = title
-            if content_html is not None:
-                patch_data["canvasLayout"] = {
-                    "horizontalSections": [
-                        {
-                            "layout": "oneColumn",
-                            "id": "1",
-                            "columns": [
-                                {
-                                    "id": "1",
-                                    "width": 12,
-                                    "webparts": [
-                                        {
-                                            "@odata.type": "#microsoft.graph.textWebPart",
-                                            "innerHtml": content_html,
-                                        }
-                                    ],
-                                }
-                            ],
-                        }
-                    ]
-                }
+                payload["title"] = title
+            if web_url:
+                payload["web_url"] = web_url
+            if publish_error:
+                payload["publish_error"] = publish_error
 
-            # PATCH via raw URL — the typed SDK path (.microsoft_graph_site_page)
-            # does not exist on BaseSitePageItemRequestBuilder in all SDK versions.
-            # Compound site_id must be URL-encoded so the path is not mis-parsed (404).
-            encoded_site_id = quote(site_id, safe="")
-            logger.info(f"📍 Updating page {page_id} in site {site_id}")
-            patch_ri = RequestInformation()
-            patch_ri.http_method = Method.PATCH
-            patch_ri.url_template = (
-                f"https://graph.microsoft.com/v1.0/sites/{encoded_site_id}"
-                f"/pages/{page_id}/microsoft.graph.sitePage"
-            )
-            patch_ri.path_parameters = {}
-            patch_ri.content = json.dumps(patch_data).encode("utf-8")
-            patch_ri.headers.try_add("Content-Type", "application/json")
-            await graph.request_adapter.send_no_response_content_async(patch_ri, {})
-
-            page_data: Dict[str, Any] = {"page_id": page_id}
-
-            published = False
-            publish_error = None
-            if publish:
-                try:
-                    pub_ri = RequestInformation()
-                    pub_ri.http_method = Method.POST
-                    pub_ri.url_template = (
-                        f"https://graph.microsoft.com/v1.0/sites/{encoded_site_id}"
-                        f"/pages/{page_id}/microsoft.graph.sitePage/publish"
-                    )
-                    pub_ri.path_parameters = {}
-                    pub_ri.content = b"{}"
-                    pub_ri.headers.try_add("Content-Type", "application/json")
-                    await graph.request_adapter.send_no_response_content_async(pub_ri, {})
-                    published = True
-                    logger.info(f"✅ Page {page_id} updated and published")
-                except Exception as pub_err:
-                    publish_error = str(pub_err)
-                    logger.warning(f"⚠️ Page updated but publish failed: {pub_err}")
-
-            web_url = (
-                page_data.get("webUrl") or page_data.get("web_url")
-                if isinstance(page_data, dict) else None
-            )
-
-            return True, json.dumps({
-                "message": f"Page updated {'and published ' if published else '(draft) '}successfully",
-                "page": page_data if isinstance(page_data, dict) else {},
-                "page_id": page_id,
-                **({"title": title} if title else {}),
-                "published": published,
-                "web_url": web_url,
-                **({"publish_error": publish_error} if publish_error else {}),
-            })
-
+            return True, json.dumps(payload)
         except Exception as e:
             return self._handle_error(e, f"update page {page_id}")
 
@@ -1892,24 +1343,20 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="create_folder",
-        description="Create a new folder in a SharePoint document library",
+        description="Create a folder in a library",
+        llm_description="Create folder in drive root or under parent_folder_id; drive_id from list_drives.",
         args_schema=CreateFolderInput,
         when_to_use=[
-            "User wants to create a new folder in SharePoint",
-            "User says 'create a folder', 'make a new folder', 'add a folder in SharePoint'",
-            "User wants to organise files into a new directory within a document library",
-            "User specifies a drive (document library) and optionally a parent folder to create inside",
+            "User wants a new folder in a library (drive_id from list_drives)",
         ],
         when_not_to_use=[
-            "User wants to create a file, not a folder — use create_word_document instead",
-            "User wants to list existing folders — use list_files instead",
+            "User wants a file (use create_word_document)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
-            "Create a folder called 'Project Docs' in the Documents library → create_folder(site_id, drive_id, folder_name='Project Docs')",
-            "Add a subfolder 'Q1 Reports' inside the 'Finance' folder → create_folder(site_id, drive_id, folder_name='Q1 Reports', parent_folder_id=...)",
-            "Make a new folder in SharePoint → create_folder(site_id, drive_id, folder_name=...)",
+            "Create folder Project Docs",
+            "Add subfolder in this library",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -1920,18 +1367,8 @@ class SharePoint:
         folder_name: str,
         parent_folder_id: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """Create a new folder in a SharePoint document library.
-
-        - parent_folder_id omitted: creates in the root of the document library.
-        - parent_folder_id provided: creates inside that specific subfolder.
-
-        If a folder with the same name already exists a unique name is generated
-        automatically (@microsoft.graph.conflictBehavior = 'rename').
-
-        Workflow:
-          1. Call list_drives(site_id) to get drive_id.
-          2. Optionally call list_files(site_id, drive_id) to find parent_folder_id.
-          3. Call create_folder(site_id, drive_id, folder_name, parent_folder_id).
+        """
+        Create a new folder in a SharePoint document library.
         """
         try:
             response = await self.client.create_folder(
@@ -1964,25 +1401,20 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="create_word_document",
-        description="Create a new Word document (.docx) in a SharePoint document library with optional content",
+        description="Create a Word file (.docx)",
+        llm_description="Create .docx in drive; file_name without extension; optional content_text and parent_folder_id.",
         args_schema=CreateWordDocumentInput,
         when_to_use=[
-            "User wants to create a Word document in SharePoint",
-            "User says 'create a Word file', 'make a .docx', 'add a document to SharePoint'",
-            "User wants to write content into a new Word document in SharePoint",
-            "User specifies a drive and optionally a subfolder location for the file",
+            "User wants a new .docx in a library",
         ],
         when_not_to_use=[
-            "User wants to create a folder — use create_folder instead",
-            "User wants to create a OneNote notebook — use create_onenote_notebook instead",
-            "User wants to create a SharePoint page (not a file) — use create_page instead",
+            "Folder only (use create_folder); page (use create_page); notebook (use create_onenote_notebook)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
-            "Create a Word document called 'Project Plan' in the Documents library → create_word_document(site_id, drive_id, file_name='Project Plan')",
-            "Create a .docx with the meeting notes → create_word_document(site_id, drive_id, file_name='Meeting Notes', content_text='...')",
-            "Add a Word file inside the 'Finance' folder → create_word_document(site_id, drive_id, file_name=..., parent_folder_id=...)",
+            "Create Word doc Meeting Notes",
+            "Add a .docx with this text",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -1994,16 +1426,8 @@ class SharePoint:
         parent_folder_id: Optional[str] = None,
         content_text: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """Create a new Word document (.docx) in a SharePoint document library.
-
-        Builds a minimal valid .docx in memory and uploads it.
-        Optional plain-text content is inserted as paragraphs in the document body.
-        The .docx extension is appended automatically — do not include it in file_name.
-
-        Workflow:
-          1. Call list_drives(site_id) to get drive_id.
-          2. Optionally call list_files(site_id, drive_id) to find a parent_folder_id.
-          3. Call create_word_document(site_id, drive_id, file_name, ...).
+        """
+        Create a new Word document (.docx) in a SharePoint document library.
         """
         try:
             response = await self.client.create_word_document(
@@ -2041,24 +1465,20 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="create_onenote_notebook",
-        description="Create a new OneNote notebook in a SharePoint site with optional first section and page",
+        description="Create a OneNote notebook",
+        llm_description="Create OneNote notebook on site; optional section then page; page needs section_name.",
         args_schema=CreateOneNoteNotebookInput,
         when_to_use=[
-            "User wants to create a OneNote notebook in SharePoint",
-            "User says 'create a OneNote notebook', 'make a new notebook', 'add a notebook to SharePoint'",
-            "User wants to create a notebook with an initial section and/or page of content",
+            "User wants a new OneNote notebook on a site; optional section/page",
         ],
         when_not_to_use=[
-            "User wants to create a Word document — use create_word_document instead",
-            "User wants to create a SharePoint page — use create_page instead",
-            "User wants to create a folder — use create_folder instead",
+            "Word doc (create_word_document); page (create_page); folder (create_folder)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
-            "Create a OneNote notebook called 'Team Notes' → create_onenote_notebook(site_id, notebook_name='Team Notes')",
-            "Create a notebook with a 'Project' section → create_onenote_notebook(site_id, notebook_name=..., section_name='Project')",
-            "Create a OneNote notebook with a first page containing meeting notes → create_onenote_notebook(site_id, notebook_name=..., section_name=..., page_title=..., page_content_html='...')",
+            "Create notebook Team Notes",
+            "Create notebook with Project section",
         ],
         category=ToolCategory.DOCUMENTATION,
     )
@@ -2070,16 +1490,8 @@ class SharePoint:
         page_title: Optional[str] = None,
         page_content_html: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """Create a new OneNote notebook in a SharePoint site.
-
-        Optionally creates a first section and a first page in a single call.
-        - Provide section_name to create an initial section inside the notebook.
-        - Provide page_title and/or page_content_html (requires section_name) to
-          create a first page with HTML content inside that section.
-
-        Workflow:
-          1. Call get_sites or get_site to obtain site_id.
-          2. Call create_onenote_notebook(site_id, notebook_name, ...).
+        """
+        Create a new OneNote notebook in a SharePoint site.
         """
         try:
             response = await self.client.create_onenote_notebook(
