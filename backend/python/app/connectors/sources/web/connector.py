@@ -195,8 +195,8 @@ class WebApp(App):
             required=False,
             default_value="100",
             min_length=1,
-            max_length=1000,
-            description="Maximum number of pages to crawl (1-1000)"
+            max_length=10000,
+            description="Maximum number of pages to crawl (1-10,000)"
         ))
         .add_sync_custom_field(CustomField(
             name="max_size_mb",
@@ -413,7 +413,6 @@ class WebConnector(BaseConnector):
             if not url:
                 self.logger.error("❌ WebPage url not found")
                 raise ValueError("WebPage url not found")
-            url = self._ensure_trailing_slash(url)
 
             crawl_type = sync_config.get("type", "single")
             max_depth = int(sync_config.get("depth") or 3)
@@ -1033,6 +1032,8 @@ class WebConnector(BaseConnector):
             # Resolve parent URL (returns None when parent would be the domain root)
             parent_url = self._get_parent_url(final_url)
 
+            await self._ensure_parent_records_exist(parent_url)
+
             if existing_record:
                 if legacy_lookup:
                     is_new = True # Force record to be treated as new to migrate external_record_id to the normalized form
@@ -1434,6 +1435,131 @@ class WebConnector(BaseConnector):
         if parent_path == '/':
             return None  # Parent is the domain root — no parent record exists
         return urlunparse((parsed.scheme, parsed.netloc, parent_path, '', '', ''))
+
+    async def _ensure_parent_records_exist(self, parent_url: Optional[str]) -> None:
+        """Ensure that every ancestor record up to (and including) *parent_url*
+        exists in the data store before the child record is upserted.
+
+        Strategy
+        --------
+        1. Return immediately when *parent_url* is ``None``.
+        2. Walk up the URL hierarchy from *parent_url* to build an ordered
+           segment list::
+
+               [parent_url, grandparent_url, great-grandparent_url, ...]
+
+        3. Iterate through that list, checking the DB for each URL.
+           - If the record **already exists** → break (all ancestors above it
+             are assumed to exist too).
+           - If it **does not exist** → build a placeholder ``FileRecord`` and
+             append it to ``batch_parent_records``.
+        4. Reverse ``batch_parent_records`` so the highest ancestor comes first.
+        5. Upsert via ``on_new_records``.  Because the list is ordered
+           root-first, ``_process_record`` will always find a parent already
+           in the DB and will never need to create its own placeholder via
+           ``_handle_parent_record``.
+        """
+        if not parent_url:
+            return
+
+        try:
+            # ── Step 1: build the segment list (closest → root) ─────────────
+            segments: List[str] = []
+            current: Optional[str] = parent_url
+            while current:
+                segments.append(current)
+                current = self._get_parent_url(current)
+
+            # ── Step 2: walk segments, collect the ones that are missing ─────
+            batch_parent_records: List[Tuple[FileRecord, List[Permission]]] = []
+            timestamp = get_epoch_timestamp_in_ms()
+
+            for segment_url in segments:
+                external_id = self._ensure_trailing_slash(segment_url)
+
+                # Primary lookup
+                existing = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=external_id,
+                )
+
+                # Legacy fallback: old records may have been stored without a trailing slash
+                if not existing:
+                    legacy_id = external_id.rstrip("/")
+                    if legacy_id != external_id:
+                        existing = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=legacy_id,
+                        )
+
+                if existing:
+                    # This ancestor (and everything above it) already exists → stop
+                    break
+
+                # Record is missing — build a placeholder
+                parsed = urlparse(segment_url)
+                prefix_path = parsed.path if parsed.path.endswith("/") else parsed.path + "/"
+                record_name = parsed.netloc + prefix_path
+
+                segment_parent_url = self._get_parent_url(segment_url)
+
+                file_record = FileRecord(
+                    id=str(uuid.uuid4()),
+                    org_id=self.data_entities_processor.org_id,
+                    record_name=record_name,
+                    record_type=RecordType.FILE,
+                    record_group_type=RecordGroupType.WEB,
+                    external_record_id=external_id,
+                    external_record_group_id=self.url,
+                    version=0,
+                    origin=OriginTypes.CONNECTOR.value,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                    source_created_at=timestamp,
+                    source_updated_at=timestamp,
+                    weburl=segment_url,
+                    size_in_bytes=None,
+                    is_file=True,
+                    extension=None,
+                    path=prefix_path,
+                    mime_type=MimeTypes.HTML.value,
+                    preview_renderable=False,
+                    parent_external_record_id=segment_parent_url,
+                    parent_record_type=RecordType.FILE if segment_parent_url else None,
+                    indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                )
+
+                permissions = [
+                    Permission(
+                        external_id=self.data_entities_processor.org_id,
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                    )
+                ]
+
+                batch_parent_records.append((file_record, permissions))
+                self.logger.debug(f"📁 Queued missing ancestor placeholder: {record_name}")
+
+            if not batch_parent_records:
+                return
+
+            # ── Step 3: reverse so root-level ancestors are processed first ──
+            batch_parent_records.reverse()
+
+            await self.data_entities_processor.on_new_records(batch_parent_records)
+            self.logger.info(
+                f"✅ Upserted {len(batch_parent_records)} missing ancestor record(s) "
+                f"for parent URL: {parent_url}"
+            )
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Error ensuring parent records exist for {parent_url}: {e}",
+                exc_info=True,
+            )
+
 
     @classmethod
     async def create_connector(
