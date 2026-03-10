@@ -24,6 +24,7 @@ import {
   ListAppsQuery,
   PaginatedResponse,
 } from '../types/oauth.types'
+import { ALLOWED_CUSTOM_REDIRECT_URIS } from '../constants/constants'
 
 const CLIENT_SECRET_LENGTH = 32
 
@@ -47,15 +48,15 @@ export class OAuthAppService {
     // Validate scopes
     this.scopeValidatorService.validateRequestedScopes(data.allowedScopes)
 
-    // Validate redirect URIs
-    this.validateRedirectUris(data.redirectUris)
-
     // Validate grant types
     const allowedGrantTypes = data.allowedGrantTypes || [
       OAuthGrantType.AUTHORIZATION_CODE,
       OAuthGrantType.REFRESH_TOKEN,
     ]
     this.validateGrantTypes(allowedGrantTypes)
+
+    const redirectUris = data.redirectUris || []
+    this.validateRedirectUris(redirectUris)
 
     // Generate credentials
     const clientId = uuidv4()
@@ -69,7 +70,7 @@ export class OAuthAppService {
       description: data.description,
       orgId: new Types.ObjectId(orgId),
       createdBy: new Types.ObjectId(createdBy),
-      redirectUris: data.redirectUris,
+      redirectUris,
       allowedGrantTypes,
       allowedScopes: data.allowedScopes,
       homepageUrl: data.homepageUrl,
@@ -207,7 +208,7 @@ export class OAuthAppService {
 
     // Validate redirect URIs if provided
     if (data.redirectUris) {
-      this.validateRedirectUris(data.redirectUris)
+      this.validateRedirectUris(data.redirectUris);
     }
 
     // Validate grant types if provided
@@ -423,9 +424,11 @@ export class OAuthAppService {
 
   private validateRedirectUris(uris: string[]): void {
     for (const uri of uris) {
+      if (ALLOWED_CUSTOM_REDIRECT_URIS.includes(uri)) {
+        continue;
+      }
       try {
         const parsed = new URL(uri)
-        // Allow localhost for development
         if (
           parsed.protocol !== 'https:' &&
           parsed.hostname !== 'localhost' &&

@@ -847,8 +847,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                 perm.email == user_email for perm in permissions
             )
 
-            self.logger.info(f"\n\n\nUser already has permission: {user_already_has_permission}")
-
             if not user_already_has_permission:
                 fallback_permission = Permission(
                     email=user_email,
@@ -1496,6 +1494,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
                 is_shared_with_me=is_shared_with_me,
+                shared_with_me_record_group_id=f"0S:{user_email}" if is_shared_with_me else None,
             )
 
             if existing_record and not content_changed:
@@ -1505,12 +1504,6 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             if is_shared_with_me:
                 file_record.external_record_group_id = None
-
-                async with self.data_store_provider.transaction() as tx_store:
-                    shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=self.connector_id, external_id=f"0S:{user_email}")
-                    if not shared_with_me_record_group:
-                        raise ValueError("Create a shared with me record group first")
-                    await tx_store.create_record_group_relation(file_record.id, shared_with_me_record_group.id)
 
             # Handle Permissions - fetch new permissions
             new_permissions = []

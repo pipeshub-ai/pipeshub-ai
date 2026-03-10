@@ -120,9 +120,9 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
-    async def delete_parent_child_edges_to(self, to_key: str) -> int:
-        """Delete PARENT_CHILD edges pointing to a specific target record."""
-        return await self.graph_provider.delete_parent_child_edges_to(to_key, transaction=self.txn)
+    async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
+        """Delete PARENT_CHILD edges pointing to a specific target record"""
+        return await self.graph_provider.delete_parent_child_edge_to_record(record_id, transaction=self.txn)
 
     async def delete_edges_to_groups(self, from_id: str, from_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to_groups(from_id, from_collection, collection, transaction=self.txn)
@@ -298,6 +298,13 @@ class GraphTransactionStore(TransactionStore):
             connector_id, parent_external_record_id, record_type, transaction=self.txn
         )
 
+    async def get_record_path(self, record_id: str) -> Optional[str]:
+        """Get full hierarchical path for a record by traversing parent-child edges."""
+        return await self.graph_provider.get_record_path(record_id, transaction=self.txn)
+    async def get_app_creator_user(self, connector_id:str) ->Optional[User]:
+        """Get the creator user for a connector/app by connectorId."""
+        return await self.graph_provider.get_app_creator_user(connector_id,transaction=self.txn)
+
     async def batch_upsert_records(self, records: List[Record]) -> None:
         """
         Batch upsert records (base + specific type + IS_OF_TYPE edge).
@@ -417,6 +424,18 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.create_inherit_permissions_relation_record_group(
             record_id, record_group_id, transaction=self.txn
         )
+
+    async def delete_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str) -> None:
+        """
+        Delete INHERIT_PERMISSIONS edge from record to record group.
+        Called when a record's inherit_permissions is False, to remove a previously created edge (e.g. from placeholder).
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.delete_inherit_permissions_relation_record_group(
+            record_id, record_group_id, transaction=self.txn
+        )
+
     async def create_inherit_permissions_relation_record(self, child_record_id: str, parent_record_id: str) -> None:
         record_edge = {
                     "from_id": child_record_id,
@@ -589,6 +608,20 @@ class GraphTransactionStore(TransactionStore):
         """Remove nodes matching field value"""
         return await self.graph_provider.remove_nodes_by_field(
             collection, field, value, transaction=self.txn
+        )
+
+    async def get_nodes_by_filters(
+        self,
+        collection: str,
+        filters: Dict,
+        return_fields: Optional[List[str]] = None
+    ) -> List[Dict]:
+        """Get nodes from a collection matching multiple field filters."""
+        return await self.graph_provider.get_nodes_by_filters(
+            collection=collection,
+            filters=filters,
+            return_fields=return_fields,
+            transaction=self.txn
         )
 
 

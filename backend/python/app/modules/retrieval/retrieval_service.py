@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Union
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
+from langchain_qdrant import FastEmbedSparse
 from qdrant_client import models
 
 from app.config.configuration_service import ConfigurationService
@@ -19,11 +19,11 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
@@ -50,7 +50,7 @@ class RetrievalService:
         config_service: ConfigurationService,
         collection_name: str,
         vector_db_service: IVectorDBService,
-        arango_service: BaseArangoService,
+        graph_provider: IGraphDBProvider,
         blob_store: BlobStorage,
     ) -> None:
         """
@@ -60,12 +60,13 @@ class RetrievalService:
             collection_name: Name of the collection
             vector_db_service: Vector DB service
             config_service: Configuration service
+            graph_provider: Graph database provider
         """
 
         self.logger = logger
         self.config_service = config_service
         self.llm = None
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.blob_store = blob_store
         # Initialize sparse embeddings
         try:
@@ -79,7 +80,6 @@ class RetrievalService:
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
-        self.vector_store = None
         self.embedding_model = None
         self.embedding_size = None
         self.embedding_model_instance = None
@@ -241,7 +241,7 @@ class RetrievalService:
         filter_groups: Optional[Dict[str, List[str]]] = None,
         limit: int = 20,
         virtual_record_ids_from_tool: Optional[List[str]] = None,
-        arango_service: Optional[BaseArangoService] = None,
+        graph_provider: Optional[IGraphDBProvider] = None,
         knowledge_search:bool = False,
         is_agent:bool = False,
     ) -> Dict[str, Any]:
@@ -249,29 +249,28 @@ class RetrievalService:
 
         try:
             # Get accessible records
-            if not self.arango_service:
-                raise ValueError("ArangoService is required for permission checking")
+            if not self.graph_provider:
+                raise ValueError("GraphProvider is required for permission checking")
 
             filter_groups = filter_groups or {}
 
             kb_ids = filter_groups.get('kb', None) if filter_groups else None
             # Convert filter_groups to format expected by get_accessible_records
-            arango_filters = {}
+            filters = {}
             if filter_groups:  # Only process if filter_groups is not empty
                 for key, values in filter_groups.items():
                     # Convert key to match collection naming
                     metadata_key = (
                         key.lower()
                     )  # e.g., 'departments', 'categories', etc.
-                    arango_filters[metadata_key] = values
+                    filters[metadata_key] = values
 
             init_tasks = [
-                self._get_accessible_records_task(user_id, org_id, filter_groups, self.arango_service),
-                self._get_vector_store_task(),
+                self._get_accessible_records_task(user_id, org_id, filter_groups, self.graph_provider),
                 self._get_user_cached(user_id)  # Get user info in parallel with caching
             ]
 
-            accessible_records, vector_store, user = await asyncio.gather(*init_tasks)
+            accessible_records, user = await asyncio.gather(*init_tasks)
 
             if not accessible_records:
                 self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
@@ -299,7 +298,7 @@ class RetrievalService:
                         must={"orgId": org_id},
                         should={"virtualRecordId": accessible_virtual_record_ids}  # Pass as should condition
                     )
-            search_results = await self._execute_parallel_searches(queries, filter, limit, vector_store)
+            search_results = await self._execute_parallel_searches(queries, filter, limit)
 
             if not search_results:
                 self.logger.debug("No search results found")
@@ -400,7 +399,7 @@ class RetrievalService:
                             is_block_group = meta.get("isBlockGroup")
                             if is_block_group is not None:
                                 if virtual_id not in virtual_record_id_to_record:
-                                    await get_record(meta,virtual_id,virtual_record_id_to_record,self.blob_store,org_id)
+                                    await get_record(virtual_id,virtual_record_id_to_record,self.blob_store,org_id,virtual_to_record_map)
                                     record = virtual_record_id_to_record[virtual_id]
                                     if record is None:
                                         continue
@@ -419,7 +418,7 @@ class RetrievalService:
                 try:
                     # Fetch files in parallel
                     file_results = await asyncio.gather(*[
-                        self.arango_service.get_document(record_id, CollectionNames.FILES.value)
+                        self.graph_provider.get_document(record_id, CollectionNames.FILES.value)
                         for record_id in file_record_ids_to_fetch
                     ], return_exceptions=True)
                     return {
@@ -437,7 +436,7 @@ class RetrievalService:
                 try:
                     # Fetch mails in parallel
                     mail_results = await asyncio.gather(*[
-                        self.arango_service.get_document(record_id, CollectionNames.MAILS.value)
+                        self.graph_provider.get_document(record_id, CollectionNames.MAILS.value)
                         for record_id in mail_record_ids_to_fetch
                     ], return_exceptions=True)
                     return {
@@ -562,18 +561,18 @@ class RetrievalService:
                 return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
-    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, arango_service: BaseArangoService) -> List[Dict[str, Any]]:
+    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, graph_provider: IGraphDBProvider) -> List[Dict[str, Any]]:
         """Separate task for getting accessible records"""
         filter_groups = filter_groups or {}
-        arango_filters = {}
+        filters = {}
 
         if filter_groups:
             for key, values in filter_groups.items():
                 metadata_key = key.lower()
-                arango_filters[metadata_key] = values
+                filters[metadata_key] = values
 
-        return await arango_service.get_accessible_records(
-            user_id=user_id, org_id=org_id, filters=arango_filters
+        return await graph_provider.get_accessible_records(
+            user_id=user_id, org_id=org_id, filters=filters
         )
 
     async def _get_user_cached(self, user_id: str) -> Optional[Dict[str, Any]]:
@@ -595,7 +594,7 @@ class RetrievalService:
 
         # Cache miss - fetch from database
         self.logger.debug(f"User cache miss for user_id: {user_id}")
-        user_data = await self.arango_service.get_user_by_user_id(user_id)
+        user_data = await self.graph_provider.get_user_by_user_id(user_id)
 
         # Store in cache
         _user_cache[user_id] = (user_data, time.time())
@@ -607,39 +606,6 @@ class RetrievalService:
             del _user_cache[oldest_key]
 
         return user_data
-
-
-    async def _get_vector_store_task(self) -> QdrantVectorStore:
-        """Cached vector store retrieval"""
-        if not self.vector_store:
-            # Check collection exists
-            collections = await self.vector_db_service.get_collections()
-            self.logger.info(f"Collections: {collections}")
-            collection_info = (
-                await self.vector_db_service.get_collection(self.collection_name)
-                if any(col.name == self.collection_name for col in collections.collections) # type: ignore
-                else None
-            )
-            if not collection_info or collection_info.points_count == 0: # type: ignore
-                raise VectorDBEmptyError("Vector DB is empty or collection not found")
-
-            # Get cached embedding model
-            dense_embeddings = await self.get_embedding_model_instance()
-            self.logger.info(f"Dense embeddings: {dense_embeddings}")
-            if not dense_embeddings:
-                raise ValueError("No dense embeddings found")
-
-            self.vector_store = QdrantVectorStore(
-                client=self.vector_db_service.get_service_client(),
-                collection_name=self.collection_name,
-                vector_name="dense",
-                sparse_vector_name="sparse",
-                embedding=dense_embeddings,
-                sparse_embedding=self.sparse_embeddings,
-                retrieval_mode=RetrievalMode.HYBRID,
-            )
-            self.logger.info(f"Vector store: {self.vector_store}")
-        return self.vector_store
 
     # Convert sparse embeddings to Qdrant's SparseVector format; FastEmbedSparse returns
     # LangChain's SparseVector, which Prefetch does not accept.
@@ -653,7 +619,7 @@ class RetrievalService:
             return models.SparseVector(indices=sparse["indices"], values=sparse["values"])
         raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
 
-    async def _execute_parallel_searches(self, queries, filter, limit, vector_store) -> List[Dict[str, Any]]:
+    async def _execute_parallel_searches(self, queries, filter, limit) -> List[Dict[str, Any]]:
         """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion."""
         all_results = []
 

@@ -32,7 +32,6 @@ import {
   getKnowledgeHubNodes,
   moveRecord,
 } from '../controllers/kb_controllers';
-import { ArangoService } from '../../../libs/services/arango.service';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -77,16 +76,21 @@ import { getPlatformSettingsFromStore } from '../../configuration_manager/utils/
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { RequestHandler, Response, NextFunction } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
+import { NotificationService } from '../../notification/service/notification.service';
 import { validateNoXSS, validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
+import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const logger = Logger.getInstance({
   service: 'KnowledgeBaseRoutes',
 });
 
-export function createKnowledgeBaseRouter(container: Container): Router {
+export function createKnowledgeBaseRouter(
+  container: Container,
+  notificationContainer?: Container,
+): Router {
   const router = Router();
   const appConfig = container.get<AppConfig>('AppConfig');
-  const arangoService = container.get<ArangoService>('ArangoService');
   const recordsEventProducer = container.get<RecordsEventProducer>(
     'RecordsEventProducer',
   );
@@ -94,7 +98,6 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     container.get<SyncEventProducer>('SyncEventProducer');
 
   const recordRelationService = new RecordRelationService(
-    arangoService,
     recordsEventProducer,
     syncEventProducer,
     appConfig.storage,
@@ -103,6 +106,17 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     'KeyValueStoreService',
   );
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  
+  // Get NotificationService from notificationContainer if available (optional)
+  let notificationService: NotificationService | undefined;
+  try {
+    if (notificationContainer) {
+      notificationService = notificationContainer.get<NotificationService>(NotificationService);
+    }
+  } catch (error) {
+    // NotificationService not available - uploads will work but without real-time updates
+    logger.warn('NotificationService not available - real-time updates disabled');
+  }
 
   // Helper: resolve current max upload size (bytes) from platform settings
   const resolveMaxUploadSize = async (): Promise<number> => {
@@ -189,6 +203,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.post(
     '/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(createKBSchema),
     createKnowledgeBase(appConfig),
@@ -198,6 +213,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(listKnowledgeBasesSchema),
     listKnowledgeBases(appConfig),
@@ -207,6 +223,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/records',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getAllRecordsSchema),
     getAllRecords(appConfig),
@@ -216,6 +233,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/knowledge-hub/nodes',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     getKnowledgeHubNodes(appConfig),
   );
@@ -224,6 +242,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/knowledge-hub/nodes/:parentType/:parentId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     getKnowledgeHubNodes(appConfig),
   );
@@ -232,6 +251,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/record/:recordId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getRecordByIdSchema),
     getRecordById(appConfig),
@@ -241,6 +261,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.put(
     '/record/:recordId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ...createDynamicBufferUpload({
       fieldName: 'file',
@@ -259,6 +280,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.delete(
     '/record/:recordId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(deleteRecordSchema),
     deleteRecord(appConfig),
@@ -268,6 +290,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/stream/record/:recordId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getRecordByIdSchema),
     getRecordBuffer(appConfig.connectorBackend),
@@ -277,6 +300,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.post(
     '/reindex/record/:recordId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(reindexRecordSchema),
     reindexRecord(appConfig),
@@ -286,6 +310,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.post(
     '/reindex/record-group/:recordGroupId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(reindexRecordGroupSchema),
     reindexRecordGroup(appConfig),
@@ -295,6 +320,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/stats/:connectorId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(appConfig),
@@ -304,6 +330,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.post(
     '/reindex-failed/connector',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(reindexFailedRecordSchema),
     reindexFailedRecords(recordRelationService, appConfig),
@@ -313,6 +340,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.post(
     '/resync/connector',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(resyncConnectorSchema),
     resyncConnectorRecords(recordRelationService, appConfig),
@@ -322,6 +350,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/limits',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     async (
       _req: AuthenticatedUserRequest,
@@ -347,6 +376,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/:kbId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getKBSchema),
     getKnowledgeBase(appConfig),
@@ -356,6 +386,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.put(
     '/:kbId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateKBSchema),
     updateKnowledgeBase(appConfig),
@@ -365,6 +396,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.delete(
     '/:kbId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(deleteKBSchema),
     deleteKnowledgeBase(appConfig),
@@ -374,6 +406,17 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/:kbId/records',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(getAllKBRecordsSchema),
+    getKBContent(appConfig),
+  );
+
+  // Get KB children (folders and records) - alias for records endpoint
+  router.get(
+    '/:kbId/children',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getAllKBRecordsSchema),
     getKBContent(appConfig),
@@ -383,6 +426,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.post(
     '/:kbId/upload',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_UPLOAD),
     metricsMiddleware(container),
     // File processing middleware (dynamic max size)
     ...createDynamicBufferUpload({
@@ -398,13 +442,14 @@ export function createKnowledgeBaseRouter(container: Container): Router {
     ValidationMiddleware.validate(uploadRecordsSchema),
 
     // Upload handler
-    uploadRecordsToKB(recordRelationService, keyValueStoreService, appConfig),
+    uploadRecordsToKB(keyValueStoreService, appConfig, notificationService),
   );
 
   // Upload records to a specific folder in the KB
   router.post(
     '/:kbId/folder/:folderId/upload',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_UPLOAD),
     metricsMiddleware(container),
     // File processing middleware (dynamic max size)
     ...createDynamicBufferUpload({
@@ -421,9 +466,9 @@ export function createKnowledgeBaseRouter(container: Container): Router {
 
     // Upload handler
     uploadRecordsToFolder(
-      recordRelationService,
       keyValueStoreService,
       appConfig,
+      notificationService,
     ),
   );
 
@@ -431,6 +476,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.post(
     '/:kbId/folder',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(createFolderSchema),
     createRootFolder(appConfig),
@@ -440,6 +486,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.post(
     '/:kbId/folder/:folderId/subfolder',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(createFolderSchema),
     createNestedFolder(appConfig),
@@ -449,6 +496,17 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/:kbId/folder/:folderId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(getFolderSchema),
+    getFolderContents(appConfig),
+  );
+
+  // Get folder children - alias for folder contents
+  router.get(
+    '/:kbId/folder/:folderId/children',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getFolderSchema),
     getFolderContents(appConfig),
@@ -458,6 +516,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.put(
     '/:kbId/folder/:folderId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateFolderSchema),
     updateFolder(appConfig),
@@ -467,6 +526,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.delete(
     '/:kbId/folder/:folderId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(deleteFolderSchema),
     deleteFolder(appConfig),
@@ -476,6 +536,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.post(
     '/:kbId/permissions',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(kbPermissionSchema),
     createKBPermission(appConfig),
@@ -485,6 +546,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.get(
     '/:kbId/permissions',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getPermissionsSchema),
     listKBPermissions(appConfig),
@@ -494,6 +556,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.put(
     '/:kbId/permissions',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updatePermissionsSchema),
     updateKBPermission(appConfig),
@@ -502,6 +565,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.delete(
     '/:kbId/permissions',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_DELETE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(deletePermissionsSchema),
     removeKBPermission(appConfig),
@@ -511,6 +575,7 @@ export function createKnowledgeBaseRouter(container: Container): Router {
   router.put(
     '/:kbId/record/:recordId/move',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(moveRecordSchema),
     moveRecord(appConfig),

@@ -7,12 +7,107 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.freshdesk.freshdesk import FreshDeskClient, FreshDeskResponse
 from app.sources.external.freshdesk.freshdesk import FreshdeskDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_ticket",
+        description="Create a new ticket",
+        parameters=[
+            {"name": "subject", "type": "string", "description": "Ticket subject", "required": True},
+            {"name": "description", "type": "string", "description": "Ticket description", "required": True}
+        ],
+        tags=["tickets", "create"]
+    ),
+    ToolDefinition(
+        name="get_ticket",
+        description="Get ticket details",
+        parameters=[
+            {"name": "ticket_id", "type": "integer", "description": "Ticket ID", "required": True}
+        ],
+        tags=["tickets", "read"]
+    ),
+    ToolDefinition(
+        name="update_ticket",
+        description="Update a ticket",
+        parameters=[
+            {"name": "ticket_id", "type": "integer", "description": "Ticket ID", "required": True}
+        ],
+        tags=["tickets", "update"]
+    ),
+    ToolDefinition(
+        name="delete_ticket",
+        description="Delete a ticket",
+        parameters=[
+            {"name": "ticket_id", "type": "integer", "description": "Ticket ID", "required": True}
+        ],
+        tags=["tickets", "delete"]
+    ),
+    ToolDefinition(
+        name="create_note",
+        description="Create a note on a ticket",
+        parameters=[
+            {"name": "ticket_id", "type": "integer", "description": "Ticket ID", "required": True},
+            {"name": "body", "type": "string", "description": "Note body", "required": True}
+        ],
+        tags=["tickets", "notes"]
+    ),
+    ToolDefinition(
+        name="create_reply",
+        description="Create a reply to a ticket",
+        parameters=[
+            {"name": "ticket_id", "type": "integer", "description": "Ticket ID", "required": True},
+            {"name": "body", "type": "string", "description": "Reply body", "required": True}
+        ],
+        tags=["tickets", "replies"]
+    ),
+    ToolDefinition(
+        name="create_agent",
+        description="Create an agent",
+        parameters=[
+            {"name": "email", "type": "string", "description": "Agent email", "required": True}
+        ],
+        tags=["agents", "create"]
+    ),
+    ToolDefinition(
+        name="search_tickets",
+        description="Search for tickets",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["tickets", "search"]
+    ),
+]
 
+
+# Register Freshdesk toolset
+@ToolsetBuilder("Freshdesk")\
+    .in_group("Customer Support")\
+    .with_description("Freshdesk integration for customer support ticket management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("Freshdesk API Key", "your-api-key"),
+            CommonFields.api_token("Freshdesk Domain", "your-domain", field_name="domain")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/freshdesk.svg"))\
+    .build_decorator()
 class FreshDesk:
     """FreshDesk tools exposed to the agents using FreshdeskDataSource"""
 

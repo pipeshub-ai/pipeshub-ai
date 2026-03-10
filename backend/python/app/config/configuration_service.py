@@ -4,7 +4,7 @@ import hashlib
 import os
 import threading
 import time
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 import dotenv
 from cachetools import LRUCache
@@ -290,11 +290,11 @@ class ConfigurationService:
     async def set_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
         """Set configuration value with optional encryption"""
         try:
+            self.logger.info("📝 set_config called for key: %s (store type: %s)", key, type(self.store).__name__)
 
             # Store in KV store
             try:
-                await self.store.create_key(key, value, overwrite=True)
-                success = True
+                success = await self.store.create_key(key, value, overwrite=True)
             except Exception as store_error:
                 self.logger.error("❌ Failed to create key in store: %s", str(store_error))
                 success = False
@@ -302,7 +302,7 @@ class ConfigurationService:
             if success:
                 # Update cache with value
                 self.cache[key] = value
-                self.logger.debug("✅ Successfully set config for key: %s", key)
+                self.logger.info("✅ Successfully set config for key: %s, now publishing cache invalidation", key)
 
                 # Publish cache invalidation for other processes (Redis only)
                 await self._publish_cache_invalidation(key)
@@ -376,14 +376,28 @@ class ConfigurationService:
         For etcd, the watch mechanism handles cross-process invalidation.
         """
         if self._kv_store_type != "redis":
+            self.logger.debug("⏭️ Skipping cache invalidation publish: KV store type is '%s', not 'redis'", self._kv_store_type)
             return
 
         try:
             if hasattr(self.store, 'publish_cache_invalidation'):
+                self.logger.info("📤 Publishing cache invalidation for key: %s", key)
                 await self.store.publish_cache_invalidation(key)
+            else:
+                self.logger.warning("⚠️ Store %s does not have publish_cache_invalidation method", type(self.store).__name__)
         except Exception as e:
             # Log but don't fail the operation - cache will eventually be consistent
             self.logger.warning("⚠️ Failed to publish cache invalidation for key %s: %s", key, str(e))
+
+    async def close(self) -> None:
+        """Shut down the configuration service and release resources."""
+        if not hasattr(self, 'store') or self.store is None:
+            return
+        try:
+            await self.store.close()
+            self.logger.info("✅ ConfigurationService closed successfully")
+        except Exception as e:
+            self.logger.warning("Error closing ConfigurationService: %s", str(e))
 
     def _etcd_watch_callback(self, event) -> None:
         """Handle etcd watch events to update cache.
@@ -399,6 +413,9 @@ class ConfigurationService:
                     self.logger.info("📦 Entire cache cleared via etcd watch")
                 else:
                     self.cache.pop(key, None)
-                    self.logger.debug("📦 Cache invalidated for key: %s", key)
         except Exception as e:
             self.logger.error("❌ Error in etcd watch callback: %s", str(e))
+
+    async def list_keys_in_directory(self, directory: str) -> List[str]:
+        """List all keys in a directory"""
+        return await self.store.list_keys_in_directory(directory)

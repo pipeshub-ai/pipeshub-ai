@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, AsyncIterator, Dict, List, NoReturn, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
@@ -25,7 +25,9 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_store.data_store import (
+    DataStoreProvider,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -369,7 +371,7 @@ def get_response_error(response) -> str:
     .in_group("Cloud Storage")\
     .with_description("Sync files and folders from your personal Nextcloud account")\
     .with_categories(["Storage", "Collaboration"])\
-    .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_scopes([ConnectorScope.PERSONAL])\
     .with_auth([
         AuthBuilder.type(AuthType.BASIC_AUTH).fields([
             # 1. Base URL is always required
@@ -651,7 +653,6 @@ class NextcloudConnector(BaseConnector):
             is_updated = False
             metadata_changed = False
             content_changed = False
-            permissions_changed = False
 
             # Store old parent and path for comparison (before resolution)
             old_parent_id = existing_record.parent_external_record_id if existing_record else None
@@ -744,13 +745,13 @@ class NextcloudConnector(BaseConnector):
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=display_name,
                 record_type=record_type,
-                record_group_type=RecordGroupType.DRIVE.value,
+                record_group_type=RecordGroupType.DRIVE,
                 external_record_group_id=record_group_id,
                 external_record_id=file_id,
                 external_revision_id=etag,
                 version=0 if is_new else existing_record.version + 1,
-                origin=OriginTypes.CONNECTOR.value,
-                connector_name=self.connector_name.value,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 created_at=timestamp_ms,
                 updated_at=timestamp_ms,
@@ -763,7 +764,7 @@ class NextcloudConnector(BaseConnector):
                 is_file=is_file,
                 preview_renderable=is_file,
                 extension=get_file_extension(display_name) if is_file else "",
-                path=path,
+                path=None,  # Path derived at runtime via parent-child graph (get_record_path)
                 mime_type=get_mimetype_enum_for_nextcloud(content_type, is_collection),
                 etag=etag,
                 ctag="",
@@ -775,41 +776,11 @@ class NextcloudConnector(BaseConnector):
 
             if file_id:
                 path_to_external_id[clean_path] = file_id
-
-            # Fetch permissions
-            new_permissions = []
-            try:
-                shares = await self._get_file_shares(path, user_id)
-
-                for share in shares:
-                    share_type = share.get('share_type')
-                    share_with = share.get('share_with')
-                    permission_int = share.get('permissions', 1)
-
-                    if share_type == 0:  # User share
-                        new_permissions.append(
-                            Permission(
-                                external_id=share_with,
-                                email=None,
-                                type=nextcloud_permissions_to_permission_type(permission_int),
+            owner_permission = [Permission(
+                                email=user_email,
+                                type=PermissionType.OWNER,
                                 entity_type=EntityType.USER
-                            )
-                        )
-                    elif share_type == 1:  # Group share
-                        new_permissions.append(
-                            Permission(
-                                external_id=share_with,
-                                email=None,
-                                type=nextcloud_permissions_to_permission_type(permission_int),
-                                entity_type=EntityType.GROUP
-                            )
-                        )
-
-            except Exception as perm_ex:
-                self.logger.debug(f"Could not fetch permissions for {path}: {perm_ex}")
-
-            permissions_changed = False
-
+            )]
             return RecordUpdate(
                 record=file_record,
                 is_new=is_new,
@@ -817,9 +788,9 @@ class NextcloudConnector(BaseConnector):
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=permissions_changed,
+                permissions_changed=True,
                 old_permissions=[],
-                new_permissions=new_permissions,
+                new_permissions=owner_permission,
                 external_record_id=file_id
             )
 
@@ -905,6 +876,21 @@ class NextcloudConnector(BaseConnector):
             self.logger.debug(f"Error fetching shares for {path}: {e}")
             return []
 
+    async def _clear_parent_child_edges_for_records(
+        self, records_with_permissions: List[Tuple[Record, List]]
+    ) -> None:
+        """Nextcloud single-parent: remove existing PARENT_CHILD edges so records don't appear in both old and new location."""
+        if not records_with_permissions:
+            return
+        async with self.data_store_provider.transaction() as tx_store:
+            for record, _ in records_with_permissions:
+                deleted = await tx_store.delete_parent_child_edge_to_record(record.id)
+                if deleted:
+                    self.logger.debug(
+                        "Removed %d existing PARENT_CHILD edge(s) to %s (Nextcloud single-parent)",
+                        deleted, record.id,
+                    )
+
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """Handle record updates (modified or deleted records). Follows Box connector pattern."""
         try:
@@ -920,10 +906,9 @@ class NextcloudConnector(BaseConnector):
                         )
 
             elif record_update.is_updated:
-                # Update the record - this ensures proper indexing queue updates
-                await self.data_entities_processor.on_new_records([
-                    (record_update.record, record_update.new_permissions or [])
-                ])
+                records_batch = [(record_update.record, record_update.new_permissions or [])]
+                await self._clear_parent_child_edges_for_records(records_batch)
+                await self.data_entities_processor.on_new_records(records_batch)
 
         except Exception as e:
             self.logger.error(f"Error handling record update: {e}", exc_info=True)
@@ -936,6 +921,7 @@ class NextcloudConnector(BaseConnector):
     ) -> None:
         """
         Synchronize all files for a specific user using WebDAV PROPFIND.
+        Hardcoded depth to 100
         """
         try:
             self.logger.info(f"Syncing files for user: {user_email}")
@@ -944,7 +930,7 @@ class NextcloudConnector(BaseConnector):
                 response = await self.data_source.list_directory(
                     user_id=user_id,
                     path="",
-                    depth="infinity"
+                    depth=100
                 )
 
             if not is_response_successful(response):
@@ -1015,6 +1001,7 @@ class NextcloudConnector(BaseConnector):
 
                     if batch_count >= self.batch_size:
                         self.logger.info(f"Processing batch of {batch_count} records")
+                        await self._clear_parent_child_edges_for_records(batch_records)
                         await self.data_entities_processor.on_new_records(batch_records)
                         batch_records = []
                         batch_count = 0
@@ -1023,6 +1010,7 @@ class NextcloudConnector(BaseConnector):
             # Process remaining records
             if batch_records:
                 self.logger.info(f"Processing final batch of {len(batch_records)} records")
+                await self._clear_parent_child_edges_for_records(batch_records)
                 await self.data_entities_processor.on_new_records(batch_records)
 
             self.logger.info(
@@ -1123,7 +1111,7 @@ class NextcloudConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 description="Personal Nextcloud Folder",
                 external_group_id=self.current_user_id,
-                connector_name=self.connector_name.value,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.DRIVE,
             )
@@ -1231,12 +1219,7 @@ class NextcloudConnector(BaseConnector):
 
             # Check response status
             # HTTP 304 Not Modified means no new activities
-            if hasattr(response, 'status_code'):
-                status_code = response.status_code
-            elif hasattr(response, 'status'):
-                status_code = response.status
-            else:
-                status_code = None
+            status_code = response.status
 
             if status_code == HTTP_NOT_MODIFIED:
                 self.logger.info("✅ [Incremental Sync] HTTP 304 - No new activities. Database is up to date.")
@@ -1456,7 +1439,7 @@ class NextcloudConnector(BaseConnector):
                                 parent_response = await self.data_source.list_directory(
                                     user_id=user_id,
                                     path=parent_path,
-                                    depth="0"
+                                    depth=0
                                 )
 
                             if is_response_successful(parent_response):
@@ -1501,17 +1484,18 @@ class NextcloudConnector(BaseConnector):
 
                                                     if parent_update and parent_update.record:
                                                         if parent_update.is_new:
-                                                            await self.data_entities_processor.on_new_records([
-                                                                (parent_update.record, parent_update.new_permissions or [])
-                                                            ])
+                                                            await self.data_entities_processor.on_new_records(
+                                                                [(parent_update.record, parent_update.new_permissions or [])],
+                                                            )
                                                             self.logger.info(f"✅ [Incremental Sync] Created parent folder: {parent_path}")
                                                         else:
                                                             await self._handle_record_updates(parent_update)
                                                             self.logger.debug(f"✅ [Incremental Sync] Updated parent folder: {parent_path}")
 
-                                                        # Cache the parent
-                                                        if parent_update.record.path:
-                                                            clean_path = parent_update.record.path.rstrip('/')
+                                                        # Cache the parent (path may be dynamic from get_record_path)
+                                                        parent_path_str = await tx_store.get_record_path(parent_update.record.id)
+                                                        if parent_path_str:
+                                                            clean_path = parent_path_str.rstrip('/')
                                                             path_to_external_id[clean_path] = parent_update.record.external_record_id
                                                             self.logger.debug(f"📌 [Incremental Sync] Cached parent: {clean_path} -> {parent_update.record.external_record_id}")
 
@@ -1524,7 +1508,7 @@ class NextcloudConnector(BaseConnector):
                         response = await self.data_source.list_directory(
                             user_id=user_id,
                             path=path,
-                            depth="0"  # Only fetch this item, not children
+                            depth=0  # Only fetch this item, not children
                         )
 
                     if not is_response_successful(response):
@@ -1561,9 +1545,9 @@ class NextcloudConnector(BaseConnector):
                         if record_update:
                             # For incremental sync: send new records immediately, handle updates separately
                             if record_update.is_new and record_update.record:
-                                await self.data_entities_processor.on_new_records([
-                                    (record_update.record, record_update.new_permissions or [])
-                                ])
+                                await self.data_entities_processor.on_new_records(
+                                    [(record_update.record, record_update.new_permissions or [])],
+                                )
                             else:
                                 # Handle updates and deletions
                                 await self._handle_record_updates(record_update)
@@ -1592,11 +1576,21 @@ class NextcloudConnector(BaseConnector):
                 detail="Data source not initialized"
             )
 
-        # Get file record to get path
+        # Get file record and path (path may be stored or derived from parent-child graph)
         async with self.data_store_provider.transaction() as tx_store:
             file_record = await tx_store.get_file_record_by_id(record.id)
+            path = None
+            if file_record:
+                path = await tx_store.get_record_path(record.id)
+        # Fallback: root-level or when graph path unavailable, use record name (WebDAV path = single segment)
+        if file_record and (path is None or path.strip() == ""):
+            path = record.record_name or file_record.record_name
 
-        if not file_record or not file_record.path:
+        if not file_record or not path:
+            self.logger.debug(
+                "stream_record path resolution failed: record_id=%s file_record=%s path=%s",
+                record.id, file_record is not None, path,
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="File not found or access denied"
@@ -1609,11 +1603,10 @@ class NextcloudConnector(BaseConnector):
                 detail="Cannot download folders"
             )
 
-        # Extract relative path from full WebDAV path
-        path = file_record.path
+        # Extract relative path from full WebDAV path (path is already relative to user root)
         relative_path = path
-        if '/files/' in path:
-            parts = path.split('/files/')
+        if relative_path and '/files/' in relative_path:
+            parts = relative_path.split('/files/')
             if len(parts) > 1:
                 user_and_path = parts[1]
                 path_parts = user_and_path.split('/', 1)
@@ -1621,8 +1614,8 @@ class NextcloudConnector(BaseConnector):
                     relative_path = path_parts[1]
                 else:
                     relative_path = ''
-        else:
-            relative_path = path.lstrip('/')
+        elif relative_path:
+            relative_path = relative_path.lstrip('/')
 
         # Download file using authenticated WebDAV client
         try:
@@ -1646,7 +1639,7 @@ class NextcloudConnector(BaseConnector):
                 )
 
             # Create async generator for streaming
-            async def generate() -> AsyncIterator[bytes]:
+            async def generate() -> AsyncGenerator[bytes]:
                 yield file_content
 
             return create_stream_record_response(
@@ -1866,21 +1859,24 @@ class NextcloudConnector(BaseConnector):
         for record in record_results:
             try:
                 async with self.data_store_provider.transaction() as tx_store:
-                    user_with_permission = await tx_store.get_first_user_with_permission_to_node(
-                        f"{CollectionNames.RECORDS.value}/{record.id}"
-                    )
-
+                    user_with_permission = await tx_store.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
                     file_record = await tx_store.get_file_record_by_id(record.id)
+                    path = None
+                    if file_record:
+                        path = await tx_store.get_record_path(record.id)
 
-                if not user_with_permission or not file_record or not file_record.path:
+                if file_record and (path is None or path.strip() == ""):
+                    path = record.record_name or file_record.record_name
+
+                if not user_with_permission or not file_record or not path:
                     failed_count += 1
                     continue
 
                 async with self.rate_limiter:
                     response = await self.data_source.list_directory(
-                        user_id=user_with_permission.source_user_id,
-                        path=file_record.path,
-                        depth="0"
+                        user_id=self.current_user_id,
+                        path=path,
+                        depth=0,
                     )
 
                 if not is_response_successful(response):

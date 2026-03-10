@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { OAuthGrantType } from '../schema/oauth.app.schema'
 
 // OAuth Provider Validators
 
@@ -44,9 +45,9 @@ export const authorizeConsentSchema = z.object({
 export const tokenSchema = z.object({
   body: z.object({
     grant_type: z.enum([
-      'authorization_code',
-      'client_credentials',
-      'refresh_token',
+      OAuthGrantType.AUTHORIZATION_CODE,
+      OAuthGrantType.CLIENT_CREDENTIALS,
+      OAuthGrantType.REFRESH_TOKEN,
     ]),
     code: z.string().optional(),
     redirect_uri: z.string().url().optional(),
@@ -92,10 +93,10 @@ export const createAppSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(100),
     description: z.string().max(500).optional(),
-    redirectUris: z.array(z.string().url()).min(1).max(10),
+    redirectUris: z.array(z.string().url()).max(10).optional(),
     allowedGrantTypes: z
       .array(
-        z.enum(['authorization_code', 'client_credentials', 'refresh_token']),
+        z.enum([OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.CLIENT_CREDENTIALS, OAuthGrantType.REFRESH_TOKEN]),
       )
       .optional(),
     allowedScopes: z.array(z.string()).min(1),
@@ -105,6 +106,15 @@ export const createAppSchema = z.object({
     isConfidential: z.boolean().optional(),
     accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
     refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
+  }).refine((data) => {
+    const grantTypes = data.allowedGrantTypes || [OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.REFRESH_TOKEN];
+    if (grantTypes.includes(OAuthGrantType.AUTHORIZATION_CODE)) {
+      return data.redirectUris && data.redirectUris.length >= 1;
+    }
+    return true;
+  }, {
+    message: 'At least one redirect URI is required when authorization_code grant type is enabled',
+    path: ['redirectUris'],
   }),
 })
 
@@ -115,10 +125,10 @@ export const updateAppSchema = z.object({
   body: z.object({
     name: z.string().min(1).max(100).optional(),
     description: z.string().max(500).optional(),
-    redirectUris: z.array(z.string().url()).min(1).max(10).optional(),
+    redirectUris: z.array(z.string().url()).max(10).optional(),
     allowedGrantTypes: z
       .array(
-        z.enum(['authorization_code', 'client_credentials', 'refresh_token']),
+        z.enum([OAuthGrantType.AUTHORIZATION_CODE, OAuthGrantType.CLIENT_CREDENTIALS, OAuthGrantType.REFRESH_TOKEN]),
       )
       .optional(),
     allowedScopes: z.array(z.string()).min(1).optional(),
@@ -127,6 +137,14 @@ export const updateAppSchema = z.object({
     termsOfServiceUrl: z.string().url().optional().nullable(),
     accessTokenLifetime: z.number().int().min(300).max(86400).optional(),
     refreshTokenLifetime: z.number().int().min(3600).max(31536000).optional(),
+  }).refine((data) => {
+    if (data.allowedGrantTypes?.includes(OAuthGrantType.AUTHORIZATION_CODE) && data.redirectUris !== undefined) {
+      return data.redirectUris.length >= 1;
+    }
+    return true;
+  }, {
+    message: 'At least one redirect URI is required when authorization_code grant type is enabled',
+    path: ['redirectUris'],
   }),
 })
 

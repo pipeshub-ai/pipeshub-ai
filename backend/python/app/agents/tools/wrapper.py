@@ -2,8 +2,10 @@
 Enhanced wrapper to adapt registry tools to LangChain format with proper client initialization.
 """
 
+import asyncio
+import inspect
 import json
-from typing import Callable, Dict, List, Union
+from typing import Callable, Dict, List, Optional, Union
 
 from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
@@ -19,7 +21,12 @@ ToolResult = Union[tuple, str, dict, list, int, float, bool]
 
 
 class ToolInstanceCreator:
-    """Handles creation of tool instances with proper client initialization"""
+    """Handles creation of tool instances with proper client initialization.
+
+    Caches created clients per (app_name, toolset_id) so that multiple
+    tool calls within the same request reuse the same authenticated client
+    instead of re-creating OAuth/MSAL/Graph from scratch each time.
+    """
 
     def __init__(self, state: ChatState) -> None:
         """Initialize tool instance creator.
@@ -32,6 +39,15 @@ class ToolInstanceCreator:
         self.state = state
         self.logger = state.get("logger")
         self.config_service = self._get_config_service()
+        # Per-request client cache lives on state so it's shared across all
+        # ToolInstanceCreator instances within the same request/sub-agent.
+        if "_client_cache" not in state:
+            state["_client_cache"] = {}
+        self._client_cache: Dict[tuple, object] = state["_client_cache"]
+        # Lock to prevent parallel tool calls from creating duplicate clients
+        if "_client_cache_locks" not in state:
+            state["_client_cache_locks"] = {}
+        self._cache_locks: Dict[tuple, asyncio.Lock] = state["_client_cache_locks"]
 
     def _get_config_service(self) -> object:
         """Get configuration service from state.
@@ -47,50 +63,228 @@ class ToolInstanceCreator:
             raise RuntimeError("ConfigurationService not available")
         return retrieval_service.config_service
 
-    def create_instance(self, action_class: type, app_name: str) -> object:
+    def create_instance(self, action_class: type, app_name: str, tool_full_name: str = None) -> object:
         """Create an instance of an action class with proper client.
         Args:
             action_class: Class to instantiate
             app_name: Name of the application
+            tool_full_name: Full tool name (e.g., "slack.send_message") for toolset lookup
         Returns:
             Instance of action_class
         """
         factory = ClientFactoryRegistry.get_factory(app_name)
 
         if factory:
-            return self._create_with_factory(factory, action_class, app_name)
+            return self._create_with_factory(factory, action_class, app_name, tool_full_name)
         else:
+            return self._fallback_creation(action_class)
+
+    async def create_instance_async(self, action_class: type, app_name: str, tool_full_name: str = None) -> object:
+        """Create an instance of an action class with proper client (async version).
+
+        This avoids spawning a new event loop in a thread pool (which causes Redis
+        cross-loop errors on retries) by awaiting the factory's create_client coroutine
+        directly in the current event loop.
+
+        Args:
+            action_class: Class to instantiate
+            app_name: Name of the application
+            tool_full_name: Full tool name (e.g., "slack.send_message") for toolset lookup
+        Returns:
+            Instance of action_class
+        """
+        factory = ClientFactoryRegistry.get_factory(app_name)
+
+        if factory:
+            return await self._create_with_factory_async(factory, action_class, app_name, tool_full_name)
+        else:
+            return self._fallback_creation(action_class)
+
+    async def _create_with_factory_async(
+        self,
+        factory: object,
+        action_class: type,
+        app_name: str,
+        tool_full_name: str = None
+    ) -> object:
+        """Create instance using factory with async client creation (no thread-pool loop).
+
+        Uses per-request client cache to avoid re-creating OAuth/MSAL/Graph
+        clients on every tool call within the same request.
+
+        Args:
+            factory: Client factory instance
+            action_class: Class to instantiate
+            app_name: Application name
+            tool_full_name: Full tool name for toolset lookup
+
+        Returns:
+            Instance of action_class
+        """
+        try:
+            toolset_config = self._get_toolset_config(tool_full_name) if tool_full_name else None
+
+            config = toolset_config if toolset_config else {}
+
+            # Build cache key from app_name + toolset_id + user_id
+            # Client is per-toolset per-user (different users have different OAuth tokens)
+            toolset_id = None
+            if tool_full_name:
+                tool_to_toolset_map = self.state.get("tool_to_toolset_map", {})
+                toolset_id = tool_to_toolset_map.get(tool_full_name)
+            user_id = self.state.get("user_id", "default")
+            cache_key = (app_name, toolset_id or "default", user_id)
+
+            # Check cache first (fast path, no lock needed)
+            client = self._client_cache.get(cache_key)
+            if client is not None:
+                if self.logger:
+                    self.logger.debug(f"Reusing cached client for {app_name} (toolset: {toolset_id})")
+                return action_class(client)
+
+            # Acquire per-key lock to prevent parallel tool calls from
+            # each creating their own client for the same cache key
+            if cache_key not in self._cache_locks:
+                self._cache_locks[cache_key] = asyncio.Lock()
+            async with self._cache_locks[cache_key]:
+                # Double-check after acquiring lock
+                client = self._client_cache.get(cache_key)
+                if client is not None:
+                    if self.logger:
+                        self.logger.debug(f"Reusing cached client for {app_name} (toolset: {toolset_id})")
+                    return action_class(client)
+
+                if self.logger:
+                    if toolset_config:
+                        self.logger.debug(f"Using toolset auth for {app_name} (ID: {tool_full_name})")
+                    else:
+                        self.logger.warning(
+                            f"No toolset config for {app_name} (tool: {tool_full_name}), "
+                            f"falling back to legacy auth"
+                        )
+
+                client = await factory.create_client(
+                    self.config_service,
+                    self.logger,
+                    config,
+                    self.state
+                )
+
+                # Cache the client for subsequent calls
+                self._client_cache[cache_key] = client
+                if self.logger:
+                    self.logger.debug(f"Cached client for {app_name} (toolset: {toolset_id})")
+
+            return action_class(client)
+        except Exception as e:
+            if self.logger:
+                self.logger.error(
+                    f"Failed to create client for {app_name}: {e}",
+                    exc_info=True
+                )
+            error_msg = str(e).lower()
+            if "not authenticated" in error_msg or "oauth" in error_msg or "authentication" in error_msg:
+                toolset_name = app_name.capitalize() if app_name else "Toolset"
+                raise ValueError(
+                    f"{toolset_name} toolset is not authenticated. Please complete the OAuth flow first. "
+                    f"Go to Settings > Toolsets to authenticate your {toolset_name} account."
+                ) from e
             return self._fallback_creation(action_class)
 
     def _create_with_factory(
         self,
         factory: object,
         action_class: type,
-        app_name: str
+        app_name: str,
+        tool_full_name: str = None
     ) -> object:
-        """Create instance using factory.
+        """Create instance using factory with toolset-based auth.
 
         Args:
             factory: Client factory instance
             action_class: Class to instantiate
             app_name: Application name
+            tool_full_name: Full tool name for toolset lookup
 
         Returns:
             Instance of action_class
         """
         try:
+            # Get toolset configuration
+            toolset_config = self._get_toolset_config(tool_full_name) if tool_full_name else None
+
+            if toolset_config:
+                if self.logger:
+                    self.logger.debug(f"Using toolset auth for {app_name} (ID: {tool_full_name})")
+                client = factory.create_client_sync(
+                    self.config_service,
+                    self.logger,
+                    toolset_config,
+                    self.state
+                )
+                return action_class(client)
+
+            # Fall back to legacy connector-based auth (if no toolset config)
+            if self.logger:
+                self.logger.warning(
+                    f"No toolset config for {app_name} (tool: {tool_full_name}), "
+                    f"falling back to legacy auth"
+                )
+            # Use empty toolset_config for legacy fallback
             client = factory.create_client_sync(
                 self.config_service,
                 self.logger,
-                self.state,
+                {},  # Empty toolset_config for legacy
+                self.state
             )
             return action_class(client)
         except Exception as e:
             if self.logger:
                 self.logger.error(
-                    f"Failed to create client for {app_name}: {e}"
+                    f"Failed to create client for {app_name}: {e}",
+                    exc_info=True
                 )
+            # Check if this is an authentication error
+            error_msg = str(e).lower()
+            if "not authenticated" in error_msg or "oauth" in error_msg or "authentication" in error_msg:
+                # Re-raise authentication errors with user-friendly message
+                toolset_name = app_name.capitalize() if app_name else "Toolset"
+                raise ValueError(
+                    f"{toolset_name} toolset is not authenticated. Please complete the OAuth flow first. "
+                    f"Go to Settings > Toolsets to authenticate your {toolset_name} account."
+                ) from e
+            # For other errors, fall back to legacy creation
             return self._fallback_creation(action_class)
+
+    def _get_toolset_config(self, tool_full_name: str) -> Optional[Dict]:
+        """Get toolset config for a tool from state.
+
+        Args:
+            tool_full_name: Full tool name (e.g., "slack.send_message")
+
+        Returns:
+            Toolset config dict or None
+        """
+        tool_to_toolset_map = self.state.get("tool_to_toolset_map", {})
+        toolset_id = tool_to_toolset_map.get(tool_full_name)
+
+        if not toolset_id:
+            if self.logger:
+                self.logger.debug(
+                    f"No toolset ID found for tool {tool_full_name} in tool_to_toolset_map"
+                )
+            return None
+
+        toolset_configs = self.state.get("toolset_configs", {})
+        config = toolset_configs.get(toolset_id)
+
+        if not config and self.logger:
+            self.logger.warning(
+                f"Toolset config not found for toolset ID {toolset_id} "
+                f"(tool: {tool_full_name}). Config may not be loaded."
+            )
+
+        return config
 
     def _fallback_creation(self, action_class: type) -> object:
         """Attempt to create instance without client.
@@ -247,17 +441,43 @@ class RegistryToolWrapper(BaseTool):
         """
         return self.chat_state
 
-    def _run(self, **kwargs: Union[str, int, bool, dict, list, None]) -> str:
-        """Execute the registry tool.
+    async def arun(self, *args, **kwargs) -> Union[str, tuple]:
+        """Async execution - runs directly in the event loop, no thread executor needed.
+
+        This ensures tools run in the same event loop as FastAPI and Neo4j driver.
+        All tool methods should be async to avoid event loop conflicts.
+        """
+        try:
+            # Extract arguments - arun can be called with args[0] as dict or **kwargs
+            if args and isinstance(args[0], dict):
+                arguments = args[0]
+            else:
+                arguments = kwargs if kwargs else {}
+
+            result = await self._execute_tool_async(arguments)
+            # Preserve tuple structure for success detection
+            if isinstance(result, (tuple, list)) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
+                return result
+            return self._format_result(result)
+        except Exception as e:
+            return self._format_error(e, kwargs if kwargs else (args[0] if args else {}))
+
+    def _run(self, **kwargs: Union[str, int, bool, dict, list, None]) -> Union[str, tuple]:
+        """Execute the registry tool (sync fallback - should not be used in async context).
 
         Args:
             **kwargs: Tool arguments
 
         Returns:
-            Formatted result string
+            Tool result (tuple if (bool, str) format, otherwise string)
+            Preserves tuple structure for success detection in nodes.py
         """
         try:
             result = self._execute_tool(kwargs)
+            # Preserve tuple structure for success detection
+            # nodes.py will handle formatting for LLM
+            if isinstance(result, (tuple, list)) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
+                return result
             return self._format_result(result)
         except Exception as e:
             return self._format_error(e, kwargs)
@@ -293,12 +513,36 @@ class RegistryToolWrapper(BaseTool):
         """
         return hasattr(func, '__qualname__') and '.' in func.__qualname__
 
-    def _execute_class_method(
+    async def _execute_tool_async(
+        self,
+        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+    ) -> ToolResult:
+        """Execute the registry tool function asynchronously.
+
+        Args:
+            arguments: Tool arguments
+
+        Returns:
+            Tool execution result
+        """
+        tool_function = self.registry_tool.function
+
+        if self._is_class_method(tool_function):
+            return await self._execute_class_method_async(tool_function, arguments)
+        else:
+            # If it's a regular function, check if it's async
+            # Use inspect.iscoroutinefunction for better compatibility
+            if inspect.iscoroutinefunction(tool_function):
+                return await tool_function(**arguments)
+            else:
+                return tool_function(**arguments)
+
+    async def _execute_class_method_async(
         self,
         tool_function: Callable,
         arguments: Dict[str, Union[str, int, bool, dict, list, None]]
     ) -> ToolResult:
-        """Execute a class method by creating an instance.
+        """Execute a class method asynchronously by creating an instance.
 
         Args:
             tool_function: Tool function to execute
@@ -316,9 +560,77 @@ class RegistryToolWrapper(BaseTool):
             action_module = __import__(module_name, fromlist=[class_name])
             action_class = getattr(action_module, class_name)
 
+            # Pass tool full name for toolset auth lookup
+            tool_full_name = self.name  # self.name is "app_name.tool_name"
+            # Use async instance creation to avoid spawning a new event loop in a
+            # thread pool (which causes Redis "Future attached to a different loop"
+            # errors on retries). Awaiting create_client directly in the current
+            # event loop keeps all async operations on a single loop.
+            instance = await self.instance_creator.create_instance_async(
+                action_class,
+                self.app_name,
+                tool_full_name
+            )
+
+            bound_method = getattr(instance, self.tool_name)
+
+            try:
+                # Always call the method first - the @tool decorator may wrap `async def` such that
+                # iscoroutinefunction() returns False on the bound method, but calling it still
+                # returns a coroutine. Detect and await it at runtime.
+                result = bound_method(**arguments)
+                # Check if the result is actually a coroutine (handles decorator-wrapped async methods)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return result
+            finally:
+                # Teardown background resources if the action provides shutdown()
+                shutdown = getattr(instance, 'shutdown', None)
+                if callable(shutdown):
+                    try:
+                        # Check if shutdown is async too
+                        if inspect.iscoroutinefunction(shutdown):
+                            await shutdown()
+                        else:
+                            shutdown()
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to execute class method "
+                f"'{self.app_name}.{self.tool_name}': {str(e)}"
+            ) from e
+
+    def _execute_class_method(
+        self,
+        tool_function: Callable,
+        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+    ) -> ToolResult:
+        """Execute a class method by creating an instance (sync fallback).
+
+        Args:
+            tool_function: Tool function to execute
+            arguments: Function arguments
+        Returns:
+            Execution result
+
+        Raises:
+            RuntimeError: If method execution fails
+        """
+        try:
+            class_name = tool_function.__qualname__.split('.')[0]
+            module_name = tool_function.__module__
+
+            action_module = __import__(module_name, fromlist=[class_name])
+            action_class = getattr(action_module, class_name)
+
+            # Pass tool full name for toolset auth lookup
+            tool_full_name = self.name  # self.name is "app_name.tool_name"
             instance = self.instance_creator.create_instance(
                 action_class,
-                self.app_name
+                self.app_name,
+                tool_full_name
             )
 
             bound_method = getattr(instance, self.tool_name)

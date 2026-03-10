@@ -1255,6 +1255,14 @@ class BookStackConnector(BaseConnector):
                 self.logger.warning(f"Skipping {content_type_name} due to missing id or name: {item}")
                 return None
 
+            # Map content type to RecordGroupType
+            content_type_mapping = {
+                "bookshelf": RecordGroupType.SHELF,
+                "book": RecordGroupType.BOOK,
+                "chapter": RecordGroupType.CHAPTER,
+            }
+            group_type = content_type_mapping.get(content_type_name, RecordGroupType.KB)
+
             # 1. Create the RecordGroup object
             record_group = RecordGroup(
                 name=item_name,
@@ -1263,7 +1271,7 @@ class BookStackConnector(BaseConnector):
                 description=item.get("description", ""),
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
-                group_type=RecordGroupType.KB,
+                group_type=group_type,
                 parent_external_group_id=parent_external_id,
                 inherit_permissions=parent_external_id is not None,
             )

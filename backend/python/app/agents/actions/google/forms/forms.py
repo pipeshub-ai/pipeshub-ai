@@ -6,19 +6,129 @@ from typing import Any, Dict, List, Optional
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.forms.forms import GoogleFormsDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_form",
+        description="Create a new Google Form",
+        parameters=[
+            {"name": "title", "type": "string", "description": "Form title", "required": False}
+        ],
+        tags=["forms", "create"]
+    ),
+    ToolDefinition(
+        name="get_form",
+        description="Get form details",
+        parameters=[
+            {"name": "form_id", "type": "string", "description": "Form ID", "required": True}
+        ],
+        tags=["forms", "read"]
+    ),
+    ToolDefinition(
+        name="batch_update_form",
+        description="Batch update form",
+        parameters=[
+            {"name": "form_id", "type": "string", "description": "Form ID", "required": True}
+        ],
+        tags=["forms", "update"]
+    ),
+    ToolDefinition(
+        name="get_form_responses",
+        description="Get form responses",
+        parameters=[
+            {"name": "form_id", "type": "string", "description": "Form ID", "required": True}
+        ],
+        tags=["forms", "responses"]
+    ),
+    ToolDefinition(
+        name="get_form_response",
+        description="Get a specific form response",
+        parameters=[
+            {"name": "form_id", "type": "string", "description": "Form ID", "required": True},
+            {"name": "response_id", "type": "string", "description": "Response ID", "required": True}
+        ],
+        tags=["forms", "responses"]
+    ),
+    ToolDefinition(
+        name="set_publish_settings",
+        description="Set form publish settings",
+        parameters=[
+            {"name": "form_id", "type": "string", "description": "Form ID", "required": True}
+        ],
+        tags=["forms", "publish"]
+    ),
+    ToolDefinition(
+        name="create_watch",
+        description="Create a watch for form responses",
+        parameters=[
+            {"name": "form_id", "type": "string", "description": "Form ID", "required": True}
+        ],
+        tags=["forms", "watch"]
+    ),
+]
+
+
+# Register Google Forms toolset
+@ToolsetBuilder("Forms")\
+    .in_group("Google Workspace")\
+    .with_description("Google Forms integration for form creation and response management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Forms",
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            token_url="https://oauth2.googleapis.com/token",
+            redirect_uri="toolsets/oauth/callback/forms",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "https://www.googleapis.com/auth/forms.body",
+                    "https://www.googleapis.com/auth/forms.responses.readonly"
+                ]
+            ),
+            token_access_type="offline",
+            additional_params={
+                "access_type": "offline",
+                "prompt": "consent",
+                "include_granted_scopes": "true"
+            },
+            fields=[
+                CommonFields.client_id("Google Cloud Console"),
+                CommonFields.client_secret("Google Cloud Console")
+            ],
+            icon_path="/assets/icons/connectors/forms.svg",
+            app_group="Google Workspace",
+            app_description="Forms OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/forms.svg"))\
+    .build_decorator()
 class GoogleForms:
-    """Google Forms tool exposed to the agents using GoogleFormsDataSource"""
+    """Forms tool exposed to the agents using FormsDataSource"""
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Forms tool"""
         """
         Args:
-            client: Google Forms client
+            client: Forms client
         Returns:
             None
         """

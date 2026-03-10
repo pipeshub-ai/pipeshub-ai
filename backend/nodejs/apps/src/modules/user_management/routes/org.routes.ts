@@ -11,6 +11,8 @@ import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middlewa
 import { attachContainerMiddleware } from '../../auth/middlewares/attachContainer.middleware';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
+import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const OrgCreationBody = z
   .object({
@@ -94,6 +96,7 @@ export function createOrgRouter(container: Container) {
   router.get(
     '/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.ORG_READ),
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -108,6 +111,7 @@ export function createOrgRouter(container: Container) {
   router.put(
     '/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.ORG_WRITE),
     metricsMiddleware(container),
     userAdminCheck,
     async (
@@ -127,6 +131,7 @@ export function createOrgRouter(container: Container) {
   router.delete(
     '/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.ORG_ADMIN),
     metricsMiddleware(container),
     userAdminCheck,
     async (
@@ -146,6 +151,7 @@ export function createOrgRouter(container: Container) {
   router.put(
     '/logo',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.ORG_WRITE),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: [
@@ -180,6 +186,7 @@ export function createOrgRouter(container: Container) {
   router.delete(
     '/logo',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.ORG_WRITE),
     metricsMiddleware(container),
     userAdminCheck,
     async (
@@ -198,6 +205,7 @@ export function createOrgRouter(container: Container) {
   router.get(
     '/logo',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.ORG_READ),
     metricsMiddleware(container),
     async (
       req: AuthenticatedUserRequest,
@@ -216,6 +224,7 @@ export function createOrgRouter(container: Container) {
   router.get(
     '/onboarding-status',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.ORG_READ),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -233,6 +242,7 @@ export function createOrgRouter(container: Container) {
   router.put(
     '/onboarding-status',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.ORG_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(OnboardingStatusUpdateValidationSchema),
     async (

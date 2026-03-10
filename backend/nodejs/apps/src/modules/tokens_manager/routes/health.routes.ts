@@ -3,7 +3,6 @@ import { Container } from 'inversify';
 import { MongoService } from '../../../libs/services/mongo.service';
 import { RedisService } from '../../../libs/services/redis.service';
 import { TokenEventProducer } from '../services/token-event.producer';
-import { ArangoService } from '../../../libs/services/arango.service';
 import { Logger }  from '../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import axios from 'axios';
@@ -17,7 +16,6 @@ const TYPES = {
   MongoService: 'MongoService',
   RedisService: 'RedisService',
   TokenEventProducer: 'KafkaService',
-  ArangoService: 'ArangoService',
   KeyValueStoreService: 'KeyValueStoreService',
 };
 
@@ -28,23 +26,18 @@ export interface HealthStatus {
     redis: string;
     kafka: string;
     mongodb: string;
-    arangodb: string;
     KVStoreservice: string;
   };
 }
 
 export function createHealthRouter(
   container: Container,
-  knowledgeBaseContainer: Container,
   configurationManagerContainer: Container
 ): Router {
   const router = Router();
   const redis = container.get<RedisService>(TYPES.RedisService);
   const kafka = container.get<TokenEventProducer>(TYPES.TokenEventProducer);
   const mongooseService = container.get<MongoService>(TYPES.MongoService);
-  const arangoService = knowledgeBaseContainer.get<ArangoService>(
-    TYPES.ArangoService,
-  );
   const keyValueStoreService = configurationManagerContainer.get<KeyValueStoreService>(
     TYPES.KeyValueStoreService,
   );
@@ -60,7 +53,6 @@ export function createHealthRouter(
           redis: 'unknown',
           kafka: 'unknown',
           mongodb: 'unknown',
-          arangodb: 'unknown',
           KVStoreservice: 'unknown',
         },
       };
@@ -89,17 +81,6 @@ export function createHealthRouter(
         }
       } catch (error) {
         health.services.mongodb = 'unhealthy';
-        health.status = 'unhealthy';
-      }
-
-      try {
-        const isArangoHealthy = await arangoService.isConnected();
-        health.services.arangodb = isArangoHealthy ? 'healthy' : 'unhealthy';
-        if (!isArangoHealthy) {
-          health.status = 'unhealthy';
-        }
-      } catch (exception) {
-        health.services.arangodb = 'unhealthy';
         health.status = 'unhealthy';
       }
 

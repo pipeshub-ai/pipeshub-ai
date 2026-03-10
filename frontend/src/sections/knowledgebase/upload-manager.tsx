@@ -40,7 +40,12 @@ interface UploadManagerProps {
   onClose: () => void;
   knowledgeBaseId: string | null | undefined;
   folderId: string | null | undefined;
-  onUploadSuccess: (message?: string) => Promise<void>;
+  onUploadSuccess: (message?: string, records?: any[], failedFiles?: Array<{fileName: string; filePath: string; error: string}>) => Promise<void>;
+  onUploadStart?: (files: string[], kbId: string, folderId?: string) => void;
+  onFileUploadStart?: (uploadKey: string, fileName: string) => void;
+  onFileUploadProgress?: (uploadKey: string, fileName: string, progress: number) => void;
+  onFileUploadComplete?: (uploadKey: string, fileName: string, recordId: string) => void;
+  onFileUploadFailed?: (uploadKey: string, fileName: string, error: string) => void;
 }
 
 interface ProcessedFile {
@@ -68,6 +73,11 @@ export default function UploadManager({
   knowledgeBaseId,
   folderId,
   onUploadSuccess,
+  onUploadStart,
+  onFileUploadStart,
+  onFileUploadProgress,
+  onFileUploadComplete,
+  onFileUploadFailed,
 }: UploadManagerProps) {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -90,6 +100,8 @@ export default function UploadManager({
   // Refs for file inputs
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  // Guard against double submission (e.g. double-click or S3 slow response)
+  const uploadInProgressRef = useRef(false);
 
   const formatFileSize = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
@@ -218,6 +230,19 @@ export default function UploadManager({
       mounted = false;
     };
   }, []);
+
+  // Warn user when trying to refresh/close the page while upload is in progress
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (uploading) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [uploading]);
+
   const BATCH_SIZE = 10; // safe per-request files count
   const CONCURRENCY = 5; // parallel requests
 
@@ -256,8 +281,14 @@ export default function UploadManager({
       setUploadError({ show: true, message: 'Collection id missing. Please refresh' });
       return;
     }
+    // Prevent duplicate submission (avoids duplicate toasts when storage is S3 or user double-clicks)
+    if (uploadInProgressRef.current) {
+      return;
+    }
+    uploadInProgressRef.current = true;
 
     if (fileStats.oversized > 0) {
+      uploadInProgressRef.current = false;
       setUploadError({
         show: true,
         message: `Cannot upload: ${fileStats.oversized} file(s) exceed the ${formatFileSize(maxFileSize)} limit. Please remove them to continue.`,
@@ -273,6 +304,30 @@ export default function UploadManager({
     try {
       // Prepare batches
       const valid = fileStats.validFiles;
+      
+      // Notify parent component that uploads have started and get upload key
+      let uploadKey: string | undefined;
+      if (onUploadStart && knowledgeBaseId) {
+        const fileNames = valid.map((f) => f.file.name || f.path);
+        const returnValue = onUploadStart(fileNames, knowledgeBaseId, folderId || undefined);
+        // onUploadStart might return the upload key
+        if (typeof returnValue === 'string') {
+          uploadKey = returnValue;
+        } else {
+          // Fallback: generate upload key if not returned
+          uploadKey = `${knowledgeBaseId}-${folderId || 'root'}-${Date.now()}`;
+        }
+      } else {
+        // Fallback: generate upload key
+        uploadKey = `${knowledgeBaseId}-${folderId || 'root'}-${Date.now()}`;
+      }
+      
+      // Close dialog immediately after upload starts to show notification instead
+      // This prevents both dialog and notification from showing at the same time
+      // Close immediately since upload has already been initiated
+      if (!uploadError.show) {
+        onClose();
+      }
       const perRequest = Math.min(BATCH_SIZE, maxFilesPerRequest);
       const batches = chunkArray(valid, perRequest);
       const totalFiles = valid.length;
@@ -331,6 +386,7 @@ export default function UploadManager({
       // Concurrency-controlled workers
       let nextIndex = 0;
       const worker = async () => {
+        const results: any[] = [];
         // eslint-disable-next-line no-constant-condition
         while (true) {
           const idx = nextIndex;
@@ -339,9 +395,17 @@ export default function UploadManager({
           const batch = batches[idx];
           const formData = buildFormDataForBatch(batch);
 
+          // Notify that files in this batch are starting to upload
+          if (uploadKey && onFileUploadStart) {
+            batch.forEach((processedFile) => {
+              const fileName = processedFile.file.name || processedFile.path;
+              onFileUploadStart(uploadKey!, fileName);
+            });
+          }
+
           try {
             // eslint-disable-next-line no-await-in-loop
-            await axios.post(url, formData, {
+            const response = await axios.post(url, formData, {
               headers: { 'Content-Type': 'multipart/form-data' },
               onUploadProgress: (progressEvent) => {
                 if (progressEvent.total) {
@@ -350,21 +414,61 @@ export default function UploadManager({
                   );
                   batchProgress[idx] = batchProgressPercent;
                   updateProgress();
+                  
+                  // Update progress for each file in this batch
+                  if (uploadKey && onFileUploadProgress) {
+                    batch.forEach((processedFile) => {
+                      const fileName = processedFile.file.name || processedFile.path;
+                      onFileUploadProgress(uploadKey!, fileName, batchProgressPercent);
+                    });
+                  }
                 }
               },
             });
             completedBatches.add(idx);
             delete batchProgress[idx];
             updateProgress();
-          } catch (err) {
+            
+            // Store response data with batch index for file mapping
+            results.push({ ...response.data, batchIndex: idx, batchFiles: batch });
+            
+            // Mark files as completed (successfully uploaded to backend)
+            if (uploadKey && onFileUploadComplete && response.data?.records) {
+              response.data.records.forEach((record: any, recordIndex: number) => {
+                // Map records back to files in this batch
+                const processedFile = batch[recordIndex];
+                if (processedFile && record) {
+                  const fileName = processedFile.file.name || processedFile.path;
+                  const recordId = record.id || record._key;
+                  if (recordId) {
+                    // This marks the upload as COMPLETED in the notification
+                    onFileUploadComplete(uploadKey!, fileName, recordId);
+                  }
+                }
+              });
+            }
+          } catch (err: any) {
             delete batchProgress[idx];
+            
+            // Mark files in this batch as failed
+            if (uploadKey && onFileUploadFailed) {
+              batch.forEach((processedFile) => {
+                const fileName = processedFile.file.name || processedFile.path;
+                const errorMsg = err?.response?.data?.message || err?.message || 'Upload failed';
+                onFileUploadFailed(uploadKey!, fileName, errorMsg);
+              });
+            }
+            
             throw err;
           }
         }
+        return results;
       };
 
       const workers = Array.from({ length: Math.min(CONCURRENCY, batches.length) }, () => worker());
-      await Promise.all(workers);
+      const workerResults = await Promise.all(workers);
+      // Flatten results from all workers
+      const responses = workerResults.flat();
 
       setUploadProgress(100);
       setUploadStatus({
@@ -374,8 +478,50 @@ export default function UploadManager({
         totalFiles,
       });
 
-      const successMessage = `Successfully uploaded ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
-      await onUploadSuccess(successMessage);
+      // Collect all records and failed files from responses for optimistic UI update
+      const allRecords: any[] = [];
+      const allFailedFiles: Array<{
+        fileName: string;
+        filePath: string;
+        error: string;
+        recordId?: string;
+      }> = [];
+      
+      responses.forEach((response) => {
+        if (response?.records && Array.isArray(response.records)) {
+          allRecords.push(...response.records);
+        }
+        // Collect failed files from response and mark them as failed
+        if (response?.failedFilesDetails && Array.isArray(response.failedFilesDetails)) {
+          allFailedFiles.push(...response.failedFilesDetails);
+          
+          // Mark these files as failed in the notification
+          if (uploadKey && onFileUploadFailed) {
+            response.failedFilesDetails.forEach((failedFile: any) => {
+              const fileName = failedFile.fileName || failedFile.filePath;
+              const error = failedFile.error || 'Upload failed';
+              onFileUploadFailed(uploadKey!, fileName, error);
+            });
+          }
+        }
+      });
+
+      // Create success message based on how many files succeeded vs failed
+      const successfulCount = totalFiles - allFailedFiles.length;
+      let successMessage: string;
+      
+      if (allFailedFiles.length === 0) {
+        // All files succeeded
+        successMessage = `Successfully uploaded ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
+      } else if (successfulCount === 0) {
+        // All files failed
+        successMessage = `Failed to upload ${totalFiles} file${totalFiles > 1 ? 's' : ''}.`;
+      } else {
+        // Some succeeded, some failed
+        successMessage = `Uploaded ${successfulCount} file${successfulCount > 1 ? 's' : ''}. ${allFailedFiles.length} file${allFailedFiles.length > 1 ? 's' : ''} failed.`;
+      }
+      
+      await onUploadSuccess(successMessage, allRecords, allFailedFiles);
       handleClose();
     } catch (error: any) {
       // Use processed error message from axios interceptor if available
@@ -390,17 +536,21 @@ export default function UploadManager({
       setUploadStatus(null);
     } finally {
       setUploading(false);
+      uploadInProgressRef.current = false;
     }
   };
 
   const handleClose = () => {
-    if (!uploading) {
-      setFiles([]);
-      setUploadError({ show: false, message: '' });
-      setUploadProgress(0);
-      setUploadStatus(null);
+    if (uploading) {
+      // Allow closing the modal during upload; upload continues in the background
       onClose();
+      return;
     }
+    setFiles([]);
+    setUploadError({ show: false, message: '' });
+    setUploadProgress(0);
+    setUploadStatus(null);
+    onClose();
   };
 
   // Group files by folders for display
@@ -825,7 +975,6 @@ export default function UploadManager({
           </Box>
           <IconButton
             onClick={handleClose}
-            disabled={uploading}
             sx={{
               color: 'text.secondary',
               '&:hover': {
@@ -1165,7 +1314,7 @@ export default function UploadManager({
             <Button
               onClick={handleUpload}
               variant="contained"
-              disabled={files.length === 0 || fileStats.oversized > 0}
+              disabled={uploading || files.length === 0 || fileStats.oversized > 0}
               disableElevation
               startIcon={<Icon icon={cloudIcon} fontSize={20} />}
               sx={{

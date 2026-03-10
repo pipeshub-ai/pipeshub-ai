@@ -11,8 +11,10 @@ export interface MigrationConfig {
   redis: {
     host: string;
     port: number;
+    username?: string;
     password?: string;
     db?: number;
+    tls?: boolean;
     keyPrefix?: string;
   };
 }

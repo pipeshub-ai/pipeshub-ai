@@ -963,7 +963,6 @@ const TeamDetailsDialog: React.FC<TeamDetailsDialogProps> = ({
                                     <Select
                                       value={currentRole}
                                       onChange={(e) => handleMemberRoleChange(userId, e.target.value)}
-                                      disabled={isOwner}
                                       sx={{
                                         height: 32,
                                         fontSize: '0.75rem',
@@ -980,11 +979,10 @@ const TeamDetailsDialog: React.FC<TeamDetailsDialogProps> = ({
                                       ))}
                                     </Select>
                                   </FormControl>
-                                  {!isOwner && (
-                                    <IconButton
-                                      edge="end"
-                                      size="small"
-                                      onClick={() => handleRemoveMember(member)}
+                                  <IconButton
+                                    edge="end"
+                                    size="small"
+                                    onClick={() => handleRemoveMember(member)}
                                       sx={{
                                         width: 32,
                                         height: 32,
@@ -997,7 +995,6 @@ const TeamDetailsDialog: React.FC<TeamDetailsDialogProps> = ({
                                     >
                                       <Icon icon={deleteIcon} width={16} height={16} />
                                     </IconButton>
-                                  )}
                                 </Stack>
                               ) : (
                                 <Chip

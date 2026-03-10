@@ -1,10 +1,10 @@
+import os
 from logging import Logger
 
 from arango import ArangoClient  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import ExtensionTypes
-from app.config.constants.service import config_node_constants
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.events.events import EventProcessor
 from app.events.processor import Processor
@@ -21,14 +21,15 @@ from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.pptx.pptx_parser import PPTXParser
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.transformers.arango import Arango
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.document_extraction import DocumentExtraction
+from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.featureflag.featureflag import FeatureFlagService
 from app.services.featureflag.provider.etcd import EtcdProvider
-from app.services.scheduler.redis_scheduler.redis_scheduler import RedisScheduler
+from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import (
     VECTOR_DB_COLLECTION_NAME,
     VECTOR_DB_SERVICE_NAME,
@@ -36,7 +37,6 @@ from app.services.vector_db.const.const import (
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.vector_db_factory import VectorDBFactory
 from app.utils.logger import create_logger
-from app.utils.redis_util import build_redis_url
 
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
@@ -61,8 +61,14 @@ class ContainerUtils:
         arango_client: ArangoClient,
         config_service: ConfigurationService,
         kafka_service,
-    ) -> BaseArangoService:
+    ) -> BaseArangoService | None:
         """Async factory to create and connect BaseArangoService (without schema init)"""
+        # Skip ArangoDB service creation if using a different graph database
+        data_store = os.getenv("DATA_STORE", "arangodb").lower()
+        if data_store != "arangodb":
+            logger.info(f"⏭️ Skipping ArangoDB service creation (DATA_STORE={data_store})")
+            return None
+
         service = BaseArangoService(
             logger,
             arango_client,
@@ -73,47 +79,58 @@ class ContainerUtils:
         await service.connect()
         return service
 
+    async def create_graph_provider(
+        self,
+        logger: Logger,
+        config_service: ConfigurationService,
+    ) -> IGraphDBProvider:
+        """Async factory to create and connect graph database provider"""
+        return await GraphDBProviderFactory.create_provider(
+            logger=logger,
+            config_service=config_service,
+        )
+
     async def create_indexing_pipeline(
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        arango_service: BaseArangoService,
+        graph_provider: IGraphDBProvider,
         vector_db_service: IVectorDBService,
     ) -> IndexingPipeline:
         """Async factory for IndexingPipeline"""
         pipeline = IndexingPipeline(
             logger=logger,
             config_service=config_service,
-            arango_service=arango_service,
+            graph_provider=graph_provider,
             collection_name=VECTOR_DB_COLLECTION_NAME,
             vector_db_service=vector_db_service,
         )
         return pipeline
 
 
-    async def create_vector_store(self, logger, arango_service, config_service, vector_db_service, collection_name) -> VectorStore:
+    async def create_vector_store(self, logger, graph_provider, config_service, vector_db_service, collection_name) -> VectorStore:
         """Async factory for VectorStore"""
-        vector_store = VectorStore(logger, config_service, arango_service, collection_name, vector_db_service)
+        vector_store = VectorStore(logger, config_service, graph_provider, collection_name, vector_db_service)
         return vector_store
 
-    async def create_arango(self, arango_service, logger) -> Arango:
-        """Async factory for Arango"""
-        arango = Arango(arango_service, logger)
-        return arango
+    async def create_graphdb(self, graph_provider, logger) -> GraphDBTransformer:
+        """Async factory for GraphDB transformer (uses graph_provider for transactions)"""
+        graphdb = GraphDBTransformer(graph_provider, logger)
+        return graphdb
 
-    async def create_sink_orchestrator(self, logger, arango, blob_storage, vector_store, arango_service) -> SinkOrchestrator:
+    async def create_sink_orchestrator(self, logger: Logger, graphdb: GraphDBTransformer, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider) -> SinkOrchestrator:
         """Async factory for SinkOrchestrator"""
-        orchestrator = SinkOrchestrator(arango=arango, blob_storage=blob_storage, vector_store=vector_store, arango_service=arango_service)
+        orchestrator = SinkOrchestrator(graphdb=graphdb, blob_storage=blob_storage, vector_store=vector_store, graph_provider=graph_provider)
         return orchestrator
 
-    async def create_document_extractor(self, logger, arango_service, config_service) -> DocumentExtraction:
+    async def create_document_extractor(self, logger, graph_provider: IGraphDBProvider, config_service) -> DocumentExtraction:
         """Async factory for DocumentExtraction"""
-        extractor = DocumentExtraction(logger, arango_service, config_service)
+        extractor = DocumentExtraction(logger, graph_provider, config_service)
         return extractor
 
-    async def create_blob_storage(self, logger, config_service, arango_service) -> BlobStorage:
+    async def create_blob_storage(self, logger, config_service, graph_provider: IGraphDBProvider) -> BlobStorage:
         """Async factory for BlobStorage"""
-        blob_storage = BlobStorage(logger, config_service, arango_service)
+        blob_storage = BlobStorage(logger, config_service, graph_provider)
         return blob_storage
 
     async def create_parsers(self, logger: Logger) -> dict:
@@ -147,7 +164,7 @@ class ContainerUtils:
         logger: Logger,
         config_service: ConfigurationService,
         indexing_pipeline: IndexingPipeline,
-        arango_service: BaseArangoService,
+        graph_provider: IGraphDBProvider,
         parsers: dict,
         document_extractor: DocumentExtraction,
         sink_orchestrator: SinkOrchestrator,
@@ -157,7 +174,7 @@ class ContainerUtils:
             logger=logger,
             config_service=config_service,
             indexing_pipeline=indexing_pipeline,
-            arango_service=arango_service,
+            graph_provider=graph_provider,
             parsers=parsers,
             document_extractor=document_extractor,
             sink_orchestrator=sink_orchestrator
@@ -169,42 +186,22 @@ class ContainerUtils:
         self,
         logger: Logger,
         processor: Processor,
-        arango_service: BaseArangoService,
+        graph_provider: IGraphDBProvider,
         config_service: ConfigurationService,
     ) -> EventProcessor:
         """Async factory for EventProcessor"""
         event_processor = EventProcessor(
-            logger=logger, processor=processor, arango_service=arango_service, config_service=config_service
+            logger=logger, processor=processor, graph_provider=graph_provider, config_service=config_service
         )
         # Add any necessary async initialization
         return event_processor
-
-    async def create_redis_scheduler(
-        self,
-        logger: Logger,
-        config_service: ConfigurationService,
-    ) -> RedisScheduler:
-        """Async factory for RedisScheduler"""
-        redis_config = await config_service.get_config(
-            config_node_constants.REDIS.value
-        )
-        if redis_config and isinstance(redis_config, dict):
-            # Build Redis URL with password if provided
-            redis_url = build_redis_url(redis_config)
-        redis_scheduler = RedisScheduler(
-            redis_url=redis_url,
-            logger=logger,
-            config_service=config_service,
-            delay_hours=1
-        )
-        return redis_scheduler
 
     async def create_retrieval_service(
         self,
         config_service: ConfigurationService,
         logger: Logger,
         vector_db_service: IVectorDBService,
-        arango_service: BaseArangoService,
+        graph_provider: IGraphDBProvider,
         blob_store: BlobStorage,
     ) -> RetrievalService:
         """Async factory for RetrievalService"""
@@ -213,7 +210,7 @@ class ContainerUtils:
             config_service=config_service,
             collection_name=VECTOR_DB_COLLECTION_NAME,
             vector_db_service=vector_db_service,
-            arango_service=arango_service,
+            graph_provider=graph_provider,
             blob_store=blob_store,
         )
         return service

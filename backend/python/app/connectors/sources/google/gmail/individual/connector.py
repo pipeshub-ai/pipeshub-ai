@@ -56,6 +56,12 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GmailIndividualApp
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    GoogleMailError,
+)
+from app.connectors.sources.google.common.datasource_refresh import (
+    refresh_google_datasource_credentials,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -284,6 +290,29 @@ class GoogleGmailIndividualConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"❌ Error initializing Google Gmail connector: {ex}", exc_info=True)
             raise
+
+    async def _get_fresh_datasource(self) -> None:
+        """
+        Ensure gmail_data_source has ALWAYS-FRESH OAuth credentials.
+
+        Creates a new Credentials object when credentials change.
+        After calling this, use self.gmail_data_source directly.
+
+        The datasource wraps a Google client by reference, so replacing
+        the client's credentials automatically updates the datasource.
+        """
+        if not self.gmail_client or not self.gmail_data_source:
+            raise GoogleMailError("Gmail client or Gmail data source not initialized. Call init() first.")
+
+
+        await refresh_google_datasource_credentials(
+            google_client=self.gmail_client,
+            data_source=self.gmail_data_source,
+            config_service=self.config_service,
+            connector_id=self.connector_id,
+            logger=self.logger,
+            service_name="Gmail"
+        )
 
     async def _get_existing_record(self, external_record_id: str) -> Optional[Record]:
         """Get existing record from data store."""
@@ -938,6 +967,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             )
 
             # Get user profile to extract email
+            await self._get_fresh_datasource()
             user_profile = await self.gmail_data_source.users_get_profile(userId="me")
             user_email = user_profile.get("emailAddress")
             if not user_email:
@@ -1661,6 +1691,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Get user profile to extract historyId
             try:
+                await self._get_fresh_datasource()
                 profile = await self.gmail_data_source.users_get_profile(userId="me")
                 history_id = profile.get('historyId')
                 self.logger.info(f"Retrieved historyId {history_id} for user {user_email}")
@@ -1679,6 +1710,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             while True:
                 try:
                     # Fetch threads list
+                    await self._get_fresh_datasource()
                     threads_response = await self.gmail_data_source.users_threads_list(
                         userId="me",
                         maxResults=100,
@@ -1877,6 +1909,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
         while True:
             try:
+                await self._get_fresh_datasource()
                 history_response = await self.gmail_data_source.users_history_list(
                     userId="me",
                     startHistoryId=start_history_id,
@@ -1927,6 +1960,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         """
         try:
             # Get full thread to see all messages
+            await self._get_fresh_datasource()
             thread = await self.gmail_data_source.users_threads_get(
                 userId="me",
                 id=thread_id,
@@ -2286,6 +2320,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Get latest historyId from user profile if available
             try:
+                await self._get_fresh_datasource()
                 profile = await self.gmail_data_source.users_get_profile(userId="me")
                 current_history_id = profile.get('historyId')
                 if current_history_id:
@@ -2336,6 +2371,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.logger.info("Starting sync for Google Gmail Individual")
 
             # Get user profile
+            await self._get_fresh_datasource()
             user_profile = await self.gmail_data_source.users_get_profile(userId="me")
             await self._create_app_user(user_profile)
 
@@ -2444,6 +2480,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 return None
 
             try:
+                await self._get_fresh_datasource()
                 user_profile = await self.gmail_data_source.users_get_profile(userId="me")
                 user_email = user_profile.get("emailAddress")
             except Exception as e:

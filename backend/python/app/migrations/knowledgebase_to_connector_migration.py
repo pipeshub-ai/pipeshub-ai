@@ -113,6 +113,7 @@ class KnowledgeBaseToConnectorMigrationService:
                     "records_updated": 0,
                     "file_records_enriched": 0,
                     "folders_external_parent_id_fixed": 0,
+                    "inherit_permission_edges_created": 0,
                     "errors": []
                 }
 
@@ -132,6 +133,7 @@ class KnowledgeBaseToConnectorMigrationService:
                     "records_updated": 0,
                     "file_records_enriched": 0,
                     "folders_external_parent_id_fixed": 0,
+                    "inherit_permission_edges_created": 0,
                     "errors": []
                 }
 
@@ -149,6 +151,7 @@ class KnowledgeBaseToConnectorMigrationService:
             total_records_updated = 0
             total_file_records_enriched = 0
             total_folders_external_parent_id_fixed = 0
+            total_inherit_permission_edges = 0
             errors = []
 
             for org in orgs:
@@ -164,6 +167,7 @@ class KnowledgeBaseToConnectorMigrationService:
                         total_records_updated += result.get("records_updated", 0)
                         total_file_records_enriched += result.get("file_records_enriched", 0)
                         total_folders_external_parent_id_fixed += result.get("folders_external_parent_id_fixed", 0)
+                        total_inherit_permission_edges += result.get("inherit_permission_edges_created", 0)
                         self.logger.info(
                             f"✅ Successfully migrated KBs for org {org_id}: "
                             f"{result.get('apps_created', 0)} apps created, "
@@ -173,7 +177,8 @@ class KnowledgeBaseToConnectorMigrationService:
                             f"{result.get('record_relations_deleted', 0)} record_relations deleted, "
                             f"{result.get('records_updated', 0)} records updated, "
                             f"{result.get('file_records_enriched', 0)} file records enriched, "
-                            f"{result.get('folders_external_parent_id_fixed', 0)} folders externalParentId fixed"
+                            f"{result.get('folders_external_parent_id_fixed', 0)} folders externalParentId fixed, "
+                            f"{result.get('inherit_permission_edges_created', 0)} inheritPermission edges created"
                         )
                     else:
                         errors.append({
@@ -200,6 +205,7 @@ class KnowledgeBaseToConnectorMigrationService:
                 "records_updated": total_records_updated,
                 "file_records_enriched": total_file_records_enriched,
                 "folders_external_parent_id_fixed": total_folders_external_parent_id_fixed,
+                "inherit_permission_edges_created": total_inherit_permission_edges,
                 "errors": errors
             }
 
@@ -218,6 +224,7 @@ class KnowledgeBaseToConnectorMigrationService:
                 f"{summary['records_updated']} records updated, "
                 f"{summary['file_records_enriched']} file records enriched, "
                 f"{summary['folders_external_parent_id_fixed']} folders externalParentId fixed, "
+                f"{summary['inherit_permission_edges_created']} inheritPermission edges created, "
                 f"{len(errors)} errors"
             )
 
@@ -235,6 +242,7 @@ class KnowledgeBaseToConnectorMigrationService:
                 "kb_app_edges_created": 0,
                 "record_relations_deleted": 0,
                 "records_updated": 0,
+                "inherit_permission_edges_created": 0,
                 "errors": [{"error": str(e)}]
             }
 
@@ -409,6 +417,7 @@ class KnowledgeBaseToConnectorMigrationService:
                     CollectionNames.RECORD_RELATIONS.value,
                     CollectionNames.RECORDS.value,
                     CollectionNames.USER_APP_RELATION.value,
+                    CollectionNames.INHERIT_PERMISSIONS.value,
                 ]
             )
 
@@ -425,7 +434,8 @@ class KnowledgeBaseToConnectorMigrationService:
                         "user_app_relations_created": 0,
                         "kb_app_edges_created": 0,
                         "record_relations_deleted": 0,
-                        "records_updated": 0
+                        "records_updated": 0,
+                        "inherit_permission_edges_created": 0
                     }
 
                 kb_app_id = kb_app.get('_key')
@@ -447,7 +457,8 @@ class KnowledgeBaseToConnectorMigrationService:
                         "record_relations_deleted": 0,
                         "records_updated": 0,
                         "file_records_enriched": 0,
-                        "folders_external_parent_id_fixed": 0
+                        "folders_external_parent_id_fixed": 0,
+                        "inherit_permission_edges_created": 0
                     }
 
                 # Step 4: For each KB, process migration
@@ -456,6 +467,7 @@ class KnowledgeBaseToConnectorMigrationService:
                 records_updated = 0
                 file_records_enriched = 0
                 folders_external_parent_id_fixed = 0
+                inherit_permission_edges_created = 0
 
                 for kb in kbs:
                     kb_id = kb.get('_key')
@@ -477,7 +489,10 @@ class KnowledgeBaseToConnectorMigrationService:
                     # 3c.1. Fix externalParentId for immediate children folders
                     fixed_folders_count = await self._fix_kb_folder_external_parent_id(kb_id, transaction)
                     folders_external_parent_id_fixed += fixed_folders_count
-                    # 3d. Delete record_relations edges from KB to records
+                    # 3d. Create inheritPermission edges from records to KB record group
+                    inherit_edges_count = await self._create_inherit_permission_edges(kb_id, transaction)
+                    inherit_permission_edges_created += inherit_edges_count
+                    # 3e. Delete record_relations edges from KB to records
                     deleted_count = await self._delete_record_relations_edges(kb_id, transaction)
                     record_relations_deleted += deleted_count
 
@@ -494,7 +509,8 @@ class KnowledgeBaseToConnectorMigrationService:
                     "record_relations_deleted": record_relations_deleted,
                     "records_updated": records_updated,
                     "file_records_enriched": file_records_enriched,
-                    "folders_external_parent_id_fixed": folders_external_parent_id_fixed
+                    "folders_external_parent_id_fixed": folders_external_parent_id_fixed,
+                    "inherit_permission_edges_created": inherit_permission_edges_created
                 }
 
             except Exception:
@@ -1169,6 +1185,93 @@ class KnowledgeBaseToConnectorMigrationService:
             self.logger.error(f"Failed to fix KB folder externalParentId: {str(e)}")
             raise
 
+    async def _create_inherit_permission_edges(self, kb_id: str, transaction) -> int:
+        """
+        Create inheritPermission edges from records to KB record group.
+
+        Creates inheritPermission edges for all records that belong to the KB
+        and have inheritPermissions set to True (or default to True if not set).
+
+        Args:
+            kb_id: Knowledge Base record group ID
+            transaction: Database transaction
+
+        Returns:
+            Number of inheritPermission edges created
+        """
+        try:
+            current_timestamp = get_epoch_timestamp_in_ms()
+            kb_doc_id = f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
+
+            # Find all records that belong to this KB via both belongsTo (new) and recordRelations (old) edges
+            # and create inheritPermission edges if they should inherit permissions
+            query = f"""
+            LET kb_records = UNION_DISTINCT(
+                // New structure: via belongsTo edges
+                FOR edge IN {CollectionNames.BELONGS_TO.value}
+                    FILTER edge._to == @kb_doc_id
+                        AND edge.entityType == @entity_type
+                    LET record = DOCUMENT(edge._from)
+                    FILTER record != null
+                    FILTER IS_SAME_COLLECTION(@records_collection, record._id)
+                    RETURN record._id
+                ,
+                // Old structure: via recordRelations edges (during migration)
+                FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER edge._from == @kb_doc_id
+                        AND edge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(edge._to)
+                    FILTER record != null
+                    FILTER IS_SAME_COLLECTION(@records_collection, record._id)
+                    RETURN record._id
+            )
+
+            // Process each record
+            FOR record_id IN kb_records
+                LET record = DOCUMENT(record_id)
+                FILTER record != null
+
+                // Check if inheritPermission edge already exists
+                LET has_inherit_edge = LENGTH(
+                    FOR inherit_edge IN {CollectionNames.INHERIT_PERMISSIONS.value}
+                        FILTER inherit_edge._from == record._id
+                            AND inherit_edge._to == @kb_doc_id
+                        RETURN 1
+                ) > 0
+
+                // Only create edge if it doesn't already exist
+                // KB records inherit permissions from KB by default (always create the edge)
+                // Note: inheritPermissions field is not stored on record documents (not in schema)
+                // so we always create the edge for KB records
+                FILTER has_inherit_edge == false
+
+                // Create the inheritPermission edge
+                INSERT {{
+                    _from: record._id,
+                    _to: @kb_doc_id,
+                    createdAtTimestamp: @timestamp,
+                    updatedAtTimestamp: @timestamp
+                }} INTO {CollectionNames.INHERIT_PERMISSIONS.value}
+                RETURN 1
+            """
+            bind_vars = {
+                "kb_doc_id": kb_doc_id,
+                "records_collection": CollectionNames.RECORDS.value,
+                "entity_type": Connectors.KNOWLEDGE_BASE.value,
+                "timestamp": current_timestamp,
+            }
+            cursor = transaction.aql.execute(query, bind_vars=bind_vars)
+            created_count = len(list(cursor))
+
+            if created_count > 0:
+                self.logger.debug(f"Created {created_count} inheritPermission edges for records in KB {kb_id}")
+
+            return created_count
+
+        except Exception as e:
+            self.logger.error(f"Failed to create inheritPermission edges: {str(e)}")
+            raise
+
     async def _count_kb_file_records(self, kb_id: str) -> int:
         """
         Count KB file records (not folders) that may need enrichment.
@@ -1274,5 +1377,6 @@ async def run_kb_to_connector_migration(container) -> Dict:
             "records_updated": 0,
             "file_records_enriched": 0,
             "folders_external_parent_id_fixed": 0,
+            "inherit_permission_edges_created": 0,
             "errors": [{"error": str(e)}]
         }

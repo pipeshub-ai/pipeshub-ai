@@ -103,10 +103,34 @@ export class UploadDocumentService {
       }
 
       logger.info('Generating presigned url for direct upload');
-      const documentPath = `${placeholderDocument.document.documentPath}/${placeholderDocument.document._id}`;
+      // Extract required fields to construct path matching regular upload structure
+      const orgId = extractOrgId(req);
+      const placeholderDoc = placeholderDocument.document;
+      const placeholderDocumentPath = placeholderDoc.documentPath;
+      const documentId = placeholderDoc._id;
+      const documentName = placeholderDoc.documentName;
+      const isVersioned = parseBoolean(placeholderDoc.isVersionedFile);
+      
+      // Get file extension (ensure it includes the dot, matching regular upload behavior)
+      const fileExtension = path.extname(originalname);
+      
+      // Construct rootPath matching regular upload structure (lines 205-211)
+      let rootPath = '';
+      if (placeholderDocumentPath) {
+        rootPath = `${orgId}/PipesHub/${placeholderDocumentPath}/${documentId}`;
+      } else {
+        rootPath = `${orgId}/PipesHub/${documentId}`;
+      }
+      
+      // Construct final path matching regular upload structure (lines 213-216)
+      const concatenatedPath =
+        isVersioned === false
+          ? `${rootPath}/${documentName}${fileExtension}`
+          : `${rootPath}/current/${documentName}${fileExtension}`;
+          
       const storageURL = await generatePresignedUrlForDirectUpload(
         this.storageServiceWrapper,
-        documentPath,
+        concatenatedPath,
       );
       if (process.env.NODE_ENV == 'development') {
         logger.info('Presigned url generated for direct upload', {

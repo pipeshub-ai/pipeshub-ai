@@ -55,6 +55,13 @@ class ExcelHeaderDetection(BaseModel):
     reasoning: str
 
 
+class CSVHeaderDetection(BaseModel):
+    has_headers: bool
+    num_header_rows: int  # 0 if no headers, 1, 2, 3+ for multi-row
+    confidence: str  # "high" or "low"
+    reasoning: str
+
+
 # Prompt for converting row data into natural language
 row_text_prompt_for_csv = ChatPromptTemplate.from_messages(
     [
@@ -156,42 +163,6 @@ You will be given:
 - End Position: Row {end_row}, Column {end_col}
 - Number of Columns: {num_columns}"""
 
-# Prompt for detecting if CSV first row contains headers
-csv_header_detection_prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            "You are a data analysis expert. Analyze the first few rows of a CSV file to determine if the first row contains valid column headers or if it is data.",
-        ),
-        (
-            "user",
-            """Analyze these first rows of a CSV file:
-
-Row 1: {row1}
-Row 2: {row2}
-Row 3: {row3}
-Row 4: {row4}
-Row 5: {row5}
-Row 6: {row6}
-
-Determine if Row 1 contains valid, descriptive column headers or if it is data.
-
-Consider:
-1. Are the values in Row 1 descriptive text (e.g., "Name", "Age", "City") or generic patterns (e.g., "Column1", "Unnamed: 0", "Field_1")?
-2. Do the values in Row 1 differ significantly in type/pattern from the subsequent rows?
-3. Are Row 1 values unique and meaningful, or do they look like data values?
-4. Generic patterns to detect: "Column1", "Column2", "Unnamed: 0", "Field_1", "col1", etc.
-5. With more sample rows, can you identify consistent data patterns that confirm whether Row 1 is a header or data?
-
-Respond with a JSON object:
-{{
-    "has_headers": true/false,
-    "confidence": "high" or "low",
-    "reasoning": "Brief explanation of your decision"
-}}""",
-        ),
-    ]
-)
 
 # Prompt for generating headers from CSV data
 excel_header_generation_prompt = ChatPromptTemplate.from_messages(

@@ -1,3 +1,4 @@
+from app.agents.registry.toolset_registry import get_toolset_registry
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -16,7 +17,6 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCommonFields,
 )
-from app.connectors.core.registry.tool_registry import get_toolset_registry
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 
 # ============================================================================

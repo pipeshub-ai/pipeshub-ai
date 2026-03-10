@@ -25,13 +25,11 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
-    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import config_node_constants
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -725,16 +723,6 @@ class AzureFilesConnector(BaseConnector):
         # Unknown operator, default to allowing the file
         return True
 
-    async def _get_signed_url_route(self, record_id: str) -> str:
-        """Generate the signed URL route for a record."""
-        endpoints = await self.config_service.get_config(
-            config_node_constants.ENDPOINTS.value
-        )
-        connector_endpoint = endpoints.get("connectors", {}).get(
-            "endpoint", DEFAULT_CONNECTOR_ENDPOINT
-        )
-        return f"{connector_endpoint}/api/v1/internal/stream/record/{record_id}"
-
     async def _sync_share(self, share_name: str) -> None:
         """Sync files and directories from a specific share with recursive traversal."""
         if not self.data_source:
@@ -893,8 +881,7 @@ class AzureFilesConnector(BaseConnector):
     ) -> None:
         """Remove old PARENT_CHILD relationships for a record."""
         try:
-            record_key = f"{CollectionNames.RECORDS.value}/{record_id}"
-            deleted_count = await tx_store.delete_parent_child_edges_to(to_key=record_key)
+            deleted_count = await tx_store.delete_parent_child_edge_to_record(record_id)
             if deleted_count > 0:
                 self.logger.info(
                     f"Removed {deleted_count} old parent relationship(s) for record {record_id}"
@@ -1064,7 +1051,6 @@ class AzureFilesConnector(BaseConnector):
                 web_url = self._generate_web_url(share_name, normalized_path)
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
-            signed_url_route = await self._get_signed_url_route(record_id)
             record_name = normalized_path.rstrip("/").split("/")[-1] or normalized_path.rstrip("/")
 
             # For moves/renames, remove old parent relationship
@@ -1103,7 +1089,6 @@ class AzureFilesConnector(BaseConnector):
                 source_updated_at=timestamp_ms,
                 weburl=web_url,
                 signed_url=None,
-                fetch_signed_url=signed_url_route if is_file else None,
                 # Match Azure Blob / GCS behavior: directories are internal placeholders with hidden weburl
                 hide_weburl=True,
                 is_internal=True if is_directory else False,
@@ -1634,7 +1619,6 @@ class AzureFilesConnector(BaseConnector):
             else:
                 web_url = self._generate_web_url(share_name, item_path)
 
-            signed_url_route = await self._get_signed_url_route(record.id)
 
             record_name = item_path.split("/")[-1] if "/" in item_path else item_path
 
@@ -1664,7 +1648,6 @@ class AzureFilesConnector(BaseConnector):
                 source_updated_at=timestamp_ms,
                 weburl=web_url,
                 signed_url=None,
-                fetch_signed_url=signed_url_route if is_file else None,
                 # Match Azure Blob / GCS behavior: directories are internal placeholders with hidden weburl
                 hide_weburl=True,
                 is_internal=True if is_directory else False,

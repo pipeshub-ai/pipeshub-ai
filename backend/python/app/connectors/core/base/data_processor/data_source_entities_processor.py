@@ -357,20 +357,31 @@ class DataSourceEntitiesProcessor:
 
         return None
 
-    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore) -> None:
+    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Optional[Record] = None) -> None:
         """
         Create edges between record and record group.
         This should be called AFTER saving the record (when record.id is available).
         """
 
-        if not record.id or not record_group_id:
-            return
+        if existing_record and existing_record.record_group_id and existing_record.record_group_id != record_group_id:
+            await tx_store.delete_edge(existing_record.id, CollectionNames.RECORDS.value, existing_record.record_group_id, CollectionNames.RECORD_GROUPS.value, CollectionNames.BELONGS_TO.value)
+            await tx_store.delete_inherit_permissions_relation_record_group(existing_record.id, existing_record.record_group_id)
 
-        # Create a edge between the record and the record group if it doesn't exist
-        await tx_store.create_record_group_relation(record.id, record_group_id)
+        if record.id and record_group_id:
+            # Create a edge between the record and the record group if it doesn't exist
+            await tx_store.create_record_group_relation(record.id, record_group_id)
 
-        if record.inherit_permissions:
-            await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
+            if record.inherit_permissions:
+                await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
+            else:
+                await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
+
+        if record.is_shared_with_me and record.shared_with_me_record_group_id is not None:
+            shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id, external_id=record.shared_with_me_record_group_id)
+            if shared_with_me_record_group:
+                await tx_store.create_record_group_relation(record.id, shared_with_me_record_group.id)
+            else:
+                self.logger.warning(f"Shared with me record group with external ID {record.shared_with_me_record_group_id} not found in database")
 
     async def _prepare_ticket_user_edge(
         self,
@@ -549,14 +560,10 @@ class DataSourceEntitiesProcessor:
             self.logger.warning(f"Failed to create LEAD_BY edge for project {project.id}: {str(e)}")
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
-        # Set org_id for the record
-        record.org_id = self.org_id
         self.logger.info("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
 
     async def _handle_updated_record(self, record: Record, existing_record: Record, tx_store: TransactionStore) -> None:
-        # Set org_id for the record
-        record.org_id = self.org_id
         self.logger.info("Updating existing record: %s, version %d -> %d",
         record.record_name, existing_record.version, record.version)
 
@@ -717,8 +724,12 @@ class DataSourceEntitiesProcessor:
             raise
 
     async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:
+        self.logger.info(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
+
+        # Set org_id for the record
+        record.org_id = self.org_id
 
         # Prepare record group BEFORE saving (so record_group_id is included in first save)
         record_group_id = await self._handle_record_group(record, tx_store)
@@ -734,8 +745,8 @@ class DataSourceEntitiesProcessor:
                 await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
-        if record_group_id:
-            await self._link_record_to_group(record, record_group_id, tx_store)
+        if record_group_id or record.is_shared_with_me:
+            await self._link_record_to_group(record, record_group_id, tx_store, existing_record)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
@@ -944,7 +955,7 @@ class DataSourceEntitiesProcessor:
                     # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
 
-                    # 2. Create the BELONGS_TO edge for the organization
+                    # 2. Create the BELONGS_TO edge for the organization and connector instance
                     org_relation = {
                         "from_id": record_group.id,
                         "from_collection": CollectionNames.RECORD_GROUPS.value,
@@ -958,6 +969,30 @@ class DataSourceEntitiesProcessor:
                     await tx_store.batch_create_edges(
                         [org_relation], collection=CollectionNames.BELONGS_TO.value
                     )
+
+                    if record_group.connector_id and record_group.parent_record_group_id is None and record_group.parent_external_group_id is None:
+                        # Only create record group -> app edge when there is no edge to a parent record group
+                        record_group_node_id = f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}"
+                        belongs_to_edges = await tx_store.get_edges_from_node(
+                            record_group_node_id, CollectionNames.BELONGS_TO.value
+                        )
+                        has_parent_record_group_edge = any(
+                            (e.get("_to") or "").startswith(f"{CollectionNames.RECORD_GROUPS.value}/")
+                            for e in belongs_to_edges
+                        )
+                        if not has_parent_record_group_edge:
+                            app_relation = {
+                                "from_id": record_group.id,
+                                "from_collection": CollectionNames.RECORD_GROUPS.value,
+                                "to_id": record_group.connector_id,
+                                "to_collection": CollectionNames.APPS.value,
+                                "createdAtTimestamp": record_group.created_at,
+                                "updatedAtTimestamp": record_group.updated_at,
+                            }
+                            self.logger.info(f"Creating BELONGS_TO edge for RecordGroup {record_group.id} to App {record_group.connector_id}")
+                            await tx_store.batch_create_edges(
+                                [app_relation], collection=CollectionNames.BELONGS_TO.value
+                            )
 
                     # 3. Handle User and Group Permissions (from the passed 'permissions' list)
                     if record_group.parent_external_group_id:
@@ -1132,7 +1167,7 @@ class DataSourceEntitiesProcessor:
                     user_group.org_id = self.org_id
 
                     self.logger.info(f"Processing user group: {user_group.name} with id {user_group.id}")
-                    self.logger.info(f"Processing user group permissions: {members}")
+                    self.logger.debug(f"Processing user group permissions: {members}")
 
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(
@@ -1873,6 +1908,12 @@ class DataSourceEntitiesProcessor:
             else:
                 self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
 
+    async def get_app_creator_user(self, connector_id: str) -> Optional[User]:
+        """
+        Fetch the creator user for a connector/app by connectorId.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_app_creator_user(connector_id)
     #IMPORTANT: DO NOT USE THIS METHOD
     #TODO: When an user is delelted from a connetor we need to delete the userAppRelation b/w the app and user
     # async def on_user_removed(

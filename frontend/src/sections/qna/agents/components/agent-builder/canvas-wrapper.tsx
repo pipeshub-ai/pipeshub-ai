@@ -13,7 +13,10 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   activeAgentConnectors,
   configuredConnectors,
   connectorRegistry,
+  toolsets,
+  refreshToolsets,
   isBusiness,
+  activeToolsetTypes = [],
   nodes,
   edges,
   onNodesChange,
@@ -27,6 +30,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   onNodeEdit,
   onNodeDelete,
   onError,
+  isReadOnly = false,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -41,16 +45,26 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
         backgroundColor: theme.palette.background.default,
       }}
     >
-    <FlowBuilderSidebar
-      sidebarOpen={sidebarOpen}
-      nodeTemplates={nodeTemplates}
-      loading={loading}
-      sidebarWidth={sidebarWidth}
-      activeAgentConnectors={activeAgentConnectors}
-      configuredConnectors={configuredConnectors}
-      connectorRegistry={connectorRegistry}
-      isBusiness={isBusiness}
-    />
+    <Box
+      sx={{
+        pointerEvents: isReadOnly ? 'none' : 'auto',
+        opacity: isReadOnly ? 0.6 : 1,
+      }}
+    >
+      <FlowBuilderSidebar
+        sidebarOpen={sidebarOpen}
+        nodeTemplates={nodeTemplates}
+        loading={loading}
+        sidebarWidth={sidebarWidth}
+        activeAgentConnectors={activeAgentConnectors}
+        configuredConnectors={configuredConnectors}
+        connectorRegistry={connectorRegistry}
+        toolsets={toolsets}
+        refreshToolsets={refreshToolsets}
+        isBusiness={isBusiness}
+        activeToolsetTypes={activeToolsetTypes}
+      />
+    </Box>
 
     <AgentBuilderCanvas
       nodes={nodes}
@@ -71,6 +85,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
       onNodeEdit={onNodeEdit}
       onNodeDelete={onNodeDelete}
       onError={onError}
+      readOnly={isReadOnly}
     />
   </Box>
   );

@@ -1,16 +1,21 @@
 import asyncio
 import base64
 import hashlib
+import random
 import re
 import uuid
+from dataclasses import dataclass
 from io import BytesIO
 from logging import Logger
-from typing import Dict, List, Optional, Set, Tuple
+from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
+import pillow_avif  # noqa: F401
 from bs4 import BeautifulSoup
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+from PIL import Image
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes
@@ -22,15 +27,28 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     CustomField,
     DocumentationLink,
 )
-from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOptionsResponse,
+    FilterType,
+    IndexingFilterKey,
+    MultiselectOperator,
+    SyncFilterKey,
+    load_connector_filters,
+)
+from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
 from app.models.entities import (
     AppUser,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -41,6 +59,30 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+@dataclass
+class RecordUpdate:
+    """Track updates to a record"""
+    record: Optional[FileRecord]
+    is_new: bool
+    is_updated: bool
+    is_deleted: bool
+    metadata_changed: bool
+    content_changed: bool
+    permissions_changed: bool
+    old_permissions: Optional[List[Permission]] = None
+    new_permissions: Optional[List[Permission]] = None
+    external_record_id: Optional[str] = None
+
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+RETRYABLE_EXCEPTIONS = (
+    aiohttp.ClientConnectorError,
+    aiohttp.ServerDisconnectedError,
+    aiohttp.ServerTimeoutError,
+    asyncio.TimeoutError,
+)
 
 # MIME type mapping for common file extensions
 FILE_MIME_TYPES = {
@@ -53,6 +95,7 @@ FILE_MIME_TYPES = {
     '.pptx': MimeTypes.PPTX,
     '.txt': MimeTypes.TEXT,
     '.csv': MimeTypes.CSV,
+    '.tsv': MimeTypes.TSV,
     '.json': MimeTypes.JSON,
     '.xml': MimeTypes.XML,
     '.zip': MimeTypes.ZIP,
@@ -61,8 +104,40 @@ FILE_MIME_TYPES = {
     '.png': MimeTypes.PNG,
     '.gif': MimeTypes.GIF,
     '.svg': MimeTypes.SVG,
+    '.webp': MimeTypes.WEBP,
+    '.heic': MimeTypes.HEIC,
+    '.heif': MimeTypes.HEIF,
     '.html': MimeTypes.HTML,
     '.htm': MimeTypes.HTML,
+    '.md': MimeTypes.MARKDOWN,
+    '.mdx': MimeTypes.MDX,
+}
+
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+RETRYABLE_EXCEPTIONS = (
+    aiohttp.ClientConnectorError,
+    aiohttp.ServerDisconnectedError,
+    aiohttp.ServerTimeoutError,
+    asyncio.TimeoutError,
+)
+
+
+DOCUMENT_MIME_TYPES = {
+    MimeTypes.PDF.value,
+    MimeTypes.DOC.value,
+    MimeTypes.DOCX.value,
+    MimeTypes.XLS.value,
+    MimeTypes.XLSX.value,
+    MimeTypes.PPT.value,
+    MimeTypes.PPTX.value,
+}
+
+IMAGE_MIME_TYPES = {
+    MimeTypes.PNG.value,
+    MimeTypes.JPEG.value,
+    MimeTypes.JPG.value,
+    MimeTypes.GIF.value,
 }
 
 class WebApp(App):
@@ -106,6 +181,8 @@ class WebApp(App):
             field_type="NUMBER",
             required=False,
             default_value="3",
+            min_length=1,
+            max_length=10,
             description="Maximum depth for recursive crawling (1-10, only applies to recursive type)"
         ))
         .add_sync_custom_field(CustomField(
@@ -114,6 +191,8 @@ class WebApp(App):
             field_type="NUMBER",
             required=False,
             default_value="100",
+            min_length=1,
+            max_length=1000,
             description="Maximum number of pages to crawl (1-1000)"
         ))
         .add_sync_custom_field(CustomField(
@@ -123,6 +202,48 @@ class WebApp(App):
             required=False,
             default_value="false",
             description="Follow links to external domains"
+        ))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(CommonFields.file_extension_filter())
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.WEBPAGES.value,
+            display_name="Index Webpages",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of webpages",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.IMAGES.value,
+            display_name="Index Images",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of images",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.VIDEOS.value,
+            display_name="Index Videos",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of videos",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.DOCUMENTS.value,
+            display_name="Index Documents",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of documents",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.ATTACHMENTS.value,
+            display_name="Index Attachments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of attachments",
+            default_value=True
         ))
         .with_sync_support(True)
         .with_agent_support(False)
@@ -170,37 +291,21 @@ class WebConnector(BaseConnector):
         # Batch processing
         self.batch_size: int = 50
 
+        # Filter collections
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
+
     async def init(self) -> bool:
         """Initialize the web connector with configuration."""
         try:
-            # Try to get config from different paths
-            config = await self.config_service.get_config(
-                f"/services/connectors/{self.connector_id}/config"
-            )
+            config_values = await self._fetch_and_parse_config(use_cache=True)
 
-            if not config:
-                self.logger.error("❌ WebPage config not found")
-                raise ValueError("Web connector configuration not found")
-
-            sync_config = config.get("sync", {})
-            if not sync_config:
-                self.logger.error("❌ WebPage sync config not found")
-                raise ValueError("WebPage sync config not found")
-
-            self.url = sync_config.get("url")
-            if not self.url:
-                self.logger.error("❌ WebPage url not found")
-                raise ValueError("WebPage url not found")
-
-            self.crawl_type = sync_config.get("type", "single")
-            self.max_depth = int(sync_config.get("depth", 3))
-            self.max_pages = int(sync_config.get("max_pages", 1000))
-            self.follow_external = sync_config.get("follow_external", False)
-
-
-            # Parse base domain
-            parsed_url = urlparse(self.url)
-            self.base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            self.url = config_values["url"]
+            self.crawl_type = config_values["crawl_type"]
+            self.max_depth = config_values["max_depth"]
+            self.max_pages = config_values["max_pages"]
+            self.follow_external = config_values["follow_external"]
+            self.base_domain = config_values["base_domain"]
 
             # Initialize aiohttp session with realistic browser headers
             # These headers mimic a real Chrome browser to avoid being blocked by websites
@@ -243,19 +348,96 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to initialize web connector: {e}", exc_info=True)
             return False
 
+    async def _fetch_and_parse_config(self, use_cache: bool = True) -> Dict:
+        """
+        Fetch and parse connector configuration.
+
+        Args:
+            use_cache: Whether to use cached config (default: True)
+
+        Returns:
+            Dictionary containing parsed config values:
+            - url: str
+            - crawl_type: str
+            - max_depth: int
+            - max_pages: int
+            - follow_external: bool
+            - base_domain: str
+
+        Raises:
+            ValueError: If config is invalid or missing required fields
+        """
+        try:
+            config = await self.config_service.get_config(
+                f"/services/connectors/{self.connector_id}/config",
+                use_cache=use_cache
+            )
+
+            if not config:
+                self.logger.error("❌ WebPage config not found")
+                raise ValueError("Web connector configuration not found")
+
+            sync_config = config.get("sync", {})
+
+            if not sync_config:
+                self.logger.error("❌ WebPage sync config not found")
+                raise ValueError("WebPage sync config not found")
+
+            url = sync_config.get("url")
+            if not url:
+                self.logger.error("❌ WebPage url not found")
+                raise ValueError("WebPage url not found")
+
+            crawl_type = sync_config.get("type", "single")
+            max_depth = int(sync_config.get("depth") or 3)
+            max_pages = int(sync_config.get("max_pages") or 1000)
+            follow_external = sync_config.get("follow_external", False)
+
+            # Parse base domain
+            parsed_url = urlparse(url)
+            base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+            return {
+                "url": url,
+                "crawl_type": crawl_type,
+                "max_depth": max_depth,
+                "max_pages": max_pages,
+                "follow_external": follow_external,
+                "base_domain": base_domain,
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch and parse config: {e}")
+            raise
+
     async def test_connection_and_access(self) -> bool:
-        """Test if the website is accessible."""
+        """Test if the website is accessible using the multi-strategy fallback."""
         if not self.url or not self.session:
             return False
 
         try:
-            async with self.session.head(self.url, allow_redirects=True) as response:
-                if response.status < HttpStatusCode.BAD_REQUEST.value:
-                    self.logger.info(f"✅ Website accessible: {self.url} (status: {response.status})")
-                    return True
-                else:
-                    self.logger.warning(f"⚠️ Website returned status {response.status}: {self.url}")
-                    return False
+            result = await fetch_url_with_fallback(
+                url=self.url,
+                session=self.session,
+                logger=self.logger,
+                max_retries_per_strategy=1,  # keep it fast for a connection test
+            )
+
+            if result is None:
+                self.logger.warning(f"⚠️ Website not accessible: {self.url}")
+                return False
+
+            if result.status_code < HttpStatusCode.BAD_REQUEST.value:
+                self.logger.info(
+                    f"✅ Website accessible: {self.url} "
+                    f"(status: {result.status_code}, via {result.strategy})"
+                )
+                return True
+            else:
+                self.logger.warning(
+                    f"⚠️ Website returned status {result.status_code}: {self.url}"
+                )
+                return False
+
         except Exception as e:
             self.logger.error(f"❌ Failed to access website: {e}")
             return False
@@ -328,9 +510,51 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to create record group: {e}", exc_info=True)
             raise
 
+    async def reload_config(self) -> None:
+        """Reload the connector configuration."""
+        try:
+            self.logger.debug("running reload config")
+            config_values = await self._fetch_and_parse_config(use_cache=False)
+
+            config_values["url"]
+            new_crawl_type = config_values["crawl_type"]
+            new_max_depth = config_values["max_depth"]
+            new_max_pages = config_values["max_pages"]
+            new_follow_external = config_values["follow_external"]
+            new_base_domain = config_values["base_domain"]
+
+            if new_base_domain != self.base_domain:
+                self.logger.error(f"❌ Cannot change base domain from {self.base_domain} to {new_base_domain}. Please create a new connector for {new_base_domain}")
+                raise ValueError("Cannot change base domain for web connector.")
+
+            if new_crawl_type != self.crawl_type:
+                self.logger.info(f"🔄 Crawl type changed from {self.crawl_type} to {new_crawl_type}")
+                self.crawl_type = new_crawl_type
+            if new_max_depth != self.max_depth:
+                self.logger.info(f"🔄 Max depth changed from {self.max_depth} to {new_max_depth}")
+                self.max_depth = new_max_depth
+            if new_max_pages != self.max_pages:
+                self.logger.info(f"🔄 Max pages changed from {self.max_pages} to {new_max_pages}")
+                self.max_pages = new_max_pages
+            if new_follow_external != self.follow_external:
+                self.logger.info(f"🔄 Follow external changed from {self.follow_external} to {new_follow_external}")
+                self.follow_external = new_follow_external
+
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to reload config: {e}", exc_info=True)
+            raise
+
     async def run_sync(self) -> None:
         """Main sync method to crawl and index web pages."""
         try:
+            await self.reload_config()
+
+            # Load filters
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "web", self.connector_id, self.logger
+            )
+
             self.logger.info(f"🚀 Starting web crawl: {self.url}")
 
             # Step 1: fetch and sync all active users
@@ -362,10 +586,22 @@ class WebConnector(BaseConnector):
     async def _crawl_single_page(self, url: str) -> None:
         """Crawl a single page and index it."""
         try:
-            file_record, permissions = await self._fetch_and_process_url(url, depth=0)
+            record_update = await self._fetch_and_process_url(url, depth=0)
 
+            self.visited_urls.add(self._normalize_url(url))
+
+            if record_update is None:
+                return
+            file_record = record_update.record
             if file_record:
-                await self.data_entities_processor.on_new_records([(file_record, permissions)])
+                is_disabled = self._check_index_filter(file_record)
+                if is_disabled:
+                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                if record_update.is_updated:
+                    await self._handle_record_updates(record_update)
+                elif record_update.is_new:
+                    await self.data_entities_processor.on_new_records([(record_update.record, record_update.new_permissions)])
                 self.logger.info(f"✅ Indexed single page: {url}")
 
         except Exception as e:
@@ -374,64 +610,21 @@ class WebConnector(BaseConnector):
     async def _crawl_recursive(self, start_url: str, depth: int) -> None:
         """Recursively crawl pages starting from start_url."""
         try:
-            # Queue for BFS crawling: (url, depth, referer)
-            queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
             batch_records: List[Tuple[FileRecord, List[Permission]]] = []
 
-            while queue and len(self.visited_urls) < self.max_pages:
-                current_url, current_depth, referer = queue.pop(0)
+            async for record_update in self._crawl_recursive_generator(start_url, depth):
 
-                # Skip if already visited
-                normalized_url = self._normalize_url(current_url)
-                if normalized_url in self.visited_urls:
+                if record_update.is_updated:
+                    await self._handle_record_updates(record_update)
                     continue
+                elif record_update.is_new:
+                    batch_records.append((record_update.record, record_update.new_permissions))
 
-                # Skip if depth exceeded
-                if current_depth > self.max_depth:
-                    continue
-
-                self.logger.info(
-                    f"📄 Crawling [{len(self.visited_urls) + 1}/{self.max_pages}] "
-                    f"(depth {current_depth}): {current_url}"
-                )
-
-                try:
-                    # Fetch and process the page with referer
-                    file_record, permissions = await self._fetch_and_process_url(
-                        current_url, current_depth, referer=referer
-                    )
-
-                    if file_record:
-                        batch_records.append((file_record, permissions))
-                        self.visited_urls.add(normalized_url)
-
-                        # Extract links if we haven't reached max depth
-                        if current_depth < self.max_depth and file_record.mime_type == MimeTypes.HTML.value:
-                            links = await self._extract_links_from_content(
-                                current_url, file_record, referer=referer
-                            )
-
-                            # Add new links to queue with current URL as referer
-                            for link in links:
-                                normalized_link = self._normalize_url(link)
-                                if (
-                                    normalized_link not in self.visited_urls
-                                    and len(self.visited_urls) < self.max_pages
-                                ):
-                                    queue.append((link, current_depth + 1, current_url))
-
-                        # Process batch if it reaches batch size
-                        if len(batch_records) >= self.batch_size:
-                            await self.data_entities_processor.on_new_records(batch_records)
-                            self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
-                            batch_records.clear()
-
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Failed to process {current_url}: {e}")
-                    continue
-
-                # Small delay to be respectful to the server
-                await asyncio.sleep(0.5)
+                    # Process batch when it reaches the size limit
+                    if len(batch_records) >= self.batch_size:
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
+                        batch_records.clear()
 
             # Process remaining batch
             if batch_records:
@@ -442,104 +635,229 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Error in recursive crawl: {e}", exc_info=True)
             raise
 
+    async def _crawl_recursive_generator(
+        self, start_url: str, depth: int
+    ) -> AsyncGenerator[Tuple[FileRecord, List[Permission]], None]:
+        """
+        BFS crawl generator; yields (FileRecord, permissions) for each successfully
+        fetched page. Allows non-blocking processing of large site crawls.
+
+        Yields:
+            Tuple of (FileRecord, List[Permission])
+        """
+        # Queue for BFS crawling: (url, depth, referer)
+        queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
+
+        while queue and len(self.visited_urls) < self.max_pages:
+            current_url, current_depth, referer = queue.pop(0)
+
+            # Skip if already visited
+            normalized_url = self._normalize_url(current_url)
+            if normalized_url in self.visited_urls:
+                continue
+
+            # Skip if depth exceeded
+            if current_depth > self.max_depth:
+                continue
+
+            self.logger.info(
+                f"📄 Crawling [{len(self.visited_urls) + 1}/{self.max_pages}] "
+                f"(depth {current_depth}): {current_url}"
+            )
+
+            try:
+                # Fetch and process the page with referer
+                record_update = await self._fetch_and_process_url(
+                    current_url, current_depth, referer=referer
+                )
+
+                if record_update is None:
+                    continue
+
+                file_record = record_update.record
+
+                if file_record:
+                    self.visited_urls.add(normalized_url)
+
+                    is_disabled = self._check_index_filter(file_record)
+
+                    if is_disabled:
+                        file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                    # Extract links if we haven't reached max depth
+                    if current_depth < self.max_depth and file_record.mime_type == MimeTypes.HTML.value:
+                        links = await self._extract_links_from_content(
+                            current_url, file_record, referer=referer
+                        )
+
+                        # Add new links to queue with current URL as referer
+                        for link in links:
+                            normalized_link = self._normalize_url(link)
+                            if (
+                                normalized_link not in self.visited_urls
+                                and len(self.visited_urls) < self.max_pages
+                            ):
+                                queue.append((link, current_depth + 1, current_url))
+
+                    yield record_update
+
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to process {current_url}: {e}")
+                continue
+
+            # Small delay to be respectful to the server; also yields control to
+            # other async tasks (mirrors the OneDrive generator pattern).
+            await asyncio.sleep(0.5)
+
     async def _fetch_and_process_url(
         self, url: str, depth: int, referer: Optional[str] = None
-    ) -> Optional[Tuple[FileRecord, List[Permission]]]:
-        """Fetch URL content and create a FileRecord."""
+    ) -> Optional[RecordUpdate]:
+        """Fetch URL content using multi-strategy fallback and create a RecordUpdate."""
         try:
-            # Add referer header if provided (mimics browser behavior)
-            headers = {}
-            if referer:
-                headers["Referer"] = referer
 
-            async with self.session.get(url, headers=headers, allow_redirects=True) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    self.logger.warning(f"⚠️ HTTP {response.status} for {url}")
-                    return None
+            result = await fetch_url_with_fallback(
+                url=url,
+                session=self.session,
+                logger=self.logger,
+                referer=referer,
+                timeout=15,
+            )
 
-                content_type = response.headers.get("Content-Type", "").lower()
-                final_url = str(response.url)
+            if result is None:
+                return None
 
-                # Read content
-                content_bytes = await response.read()
+            if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                # Already logged inside fetch_url_with_fallback
+                return None
 
-                # Determine MIME type and file extension
-                mime_type, extension = self._determine_mime_type(url, content_type)
+            is_new = False
+            is_updated = False
+            is_deleted = False
+            metadata_changed = False
+            content_changed = False
 
-                # Generate unique ID
+            content_type = result.headers.get("Content-Type", "").lower()
+            final_url = result.final_url
+            content_bytes = result.content_bytes
+
+            # Determine MIME type and file extension
+            mime_type, extension = self._determine_mime_type(url, content_type)
+            if not self._pass_extension_filter(extension):
+                return None
+
+            # Generate unique ID
+            record_id = str(uuid.uuid4())
+            external_id = final_url
+
+            # Generate unique ID
+            record_id = None
+            external_id = final_url
+
+            existing_record = await self.data_entities_processor.get_record_by_external_id(connector_id=self.connector_id, external_record_id=external_id)
+            if existing_record:
+                record_id = existing_record.id
+            else:
                 record_id = str(uuid.uuid4())
-                external_id = final_url
 
-                # Get title and clean content for HTML
+            # Get title and clean content for HTML
+            title = self._extract_title_from_url(final_url)
+            size_in_bytes = len(content_bytes)
+            timestamp = get_epoch_timestamp_in_ms()
+
+            # For HTML pages, extract clean content
+            if mime_type == MimeTypes.HTML:
+                try:
+                    soup = BeautifulSoup(content_bytes, "html.parser")
+                    title = self._extract_title(soup, final_url)
+
+                    # Remove script and style elements
+                    for script in soup(["script", "style", "noscript", "iframe"]):
+                        script.decompose()
+
+                    # Get text content
+                    text_content = soup.get_text(separator="\n", strip=True)
+
+                    # Store cleaned HTML for indexing
+                    content_bytes = text_content.encode("utf-8")
+                    size_in_bytes = len(content_bytes)
+
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Failed to parse HTML for {url}: {e}")
+
+            # Calculate MD5 hash once
+            content_md5_hash = hashlib.md5(content_bytes).hexdigest()
+
+            # Ensure title is never empty (schema requirement)
+            if not title or not title.strip():
                 title = self._extract_title_from_url(final_url)
-                size_in_bytes = len(content_bytes)
-                timestamp = get_epoch_timestamp_in_ms()
+                # Final fallback: use URL if title extraction still fails
+                if not title or not title.strip():
+                    parsed = urlparse(final_url)
+                    title = parsed.netloc or final_url
 
-                # For HTML pages, extract clean content
-                if mime_type == MimeTypes.HTML:
-                    try:
-                        soup = BeautifulSoup(content_bytes, 'html.parser')
-                        title = self._extract_title(soup, final_url)
+            if existing_record:
+                if existing_record.record_name != title:
+                    metadata_changed = True
+                if existing_record.external_revision_id != content_md5_hash:
+                    content_changed = True
+                is_updated = metadata_changed or content_changed
+            else:
+                is_new = True
 
-                        # Remove script and style elements
-                        for script in soup(["script", "style", "noscript", "iframe"]):
-                            script.decompose()
+            # Create FileRecord
+            file_record = FileRecord(
+                id=record_id,
+                org_id=self.data_entities_processor.org_id,
+                record_name=title,
+                record_type=RecordType.FILE,
+                record_group_type=RecordGroupType.WEB,
+                external_record_id=external_id,
+                external_revision_id=content_md5_hash,
+                external_record_group_id=self.url,
+                version=0,
+                origin=OriginTypes.CONNECTOR.value,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                created_at=timestamp,
+                updated_at=timestamp,
+                source_created_at=timestamp,
+                source_updated_at=timestamp,
+                weburl=final_url,
+                size_in_bytes=size_in_bytes,
+                is_file=True,
+                extension=extension,
+                path=urlparse(final_url).path,
+                mime_type=mime_type.value,
+                md5_hash=content_md5_hash,
+                preview_renderable=False,
+            )
 
-                        # Get text content
-                        text_content = soup.get_text(separator='\n', strip=True)
-
-                        # Store cleaned HTML for indexing
-                        content_bytes = text_content.encode('utf-8')
-                        size_in_bytes = len(content_bytes)
-
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to parse HTML for {url}: {e}")
-
-                # Calculate MD5 hash once
-                content_md5_hash = hashlib.md5(content_bytes).hexdigest()
-
-                # Create FileRecord
-                file_record = FileRecord(
-                    id=record_id,
-                    record_name=title,
-                    record_type=RecordType.FILE,
-                    record_group_type=RecordGroupType.WEB,
-                    external_record_id=external_id,
-                    external_revision_id=content_md5_hash,
-                    external_record_group_id=self.url,
-                    version=0,
-                    origin=OriginTypes.CONNECTOR.value,
-                    connector_name=self.connector_name,
-                    connector_id=self.connector_id,
-                    created_at=timestamp,
-                    updated_at=timestamp,
-                    source_created_at=timestamp,
-                    source_updated_at=timestamp,
-                    weburl=final_url,
-                    size_in_bytes=size_in_bytes,
-                    is_file=True,
-                    extension=extension,
-                    path=urlparse(final_url).path,
-                    mime_type=mime_type.value,
-                    md5_hash=content_md5_hash,
-                    preview_renderable=False,
+            # Create permissions (org-level access for web pages)
+            permissions = [
+                Permission(
+                    external_id=self.data_entities_processor.org_id,
+                    type=PermissionType.READ,
+                    entity_type=EntityType.ORG,
                 )
+            ]
 
-                # Create permissions (org-level access for web pages)
-                permissions = [
-                    Permission(
-                        external_id=self.data_entities_processor.org_id,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
+            record_update = RecordUpdate(
+                record=file_record,
+                is_new=is_new,
+                is_updated=is_updated,
+                is_deleted=is_deleted,
+                metadata_changed=metadata_changed,
+                content_changed=content_changed,
+                permissions_changed=False,
+                new_permissions=permissions,
+            )
 
-                    )
-                ]
+            self.logger.debug(
+                "✅ Processed: %s (%s, %s bytes) via %s",
+                title, mime_type.value, size_in_bytes, result.strategy
+            )
 
-                self.logger.debug(
-                    f"✅ Processed: {title} ({mime_type.value}, {size_in_bytes} bytes)"
-                )
-
-                return file_record, permissions
+            return record_update
 
         except asyncio.TimeoutError:
             self.logger.warning(f"⚠️ Timeout fetching {url}")
@@ -547,6 +865,15 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error fetching {url}: {e}", exc_info=True)
             return None
+
+    async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
+        """Handle record updates."""
+        if record_update.is_deleted:
+            await self.data_entities_processor.on_record_deleted(record_update.record.id)
+        if record_update.metadata_changed:
+            await self.data_entities_processor.on_record_metadata_update(record_update.record)
+        if record_update.content_changed:
+            await self.data_entities_processor.on_record_content_update(record_update.record)
 
     async def _extract_links_from_content(
         self, base_url: str, file_record: FileRecord, referer: Optional[str] = None
@@ -583,6 +910,20 @@ class WebConnector(BaseConnector):
             self.logger.warning(f"⚠️ Failed to extract links from {base_url}: {e}")
 
         return links
+
+    def _check_index_filter(self, record: Record) -> bool:
+        """Check if the record should be indexed."""
+        mime_type = record.mime_type
+        is_disabled = False
+
+        if mime_type == MimeTypes.HTML.value:
+            is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.WEBPAGES, default=True)
+        elif mime_type in DOCUMENT_MIME_TYPES:
+            is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS, default=True)
+        elif mime_type in IMAGE_MIME_TYPES:
+            is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
+
+        return is_disabled
 
     def _is_valid_url(self, url: str, base_url: str) -> bool:
         """Check if a URL should be crawled."""
@@ -634,16 +975,56 @@ class WebConnector(BaseConnector):
         """Determine MIME type and extension from URL and content-type header."""
         # First, try to get from content-type header
         if content_type:
-            if 'html' in content_type:
+            content_type_lower = content_type.lower()
+            if 'html' in content_type_lower:
                 return MimeTypes.HTML, 'html'
-            elif 'pdf' in content_type:
+            elif 'pdf' in content_type_lower:
                 return MimeTypes.PDF, 'pdf'
-            elif 'json' in content_type:
+            elif 'json' in content_type_lower:
                 return MimeTypes.JSON, 'json'
-            elif 'xml' in content_type:
+            elif 'xml' in content_type_lower:
                 return MimeTypes.XML, 'xml'
-            elif 'plain' in content_type:
+            elif 'plain' in content_type_lower:
                 return MimeTypes.TEXT, 'txt'
+            elif 'csv' in content_type_lower:
+                return MimeTypes.CSV, 'csv'
+            elif 'tab-separated' in content_type_lower or 'tsv' in content_type_lower:
+                return MimeTypes.TSV, 'tsv'
+            elif 'markdown' in content_type_lower or 'md' in content_type_lower:
+                return MimeTypes.MARKDOWN, 'md'
+            elif 'mdx' in content_type_lower:
+                return MimeTypes.MDX, 'mdx'
+            elif 'image/webp' in content_type_lower:
+                return MimeTypes.WEBP, 'webp'
+            elif 'image/heic' in content_type_lower:
+                return MimeTypes.HEIC, 'heic'
+            elif 'image/heif' in content_type_lower:
+                return MimeTypes.HEIF, 'heif'
+            elif 'image/png' in content_type_lower:
+                return MimeTypes.PNG, 'png'
+            elif 'image/jpeg' in content_type_lower or 'image/jpg' in content_type_lower:
+                return MimeTypes.JPEG, 'jpeg'
+            elif 'image/gif' in content_type_lower:
+                return MimeTypes.GIF, 'gif'
+            elif 'image/svg' in content_type_lower:
+                return MimeTypes.SVG, 'svg'
+            elif 'wordprocessingml' in content_type_lower or 'msword' in content_type_lower:
+                if 'openxml' in content_type_lower:
+                    return MimeTypes.DOCX, 'docx'
+                else:
+                    return MimeTypes.DOC, 'doc'
+            elif 'spreadsheetml' in content_type_lower or 'ms-excel' in content_type_lower:
+                if 'openxml' in content_type_lower:
+                    return MimeTypes.XLSX, 'xlsx'
+                else:
+                    return MimeTypes.XLS, 'xls'
+            elif 'presentationml' in content_type_lower or 'ms-powerpoint' in content_type_lower:
+                if 'openxml' in content_type_lower:
+                    return MimeTypes.PPTX, 'pptx'
+                else:
+                    return MimeTypes.PPT, 'ppt'
+            elif 'zip' in content_type_lower or 'compressed' in content_type_lower:
+                return MimeTypes.ZIP, 'zip'
 
         # Try to get from URL extension
         parsed_url = urlparse(url)
@@ -656,21 +1037,79 @@ class WebConnector(BaseConnector):
         # Default to HTML
         return MimeTypes.HTML, 'html'
 
+    def _pass_extension_filter(self, extension: str) -> bool:
+        """
+        Checks if the file extension passes the configured file extensions filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow files with extensions in the selected list
+        - Operator NOT_IN: Allow files with extensions NOT in the selected list
+
+        Args:
+            extension: File extension (e.g., "pdf", "docx", "html") without leading dot
+
+        Returns:
+            True if the extension passes the filter (should be kept), False otherwise
+        """
+        # 1. Get the extensions filter
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+
+        # 2. Handle files without extensions
+        if extension is None or extension == '':
+            operator = extensions_filter.get_operator()
+            # If using NOT_IN operator, files without extensions pass (not in excluded list)
+            # If using IN operator, files without extensions fail (not in allowed list)
+            return operator== MultiselectOperator.NOT_IN
+
+        # 3. Normalize extension (lowercase, without dots)
+        file_extension = extension.lower().lstrip(".")
+
+        # 4. Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        if not isinstance(allowed_extensions, list):
+            return True  # Invalid filter value, allow the file
+
+        # 5. Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+
+        # 6. Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+
+        if operator == MultiselectOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator == MultiselectOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+
+        # Unknown operator, default to allowing the file
+        return True
+
     def _extract_title(self, soup: BeautifulSoup, url: str) -> str:
         """Extract page title from BeautifulSoup object."""
         # Try <title> tag
         if soup.title and soup.title.string:
-            return soup.title.string.strip()
+            title = soup.title.string.strip()
+            if title:
+                return title
 
         # Try <h1> tag
         h1 = soup.find('h1')
         if h1:
-            return h1.get_text(strip=True)
+            title = h1.get_text(strip=True)
+            if title:
+                return title
 
         # Try og:title meta tag
         og_title = soup.find('meta', property='og:title')
         if og_title and og_title.get('content'):
-            return og_title['content'].strip()
+            title = og_title['content'].strip()
+            if title:
+                return title
 
         # Fallback to URL
         return self._extract_title_from_url(url)
@@ -720,8 +1159,20 @@ class WebConnector(BaseConnector):
 
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex records - not implemented for Web connector yet."""
-        self.logger.warning("Reindex not implemented for Web connector")
-        pass
+
+        try:
+            if not record_results:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(record_results)} Web records")
+
+            await self.data_entities_processor.reindex_existing_records(record_results)
+            self.logger.info(f"Published reindex events for {len(record_results)} records")
+
+        except Exception as e:
+            self.logger.error(f"Error during Web reindex: {e}", exc_info=True)
+            raise
 
     async def get_filter_options(
         self,
@@ -866,6 +1317,16 @@ class WebConnector(BaseConnector):
         for tag in soup(["script", "style", "noscript", "iframe"]):
             tag.decompose()
 
+    def _remove_image_tags(self, soup: BeautifulSoup) -> None:
+        """Remove all image and SVG tags from the soup."""
+        # Remove all img tags
+        for img in soup.find_all('img'):
+            img.decompose()
+
+        # Remove all svg tags
+        for svg in soup.find_all('svg'):
+            svg.decompose()
+
     def _convert_svg_tag_to_png(self, soup: BeautifulSoup, svg) -> bool:
         """
         Convert an SVG tag to a PNG img tag.
@@ -910,6 +1371,11 @@ class WebConnector(BaseConnector):
         for svg in soup.find_all('svg'):
             self._convert_svg_tag_to_png(soup, svg)
 
+    # Image formats supported by OpenAI vision API
+    OPENAI_SUPPORTED_IMAGE_TYPES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
+    # Accept header for image requests — deliberately excludes unsupported image types
+    _IMAGE_ACCEPT_HEADER = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/*;q=0.8"
+
     async def _process_single_image(
         self,
         img,
@@ -934,19 +1400,75 @@ class WebConnector(BaseConnector):
         if "data:image" in src:
             if "," in src:
                 header, existing_b64 = src.split(",", 1)
-                cleaned_b64 = self._clean_base64_string(existing_b64)
-                if cleaned_b64:
-                    img['src'] = f"{header},{cleaned_b64}"
-                else:
-                    self.logger.warning("⚠️ Invalid existing base64 data URI, removing image")
+
+                # Extract and validate the mime type from the data URI header
+                mime_match = re.match(r'data:([^;,]+)', header)
+                mime_type = mime_match.group(1).lower() if mime_match else ''
+
+                if mime_type == 'image/svg+xml':
+                    if ';base64' not in header:
+                        # URL-encoded SVG, decode directly
+                        svg_bytes = unquote(existing_b64).encode('utf-8')
+                    else:
+                        # base64-encoded SVG
+                        cleaned_b64 = self._clean_base64_string(existing_b64)
+                        if not cleaned_b64:
+                            self.logger.warning("⚠️ Invalid base64 in SVG data URI, removing image")
+                            img.decompose()
+                            return
+                        svg_bytes = base64.b64decode(cleaned_b64)
+
+                    # Common path for both cases
+                    try:
+                        png_b64 = self._convert_svg_bytes_to_png_base64(svg_bytes, 'inline-svg-data-uri')
+                        if png_b64:
+                            img['src'] = f"data:image/png;base64,{png_b64}"
+                        else:
+                            self.logger.warning("⚠️ Failed to convert inline SVG data URI to PNG, removing image")
+                            img.decompose()
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Error converting inline SVG data URI: {e}, removing image")
+                        img.decompose()
+
+                elif mime_type == 'image/avif':
+                    self.logger.debug("Converting inline AVIF base64 to PNG base64")
+                    # Inline AVIF data URI — decode and convert to PNG
+                    cleaned_b64 = self._clean_base64_string(existing_b64)
+                    if cleaned_b64:
+                        try:
+                            avif_bytes = base64.b64decode(cleaned_b64)
+                            png_b64 = self._convert_avif_bytes_to_png_base64(avif_bytes, 'inline-avif-data-uri')
+                            if png_b64:
+                                img['src'] = f"data:image/png;base64,{png_b64}"
+                            else:
+                                img.decompose()
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Error converting inline AVIF data URI: {e}, removing image")
+                            img.decompose()
+                    else:
+                        self.logger.warning("⚠️ Invalid base64 in AVIF data URI, removing image")
+                        img.decompose()
+                elif mime_type and mime_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
+                    self.logger.warning(f"⚠️ Unsupported image format '{mime_type}' in existing data URI, removing image")
                     img.decompose()
+                else:
+                    # Supported format — just clean/validate the base64
+                    cleaned_b64 = self._clean_base64_string(existing_b64)
+                    if cleaned_b64:
+                        img['src'] = f"{header},{cleaned_b64}"
+                    else:
+                        self.logger.warning("⚠️ Invalid existing base64 data URI, removing image")
+                        img.decompose()
             return
 
         # Download and convert external images
         try:
             absolute_url = src if src.startswith(('http:', 'https:')) else urljoin(base_url, src)
 
-            async with self.session.get(absolute_url, headers=headers) as img_response:
+            # Override Accept header so servers don't return unsupported image types
+            img_headers = {**headers, "Accept": self._IMAGE_ACCEPT_HEADER}
+
+            async with self.session.get(absolute_url, headers=img_headers) as img_response:
                 if img_response.status >= HttpStatusCode.BAD_REQUEST.value:
                     self.logger.warning(f"⚠️ Failed to download image: {absolute_url} (status: {img_response.status})")
                     return
@@ -957,13 +1479,34 @@ class WebConnector(BaseConnector):
 
                 content_type = self._determine_image_content_type(img_response, absolute_url)
 
-                # Convert to base64 (handle SVG specially)
+                # Convert to base64 (handle SVG and AVIF specially)
                 if content_type == 'image/svg+xml':
                     b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
                     if not b64_str:
                         img.decompose()
                         return
                     content_type = 'image/png'
+                elif content_type == 'image/avif':
+                    self.logger.debug("Converting external AVIF to PNG base64")
+                    b64_str = self._convert_avif_bytes_to_png_base64(img_bytes, absolute_url)
+                    if not b64_str:
+                        img.decompose()
+                        return
+                    content_type = 'image/png'
+                elif content_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
+                    # Server returned an unsupported format — log full metadata then skip.
+                    raw_ct = img_response.headers.get('Content-Type', '<none>')
+                    self.logger.debug(
+                        f"⚠️ Unsupported downloaded image — "
+                        f"resolved_content_type='{content_type}' | "
+                        f"raw_Content-Type='{raw_ct}' | "
+                        f"url='{absolute_url}' | "
+                        f"response_status={img_response.status} | "
+                        f"content_length={len(img_bytes)} bytes | "
+                        f"response_headers={dict(img_response.headers)} — skipping"
+                    )
+                    img.decompose()
+                    return
                 else:
                     b64_str = base64.b64encode(img_bytes).decode('utf-8')
                     b64_str = self._clean_base64_string(b64_str)
@@ -991,6 +1534,7 @@ class WebConnector(BaseConnector):
                 '.gif': 'image/gif',
                 '.webp': 'image/webp',
                 '.svg': 'image/svg+xml',
+                '.avif': 'image/avif',
             }
 
             for ext, mime in extension_map.items():
@@ -1017,6 +1561,30 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to convert SVG to PNG: {e}. Removing image.")
             return None
+
+    def _convert_avif_bytes_to_png_base64(self, avif_bytes: bytes, url: str) -> Optional[str]:
+        """
+        Convert AVIF bytes to PNG base64 string. use pillow_avif to convert AVIF to PNG.
+        """
+
+        try:
+            with Image.open(BytesIO(avif_bytes)) as img:
+                out_mode = "RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB"
+                png_buffer = BytesIO()
+                img.convert(out_mode).save(png_buffer, format="PNG")
+            png_b64_str = self._clean_base64_string(
+                base64.b64encode(png_buffer.getvalue()).decode('utf-8')
+            )
+            if not png_b64_str:
+                self.logger.warning(f"⚠️ Failed to clean/validate PNG base64 from AVIF (Pillow): {url}")
+                return None
+            self.logger.debug(f"✅ Converted AVIF→PNG via Pillow: {url}")
+            return png_b64_str
+
+        except Exception as pillow_err:
+            self.logger.debug(
+                f"ℹ️  Pillow could not open AVIF ({pillow_err}), trying ffmpeg fallback — '{url}'"
+            )
 
     async def _process_all_images(
         self,
@@ -1052,11 +1620,19 @@ class WebConnector(BaseConnector):
             # Remove unwanted tags
             self._remove_unwanted_tags(soup)
 
-            # Convert SVG tags to PNG img tags
-            self._process_svg_tags(soup)
+            # Check if image indexing is enabled
+            images_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
 
-            # Process all images: download and convert to base64
-            await self._process_all_images(soup, record.weburl, headers)
+            if images_enabled:
+                # Convert SVG tags to PNG img tags
+                self._process_svg_tags(soup)
+
+                # Process all images: download and convert to base64
+                await self._process_all_images(soup, record.weburl, headers)
+            else:
+                self.logger.debug("Removing all image tags: image indexing is disabled")
+                # Remove all image and SVG tags when image indexing is disabled
+                self._remove_image_tags(soup)
 
             # Serialize and clean data URIs
             cleaned_html = str(soup)
@@ -1065,61 +1641,161 @@ class WebConnector(BaseConnector):
             return cleaned_html
 
         except Exception as e:
-            self.logger.warning(f"⚠️ Failed to parse/clean HTML: {e}")
-            return None
+            self.logger.error(f"⚠️ Failed to parse/clean HTML: {e}")
+            raise
+
+    # ==================== Retryable Fetch Method ====================
+
+    async def _fetch_with_retry(
+        self,
+        url: str,
+        headers: dict,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 10.0,
+    ) -> bytes:
+        """
+        Fetch a URL with exponential backoff retry for transient errors.
+
+        Args:
+            url: The URL to fetch
+            headers: Request headers
+            max_retries: Maximum number of retry attempts
+            base_delay: Initial delay in seconds before first retry
+            max_delay: Maximum delay cap in seconds
+
+        Returns:
+            The response content as bytes
+
+        Raises:
+            HTTPException: On non-retryable HTTP errors or after exhausting retries
+        """
+
+        for attempt in range(max_retries + 1):
+            try:
+                async with self.session.get(url, headers=headers) as response:
+                    # Non-retryable client errors — fail immediately
+                    if (
+                        response.status >= HttpStatusCode.BAD_REQUEST.value
+                        and response.status not in RETRYABLE_STATUS_CODES
+                    ):
+                        raise HTTPException(
+                            status_code=response.status,
+                            detail=f"HTTP {response.status} for {url}",
+                        )
+
+                    # Retryable status codes
+                    if response.status in RETRYABLE_STATUS_CODES:
+                        if attempt == max_retries:
+                            raise HTTPException(
+                                status_code=response.status,
+                                detail=f"HTTP {response.status} for {url} after {max_retries} retries",
+                            )
+
+                        delay = self._calculate_retry_delay(
+                            attempt, base_delay, max_delay,
+                            retry_after=response.headers.get("Retry-After"),
+                        )
+                        self.logger.warning(
+                            f"\n\n\n⚠️ Retryable HTTP {response.status} for {url}. "
+                            f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                    # Success
+                    return await response.read()
+
+            except RETRYABLE_EXCEPTIONS as e:
+                if attempt == max_retries:
+                    self.logger.error(
+                        f"❌ Failed to fetch {url} after {max_retries} retries: {e}"
+                    )
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_GATEWAY.value,
+                        detail=f"Failed to fetch {url} after {max_retries} retries: {e}",
+                    )
+
+                delay = self._calculate_retry_delay(attempt, base_delay, max_delay)
+                self.logger.warning(
+                    f"⚠️ Connection error for {url}: {e}. "
+                    f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
+                )
+                await asyncio.sleep(delay)
+
+        # Should not be reached, but just in case
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_GATEWAY.value,
+            detail=f"Failed to fetch {url} after {max_retries} retries",
+        )
+
+    @staticmethod
+    def _calculate_retry_delay(
+        attempt: int,
+        base_delay: float,
+        max_delay: float,
+        retry_after: Optional[str] = None,
+    ) -> float:
+        """
+        Calculate delay using exponential backoff with jitter,
+        respecting Retry-After header if present.
+        """
+        if retry_after:
+            try:
+                return min(float(retry_after), max_delay)
+            except (ValueError, TypeError):
+                pass
+
+        delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+        return min(delay, max_delay)
 
     # ==================== Main Stream Record Method ====================
 
     async def stream_record(self, record: Record) -> Optional[StreamingResponse]:
         """
         Stream the web page content with proper content extraction.
-
-        This method fetches web content, processes HTML (cleaning and converting
-        images to base64), and returns a streaming response.
-
-        Args:
-            record: Record object containing URL and metadata
-
-        Returns:
-            StreamingResponse with the processed content, or None on failure
         """
         if not record.weburl:
-            return None
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Web URL is missing for record {record.record_name} (id:{record.id})",
+            )
 
         try:
             headers = {"Referer": self.url} if self.url else {}
 
-            async with self.session.get(record.weburl, headers=headers) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    return None
+            content_bytes = await self._fetch_with_retry(record.weburl, headers)
 
-                content_bytes = await response.read()
-                mime_type = record.mime_type or "text/html"
+            mime_type = record.mime_type or "text/html"
 
-                # Process HTML content
-                cleaned_html_content = None
-                if "html" in mime_type.lower():
-                    cleaned_html_content = await self._process_html_content(
-                        content_bytes, record, headers
-                    )
-
-                # Prepare response content
-                response_content = (
-                    cleaned_html_content.encode('utf-8')
-                    if cleaned_html_content
-                    else content_bytes
+            # Process HTML content
+            cleaned_html_content = None
+            if "html" in mime_type.lower():
+                cleaned_html_content = await self._process_html_content(
+                    content_bytes, record, headers
                 )
 
-                return create_stream_record_response(
-                    BytesIO(response_content),
-                    filename=record.record_name,
-                    mime_type=mime_type,
-                    fallback_filename=f"record_{record.id}"
-                )
+            # Prepare response content
+            response_content = (
+                cleaned_html_content.encode("utf-8")
+                if cleaned_html_content
+                else content_bytes
+            )
 
+            return create_stream_record_response(
+                BytesIO(response_content),
+                filename=record.record_name,
+                mime_type=mime_type,
+                fallback_filename=f"record_{record.id}",
+            )
+
+        except HTTPException:
+            raise
         except Exception as e:
-            self.logger.error(f"❌ Error streaming record {record.id}: {e}")
-            return None
+            self.logger.error(
+                f"❌ Error streaming record {record.id}: {e}", exc_info=True
+            )
+            raise
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (same as full sync for web pages)."""

@@ -222,6 +222,57 @@ source_edge_schema = {
     }
 }
 
+# Agent -> Toolset
+agent_has_toolset_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent has toolset schema.",
+}
+
+# Agent -> Knowledge
+agent_has_knowledge_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the agent has knowledge schema.",
+}
+
+# Toolset -> Tool
+toolset_has_tool_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the toolset has tool schema.",
+}
+
 
 # future schema
 

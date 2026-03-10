@@ -1,6 +1,5 @@
 import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { ArangoService } from '../../../libs/services/arango.service';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { RecordsEventProducer } from '../services/records_events.service';
@@ -43,11 +42,6 @@ export class KnowledgeBaseContainer {
   ): Promise<void> {
     try {
       // Initialize services
-      const arangoService = new ArangoService(appConfig.arango);
-      await arangoService.initialize();
-      container
-        .bind<ArangoService>('ArangoService')
-        .toConstantValue(arangoService);
 
       const configurationManagerConfig =
         container.get<ConfigurationManagerConfig>('ConfigurationManagerConfig');

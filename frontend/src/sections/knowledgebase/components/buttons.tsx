@@ -15,25 +15,26 @@ import {
   ListItemText,
 } from '@mui/material';
 
-const getReindexButtonText = (status: string): string => {
+/** Status-based reindex label: Start indexing | Retry indexing | Force reindexing. Exported for use in all-records and collections. */
+export const getReindexButtonText = (status: string): string => {
   switch (status) {
+    case 'COMPLETED':
+      return 'Force reindexing';
     case 'FAILED':
-      return 'Retry Indexing';
-    case 'FILE_TYPE_NOT_SUPPORTED':
-      return 'File Not Supported';
-    case 'AUTO_INDEX_OFF':
-      return 'Enable Indexing';
-    case 'NOT_STARTED':
-      return 'Start Indexing';
-    case 'PAUSED':
-      return 'Resume Indexing';
     case 'QUEUED':
-      return 'Reindex';
     case 'EMPTY':
-      return 'Retry Indexing';
     case 'ENABLE_MULTIMODAL_MODELS':
-      return 'Retry Indexing';
     case 'CONNECTOR_DISABLED':
+      return 'Retry indexing';
+    case 'FILE_TYPE_NOT_SUPPORTED':
+      return 'File not supported';
+    case 'AUTO_INDEX_OFF':
+      return 'Start indexing';
+    case 'NOT_STARTED':
+      return 'Start indexing';
+    case 'PAUSED':
+      return 'Resume indexing';
+    case 'IN_PROGRESS':
       return 'Reindex';
     default:
       return 'Reindex';
@@ -47,23 +48,23 @@ const getReindexTooltip = (status: string): string => {
     case 'FILE_TYPE_NOT_SUPPORTED':
       return 'This file type is not supported for indexing';
     case 'AUTO_INDEX_OFF':
-      return 'Document indexing is turned off';
+      return 'Document has not been indexed yet. Click to start indexing.';
     case 'NOT_STARTED':
-      return 'Document indexing has not started yet';
+      return 'Document indexing has not started yet. Click to start.';
     case 'PAUSED':
       return 'Document indexing is paused. Click to resume.';
     case 'QUEUED':
-      return 'Document is queued for indexing.';
+      return 'Document is queued. Click to retry indexing.';
     case 'IN_PROGRESS':
       return 'Document is currently being indexed';
     case 'COMPLETED':
-      return 'Document has been successfully indexed. Click to reindex.';
+      return 'Document already indexed. Click to force reindex (may incur extra charges).';
     case 'EMPTY':
       return 'Document has no content.';
     case 'ENABLE_MULTIMODAL_MODELS':
       return 'Enable Multimodal LLM or Embedding Model to index document.';
     case 'CONNECTOR_DISABLED':
-      return 'Connector was disabled. Click to reindex (will check if connector is now enabled).';
+      return 'Connector was disabled. Click to retry (will check if connector is now enabled).';
     default:
       return 'Reindex document to update search indexes';
   }
@@ -86,9 +87,15 @@ export const ReindexButton: React.FC<ReindexButtonProps> = ({
   onMenuClose,
 }) => {
   const isDisabled =
-    indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' || 
+    indexingStatus === 'FILE_TYPE_NOT_SUPPORTED' ||
     indexingStatus === 'IN_PROGRESS';
-  const isFailed = indexingStatus === 'FAILED';
+  const isFailed =
+    indexingStatus === 'FAILED' ||
+    indexingStatus === 'QUEUED' ||
+    indexingStatus === 'EMPTY' ||
+    indexingStatus === 'ENABLE_MULTIMODAL_MODELS' ||
+    indexingStatus === 'CONNECTOR_DISABLED';
+  const isForceReindex = indexingStatus === 'COMPLETED';
 
   // Get base button styles based on variant
   const getBaseStyles = () => {
@@ -121,7 +128,9 @@ export const ReindexButton: React.FC<ReindexButtonProps> = ({
   // Get button text based on variant
   const getButtonText = () => {
     if (variant === 'compact') {
-      return indexingStatus === 'FAILED' ? 'Retry' : 'Sync';
+      if (indexingStatus === 'COMPLETED') return 'Force';
+      if (isFailed) return 'Retry';
+      return 'Start';
     }
     return getReindexButtonText(indexingStatus);
   };
@@ -145,17 +154,21 @@ export const ReindexButton: React.FC<ReindexButtonProps> = ({
           ? themeVal.palette.mode === 'dark'
             ? '#FACC15'
             : '#D97706'
-          : themeVal.palette.mode === 'dark'
-            ? 'rgba(255,255,255,0.23)'
-            : 'rgba(0,0,0,0.23)',
+          : isForceReindex
+            ? themeVal.palette.info.main
+            : themeVal.palette.mode === 'dark'
+              ? 'rgba(255,255,255,0.23)'
+              : 'rgba(0,0,0,0.23)',
       color: (themeVal: any) =>
         isFailed
           ? themeVal.palette.mode === 'dark'
             ? '#FACC15'
             : '#D97706'
-          : themeVal.palette.mode === 'dark'
-            ? '#E0E0E0'
-            : '#4B5563',
+          : isForceReindex
+            ? themeVal.palette.info.main
+            : themeVal.palette.mode === 'dark'
+              ? '#E0E0E0'
+              : '#4B5563',
       borderWidth: '1px',
       bgcolor: 'transparent',
       '&:hover': {
@@ -164,17 +177,23 @@ export const ReindexButton: React.FC<ReindexButtonProps> = ({
             ? themeVal.palette.mode === 'dark'
               ? '#FDE68A'
               : '#B45309'
-            : themeVal.palette.mode === 'dark'
-              ? 'rgba(255,255,255,0.4)'
-              : 'rgba(0,0,0,0.4)',
+            : isForceReindex
+              ? themeVal.palette.info.dark
+              : themeVal.palette.mode === 'dark'
+                ? 'rgba(255,255,255,0.4)'
+                : 'rgba(0,0,0,0.4)',
         bgcolor: (themeVal: any) =>
           isFailed
             ? themeVal.palette.mode === 'dark'
               ? 'rgba(250,204,21,0.08)'
               : 'rgba(217,119,6,0.04)'
-            : themeVal.palette.mode === 'dark'
-              ? 'rgba(255,255,255,0.05)'
-              : 'rgba(0,0,0,0.03)',
+            : isForceReindex
+              ? themeVal.palette.mode === 'dark'
+                ? 'rgba(33,150,243,0.12)'
+                : 'rgba(25,118,210,0.06)'
+              : themeVal.palette.mode === 'dark'
+                ? 'rgba(255,255,255,0.05)'
+                : 'rgba(0,0,0,0.03)',
       },
       '&.Mui-disabled': {
         borderColor: (themeVal: any) =>
@@ -216,7 +235,7 @@ export const ReindexButton: React.FC<ReindexButtonProps> = ({
             icon={refreshIcon}
             style={{
               fontSize: '1rem',
-              color: isFailed ? '#FACC15' : 'inherit',
+              color: isFailed ? '#FACC15' : isForceReindex ? '#2196F3' : 'inherit',
             }}
           />
         </ListItemIcon>
@@ -226,7 +245,7 @@ export const ReindexButton: React.FC<ReindexButtonProps> = ({
           primaryTypographyProps={{
             fontSize: '0.775rem',
             fontWeight: 500,
-            color: isFailed ? '#FACC15' : 'inherit',
+            color: isFailed ? '#FACC15' : isForceReindex ? '#2196F3' : 'inherit',
           }}
           secondaryTypographyProps={{
             fontSize: '0.65rem',

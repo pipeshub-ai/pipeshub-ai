@@ -4,7 +4,7 @@ import io
 import json
 import logging
 import threading
-from typing import Coroutine, Optional, Tuple
+from typing import Coroutine, List, Optional, Tuple
 
 from box_sdk_gen.managers.files import UpdateFileByIdParent
 from box_sdk_gen.managers.uploads import UploadFileAttributes
@@ -12,12 +12,103 @@ from box_sdk_gen.managers.uploads import UploadFileAttributes
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.box.box import BoxClient
 from app.sources.external.box.box import BoxDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="get_file",
+        description="Get file details",
+        parameters=[
+            {"name": "file_id", "type": "string", "description": "File ID", "required": True}
+        ],
+        tags=["files", "read"]
+    ),
+    ToolDefinition(
+        name="update_file",
+        description="Update file metadata",
+        parameters=[
+            {"name": "file_id", "type": "string", "description": "File ID", "required": True}
+        ],
+        tags=["files", "update"]
+    ),
+    ToolDefinition(
+        name="delete_file",
+        description="Delete a file",
+        parameters=[
+            {"name": "file_id", "type": "string", "description": "File ID", "required": True}
+        ],
+        tags=["files", "delete"]
+    ),
+    ToolDefinition(
+        name="upload_file",
+        description="Upload a file",
+        parameters=[
+            {"name": "file_name", "type": "string", "description": "File name", "required": True},
+            {"name": "content", "type": "string", "description": "File content", "required": True},
+            {"name": "folder_id", "type": "string", "description": "Folder ID", "required": False}
+        ],
+        tags=["files", "upload"]
+    ),
+    ToolDefinition(
+        name="search_content",
+        description="Search for files and folders",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["search"]
+    ),
+]
 
+
+# Register Box toolset
+@ToolsetBuilder("Box")\
+    .in_group("Storage")\
+    .with_description("Box integration for file storage and management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Box",
+            authorize_url="https://account.box.com/api/oauth2/authorize",
+            token_url="https://api.box.com/oauth2/token",
+            redirect_uri="toolsets/oauth/callback/box",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "root_readwrite",
+                    "manage_enterprise_properties"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Box Developer Console"),
+                CommonFields.client_secret("Box Developer Console")
+            ],
+            icon_path="/assets/icons/connectors/box.svg",
+            app_group="Storage",
+            app_description="Box OAuth application for agent integration"
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("Box Access Token", "your-access-token")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/box.svg"))\
+    .build_decorator()
 class Box:
     """Box tools exposed to agents using BoxDataSource.
 

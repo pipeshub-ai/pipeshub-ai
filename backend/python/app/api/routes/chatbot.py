@@ -8,14 +8,15 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
+from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType
-from app.config.constants.service import config_node_constants
-from app.connectors.services.base_arango_service import BaseArangoService
+from app.config.constants.service import OAuthScopes, config_node_constants
 from app.containers.query import QueryAppContainer
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import get_flattened_results, get_message_content
@@ -55,10 +56,12 @@ async def get_retrieval_service(request: Request) -> RetrievalService:
     return retrieval_service
 
 
-async def get_arango_service(request: Request) -> BaseArangoService:
+async def get_graph_provider(request: Request) -> IGraphDBProvider:
+    """Get graph provider from app.state or container"""
+    if hasattr(request.app.state, 'graph_provider'):
+        return request.app.state.graph_provider
     container: QueryAppContainer = request.app.container
-    arango_service = await container.arango_service()
-    return arango_service
+    return await container.graph_provider()
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
@@ -218,7 +221,7 @@ async def process_chat_query_with_status(
     query_info: ChatQuery,
     request: Request,
     retrieval_service: RetrievalService,
-    arango_service: BaseArangoService,
+    graph_provider: IGraphDBProvider,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     logger,
@@ -240,8 +243,9 @@ async def process_chat_query_with_status(
     if llm is None:
         raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
 
-    logger.info(f"LLM provider: {llm.provider.lower()}")
-    if config.get("provider").lower() == "ollama":
+    provider = config.get("provider", "unknown")
+    logger.info(f"LLM provider: {provider.lower()}")
+    if provider.lower() == "ollama":
         query_info.mode = "simple"
 
     # Handle conversation history and query transformation
@@ -295,7 +299,7 @@ async def process_chat_query_with_status(
     if yield_status:
         await yield_status("status", {"status": "processing", "message": "Processing search results..."})
 
-    blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
+    blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
 
     virtual_record_id_to_result = {}
     flattened_results = await get_flattened_results(
@@ -322,7 +326,7 @@ async def process_chat_query_with_status(
 
     if send_user_info:
         # Use cached user/org info for better performance (saves 0.5-1s per request)
-        user_info, org_info = await get_cached_user_info(arango_service, user_id, org_id)
+        user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
 
         if (org_info is not None and (
             org_info.get("accountType") == AccountType.ENTERPRISE.value
@@ -362,7 +366,7 @@ async def process_chat_query_with_status(
 
     tool_runtime_kwargs = {
         "blob_store": blob_store,
-        "arango_service": arango_service,
+        "graph_provider": graph_provider,
         "org_id": org_id,
     }
 
@@ -373,14 +377,14 @@ async def process_chat_query(
     query_info: ChatQuery,
     request: Request,
     retrieval_service: RetrievalService,
-    arango_service: BaseArangoService,
+    graph_provider: IGraphDBProvider,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     logger
 ) -> Tuple[BaseChatModel, List[dict], List[dict], dict, dict]:
     """Wrapper for non-streaming endpoint (without status updates)"""
     return await process_chat_query_with_status(
-        query_info, request, retrieval_service, arango_service,
+        query_info, request, retrieval_service, graph_provider,
         reranker_service, config_service, logger, yield_status=None
     )
 
@@ -479,12 +483,12 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
 
 
 
-@router.post("/chat/stream")
+@router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def askAIStream(
     request: Request,
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     reranker_service: RerankerService = Depends(get_reranker_service),
     config_service: ConfigurationService = Depends(get_config_service),
 ) -> StreamingResponse:
@@ -511,7 +515,6 @@ async def askAIStream(
                 is_multimodal_llm = config.get("isMultimodal")
                 context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
-                logger.info(f"Context length: {context_length}")
 
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
@@ -569,11 +572,11 @@ async def askAIStream(
 
                 yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
 
-                blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
+                blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
 
                 virtual_record_id_to_result = {}
                 flattened_results = await get_flattened_results(
-                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, virtual_to_record_map
+                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, virtual_to_record_map, graph_provider=graph_provider
                 )
 
                 # Re-rank results
@@ -595,7 +598,7 @@ async def askAIStream(
 
                 if send_user_info:
                     from app.utils.cache_helpers import get_cached_user_info
-                    user_info, org_info = await get_cached_user_info(arango_service, user_id, org_id)
+                    user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
 
                     if (org_info is not None and (
                         org_info.get("accountType") == AccountType.ENTERPRISE.value
@@ -621,7 +624,7 @@ async def askAIStream(
 
                 custom_system_prompt = ai_models_config.get("customSystemPrompt", "")
                 if custom_system_prompt:
-                    logger.info(f"Custom system prompt: {custom_system_prompt}")
+                    logger.debug(f"Custom system prompt: {custom_system_prompt}")
                     mode_config["system_prompt"] = custom_system_prompt
 
                 messages = [{"role": "system", "content": mode_config["system_prompt"]}]
@@ -643,13 +646,14 @@ async def askAIStream(
 
                 tool_runtime_kwargs = {
                     "blob_store": blob_store,
-                    "arango_service": arango_service,
+                    "graph_provider": graph_provider,
                     "org_id": org_id,
                 }
 
                 all_queries = all_queries
 
             except HTTPException as e:
+                logger.error(f"HTTPException: {str(e)}", exc_info=True)
                 result = e.detail
                 yield create_sse_event("error", {
                     "status": result.get("status", "error"),
@@ -657,6 +661,7 @@ async def askAIStream(
                 })
                 return
             except Exception as e:
+                logger.error(f"Exception: {str(e)}", exc_info=True)
                 yield create_sse_event("error", {"error": str(e)})
                 logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
                 return
@@ -706,13 +711,13 @@ async def askAIStream(
     )
 
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def askAI(
     request: Request,
     query_info: ChatQuery,
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     reranker_service: RerankerService = Depends(get_reranker_service),
     config_service: ConfigurationService = Depends(get_config_service),
 ) -> JSONResponse:
@@ -723,7 +728,7 @@ async def askAI(
 
         # Process query using shared logic
         llm, messages, tools, tool_runtime_kwargs, final_results, all_queries, virtual_record_id_to_result, blob_store, is_multimodal_llm = await process_chat_query(
-            query_info, request, retrieval_service, arango_service, reranker_service, config_service, logger
+            query_info, request, retrieval_service, graph_provider, reranker_service, config_service, logger
         )
 
         # Make async LLM call with tools

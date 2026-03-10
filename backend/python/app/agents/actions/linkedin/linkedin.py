@@ -2,17 +2,114 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Optional, Tuple
+from typing import Coroutine, List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.linkedin.linkedin import LinkedInClient
 from app.sources.external.linkedin.linkedin import LinkedInDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="get_userinfo",
+        description="Get LinkedIn user information",
+        parameters=[],
+        tags=["users", "info"]
+    ),
+    ToolDefinition(
+        name="create_post",
+        description="Create a LinkedIn post",
+        parameters=[
+            {"name": "text", "type": "string", "description": "Post text", "required": True}
+        ],
+        tags=["posts", "create"]
+    ),
+    ToolDefinition(
+        name="get_post",
+        description="Get post details",
+        parameters=[
+            {"name": "post_id", "type": "string", "description": "Post ID", "required": True}
+        ],
+        tags=["posts", "read"]
+    ),
+    ToolDefinition(
+        name="update_post",
+        description="Update a post",
+        parameters=[
+            {"name": "post_id", "type": "string", "description": "Post ID", "required": True},
+            {"name": "text", "type": "string", "description": "New post text", "required": True}
+        ],
+        tags=["posts", "update"]
+    ),
+    ToolDefinition(
+        name="delete_post",
+        description="Delete a post",
+        parameters=[
+            {"name": "post_id", "type": "string", "description": "Post ID", "required": True}
+        ],
+        tags=["posts", "delete"]
+    ),
+    ToolDefinition(
+        name="search_people",
+        description="Search for people on LinkedIn",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["search", "people"]
+    ),
+]
 
+
+# Register LinkedIn toolset
+@ToolsetBuilder("LinkedIn")\
+    .in_group("Social Media")\
+    .with_description("LinkedIn integration for posts and networking")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="LinkedIn",
+            authorize_url="https://www.linkedin.com/oauth/v2/authorization",
+            token_url="https://www.linkedin.com/oauth/v2/accessToken",
+            redirect_uri="toolsets/oauth/callback/linkedin",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "r_liteprofile",
+                    "r_emailaddress",
+                    "w_member_social"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("LinkedIn Developer Console"),
+                CommonFields.client_secret("LinkedIn Developer Console")
+            ],
+            icon_path="/assets/icons/connectors/linkedin.svg",
+            app_group="Social Media",
+            app_description="LinkedIn OAuth application for agent integration"
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("LinkedIn Access Token", "your-access-token")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/linkedin.svg"))\
+    .build_decorator()
 class LinkedIn:
     """LinkedIn tools exposed to agents using LinkedInDataSource.
 

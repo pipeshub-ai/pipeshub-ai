@@ -89,6 +89,7 @@ import {
 import { KnowledgeBaseAPI } from '../services/api';
 import DeleteRecordDialog from '../delete-record-dialog';
 import DynamicFilterSidebar, { AppliedFilters, AvailableFilters } from './dynamic-filter-sidebar';
+import { getReindexButtonText } from './buttons';
 import { ORIGIN } from '../constants/knowledge-search';
 import { getExtensionFromMimeType, getFileIcon, getFileIconColor } from '../utils/utils';
 
@@ -729,7 +730,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   // Action handlers
   const handleRetryIndexing = async (recordId: string) => {
     try {
-      const response = await KnowledgeBaseAPI.reindexRecord(recordId);
+      // All-records tree: depth 100 (include children)
+      const response = await KnowledgeBaseAPI.reindexRecord(recordId, false, 100);
       setSnackbar({
         open: true,
         message: response.success
@@ -795,7 +797,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       const { id, type } = forceReindexDialog;
       let response;
       if (type === 'record') {
-        response = await KnowledgeBaseAPI.reindexRecord(id, true);
+        // All-records tree: depth 100 for force reindex
+        response = await KnowledgeBaseAPI.reindexRecord(id, true, 100);
       } else {
         response = await KnowledgeBaseAPI.reindexRecordGroup(id, true);
       }
@@ -1066,6 +1069,10 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
             displayLabel = 'In Progress';
             color = theme.palette.info.main;
             break;
+          case 'PROCESSING':
+            displayLabel = 'PROCESSING';
+            color = theme.palette.info.main;
+            break;
           case 'FAILED':
             displayLabel = 'Failed';
             color = theme.palette.error.main;
@@ -1106,10 +1113,35 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
             displayLabel = status.replace(/_/g, ' ');
         }
 
+        displayLabel = displayLabel
+        .split(' ')
+        .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+        const isProcessing = status === 'PROCESSING';
+
         return (
-          <Typography variant="caption" sx={{ color, fontWeight: 500 }}>
-            {displayLabel}
-          </Typography>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 0.75,
+              mt: 2.4,
+            }}
+          >
+            {isProcessing && (
+              <CircularProgress
+                size={12}
+                thickness={4}
+                sx={{
+                  color: theme.palette.info.main,
+                }}
+              />
+            )}
+            <Typography variant="caption" sx={{ color, fontWeight: 500 }}>
+              {displayLabel}
+            </Typography>
+          </Box>
         );
       },
     },
@@ -1333,18 +1365,37 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
 
           const menuActions: ActionMenuItem[] = [];
 
-          // Only show Open action if node has children or is a record
-          if (node.hasChildren || node.nodeType === 'record') {
+          // For records: always show "View Record", and if has children, also show "Open"
+          if (node.nodeType === 'record') {
+            // Always show "View Record" option for records
             menuActions.push({
-              label: 'Open',
+              label: 'View Record',
               icon: eyeIcon,
               color: theme.palette.primary.main,
               onClick: () => {
-                if (node.hasChildren) {
+                onNavigateToRecord(node.id);
+              },
+            });
+
+            // If record has children, also show "Open" option to navigate into it
+            if (node.hasChildren) {
+              menuActions.push({
+                label: 'Open',
+                icon: folderOpenIcon,
+                color: theme.palette.primary.main,
+                onClick: () => {
                   handleRowClick(node);
-                } else {
-                  onNavigateToRecord(node.id);
-                }
+                },
+              });
+            }
+          } else if (node.hasChildren) {
+            // For non-records with children, show "Open" option
+            menuActions.push({
+              label: 'Open',
+              icon: folderOpenIcon,
+              color: theme.palette.primary.main,
+              onClick: () => {
+                handleRowClick(node);
               },
             });
           }
@@ -1365,35 +1416,39 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
 
           // Add reindex options
           if (node.nodeType === 'record') {
-            // Force reindex for completed records only
+            // Force reindexing for completed records only
             if (node.indexingStatus === 'COMPLETED') {
               menuActions.push({
-                label: 'Force Reindex',
+                label: getReindexButtonText('COMPLETED'),
                 icon: refreshIcon,
                 color: theme.palette.info.main,
                 onClick: () =>
                   setForceReindexDialog({ open: true, id: node.id, name: node.name, type: 'record' }),
               });
             }
-            // For records
-            if (node.indexingStatus === 'FAILED' || node.indexingStatus === 'NOT_STARTED' || node.indexingStatus === 'PAUSED' || node.indexingStatus === 'QUEUED' || node.indexingStatus === 'AUTO_INDEX_OFF') {
+            // Start indexing / Retry indexing for non-completed records
+            if (['FAILED', 'NOT_STARTED', 'PAUSED', 'QUEUED', 'AUTO_INDEX_OFF', 'EMPTY', 'ENABLE_MULTIMODAL_MODELS', 'CONNECTOR_DISABLED'].includes(node.indexingStatus || '')) {
               menuActions.push({
-                label: 'Retry Indexing',
+                label: getReindexButtonText(node.indexingStatus ?? ''),
                 icon: refreshIcon,
                 color: theme.palette.warning.main,
                 onClick: () => handleRetryIndexing(node.id),
               });
             }
-          } 
-          else if (node.nodeType === 'recordGroup') {
-            // For recordGroups (with depth: 100, uses reindexRecordGroup API)
-              menuActions.push({
-                label: 'Manual index',
-                icon: refreshIcon,
-                color: theme.palette.warning.main,
-                onClick: () => handleRetryIndexingRecordGroup(node),
-              });
-            
+          } else if (node.nodeType === 'folder') {
+            menuActions.push({
+              label: 'Start indexing',
+              icon: refreshIcon,
+              color: theme.palette.warning.main,
+              onClick: () => handleRetryIndexingFolder(node.id),
+            });
+          } else if (node.nodeType === 'recordGroup') {
+            menuActions.push({
+              label: 'Start indexing',
+              icon: refreshIcon,
+              color: theme.palette.warning.main,
+              onClick: () => handleRetryIndexingRecordGroup(node),
+            });
           }
 
           // Add delete option for records with permissions

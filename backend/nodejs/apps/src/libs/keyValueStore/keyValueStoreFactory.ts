@@ -9,6 +9,7 @@ import { StoreType } from './constants/KeyValueStoreType';
 import { ConfigurationManagerStoreConfig } from '../../modules/configuration_manager/config/config';
 import { DeserializationFailedError, SerializationFailedError } from '../errors/serialization.error';
 import { BadRequestError } from '../errors/http.errors';
+import { Logger } from '../services/logger.service';
 
 /**
  * Type guard to check if config is an etcd configuration.
@@ -31,12 +32,17 @@ function isRedisConfig(
 }
 
 export class KeyValueStoreFactory {
+  private static logger = Logger.getInstance({
+    service: 'KeyValueStoreFactory',
+  });
+
   static createStore<T>(
     type: StoreType,
     config: ConfigurationManagerStoreConfig | RedisStoreConfig,
     serializer?: (value: T) => Buffer,
     deserializer?: (buffer: Buffer) => T,
   ): DistributedKeyValueStore<T> {
+    this.logger.info('Creating key-value store', { storeType: type });
 
     switch (type) {
       case StoreType.Etcd3:
@@ -49,12 +55,14 @@ export class KeyValueStoreFactory {
         if (!isEtcdConfig(config)) {
           throw new BadRequestError('Invalid config for Etcd3 store: expected ConfigurationManagerStoreConfig with dialTimeout');
         }
+        this.logger.debug('Creating Etcd3 distributed key-value store');
         return new Etcd3DistributedKeyValueStore<T>(
           config,
           serializer,
           deserializer,
         );
       case StoreType.InMemory:
+        this.logger.debug('Creating in-memory key-value store');
         return new InMemoryKeyValueStore<T>();
       case StoreType.Redis:
         if (!serializer) {
@@ -66,12 +74,14 @@ export class KeyValueStoreFactory {
         if (!isRedisConfig(config)) {
           throw new BadRequestError('Invalid config for Redis store: expected RedisStoreConfig');
         }
+        this.logger.debug('Creating Redis distributed key-value store');
         return new RedisDistributedKeyValueStore<T>(
           config,
           serializer,
           deserializer,
         );
       default:
+        this.logger.error('Unsupported store type requested', { storeType: type });
         throw new BadRequestError(`Unsupported store type: ${type}`);
     }
   }

@@ -4,8 +4,6 @@ import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
 import { RecordRelationService } from '../services/kb.relation.service';
-import { IRecordDocument } from '../types/record';
-import { IFileRecordDocument } from '../types/file_record';
 import {
   BadRequestError,
   ForbiddenError,
@@ -14,9 +12,14 @@ import {
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
-  saveFileToStorageAndGetDocumentId,
   uploadNextVersionToStorage,
+  createPlaceholderDocument,
+  processUploadsInBackground,
+  FileUploadMetadata,
+  PlaceholderResultWithMetadata,
 } from '../utils/utils';
+import { IRecordDocument } from '../types/record';
+import { IFileRecordDocument } from '../types/file_record';
 import {
   INDEXING_STATUS,
   ORIGIN_TYPE,
@@ -32,6 +35,7 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
+import { NotificationService } from '../../notification/service/notification.service';
 import {
   safeParsePagination,
 } from '../../../utils/safe-integer';
@@ -103,7 +107,7 @@ export const getKnowledgeHubNodes =
       }
 
       const { parentType, parentId } = req.params;
-      let url = `${appConfig.connectorBackend}/api/v2/knowledge-hub/nodes`;
+      let url = `${appConfig.connectorBackend}/api/v1/knowledge-hub/nodes`;
 
       if (parentType && parentId) {
         url += `/${parentType}/${parentId}`;
@@ -695,9 +699,9 @@ export const deleteFolder =
  */
 export const uploadRecordsToKB =
   (
-    recordRelationService: RecordRelationService,
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
+    notificationService?: NotificationService,
   ) =>
   async (
     req: AuthenticatedUserRequest,
@@ -730,7 +734,15 @@ export const uploadRecordsToKB =
       });
 
       const currentTime = Date.now();
-      const processedFiles = [];
+
+      // STEP 1: Create all placeholder documents first (fast operation)
+      // Track successful and failed files separately
+      const placeholderResults: PlaceholderResultWithMetadata[] = [];
+      const failedFiles: Array<{
+        fileName: string;
+        filePath: string;
+        error: string;
+      }> = [];
 
       for (const file of fileBuffers) {
         const { originalname, mimetype, size, filePath, lastModified } = file;
@@ -757,13 +769,137 @@ export const uploadRecordsToKB =
             ? lastModified
             : currentTime;
 
+        // Create file metadata structure
+        const metadata: FileUploadMetadata = {
+          file,
+          filePath,
+          fileName,
+          extension,
+          correctMimeType,
+          key,
+          webUrl,
+          validLastModified,
+          size,
+        };
+
+        // Create placeholder document (fast, doesn't upload file yet)
+        // Wrap in try-catch to handle individual file failures
+        try {
+          const placeholderResult = await createPlaceholderDocument(
+            req,
+            file,
+            fileName,
+            isVersioned,
+            keyValueStoreService,
+            appConfig.storage,
+          );
+
+          placeholderResults.push({
+            placeholderResult,
+            metadata,
+          });
+        } catch (placeholderError: any) {
+          // Track failed file but continue processing others
+          // Handle different error response structures
+          const errorMessage = placeholderError?.response?.data?.error?.message ||
+                              placeholderError?.response?.data?.message || 
+                              placeholderError?.message || 
+                              'Failed to create placeholder document';
+          
+          failedFiles.push({
+            fileName,
+            filePath,
+            error: errorMessage,
+          });
+
+          logger.error('Failed to create placeholder document for file', {
+            fileName,
+            filePath,
+            error: errorMessage,
+            stack: placeholderError?.stack,
+          });
+          // Continue with next file
+        }
+      }
+
+      logger.info('✅ Placeholder creation completed', {
+        totalFiles: fileBuffers.length,
+        successful: placeholderResults.length,
+        failed: failedFiles.length,
+        uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
+      });
+
+      // Send failed files notification immediately if any failed during placeholder creation
+      // Event-driven: Send immediately when failures are detected
+      // NotificationService handles connection state and queuing automatically
+      if (failedFiles.length > 0 && notificationService) {
+        try {
+          const failedFilesWithIds = failedFiles.map((ff) => ({
+            recordId: uuidv4(), // Generate a temporary ID for tracking
+            fileName: ff.fileName,
+            filePath: ff.filePath,
+            error: ff.error,
+          }));
+
+          const eventData = {
+            failedFiles: failedFilesWithIds,
+            orgId,
+            kbId,
+            folderId: undefined,
+            totalFailed: failedFiles.length,
+            timestamp: Date.now(),
+          };
+
+          // Send immediately - service handles connection state and queuing
+          const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
+
+          logger.info('Notification sent for failed files (placeholder creation)', {
+            userId,
+            totalFailed: failedFiles.length,
+            kbId,
+            sentImmediately,
+          });
+        } catch (socketError: unknown) {
+          const error = socketError instanceof Error ? socketError : new Error(String(socketError));
+          logger.error('Failed to send notification for failed files (placeholder creation)', {
+            error: error.message,
+            stack: error.stack,
+            userId,
+            kbId,
+          });
+          // Don't fail the upload if notification fails - this is a non-critical notification
+        }
+      }
+
+      // If no files succeeded, return early with error info
+      if (placeholderResults.length === 0) {
+        res.status(200).json({
+          message: 'All files failed to upload',
+          totalFiles: fileBuffers.length,
+          status: 'failed',
+          records: [],
+          failedFiles: failedFiles.map((ff) => ({
+            fileName: ff.fileName,
+            filePath: ff.filePath,
+            error: ff.error,
+          })),
+        });
+        return;
+      }
+
+      // STEP 2: Build placeholder records for optimistic UI update (Google Drive-like experience)
+      const placeholderRecords = placeholderResults.map((result) => {
+        const { placeholderResult, metadata } = result;
+        const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
+
+        // Create record structure matching the format expected by frontend
         // Create record structure
         const connectorId = `knowledgeBase_${orgId}`;
         const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
-          recordName: fileName,
-          externalRecordId: '',
+          recordName: placeholderResult.documentName,
+          externalRecordId: placeholderResult.documentId,
           recordType: RECORD_TYPE.FILE,
           origin: ORIGIN_TYPE.UPLOAD,
           createdAtTimestamp: currentTime,
@@ -783,7 +919,7 @@ export const uploadRecordsToKB =
         const fileRecord: IFileRecordDocument = {
           _key: key,
           orgId: orgId,
-          name: fileName,
+          name: placeholderResult.documentName,
           isFile: true,
           extension: extension,
           mimeType: correctMimeType,
@@ -791,57 +927,76 @@ export const uploadRecordsToKB =
           webUrl: webUrl,
         };
 
-        // Save file to storage and get document ID
-        const { documentId, documentName } =
-          await saveFileToStorageAndGetDocumentId(
-            req,
-            file,
-            fileName,
-            isVersioned,
-            record,
-            fileRecord,
-            keyValueStoreService,
-            appConfig.storage,
-            recordRelationService,
-          );
-
-        // Update record and fileRecord with storage info
-        record.recordName = documentName;
-        record.externalRecordId = documentId;
-        fileRecord.name = documentName;
-
-        processedFiles.push({
+        return {
           record,
           fileRecord,
-          filePath,
+          filePath: metadata.filePath,
           lastModified: validLastModified,
-        });
-      }
-
-      logger.info('Files processed, sending to Python service', {
-        count: processedFiles.length,
+        };
       });
 
-      const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
-        HttpMethod.POST,
-        req.headers as Record<string, string>,
-        {
-          files: processedFiles.map((pf) => ({
-            record: pf.record,
-            fileRecord: pf.fileRecord,
-            filePath: pf.filePath,
-            lastModified: pf.lastModified,
-          })),
-        },
-      );
+      // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
+      // Frontend can display these records immediately with a "processing" status
+      res.status(200).json({
+        message: failedFiles.length > 0 
+          ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
+          : 'Upload initiated successfully',
+        totalFiles: fileBuffers.length,
+        successfulFiles: placeholderResults.length,
+        failedFiles: failedFiles.length,
+        status: 'processing',
+        failedFilesDetails: failedFiles.map((ff) => ({
+          fileName: ff.fileName,
+          filePath: ff.filePath,
+          error: ff.error,
+        })),
+        records: placeholderRecords.map((pr) => ({
+          _key: pr.record._key,
+          recordName: pr.record.recordName,
+          externalRecordId: pr.record.externalRecordId,
+          recordType: pr.record.recordType,
+          origin: pr.record.origin,
+          indexingStatus: 'NOT_STARTED', // Special status to indicate background not started
+          createdAtTimestamp: pr.record.createdAtTimestamp,
+          updatedAtTimestamp: pr.record.updatedAtTimestamp,
+          sourceCreatedAtTimestamp: pr.record.sourceCreatedAtTimestamp,
+          sourceLastModifiedTimestamp: pr.record.sourceLastModifiedTimestamp,
+          version: pr.record.version,
+          webUrl: pr.record.webUrl,
+          mimeType: pr.record.mimeType,
+          fileRecord: {
+            _key: pr.fileRecord._key,
+            name: pr.fileRecord.name,
+            extension: pr.fileRecord.extension,
+            mimeType: pr.fileRecord.mimeType,
+            sizeInBytes: pr.fileRecord.sizeInBytes,
+            webUrl: pr.fileRecord.webUrl,
+          },
+        })),
+      });
 
-      handleConnectorResponse(
-        response,
-        res,
-        'Upload not found',
-        'Failed to process upload',
-      );
+      // STEP 4: Process uploads and call Python service in background (non-blocking)
+      // This runs after the response is sent - uploads sequentially, then calls Python
+      // For local storage, files are already uploaded, so this will just call Python API
+      processUploadsInBackground(
+        placeholderResults,
+        orgId,
+        userId,
+        currentTime,
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
+        req.headers as Record<string, string>,
+        logger,
+        notificationService,
+        kbId,
+        undefined, // folderId is undefined for KB root uploads
+      ).catch((error) => {
+        logger.error('Background processing error (non-fatal)', {
+          error: error.message,
+          stack: error.stack,
+          kbId,
+          userId,
+        });
+      });
     } catch (error: any) {
       logger.error('Record upload failed', {
         error: error.message,
@@ -860,9 +1015,9 @@ export const uploadRecordsToKB =
  */
 export const uploadRecordsToFolder =
   (
-    recordRelationService: RecordRelationService,
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
+    notificationService?: NotificationService,
   ) =>
   async (
     req: AuthenticatedUserRequest,
@@ -898,7 +1053,15 @@ export const uploadRecordsToFolder =
       });
 
       const currentTime = Date.now();
-      const processedFiles = [];
+
+      // STEP 1: Create all placeholder documents first (fast operation)
+      // Track successful and failed files separately
+      const placeholderResults: PlaceholderResultWithMetadata[] = [];
+      const failedFiles: Array<{
+        fileName: string;
+        filePath: string;
+        error: string;
+      }> = [];
 
       for (const file of fileBuffers) {
         const { originalname, mimetype, size, filePath, lastModified } = file;
@@ -925,13 +1088,139 @@ export const uploadRecordsToFolder =
             ? lastModified
             : currentTime;
 
+        // Create file metadata structure
+        const metadata: FileUploadMetadata = {
+          file,
+          filePath,
+          fileName,
+          extension,
+          correctMimeType,
+          key,
+          webUrl,
+          validLastModified,
+          size,
+        };
+
+        // Create placeholder document (fast, doesn't upload file yet)
+        // Wrap in try-catch to handle individual file failures
+        try {
+          const placeholderResult = await createPlaceholderDocument(
+            req,
+            file,
+            fileName,
+            isVersioned,
+            keyValueStoreService,
+            appConfig.storage,
+          );
+
+          placeholderResults.push({
+            placeholderResult,
+            metadata,
+          });
+        } catch (placeholderError: any) {
+          // Track failed file but continue processing others
+          // Handle different error response structures
+          const errorMessage = placeholderError?.response?.data?.error?.message ||
+                              placeholderError?.response?.data?.message || 
+                              placeholderError?.message || 
+                              'Failed to create placeholder document';
+          
+          failedFiles.push({
+            fileName,
+            filePath,
+            error: errorMessage,
+          });
+
+          logger.error('Failed to create placeholder document for file', {
+            fileName,
+            filePath,
+            error: errorMessage,
+            stack: placeholderError?.stack,
+          });
+          // Continue with next file
+        }
+      }
+
+      logger.info('✅ Placeholder creation completed', {
+        totalFiles: fileBuffers.length,
+        successful: placeholderResults.length,
+        failed: failedFiles.length,
+        uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
+      });
+
+      // Send failed files notification immediately if any failed during placeholder creation
+      // Event-driven: Send immediately when failures are detected
+      // NotificationService handles connection state and queuing automatically
+      if (failedFiles.length > 0 && notificationService) {
+        try {
+          const failedFilesWithIds = failedFiles.map((ff) => ({
+            recordId: uuidv4(), // Generate a temporary ID for tracking
+            fileName: ff.fileName,
+            filePath: ff.filePath,
+            error: ff.error,
+          }));
+
+          const eventData = {
+            failedFiles: failedFilesWithIds,
+            orgId,
+            kbId,
+            folderId,
+            totalFailed: failedFiles.length,
+            timestamp: Date.now(),
+          };
+
+          // Send immediately - service handles connection state and queuing
+          const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
+
+          logger.info('Notification sent for failed files (placeholder creation)', {
+            userId,
+            totalFailed: failedFiles.length,
+            kbId,
+            folderId,
+            sentImmediately,
+          });
+        } catch (socketError: unknown) {
+          const error = socketError instanceof Error ? socketError : new Error(String(socketError));
+          logger.error('Failed to send notification for failed files (placeholder creation)', {
+            error: error.message,
+            stack: error.stack,
+            userId,
+            kbId,
+            folderId,
+          });
+          // Don't fail the upload if notification fails - this is a non-critical notification
+        }
+      }
+
+      // If no files succeeded, return early with error info
+      if (placeholderResults.length === 0) {
+        res.status(200).json({
+          message: 'All files failed to upload',
+          totalFiles: fileBuffers.length,
+          status: 'failed',
+          records: [],
+          failedFiles: failedFiles.map((ff) => ({
+            fileName: ff.fileName,
+            filePath: ff.filePath,
+            error: ff.error,
+          })),
+        });
+        return;
+      }
+
+      // STEP 2: Build placeholder records for optimistic UI update (Google Drive-like experience)
+      const placeholderRecords = placeholderResults.map((result) => {
+        const { placeholderResult, metadata } = result;
+        const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
+
+        // Create record structure matching the format expected by frontend
         // Create record structure
         const connectorId = `knowledgeBase_${orgId}`;
         const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
-          recordName: fileName,
-          externalRecordId: '',
+          recordName: placeholderResult.documentName,
+          externalRecordId: placeholderResult.documentId,
           recordType: RECORD_TYPE.FILE,
           origin: ORIGIN_TYPE.UPLOAD,
           createdAtTimestamp: currentTime,
@@ -950,7 +1239,7 @@ export const uploadRecordsToFolder =
         const fileRecord: IFileRecordDocument = {
           _key: key,
           orgId: orgId,
-          name: fileName,
+          name: placeholderResult.documentName,
           isFile: true,
           extension: extension,
           mimeType: correctMimeType,
@@ -958,60 +1247,79 @@ export const uploadRecordsToFolder =
           webUrl: webUrl,
         };
 
-        // Save file to storage and get document ID
-        const { documentId, documentName } =
-          await saveFileToStorageAndGetDocumentId(
-            req,
-            file,
-            fileName,
-            isVersioned,
-            record,
-            fileRecord,
-            keyValueStoreService,
-            appConfig.storage,
-            recordRelationService,
-          );
-
-        // Update record and fileRecord with storage info
-        record.recordName = documentName;
-        record.externalRecordId = documentId;
-        fileRecord.name = documentName;
-
-        processedFiles.push({
+        return {
           record,
           fileRecord,
-          filePath,
+          filePath: metadata.filePath,
           lastModified: validLastModified,
-        });
-      }
-
-      logger.info('Files processed, sending to Python service for folder upload', {
-        count: processedFiles.length,
-        folderId,
+        };
       });
 
-      const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
-        HttpMethod.POST,
-        req.headers as Record<string, string>,
-        {
-          files: processedFiles.map((pf) => ({
-            record: pf.record,
-            fileRecord: pf.fileRecord,
-            filePath: pf.filePath,
-            lastModified: pf.lastModified,
-          })),
-        },
-      );
+      // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
+      // Frontend can display these records immediately with a "processing" status
+      res.status(200).json({
+        message: failedFiles.length > 0 
+          ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
+          : 'Upload initiated successfully',
+        totalFiles: fileBuffers.length,
+        successfulFiles: placeholderResults.length,
+        failedFiles: failedFiles.length,
+        status: 'processing',
+        failedFilesDetails: failedFiles.map((ff) => ({
+          fileName: ff.fileName,
+          filePath: ff.filePath,
+          error: ff.error,
+        })),
+        records: placeholderRecords.map((pr) => ({
+          _key: pr.record._key,
+          recordName: pr.record.recordName,
+          externalRecordId: pr.record.externalRecordId,
+          recordType: pr.record.recordType,
+          origin: pr.record.origin,
+          indexingStatus: 'NOT_STARTED', // Special status to indicate background not started
+          createdAtTimestamp: pr.record.createdAtTimestamp,
+          updatedAtTimestamp: pr.record.updatedAtTimestamp,
+          sourceCreatedAtTimestamp: pr.record.sourceCreatedAtTimestamp,
+          sourceLastModifiedTimestamp: pr.record.sourceLastModifiedTimestamp,
+          version: pr.record.version,
+          webUrl: pr.record.webUrl,
+          mimeType: pr.record.mimeType,
+          fileRecord: {
+            _key: pr.fileRecord._key,
+            name: pr.fileRecord.name,
+            extension: pr.fileRecord.extension,
+            mimeType: pr.fileRecord.mimeType,
+            sizeInBytes: pr.fileRecord.sizeInBytes,
+            webUrl: pr.fileRecord.webUrl,
+          },
+        })),
+      });
 
-      handleConnectorResponse(
-        response,
-        res,
-        'Uploading records to folder',
-        'Records not found',
-      );
+      // STEP 4: Process uploads and call Python service in background (non-blocking)
+      // This runs after the response is sent - uploads sequentially, then calls Python
+      // For local storage, files are already uploaded, so this will just call Python API
+      processUploadsInBackground(
+        placeholderResults,
+        orgId,
+        userId,
+        currentTime,
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
+        req.headers as Record<string, string>,
+        logger,
+        notificationService,
+        kbId,
+        folderId,
+      ).catch((error) => {
+        logger.error('Background processing error (non-fatal)', {
+          error: error.message,
+          stack: error.stack,
+          kbId,
+          folderId,
+          userId,
+        });
+      });
     } catch (error: any) {
-      logger.error('Folder record upload failed', {
+      logger.error('❌ Folder record upload failed', {
         error: error.message,
         userId: req.user?.userId,
         kbId: req.params.kbId,
@@ -2100,89 +2408,41 @@ export const createKBPermission =
 
       logger.info(
         `Creating ${role || 'team'} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
-        {
-          userIds:
-            userIds.length > 5
-              ? `${userIds.slice(0, 5).join(', ')} and ${userIds.length - 5} more`
-              : userIds.join(', '),
-          teamIds:
-            teamIds.length > 5
-              ? `${teamIds.slice(0, 5).join(', ')} and ${teamIds.length - 5} more`
-              : teamIds.join(', '),
-          role: role || 'N/A (team access)',
-        },
       );
 
-      try {
-        const payload: { userIds: string[]; teamIds: string[]; role?: string } = {
-          userIds: userIds,
-          teamIds: teamIds,
-        };
-        // Only include role if it's provided (for users)
-        if (role) {
-          payload.role = role;
-        }
-
-        const response = await executeConnectorCommand(
-          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
-          HttpMethod.POST,
-          req.headers as Record<string, string>,
-          payload,
-        );
-
-        if (response.statusCode !== 200) {
-          throw new InternalServerError('Failed to create permissions');
-        }
-
-        const permissionResult = response.data as any;
-
-        logger.info('Permissions created successfully', {
-          kbId,
-          grantedCount: permissionResult.grantedCount,
-          updatedCount: permissionResult.updatedCount,
-          role: role || 'N/A (team access)',
-        });
-
-        res.status(201).json({
-          kbId: kbId,
-          permissionResult,
-        });
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for permission creation', {
-          kbId,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-        });
-
-        // Handle different error types from Python service
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'Permission denied - only KB owners can grant permissions',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          const errorData = pythonServiceError.response?.data;
-          if (errorData?.reason?.includes('Users not found')) {
-            throw new NotFoundError(errorData.reason);
-          } else {
-            throw new NotFoundError('Knowledge base not found');
-          }
-        } else if (pythonServiceError.response?.status === 400) {
-          throw new BadRequestError(
-            pythonServiceError.response?.data?.reason ||
-              'Invalid permission data',
-          );
-        } else {
-          throw new InternalServerError(
-            `Failed to create permissions: ${pythonServiceError.message}`,
-          );
-        }
+      const payload: { userIds: string[]; teamIds: string[]; role?: string } = {
+        userIds: userIds,
+        teamIds: teamIds,
+      };
+      // Only include role if it's provided (for users)
+      if (role) {
+        payload.role = role;
       }
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        payload,
+      );
+
+      if (response.statusCode !== 200 && response.statusCode !== 201) {
+        throw handleBackendError(response, 'create permissions');
+      }
+
+      const permissionResult = response.data as any;
+      if (!permissionResult) {
+        throw new NotFoundError('Failed to create permissions');
+      }
+
+      res.status(201).json({
+        kbId: kbId,
+        permissionResult,
+      });
     } catch (error: any) {
-      logger.error('Error Creating permissions for knowledge base', {
+      logger.error('Error creating KB permissions', {
         error: error.message,
         kbId: req.params.kbId,
-        status: error.response?.status,
-        data: error.response?.data,
       });
       const handleError = handleBackendError(error, 'create permissions');
       next(handleError);
@@ -2229,72 +2489,33 @@ export const updateKBPermission =
         `Updating permission for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId} to ${role}`,
       );
 
-      try {
-        const response = await executeConnectorCommand(
-          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
-          HttpMethod.PUT,
-          req.headers as Record<string, string>,
-          {
-            userIds: userIds,
-            teamIds: teamIds,
-            role: role,
-          },
-        );
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+        HttpMethod.PUT,
+        req.headers as Record<string, string>,
+        {
+          userIds: userIds,
+          teamIds: teamIds,
+          role: role,
+        },
+      );
 
-        if (response.statusCode !== 200) {
-          throw new InternalServerError('Failed to update permission');
-        }
-
-        const updateResult = response.data as any;
-
-        logger.info('Permission updated successfully', {
-          kbId,
-          userIds: updateResult.userIds,
-          teamIds: updateResult.teamIds,
-          newRole: updateResult.newRole,
-        });
-
-        res.status(200).json({
-          kbId: kbId,
-          userIds: updateResult.userIds,
-          teamIds: updateResult.teamIds,
-          newRole: updateResult.newRole,
-        });
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for permission update', {
-          kbId,
-          userIds: req.body.userIds,
-          teamIds: req.body.teamIds,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-        });
-
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'Permission denied - only KB owners can update permissions',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          throw new NotFoundError(
-            'User permission not found on this knowledge base',
-          );
-        } else if (pythonServiceError.response?.status === 400) {
-          throw new BadRequestError(
-            pythonServiceError.response?.data?.reason ||
-              'Invalid permission update data',
-          );
-        } else {
-          throw new InternalServerError(
-            `Failed to update permission: ${pythonServiceError.message}`,
-          );
-        }
+      if (response.statusCode !== 200) {
+        throw handleBackendError(response, 'update permissions');
       }
+
+      const updateResult = response.data as any;
+
+      res.status(200).json({
+        kbId: kbId,
+        userIds: updateResult.userIds,
+        teamIds: updateResult.teamIds,
+        newRole: updateResult.newRole,
+      });
     } catch (error: any) {
       logger.error('Error updating KB permission', {
-        kbId: req.params.kbId,
-        userIds: req.body.userIds,
-        teamIds: req.body.teamIds,
         error: error.message,
-        requestId: req.context?.requestId,
+        kbId: req.params.kbId,
       });
       const handleError = handleBackendError(error, 'update permissions');
       next(handleError);
@@ -2323,70 +2544,31 @@ export const removeKBPermission =
         `Removing permission for ${userIds.length} users and ${teamIds.length} teams from KB ${kbId}`,
       );
 
-      try {
-        const response = await executeConnectorCommand(
-          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
-          HttpMethod.DELETE,
-          req.headers as Record<string, string>,
-          {
-            userIds: userIds,
-            teamIds: teamIds,
-          },
-        );
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+        HttpMethod.DELETE,
+        req.headers as Record<string, string>,
+        {
+          userIds: userIds,
+          teamIds: teamIds,
+        },
+      );
 
-        if (response.statusCode !== 200) {
-          throw new InternalServerError('Failed to remove permission');
-        }
-
-        const removeResult = response.data as any;
-
-        logger.info('Permission removed successfully', {
-          kbId,
-          userIds: removeResult.userIds,
-          teamIds: removeResult.teamIds,
-        });
-
-        res.status(200).json({
-          kbId: kbId,
-          userIds: removeResult.userIds,
-          teamIds: removeResult.teamIds,
-        });
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for permission removal', {
-          kbId,
-          userIds: req.body.userIds,
-          teamIds: req.body.teamIds,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-        });
-
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'Permission denied - only KB owners can remove permissions',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          throw new NotFoundError(
-            'User permission not found on this knowledge base',
-          );
-        } else if (pythonServiceError.response?.status === 400) {
-          throw new BadRequestError(
-            pythonServiceError.response?.data?.reason ||
-              'Cannot remove permission',
-          );
-        } else {
-          throw new InternalServerError(
-            `Failed to remove permission: ${pythonServiceError.message}`,
-          );
-        }
+      if (response.statusCode !== 200) {
+        throw handleBackendError(response, 'remove permissions');
       }
+
+      const removeResult = response.data as any;
+
+      res.status(200).json({
+        kbId: kbId,
+        userIds: removeResult.userIds,
+        teamIds: removeResult.teamIds,
+      });
     } catch (error: any) {
       logger.error('Error removing KB permission', {
-        kbId: req.params.kbId,
-        userIds: req.body.userIds,
-        teamIds: req.body.teamIds,
         error: error.message,
-        requesterId: req.user?.userId,
-        requestId: req.context?.requestId,
+        kbId: req.params.kbId,
       });
       const handleError = handleBackendError(error, 'removing KB permissions');
       next(handleError);
@@ -2408,56 +2590,30 @@ export const listKBPermissions =
 
       logger.info(`Listing permissions for KB ${kbId}`);
 
-      try {
-        const response = await executeConnectorCommand(
-          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
-          HttpMethod.GET,
-          req.headers as Record<string, string>,
-        );
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
 
-        if (response.statusCode !== 200) {
-          throw new InternalServerError('Failed to list permissions');
-        }
-
-        const listResult = response.data as any;
-
-        logger.info('Permissions listed successfully', {
-          kbId,
-          totalCount: listResult.totalCount,
-        });
-
-        res.status(200).json({
-          kbId: kbId,
-          permissions: listResult.permissions,
-          totalCount: listResult.totalCount,
-        });
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for permission listing', {
-          kbId,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-        });
-
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'Permission denied - you do not have access to this knowledge base',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          throw new NotFoundError('Knowledge base not found');
-        } else {
-          throw new InternalServerError(
-            `Failed to list permissions: ${pythonServiceError.message}`,
-          );
-        }
+      if (response.statusCode !== 200) {
+        throw handleBackendError(response, 'list permissions');
       }
+
+      const listResult = response.data as any;
+
+      res.status(200).json({
+        kbId: kbId,
+        permissions: listResult.permissions,
+        totalCount: listResult.totalCount,
+      });
     } catch (error: any) {
       logger.error('Error listing KB permissions', {
-        kbId: req.params.kbId,
         error: error.message,
-        requesterId: req.user?.userId,
-        requestId: req.context?.requestId,
+        kbId: req.params.kbId,
       });
-      next(error);
+      const handleError = handleBackendError(error, 'list permissions');
+      next(handleError);
     }
   };
 
@@ -2649,6 +2805,7 @@ export const reindexFailedRecords =
         orgId,
         app: normalizeAppName(app),
         connectorId,
+        statusFilters: req.body.statusFilters,
       };
 
       const reindexResponse =
@@ -2676,6 +2833,7 @@ export const resyncConnectorRecords =
       const orgId = req.user?.orgId;
       const connectorName = req.body.connectorName;
       const connectorId = req.body.connectorId;
+      const fullSync = req.body.fullSync || false;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
@@ -2691,6 +2849,7 @@ export const resyncConnectorRecords =
         orgId,
         connectorName: normalizeAppName(connectorName),
         connectorId,
+        fullSync,
       };
 
       const resyncConnectorResponse =

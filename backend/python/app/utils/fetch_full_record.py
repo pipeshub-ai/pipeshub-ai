@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
-
-from app.modules.transformers.blob_storage import BlobStorage
 
 
 class FetchFullRecordArgs(BaseModel):
@@ -33,29 +31,6 @@ class FetchBlockGroupArgs(BaseModel):
         default="Fetching block group for additional context",
         description="Why the block group is needed (explain the gap in the provided blocks)."
     )
-
-
-async def _try_blobstore_fetch(blob_store: BlobStorage, org_id: str, record_id: str) -> Optional[Dict[str, Any]]:
-    """
-    Try common BlobStorage paths. We don't know the exact method names in your code,
-    so attempt a few sensible options and return the first successful payload.
-    """
-    try:
-        rec = await blob_store.get_record_from_storage(org_id=org_id, virtual_record_id=record_id)
-        if rec:
-            return rec
-    except Exception:
-        pass
-
-async def _fetch_full_record_using_vrid(vrid: str, blob_store: BlobStorage,org_id: str) -> Dict[str, Any]:
-    """
-    Fetch complete record using virtual record id.
-    """
-    record = await _try_blobstore_fetch(blob_store, org_id, vrid)
-    if record:
-        return {"ok": True, "record": record}
-    else:
-        return {"ok": False, "error": f"Record with vrid '{vrid}' not found in blob store."}
 
 async def _fetch_multiple_records_impl(
     record_ids: List[str],

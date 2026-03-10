@@ -2764,9 +2764,8 @@ class JiraConnector(BaseConnector):
         is_epic = hierarchy_level == 1
         is_subtask = hierarchy_level == -1
 
-        # Build record name with issue type for better searchability
-
-        issue_name = issue_summary
+        # Build record name with issue key in square brackets at start for better searchability
+        issue_name = f"[{issue_key}] {issue_summary}" if issue_key else issue_summary
 
         # Add issue type to description for full searchability
         if issue_type and description_text:
@@ -4374,8 +4373,10 @@ class JiraConnector(BaseConnector):
                 if account_id and email:
                     user_by_account_id[account_id] = AppUser(
                         id="",
+                        app_name=Connectors.JIRA,
                         connector_id=self.connector_id,
                         email=email,
+                        full_name=user_obj.get("displayName") or email,
                         source_user_id=account_id
                     )
 

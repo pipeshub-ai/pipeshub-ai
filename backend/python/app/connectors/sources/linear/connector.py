@@ -1006,7 +1006,7 @@ class LinearConnector(BaseConnector):
                             issue_created_at = self._parse_linear_datetime(issue_data.get("createdAt", "")) or 0
                             issue_updated_at = self._parse_linear_datetime(issue_data.get("updatedAt", "")) or 0
 
-                            file_records = await self._extract_files_from_markdown(
+                            new_file_records, _ = await self._extract_files_from_markdown(
                                 markdown_text=issue_description,
                                 parent_external_id=issue_id,
                                 parent_node_id=ticket_record.id,
@@ -1018,7 +1018,7 @@ class LinearConnector(BaseConnector):
                                 parent_weburl=ticket_record.weburl,
                                 exclude_images=True
                             )
-                            batch_records.extend(file_records)
+                            batch_records.extend(new_file_records)
 
                         # Extract files from comment bodies and create FileRecords
                         comments_data = issue_data.get("comments", {}).get("nodes", [])
@@ -1035,7 +1035,7 @@ class LinearConnector(BaseConnector):
                                 comment_updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
                                 comment_url = comment_data.get("url", ticket_record.weburl)
 
-                                comment_file_records = await self._extract_files_from_markdown(
+                                new_comment_file_records, _ = await self._extract_files_from_markdown(
                                     markdown_text=comment_body,
                                     parent_external_id=issue_id,
                                     parent_node_id=ticket_record.id,
@@ -1048,7 +1048,7 @@ class LinearConnector(BaseConnector):
                                     exclude_images=True,
                                     indexing_filter_key=IndexingFilterKey.FILES
                                 )
-                                batch_records.extend(comment_file_records)
+                                batch_records.extend(new_comment_file_records)
 
                     except Exception as e:
                         issue_id = issue_data.get("id", "unknown")
@@ -1582,7 +1582,7 @@ class LinearConnector(BaseConnector):
                         project_content = full_project_data.get("content", "")
                         if project_content:
                             # Extract files from project content (excluding images)
-                            file_records = await self._extract_files_from_markdown(
+                            new_file_records, _ = await self._extract_files_from_markdown(
                                 markdown_text=project_content,
                                 parent_external_id=project_id,
                                 parent_node_id=project_record.id,
@@ -1596,7 +1596,7 @@ class LinearConnector(BaseConnector):
                                 indexing_filter_key=IndexingFilterKey.PROJECTS
                             )
                             # Add file records to batch
-                            batch_records.extend(file_records)
+                            batch_records.extend(new_file_records)
 
                         # Records inherit permissions from RecordGroup (team), so pass empty list
                         batch_records.append((project_record, []))
@@ -2033,8 +2033,8 @@ class LinearConnector(BaseConnector):
         if not content:
             return child_records
 
-        # Extract files from markdown and create FileRecords if they don't exist
-        file_records = await self._extract_files_from_markdown(
+        # Extract files from markdown - returns NEW files and EXISTING file children separately
+        new_file_records, existing_file_children = await self._extract_files_from_markdown(
             markdown_text=content,
             parent_external_id=parent_external_id,
             parent_node_id=parent_node_id,
@@ -2048,17 +2048,20 @@ class LinearConnector(BaseConnector):
             indexing_filter_key=IndexingFilterKey.FILES
         )
 
-        # Save FileRecords if any were created (new files added after sync)
-        if file_records:
-            await self.data_entities_processor.on_new_records(file_records)
+        # Save NEW FileRecords only (existing files are already in DB, don't need to save)
+        if new_file_records:
+            await self.data_entities_processor.on_new_records(new_file_records)
 
-        # Create ChildRecords for the files
-        for file_record, _ in file_records:
+        # Create ChildRecords for NEW files
+        for file_record, _ in new_file_records:
             child_records.append(ChildRecord(
                 child_type=ChildType.RECORD,
                 child_id=file_record.id,
                 child_name=file_record.record_name
             ))
+
+        # Add EXISTING file children (already created as ChildRecords in _extract_files_from_markdown)
+        child_records.extend(existing_file_children)
 
         return child_records
 
@@ -2104,8 +2107,8 @@ class LinearConnector(BaseConnector):
             comment_updated_at = self._parse_linear_datetime(comment_data.get("updatedAt", "")) or 0
             comment_url = comment_data.get("url", issue_weburl)
 
-            # Extract files from comment body and create FileRecords if they don't exist
-            file_records = await self._extract_files_from_markdown(
+            # Extract files from comment body - returns NEW files and EXISTING file children separately
+            new_file_records, existing_file_children = await self._extract_files_from_markdown(
                 markdown_text=comment_body,
                 parent_external_id=issue_id,
                 parent_node_id=issue_node_id,
@@ -2119,18 +2122,21 @@ class LinearConnector(BaseConnector):
                 indexing_filter_key=IndexingFilterKey.FILES
             )
 
-            # Save FileRecords if any were created (new files added after sync)
-            if file_records:
-                await self.data_entities_processor.on_new_records(file_records)
+            # Save NEW FileRecords only (existing files are already in DB, don't need to save)
+            if new_file_records:
+                await self.data_entities_processor.on_new_records(new_file_records)
 
-            # Create ChildRecords for the files
+            # Create ChildRecords for NEW files
             child_records: List[ChildRecord] = []
-            for file_record, _ in file_records:
+            for file_record, _ in new_file_records:
                 child_records.append(ChildRecord(
                     child_type=ChildType.RECORD,
                     child_id=file_record.id,
                     child_name=file_record.record_name
                 ))
+
+            # Add EXISTING file children (already created as ChildRecords in _extract_files_from_markdown)
+            child_records.extend(existing_file_children)
 
             if child_records:
                 comment_file_children_map[comment_id] = child_records
@@ -2150,7 +2156,7 @@ class LinearConnector(BaseConnector):
         parent_weburl: Optional[str] = None,
         exclude_images: bool = False,
         indexing_filter_key: Optional[IndexingFilterKey] = IndexingFilterKey.FILES
-    ) -> List[Tuple[Record, List[Permission]]]:
+    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[ChildRecord]]:
         """
         Extract files from markdown text and create FileRecords.
 
@@ -2168,18 +2174,21 @@ class LinearConnector(BaseConnector):
             indexing_filter_key: Indexing filter key to use (defaults to FILES)
 
         Returns:
-            List of (FileRecord, permissions) tuples
+            Tuple of:
+            - List of (FileRecord, permissions) tuples for NEW files only (safe for on_new_records)
+            - List of ChildRecord objects for EXISTING files (for children_records during streaming)
         """
         file_records: List[Tuple[Record, List[Permission]]] = []
+        existing_file_children: List[ChildRecord] = []
 
         if not markdown_text:
-            return file_records
+            return file_records, existing_file_children
 
         # Extract file URLs from markdown (excluding images if requested)
         file_urls = self._extract_file_urls_from_markdown(markdown_text, exclude_images=exclude_images)
 
         if not file_urls:
-            return file_records
+            return file_records, existing_file_children
 
         for file_info in file_urls:
             try:
@@ -2193,11 +2202,17 @@ class LinearConnector(BaseConnector):
                     external_id=file_url
                 )
 
-                # If file already exists, reuse it (files in Linear markdown never change, only added/deleted)
+                # If file already exists, add to children_records (for streaming)
+                # BUT don't return it in file_records (to avoid breaking on_new_records with base Record)
                 if existing_file and existing_file.record_type == RecordType.FILE:
-                    # Files inherit permissions from parent, so pass empty list
-                    file_records.append((existing_file, []))
-                    continue
+                    # Create ChildRecord for existing file (needed for BlockGroup children_records)
+                    # Works for both typed FileRecord and base Record
+                    existing_file_children.append(ChildRecord(
+                        child_type=ChildType.RECORD,
+                        child_id=existing_file.id,
+                        child_name=existing_file.record_name or filename
+                    ))
+                    continue  # Skip creating new record
 
                 # File doesn't exist, create new FileRecord
                 file_record = await self._transform_file_url_to_file_record(
@@ -2225,7 +2240,7 @@ class LinearConnector(BaseConnector):
                 self.logger.error(f"❌ Error processing file {file_info.get('url', 'unknown')}: {e}", exc_info=True)
                 continue
 
-        return file_records
+        return file_records, existing_file_children
 
     def _extract_file_urls_from_markdown(self, markdown_text: str, exclude_images: bool = False) -> List[Dict[str, str]]:
         """

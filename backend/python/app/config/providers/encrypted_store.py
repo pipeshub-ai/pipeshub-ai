@@ -2,7 +2,8 @@ import asyncio
 import hashlib
 import json
 import os
-from typing import Callable, Dict, Generic, List, Optional, TypeVar, Union
+from datetime import datetime
+from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar, Union
 
 import dotenv  # type: ignore
 
@@ -14,7 +15,18 @@ from app.utils.encryption.encryption_service import EncryptionService
 
 dotenv.load_dotenv()
 
+# Constants
+ENCRYPTED_KEY_PARTS_COUNT = 2  # Number of colons in encrypted format: "iv:ciphertext:authTag"
+
 T = TypeVar("T")
+
+
+class _DatetimeSafeEncoder(json.JSONEncoder):
+    """JSON encoder that safely handles datetime objects by converting them to ISO format strings."""
+    def default(self, obj: Any) -> Any:  # noqa: ANN401
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 
 class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
@@ -175,7 +187,8 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 return False  # Key was not created (already exists)
 
             # Convert value to JSON string
-            value_json = json.dumps(value)
+            # Use datetime-safe encoder to handle any datetime objects that may have leaked into the config
+            value_json = json.dumps(value, cls=_DatetimeSafeEncoder)
 
             EXCLUDED_KEYS = [
                 config_node_constants.ENDPOINTS.value,
@@ -207,6 +220,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                         stored_value = json.loads(decrypted_value)
                     else:
                         stored_value = encrypted_stored_value
+                        stored_value = json.loads(stored_value) if isinstance(stored_value, str) else stored_value
 
                     if stored_value != value:
                         self.logger.warning("Verification failed for key: %s", key)
@@ -286,7 +300,66 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         return await self.store.watch_key(key, callback, error_callback)
 
     async def list_keys_in_directory(self, directory: str) -> List[str]:
-        return await self.store.list_keys_in_directory(directory)
+        """
+        List all keys in a directory, decrypting encrypted keys.
+
+        Args:
+            directory: Directory path to filter keys. If empty or "/", returns all keys.
+                      Otherwise, returns keys starting with this path.
+
+        Returns:
+            List of decrypted keys matching the directory prefix.
+        """
+        try:
+            # Get all keys from etcd (they are stored encrypted)
+            encrypted_keys = await self.store.get_all_keys()
+
+            if not encrypted_keys:
+                return []
+
+            # Normalize directory prefix for matching
+            directory_prefix = directory.rstrip("/") if directory and directory != "/" else ""
+
+            UNENCRYPTED_PREFIXES = [
+                config_node_constants.ENDPOINTS.value,
+                config_node_constants.STORAGE.value,
+                config_node_constants.MIGRATIONS.value,
+            ]
+
+            decrypted_keys = []
+            for encrypted_key in encrypted_keys:
+                try:
+                    # Check if key is unencrypted (excluded from encryption)
+                    is_unencrypted = any(encrypted_key.startswith(prefix) for prefix in UNENCRYPTED_PREFIXES)
+
+                    if is_unencrypted:
+                        decrypted_key = encrypted_key
+                    else:
+                        # Try to decrypt the key
+                        # Encrypted format: "iv:ciphertext:authTag" (3 parts)
+                        if encrypted_key.count(":") == ENCRYPTED_KEY_PARTS_COUNT:
+                            try:
+                                decrypted_key = self.encryption_service.decrypt(encrypted_key)
+                            except Exception:
+                                # Decryption failed, use as-is (might be unencrypted)
+                                decrypted_key = encrypted_key
+                        else:
+                            # Not in encrypted format, use as-is
+                            decrypted_key = encrypted_key
+
+                    # Filter by directory prefix if provided
+                    if not directory_prefix or decrypted_key.startswith(directory_prefix):
+                        decrypted_keys.append(decrypted_key)
+
+                except Exception as e:
+                    self.logger.debug(f"Skipping key due to error: {e}")
+                    continue
+
+            return decrypted_keys
+
+        except Exception as e:
+            self.logger.error(f"Failed to list keys in directory {directory}: {e}")
+            raise
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:
         return await self.store.cancel_watch(key, watch_id)

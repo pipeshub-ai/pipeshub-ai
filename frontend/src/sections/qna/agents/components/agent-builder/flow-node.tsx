@@ -14,32 +14,46 @@ import {
   DialogContent,
   DialogActions,
   Button,
+  Switch,
+  FormControlLabel,
+  Tooltip,
 } from '@mui/material';
 import { Icon } from '@iconify/react';
 import brainIcon from '@iconify-icons/mdi/brain';
 import toolIcon from '@iconify-icons/mdi/tools';
-import databaseIcon from '@iconify-icons/mdi/database';
+import collectionIcon from '@iconify-icons/mdi/folder-multiple-outline';
 import closeIcon from '@iconify-icons/eva/close-outline';
 import scriptIcon from '@iconify-icons/mdi/script-text';
 import pencilIcon from '@iconify-icons/mdi/pencil';
 import messageTextIcon from '@iconify-icons/mdi/message-text';
-import informationIcon from '@iconify-icons/mdi/information';
 import packageIcon from '@iconify-icons/mdi/package-variant';
 import cogIcon from '@iconify-icons/mdi/cog';
 import cloudIcon from '@iconify-icons/mdi/cloud-outline';
-import tuneIcon from '@iconify-icons/mdi/tune';
 import deleteIcon from '@iconify-icons/mdi/delete-outline';
+import chevronDownIcon from '@iconify-icons/mdi/chevron-down';
+import chevronUpIcon from '@iconify-icons/mdi/chevron-up';
+import checkIcon from '@iconify-icons/mdi/check';
 import { formattedProvider, normalizeDisplayName } from '../../utils/agent';
 import { NodeData } from '../../types/agent';
 import { NodeHandles, NodeIcon } from './nodes';
+import { ToolsetNode } from './nodes/ToolsetNode';
 
 interface FlowNodeProps {
+  id?: string; // ReactFlow passes the actual node ID as a prop automatically
   data: NodeData;
   selected: boolean;
   onDelete?: (nodeId: string) => void;
 }
 
-const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
+// Helper function to get model display name (friendly name or fallback to modelName)
+const getModelDisplayName = (config: { modelName?: string; modelFriendlyName?: string } | null | undefined): string => {
+  if (!config) return '';
+
+  // Prioritize friendly name, fallback to modelName
+  return (config.modelFriendlyName && config.modelFriendlyName.trim()) || (config.modelName && config.modelName.trim()) || '';
+};
+
+const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, onDelete }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const storeNodes = useStore((s) => s.nodes);
@@ -52,73 +66,75 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
   const [systemPromptValue, setSystemPromptValue] = useState(
     data.config?.systemPrompt || 'You are a helpful assistant.'
   );
+  const [instructionsValue, setInstructionsValue] = useState(
+    data.config?.instructions || ''
+  );
   const [startMessageValue, setStartMessageValue] = useState(
     data.config?.startMessage || 'Hello! How can I help you today?'
   );
-  const [descriptionValue, setDescriptionValue] = useState(
-    data.config?.description || 'AI agent for task automation and assistance'
-  );
+  // Prompt field editing & expand state
+  const [editingField, setEditingField] = useState<string | null>(null);
+  const [expandedFields, setExpandedFields] = useState<Set<string>>(new Set());
 
-  const updateNodeConfig = useCallback(
-    (key: string, value: string) => {
-      setNodes((nodes: any[]) =>
-        nodes.map((node: any) =>
-          node.id === data.id
-            ? {
-                ...node,
-                data: {
-                  ...node.data,
-                  config: {
-                    ...node.data.config,
-                    [key]: value,
-                  },
-                },
-              }
-            : node
-        )
-      );
-    },
-    [data.id, setNodes]
-  );
+  const nodeId = data.id;
 
-  const handlePromptDialogOpen = useCallback(() => {
+  const handlePromptDialogOpen = () => {
     setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
+    setInstructionsValue(data.config?.instructions ?? '');
     setStartMessageValue(data.config?.startMessage || 'Hello! How can I help you today?');
-    setDescriptionValue(data.config?.description || 'AI agent for task automation and assistance');
+    setEditingField(null);
+    setExpandedFields(new Set());
     setPromptDialogOpen(true);
-  }, [data.config?.systemPrompt, data.config?.startMessage, data.config?.description]);
+  };
 
-  const handlePromptDialogSave = useCallback(() => {
-    updateNodeConfig('systemPrompt', systemPromptValue);
-    updateNodeConfig('startMessage', startMessageValue);
-    updateNodeConfig('description', descriptionValue);
+  const handlePromptDialogSave = () => {
+    // Single setNodes call to atomically update all three fields at once
+    setNodes((nodes: any[]) =>
+      nodes.map((node: any) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                config: {
+                  ...node.data.config,
+                  systemPrompt: systemPromptValue,
+                  instructions: instructionsValue,
+                  startMessage: startMessageValue,
+                },
+              },
+            }
+          : node
+      )
+    );
+    setEditingField(null);
+    setExpandedFields(new Set());
     setPromptDialogOpen(false);
-  }, [systemPromptValue, startMessageValue, descriptionValue, updateNodeConfig]);
+  };
 
-  const handlePromptDialogCancel = useCallback(() => {
+  const handlePromptDialogCancel = () => {
     setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
+    setInstructionsValue(data.config?.instructions ?? '');
     setStartMessageValue(data.config?.startMessage || 'Hello! How can I help you today?');
-    setDescriptionValue(data.config?.description || 'AI agent for task automation and assistance');
+    setEditingField(null);
+    setExpandedFields(new Set());
     setPromptDialogOpen(false);
-  }, [data.config?.systemPrompt, data.config?.startMessage, data.config?.description]);
+  };
 
-  // Sync local state with node data changes
+  // Sync local state when node data changes externally (e.g. from flow reconstruction)
   useEffect(() => {
-    setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
-  }, [data.config?.systemPrompt]);
-
-  useEffect(() => {
-    setStartMessageValue(data.config?.startMessage || 'Hello! How can I help you today?');
-  }, [data.config?.startMessage]);
-
-  useEffect(() => {
-    setDescriptionValue(data.config?.description || 'AI agent for task automation and assistance');
-  }, [data.config?.description]);
+    if (!promptDialogOpen) {
+      setSystemPromptValue(data.config?.systemPrompt || 'You are a helpful assistant.');
+      setInstructionsValue(data.config?.instructions ?? '');
+      setStartMessageValue(data.config?.startMessage || 'Hello! How can I help you today?');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.config?.systemPrompt, data.config?.instructions, data.config?.startMessage]);
 
   const connectedNodesByHandle = React.useMemo(() => {
     if (data.type !== 'agent-core') return {} as Record<string, any[]>;
     const incoming = storeEdges.filter((e) => e.target === data.id);
-    const map: Record<string, any[]> = { input: [], actions: [], knowledge: [], llms: [] };
+    const map: Record<string, any[]> = { input: [], toolsets: [], knowledge: [], llms: [] };
     incoming.forEach((e: any) => {
       const sourceNode = storeNodes.find((n) => n.id === e.source) as any;
       if (sourceNode) {
@@ -411,7 +427,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
             </Box>
           </Box>
 
-          {/* Description */}
+          {/* Instructions */}
           <Box sx={{ mb: 2 }}>
             {' '}
             {/* Keep comfortable margin */}
@@ -432,12 +448,12 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 }}
               >
                 <Icon
-                  icon={informationIcon}
+                  icon={scriptIcon}
                   width={12}
                   height={12} // Keep comfortable size
                   style={{ color: colors.info }}
                 />
-                Description
+                Instructions
               </Typography>
             </Box>
             <Box
@@ -447,7 +463,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   ? alpha('#2a2a2a', 0.5) 
                   : alpha(theme.palette.background.paper, 0.9),
                 borderRadius: 1.5,
-                border: `2px solid ${colors.border.subtle}`,
+                border: `1px solid ${colors.border.subtle}`,
                 minHeight: 40,
                 maxHeight: 60,
                 overflow: 'auto',
@@ -463,17 +479,19 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
               <Typography
                 sx={{
                   fontSize: '0.75rem',
-                  color: colors.text.primary,
+                  color: data.config?.instructions?.trim() ? colors.text.primary : colors.text.muted,
                   fontWeight: 500,
                   lineHeight: 1.4,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
+                  fontStyle: data.config?.instructions?.trim() ? 'normal' : 'italic',
                 }}
               >
-                {data.config?.description || 'AI agent for task automation and assistance'}
+                {data.config?.instructions?.trim() || 'No instructions set'}
               </Typography>
             </Box>
           </Box>
+
         </Box>
 
         {/* Content with improved spacing */}
@@ -572,7 +590,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                             fontWeight: 500,
                           }}
                         >
-                          {llmNode.config?.modelName || llmNode.label}
+                          {getModelDisplayName(llmNode.config) || llmNode.label}
                         </Typography>
                       </Box>
                     </Box>
@@ -703,7 +721,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                                     objectFit: 'contain',
                                   }}
                                   onError={(e) => {
-                                    e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                                    e.currentTarget.src = '/assets/icons/connectors/collections-gray.svg';
                                   }}
                                 />
                               </Box>
@@ -795,12 +813,12 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                           <img
                             src={
                               knowledgeNode.config?.iconPath ||
-                              '/assets/icons/connectors/default.svg'
+                              '/assets/icons/connectors/collections-gray.svg'
                             }
                             alt=""
                             style={{
-                              width: 14,
-                              height: 14,
+                              width: 20,
+                              height: 20,
                               objectFit: 'contain',
                             }}
                           />
@@ -825,9 +843,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                             }}
                           >
                             {knowledgeNode.type.startsWith('kb-')
-                              ? 'Knowledge Base'
+                              ? 'Collections'
                               : knowledgeNode.type.startsWith('knowledge-hub')
-                                ? 'Knowledge Hub'
+                                ? 'Collections Hub'
                                 : 'Knowledge'}
                           </Typography>
                         </Box>
@@ -887,7 +905,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 letterSpacing: '0.05em',
               }}
             >
-              Actions
+              Toolsets
             </Typography>
             <Box
               sx={{
@@ -906,7 +924,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
               <Handle
                 type="target"
                 position={Position.Left}
-                id="actions"
+                id="toolsets"
                 style={{
                   top: '50%',
                   left: -9,
@@ -920,9 +938,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   transformOrigin: 'center',
                 }}
               />
-              {connectedNodesByHandle.actions?.length > 0 ? (
+              {connectedNodesByHandle.toolsets?.length > 0 ? (
                 <Box>
-                  {connectedNodesByHandle.actions.slice(0, 2).map((actionNode, index) => (
+                  {connectedNodesByHandle.toolsets.slice(0, 2).map((toolsetNode: any, index: number) => (
                     <Box
                       key={index}
                       sx={{
@@ -943,9 +961,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                           boxShadow: `0 2px 4px ${alpha(colors.info, 0.3)}`,
                         }}
                       >
-                        {actionNode.config?.iconPath ? (
+                        {toolsetNode.config?.iconPath ? (
                           <img
-                            src={actionNode.config.iconPath}
+                            src={toolsetNode.config.iconPath}
                             alt=""
                             style={{
                               width: 14,
@@ -967,7 +985,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                           height={12} // Keep comfortable size
                           style={{
                             color: '#ffffff',
-                            display: actionNode.config?.iconPath ? 'none' : 'block',
+                            display: toolsetNode.config?.iconPath ? 'none' : 'block',
                           }}
                         />
                       </Box>
@@ -975,9 +993,10 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                         <Typography
                           sx={{ fontSize: '0.85rem', fontWeight: 600, color: colors.text.primary }} // Keep comfortable size
                         >
-                          {actionNode.config?.name ||
-                            actionNode.config?.appName ||
-                            actionNode.label}
+                          {toolsetNode.config?.displayName ||
+                            toolsetNode.config?.name ||
+                            toolsetNode.config?.appName ||
+                            toolsetNode.label}
                         </Typography>
                         <Typography
                           sx={{
@@ -986,20 +1005,22 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                             fontWeight: 500,
                           }}
                         >
-                          {actionNode.type.startsWith('tool-group-')
-                            ? 'Tool Group'
-                            : actionNode.type.startsWith('tool-individual-')
-                              ? 'Individual Tool'
-                              : actionNode.type.startsWith('connector-group-')
-                                ? 'Connector Group'
-                                : 'Action'}
+                          {toolsetNode.type.startsWith('toolset-')
+                            ? 'Toolset'
+                            : toolsetNode.type.startsWith('tool-group-')
+                              ? 'Tool Group'
+                              : toolsetNode.type.startsWith('tool-individual-')
+                                ? 'Individual Tool'
+                                : toolsetNode.type.startsWith('connector-group-')
+                                  ? 'Connector Group'
+                                  : 'Toolset'}
                         </Typography>
                       </Box>
                     </Box>
                   ))}
-                  {connectedNodesByHandle.actions.length > 2 && (
+                  {connectedNodesByHandle.toolsets.length > 2 && (
                     <Chip
-                      label={`+${connectedNodesByHandle.actions.length - 2} more`}
+                      label={`+${connectedNodesByHandle.toolsets.length - 2} more`}
                       size="small"
                       sx={{
                         height: 22, // Keep comfortable size
@@ -1030,7 +1051,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 <Typography
                   sx={{ fontSize: '0.85rem', color: colors.text.muted, fontStyle: 'italic' }} // Keep comfortable size
                 >
-                  No actions connected
+                  No toolsets connected
                 </Typography>
               )}
             </Box>
@@ -1283,6 +1304,25 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 px: 3,
                 pb: 0,
               },
+              '&::-webkit-scrollbar': {
+                width: 8,
+              },
+              '&::-webkit-scrollbar-track': {
+                bgcolor: 'transparent',
+              },
+              '&::-webkit-scrollbar-thumb': {
+                bgcolor: isDark ? alpha('#fff', 0.15) : alpha('#000', 0.15),
+                borderRadius: 4,
+                border: '2px solid transparent',
+                backgroundClip: 'content-box',
+                '&:hover': {
+                  bgcolor: isDark ? alpha('#fff', 0.25) : alpha('#000', 0.25),
+                },
+              },
+              scrollbarWidth: 'thin',
+              scrollbarColor: isDark
+                ? `${alpha('#fff', 0.15)} transparent`
+                : `${alpha('#000', 0.15)} transparent`,
             }}
           >
             <Box sx={{ mb: 3 }}>
@@ -1290,155 +1330,685 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 Define the agent&apos;s behavior and initial greeting message for users.
               </Typography>
 
-              <Box sx={{ mb: 3 }}>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500 }}>
-                  System Prompt
-                </Typography>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={4}
-                  value={systemPromptValue}
-                  onChange={(e) => setSystemPromptValue(e.target.value)}
-                  placeholder="Define the agent's role, capabilities, and behavior instructions..."
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 1,
-                      backgroundColor: isDark 
-                        ? alpha('#2a2a2a', 0.5) 
-                        : alpha(theme.palette.background.paper, 0.9),
-                      color: colors.text.primary,
-                      '& fieldset': {
-                        borderColor: colors.border.subtle,
-                      },
-                      '&:hover': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                        },
-                      },
-                      '&.Mui-focused': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                          borderWidth: 1.5,
-                        },
-                      },
-                    },
-                    '& .MuiInputBase-input': {
-                      color: colors.text.primary,
-                      '&::placeholder': {
-                        color: colors.text.muted,
-                        opacity: 1,
-                      },
-                    },
-                  }}
-                />
-              </Box>
+              {/* System Prompt - Collapsible preview card */}
+              {(() => {
+                const fieldKey = 'systemPrompt';
+                const value = systemPromptValue;
+                const setValue = setSystemPromptValue;
+                const isEditing = editingField === fieldKey;
+                const isExpanded = expandedFields.has(fieldKey);
+                const hasContent = value.trim().length > 0;
+                const lineCount = value.split('\n').length;
+                const charCount = value.length;
+                const isLong = lineCount > 5 || charCount > 300;
+                const previewBg = isDark ? alpha('#1e1e2e', 0.7) : alpha(theme.palette.grey[100], 0.9);
 
-              <Box sx={{ mb: 3 }}>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500 }}>
-                  Description
-                </Typography>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={2}
-                  value={descriptionValue}
-                  onChange={(e) => setDescriptionValue(e.target.value)}
-                  placeholder="Enter a brief description for the agent's behavior..."
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 1,
-                      backgroundColor: isDark 
-                        ? alpha('#2a2a2a', 0.5) 
-                        : alpha(theme.palette.background.paper, 0.9),
-                      color: colors.text.primary,
-                      '& fieldset': {
-                        borderColor: colors.border.subtle,
-                      },
-                      '&:hover': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                        },
-                      },
-                      '&.Mui-focused': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                          borderWidth: 1.5,
-                        },
-                      },
-                    },
-                    '& .MuiInputBase-input': {
-                      color: colors.text.primary,
-                      '&::placeholder': {
-                        color: colors.text.muted,
-                        opacity: 1,
-                      },
-                    },
-                  }}
-                />
-              </Box>
+                return (
+                  <Box sx={{ mb: 3 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+                          System Prompt
+                        </Typography>
+                        {hasContent && (
+                          <Chip
+                            label={`${lineCount} ${lineCount === 1 ? 'line' : 'lines'} · ${charCount} chars`}
+                            size="small"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.65rem',
+                              bgcolor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.06),
+                              color: isDark ? alpha('#fff', 0.7) : alpha('#000', 0.55),
+                              '& .MuiChip-label': { px: 1 },
+                            }}
+                          />
+                        )}
+                      </Box>
+                      <Button
+                        size="small"
+                        onClick={() => setEditingField(isEditing ? null : fieldKey)}
+                        startIcon={<Icon icon={isEditing ? checkIcon : pencilIcon} width={13} height={13} />}
+                        sx={{
+                          fontSize: '0.7rem',
+                          textTransform: 'none',
+                          color: isEditing ? theme.palette.success.main : colors.text.muted,
+                          minWidth: 0,
+                          px: 1,
+                          '&:hover': { bgcolor: isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04) },
+                        }}
+                      >
+                        {isEditing ? 'Done' : 'Edit'}
+                      </Button>
+                    </Box>
 
-              <Box>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500 }}>
-                  Starting Message
-                </Typography>
-                <TextField
-                  fullWidth
-                  multiline
-                  rows={2}
-                  value={startMessageValue}
-                  onChange={(e) => setStartMessageValue(e.target.value)}
-                  placeholder="Enter the agent's greeting message to users..."
-                  sx={{
-                    '& .MuiOutlinedInput-root': {
-                      borderRadius: 1,
-                      backgroundColor: isDark 
-                        ? alpha('#2a2a2a', 0.5) 
-                        : alpha(theme.palette.background.paper, 0.9),
-                      color: colors.text.primary,
-                      '& fieldset': {
-                        borderColor: colors.border.subtle,
-                      },
-                      '&:hover': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                        },
-                      },
-                      '&.Mui-focused': {
-                        backgroundColor: isDark 
-                          ? alpha('#2a2a2a', 0.7) 
-                          : theme.palette.background.paper,
-                        '& fieldset': {
-                          borderColor: colors.border.focus,
-                          borderWidth: 1.5,
-                        },
-                      },
-                    },
-                    '& .MuiInputBase-input': {
-                      color: colors.text.primary,
-                      '&::placeholder': {
-                        color: colors.text.muted,
-                        opacity: 1,
-                      },
-                    },
-                  }}
-                />
-              </Box>
+                    {isEditing ? (
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={4}
+                        maxRows={16}
+                        value={value}
+                        onChange={(e) => setValue(e.target.value)}
+                        autoFocus
+                        placeholder="Define the agent's role, capabilities, and behavior instructions..."
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            borderRadius: 1,
+                            backgroundColor: isDark
+                              ? alpha('#2a2a2a', 0.5)
+                              : alpha(theme.palette.background.paper, 0.9),
+                            color: colors.text.primary,
+                            fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                            fontSize: '0.8rem',
+                            lineHeight: 1.7,
+                            '& fieldset': { borderColor: colors.border.focus, borderWidth: 1.5 },
+                            '&:hover fieldset': { borderColor: colors.border.focus },
+                            '&.Mui-focused fieldset': { borderColor: theme.palette.primary.main, borderWidth: 1.5 },
+                          },
+                          '& .MuiInputBase-input': {
+                            color: colors.text.primary,
+                            '&::placeholder': { color: colors.text.muted, opacity: 1 },
+                          },
+                        }}
+                      />
+                    ) : hasContent ? (
+                      <Box
+                        sx={{
+                          position: 'relative',
+                          bgcolor: previewBg,
+                          borderRadius: 1.5,
+                          border: '1px solid',
+                          borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08),
+                          overflow: 'hidden',
+                          cursor: 'pointer',
+                          transition: 'border-color 0.2s',
+                          '&:hover': {
+                            borderColor: isDark ? alpha('#fff', 0.15) : alpha('#000', 0.15),
+                          },
+                        }}
+                        onClick={() => {
+                          if (isLong) {
+                            setExpandedFields((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(fieldKey)) next.delete(fieldKey);
+                              else next.add(fieldKey);
+                              return next;
+                            });
+                          }
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            p: 2,
+                            maxHeight: isExpanded ? 400 : 120,
+                            overflow: isExpanded ? 'auto' : 'hidden',
+                            transition: 'max-height 0.3s ease',
+                            '&::-webkit-scrollbar': { width: 6 },
+                            '&::-webkit-scrollbar-track': { bgcolor: 'transparent' },
+                            '&::-webkit-scrollbar-thumb': {
+                              bgcolor: isDark ? alpha('#fff', 0.18) : alpha('#000', 0.18),
+                              borderRadius: 3,
+                              '&:hover': {
+                                bgcolor: isDark ? alpha('#fff', 0.28) : alpha('#000', 0.28),
+                              },
+                            },
+                            scrollbarWidth: 'thin',
+                            scrollbarColor: isDark
+                              ? `${alpha('#fff', 0.18)} transparent`
+                              : `${alpha('#000', 0.18)} transparent`,
+                          }}
+                        >
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                              fontSize: '0.78rem',
+                              lineHeight: 1.7,
+                              color: colors.text.primary,
+                            }}
+                          >
+                            {value}
+                          </Typography>
+                        </Box>
+                        {/* Fade gradient for collapsed long content */}
+                        {!isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              position: 'absolute',
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              height: 48,
+                              background: `linear-gradient(transparent, ${isDark ? 'rgba(30,30,46,0.95)' : 'rgba(245,245,245,0.95)'})`,
+                              display: 'flex',
+                              alignItems: 'flex-end',
+                              justifyContent: 'center',
+                              pb: 1,
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronDownIcon} width={14} height={14} />
+                              Show all ({lineCount} lines)
+                            </Typography>
+                          </Box>
+                        )}
+                        {/* Collapse button when expanded */}
+                        {isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              justifyContent: 'center',
+                              py: 0.75,
+                              borderTop: '1px solid',
+                              borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.06),
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronUpIcon} width={14} height={14} />
+                              Show less
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    ) : (
+                      <Box
+                        onClick={() => setEditingField(fieldKey)}
+                        sx={{
+                          p: 2,
+                          bgcolor: isDark ? alpha('#1e1e2e', 0.4) : alpha(theme.palette.grey[100], 0.5),
+                          borderRadius: 1.5,
+                          border: '1px dashed',
+                          borderColor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.12),
+                          cursor: 'pointer',
+                          transition: 'all 0.2s',
+                          '&:hover': {
+                            borderColor: theme.palette.primary.main,
+                            bgcolor: isDark ? alpha('#1e1e2e', 0.6) : alpha(theme.palette.grey[100], 0.7),
+                          },
+                        }}
+                      >
+                        <Typography variant="body2" sx={{ color: colors.text.muted, fontStyle: 'italic', fontSize: '0.8rem' }}>
+                          Click to add a system prompt...
+                        </Typography>
+                      </Box>
+                    )}
+                  </Box>
+                );
+              })()}
+
+              {/* Instructions - Collapsible preview card */}
+              {(() => {
+                const fieldKey = 'instructions';
+                const value = instructionsValue;
+                const setValue = setInstructionsValue;
+                const isEditing = editingField === fieldKey;
+                const isExpanded = expandedFields.has(fieldKey);
+                const hasContent = value.trim().length > 0;
+                const lineCount = value.split('\n').length;
+                const charCount = value.length;
+                const isLong = lineCount > 5 || charCount > 300;
+                const previewBg = isDark ? alpha('#1e1e2e', 0.7) : alpha(theme.palette.grey[100], 0.9);
+
+                return (
+                  <Box sx={{ mb: 3 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+                          Instructions
+                        </Typography>
+                        {hasContent && (
+                          <Chip
+                            label={`${lineCount} ${lineCount === 1 ? 'line' : 'lines'} · ${charCount} chars`}
+                            size="small"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.65rem',
+                              bgcolor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.06),
+                              color: isDark ? alpha('#fff', 0.7) : alpha('#000', 0.55),
+                              '& .MuiChip-label': { px: 1 },
+                            }}
+                          />
+                        )}
+                      </Box>
+                      <Button
+                        size="small"
+                        onClick={() => setEditingField(isEditing ? null : fieldKey)}
+                        startIcon={<Icon icon={isEditing ? checkIcon : pencilIcon} width={13} height={13} />}
+                        sx={{
+                          fontSize: '0.7rem',
+                          textTransform: 'none',
+                          color: isEditing ? theme.palette.success.main : colors.text.muted,
+                          minWidth: 0,
+                          px: 1,
+                          '&:hover': { bgcolor: isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04) },
+                        }}
+                      >
+                        {isEditing ? 'Done' : 'Edit'}
+                      </Button>
+                    </Box>
+
+                    {isEditing ? (
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={3}
+                        maxRows={16}
+                        value={value}
+                        onChange={(e) => setValue(e.target.value)}
+                        autoFocus
+                        placeholder="Optional additional instructions for the agent (e.g. always respond in French, use bullet points, focus on concise answers)..."
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            borderRadius: 1,
+                            backgroundColor: isDark
+                              ? alpha('#2a2a2a', 0.5)
+                              : alpha(theme.palette.background.paper, 0.9),
+                            color: colors.text.primary,
+                            fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                            fontSize: '0.8rem',
+                            lineHeight: 1.7,
+                            '& fieldset': { borderColor: colors.border.focus, borderWidth: 1.5 },
+                            '&:hover fieldset': { borderColor: colors.border.focus },
+                            '&.Mui-focused fieldset': { borderColor: theme.palette.primary.main, borderWidth: 1.5 },
+                          },
+                          '& .MuiInputBase-input': {
+                            color: colors.text.primary,
+                            '&::placeholder': { color: colors.text.muted, opacity: 1 },
+                          },
+                        }}
+                      />
+                    ) : hasContent ? (
+                      <Box
+                        sx={{
+                          position: 'relative',
+                          bgcolor: previewBg,
+                          borderRadius: 1.5,
+                          border: '1px solid',
+                          borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08),
+                          overflow: 'hidden',
+                          cursor: 'pointer',
+                          transition: 'border-color 0.2s',
+                          '&:hover': {
+                            borderColor: isDark ? alpha('#fff', 0.15) : alpha('#000', 0.15),
+                          },
+                        }}
+                        onClick={() => {
+                          if (isLong) {
+                            setExpandedFields((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(fieldKey)) next.delete(fieldKey);
+                              else next.add(fieldKey);
+                              return next;
+                            });
+                          }
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            p: 2,
+                            maxHeight: isExpanded ? 400 : 120,
+                            overflow: isExpanded ? 'auto' : 'hidden',
+                            transition: 'max-height 0.3s ease',
+                            '&::-webkit-scrollbar': { width: 6 },
+                            '&::-webkit-scrollbar-track': { bgcolor: 'transparent' },
+                            '&::-webkit-scrollbar-thumb': {
+                              bgcolor: isDark ? alpha('#fff', 0.18) : alpha('#000', 0.18),
+                              borderRadius: 3,
+                              '&:hover': {
+                                bgcolor: isDark ? alpha('#fff', 0.28) : alpha('#000', 0.28),
+                              },
+                            },
+                            scrollbarWidth: 'thin',
+                            scrollbarColor: isDark
+                              ? `${alpha('#fff', 0.18)} transparent`
+                              : `${alpha('#000', 0.18)} transparent`,
+                          }}
+                        >
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                              fontSize: '0.78rem',
+                              lineHeight: 1.7,
+                              color: colors.text.primary,
+                            }}
+                          >
+                            {value}
+                          </Typography>
+                        </Box>
+                        {!isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              position: 'absolute',
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              height: 48,
+                              background: `linear-gradient(transparent, ${isDark ? 'rgba(30,30,46,0.95)' : 'rgba(245,245,245,0.95)'})`,
+                              display: 'flex',
+                              alignItems: 'flex-end',
+                              justifyContent: 'center',
+                              pb: 1,
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronDownIcon} width={14} height={14} />
+                              Show all ({lineCount} lines)
+                            </Typography>
+                          </Box>
+                        )}
+                        {isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              justifyContent: 'center',
+                              py: 0.75,
+                              borderTop: '1px solid',
+                              borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.06),
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronUpIcon} width={14} height={14} />
+                              Show less
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    ) : (
+                      <Box
+                        onClick={() => setEditingField(fieldKey)}
+                        sx={{
+                          p: 2,
+                          bgcolor: isDark ? alpha('#1e1e2e', 0.4) : alpha(theme.palette.grey[100], 0.5),
+                          borderRadius: 1.5,
+                          border: '1px dashed',
+                          borderColor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.12),
+                          cursor: 'pointer',
+                          transition: 'all 0.2s',
+                          '&:hover': {
+                            borderColor: theme.palette.primary.main,
+                            bgcolor: isDark ? alpha('#1e1e2e', 0.6) : alpha(theme.palette.grey[100], 0.7),
+                          },
+                        }}
+                      >
+                        <Typography variant="body2" sx={{ color: colors.text.muted, fontStyle: 'italic', fontSize: '0.8rem' }}>
+                          Click to add instructions...
+                        </Typography>
+                      </Box>
+                    )}
+                  </Box>
+                );
+              })()}
+
+              {/* Starting Message - Collapsible preview card */}
+              {(() => {
+                const fieldKey = 'startMessage';
+                const value = startMessageValue;
+                const setValue = setStartMessageValue;
+                const isEditing = editingField === fieldKey;
+                const isExpanded = expandedFields.has(fieldKey);
+                const hasContent = value.trim().length > 0;
+                const lineCount = value.split('\n').length;
+                const charCount = value.length;
+                const isLong = lineCount > 5 || charCount > 300;
+                const previewBg = isDark ? alpha('#1e1e2e', 0.7) : alpha(theme.palette.grey[100], 0.9);
+
+                return (
+                  <Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+                          Starting Message
+                        </Typography>
+                        {hasContent && (
+                          <Chip
+                            label={`${lineCount} ${lineCount === 1 ? 'line' : 'lines'} · ${charCount} chars`}
+                            size="small"
+                            sx={{
+                              height: 20,
+                              fontSize: '0.65rem',
+                              bgcolor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.06),
+                              color: isDark ? alpha('#fff', 0.7) : alpha('#000', 0.55),
+                              '& .MuiChip-label': { px: 1 },
+                            }}
+                          />
+                        )}
+                      </Box>
+                      <Button
+                        size="small"
+                        onClick={() => setEditingField(isEditing ? null : fieldKey)}
+                        startIcon={<Icon icon={isEditing ? checkIcon : pencilIcon} width={13} height={13} />}
+                        sx={{
+                          fontSize: '0.7rem',
+                          textTransform: 'none',
+                          color: isEditing ? theme.palette.success.main : colors.text.muted,
+                          minWidth: 0,
+                          px: 1,
+                          '&:hover': { bgcolor: isDark ? alpha('#fff', 0.05) : alpha('#000', 0.04) },
+                        }}
+                      >
+                        {isEditing ? 'Done' : 'Edit'}
+                      </Button>
+                    </Box>
+
+                    {isEditing ? (
+                      <TextField
+                        fullWidth
+                        multiline
+                        minRows={2}
+                        maxRows={10}
+                        value={value}
+                        onChange={(e) => setValue(e.target.value)}
+                        autoFocus
+                        placeholder="Enter the agent's greeting message to users..."
+                        sx={{
+                          '& .MuiOutlinedInput-root': {
+                            borderRadius: 1,
+                            backgroundColor: isDark
+                              ? alpha('#2a2a2a', 0.5)
+                              : alpha(theme.palette.background.paper, 0.9),
+                            color: colors.text.primary,
+                            fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                            fontSize: '0.8rem',
+                            lineHeight: 1.7,
+                            '& fieldset': { borderColor: colors.border.focus, borderWidth: 1.5 },
+                            '&:hover fieldset': { borderColor: colors.border.focus },
+                            '&.Mui-focused fieldset': { borderColor: theme.palette.primary.main, borderWidth: 1.5 },
+                          },
+                          '& .MuiInputBase-input': {
+                            color: colors.text.primary,
+                            '&::placeholder': { color: colors.text.muted, opacity: 1 },
+                          },
+                        }}
+                      />
+                    ) : hasContent ? (
+                      <Box
+                        sx={{
+                          position: 'relative',
+                          bgcolor: previewBg,
+                          borderRadius: 1.5,
+                          border: '1px solid',
+                          borderColor: isDark ? alpha('#fff', 0.08) : alpha('#000', 0.08),
+                          overflow: 'hidden',
+                          cursor: 'pointer',
+                          transition: 'border-color 0.2s',
+                          '&:hover': {
+                            borderColor: isDark ? alpha('#fff', 0.15) : alpha('#000', 0.15),
+                          },
+                        }}
+                        onClick={() => {
+                          if (isLong) {
+                            setExpandedFields((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(fieldKey)) next.delete(fieldKey);
+                              else next.add(fieldKey);
+                              return next;
+                            });
+                          }
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            p: 2,
+                            maxHeight: isExpanded ? 400 : 120,
+                            overflow: isExpanded ? 'auto' : 'hidden',
+                            transition: 'max-height 0.3s ease',
+                            '&::-webkit-scrollbar': { width: 6 },
+                            '&::-webkit-scrollbar-track': { bgcolor: 'transparent' },
+                            '&::-webkit-scrollbar-thumb': {
+                              bgcolor: isDark ? alpha('#fff', 0.18) : alpha('#000', 0.18),
+                              borderRadius: 3,
+                              '&:hover': {
+                                bgcolor: isDark ? alpha('#fff', 0.28) : alpha('#000', 0.28),
+                              },
+                            },
+                            scrollbarWidth: 'thin',
+                            scrollbarColor: isDark
+                              ? `${alpha('#fff', 0.18)} transparent`
+                              : `${alpha('#000', 0.18)} transparent`,
+                          }}
+                        >
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              fontFamily: '"SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace',
+                              fontSize: '0.78rem',
+                              lineHeight: 1.7,
+                              color: colors.text.primary,
+                            }}
+                          >
+                            {value}
+                          </Typography>
+                        </Box>
+                        {!isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              position: 'absolute',
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              height: 48,
+                              background: `linear-gradient(transparent, ${isDark ? 'rgba(30,30,46,0.95)' : 'rgba(245,245,245,0.95)'})`,
+                              display: 'flex',
+                              alignItems: 'flex-end',
+                              justifyContent: 'center',
+                              pb: 1,
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronDownIcon} width={14} height={14} />
+                              Show all ({lineCount} lines)
+                            </Typography>
+                          </Box>
+                        )}
+                        {isExpanded && isLong && (
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              justifyContent: 'center',
+                              py: 0.75,
+                              borderTop: '1px solid',
+                              borderColor: isDark ? alpha('#fff', 0.06) : alpha('#000', 0.06),
+                            }}
+                          >
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 0.5,
+                                color: theme.palette.primary.main,
+                                fontSize: '0.7rem',
+                                fontWeight: 500,
+                              }}
+                            >
+                              <Icon icon={chevronUpIcon} width={14} height={14} />
+                              Show less
+                            </Typography>
+                          </Box>
+                        )}
+                      </Box>
+                    ) : (
+                      <Box
+                        onClick={() => setEditingField(fieldKey)}
+                        sx={{
+                          p: 2,
+                          bgcolor: isDark ? alpha('#1e1e2e', 0.4) : alpha(theme.palette.grey[100], 0.5),
+                          borderRadius: 1.5,
+                          border: '1px dashed',
+                          borderColor: isDark ? alpha('#fff', 0.12) : alpha('#000', 0.12),
+                          cursor: 'pointer',
+                          transition: 'all 0.2s',
+                          '&:hover': {
+                            borderColor: theme.palette.primary.main,
+                            bgcolor: isDark ? alpha('#1e1e2e', 0.6) : alpha(theme.palette.grey[100], 0.7),
+                          },
+                        }}
+                      >
+                        <Typography variant="body2" sx={{ color: colors.text.muted, fontStyle: 'italic', fontSize: '0.8rem' }}>
+                          Click to add a starting message...
+                        </Typography>
+                      </Box>
+                    )}
+                  </Box>
+                );
+              })()}
             </Box>
           </DialogContent>
 
@@ -1517,6 +2087,12 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
 
   const { width, minHeight } = getNodeDimensions();
 
+  // Use specialized ToolsetNode for toolset nodes
+  // Check both category and type to ensure toolset nodes are always rendered correctly
+  if (data.type.startsWith('toolset-') || data.category === 'toolset') {
+    return <ToolsetNode data={data} selected={selected} onDelete={onDelete} />;
+  }
+
   return (
     <Card
       sx={{
@@ -1575,17 +2151,21 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 letterSpacing: '-0.025em',
               }}
             >
-              {normalizeDisplayName(data.label)}
+              {data.type.startsWith('llm-') 
+                ? normalizeDisplayName(getModelDisplayName(data.config) || data.label)
+                : normalizeDisplayName(data.label)}
             </Typography>
           </Box>
-          {onDelete && (
+          {onDelete && !data?.type?.startsWith('user-input') && !data?.type?.startsWith('chat-response') && (
             <IconButton
               size="small"
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 e.nativeEvent.stopImmediatePropagation();
-                onDelete(data.id);
+                // Use the ReactFlow node id (reactFlowId) which is the authoritative node identifier,
+                // falling back to data.id for backward compatibility
+                onDelete(reactFlowId || data.id);
               }}
               sx={{
                 width: 30,
@@ -1997,7 +2577,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                             objectFit: 'contain',
                           }}
                           onError={(e) => {
-                            e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                            e.currentTarget.src = '/assets/icons/connectors/collections-gray.svg';
                           }}
                         />
                       </Box>
@@ -2138,8 +2718,8 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 gap: 1,
               }}
             >
-              <Icon icon={databaseIcon} width={12} height={12} style={{ color: colors.warning }} />
-              Knowledge Base Group
+              <Icon icon={collectionIcon} width={12} height={12} style={{ color: colors.warning }} />
+              Collection Group
             </Typography>
             <Box
               sx={{
@@ -2163,7 +2743,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   lineHeight: 1.3,
                 }}
               >
-                All Knowledge Bases
+                All Collections
               </Typography>
               <Typography
                 sx={{
@@ -2173,7 +2753,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   mt: 0.5,
                 }}
               >
-                {data.config?.knowledgeBases?.length || 0} KBs available
+                {data.config?.knowledgeBases?.length || 0} collection(s) available
               </Typography>
             </Box>
           </Box>
@@ -2196,8 +2776,8 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 gap: 1,
               }}
             >
-              <Icon icon={databaseIcon} width={12} height={12} style={{ color: colors.warning }} />
-              Knowledge Base
+              <Icon icon={collectionIcon} width={12} height={12} style={{ color: colors.warning }} />
+              Collection
             </Typography>
             <Box
               sx={{
@@ -2278,40 +2858,22 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
               >
                 {formattedProvider(data.config?.provider || 'AI Provider')}
               </Typography>
+              {data.config?.modelName && (
+                <Typography
+                  sx={{
+                    fontSize: '0.65rem',
+                    color: colors.text.secondary,
+                    fontWeight: 500,
+                    mt: 0.5,
+                  }}
+                >
+                  {getModelDisplayName(data.config) || data.label}
+                </Typography>
+              )}
             </Box>
           </Box>
         )}
 
-        {/* Toolset Badge */}
-        <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 0.5,
-              px: 1.5,
-              py: 0.75,
-              background: `linear-gradient(135deg, ${alpha(colors.info, 0.1)} 0%, ${alpha(colors.primary, 0.1)} 100%)`,
-              border: `1px solid ${alpha(colors.info, 0.2)}`,
-              borderRadius: 2,
-              fontSize: '0.7rem',
-              fontWeight: 700,
-              color: colors.info,
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              transition: 'all 0.2s ease',
-              '&:hover': {
-                background: `linear-gradient(135deg, ${alpha(colors.info, 0.2)} 0%, ${alpha(colors.primary, 0.2)} 100%)`,
-                borderColor: colors.info,
-                transform: 'scale(1.05)',
-                boxShadow: `0 2px 8px ${alpha(colors.info, 0.3)}`,
-              },
-            }}
-          >
-            Toolset
-            <Icon icon={tuneIcon} width={12} height={12} />
-          </Box>
-        </Box>
       </Box>
 
       {/* Handles - uses modular NodeHandles component */}
