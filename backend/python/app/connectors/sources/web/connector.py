@@ -748,7 +748,7 @@ class WebConnector(BaseConnector):
 
                         if existing:
                             self.logger.info(
-                                f"🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
+                                f"🔄 \n\n\n\n\n Found legacy record (no trailing slash) for {legacy_external_id}, "
                                 f"will migrate external_record_id to {external_id}"
                             )
 
@@ -985,7 +985,7 @@ class WebConnector(BaseConnector):
                     if existing_record:
                         legacy_lookup = True
                         self.logger.info(
-                            f"🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
+                            f"\n\n\n\n\n🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
                             f"will migrate external_record_id to {external_id}"
                         )
 
@@ -1029,18 +1029,18 @@ class WebConnector(BaseConnector):
             parent_url = self._get_parent_url(final_url)
             if parent_url and urlparse(parent_url).path in ("", "/"):
                 parent_url = None
-            
+
             if existing_record:
                 if legacy_lookup:
-                    # Force metadata update to migrate external_record_id to the normalized form
-                    metadata_changed = True
-                elif existing_record.record_name != title:
-                    metadata_changed = True
-                elif existing_record.parent_external_record_id != parent_url:
-                    metadata_changed = True
-                if existing_record.external_revision_id != content_md5_hash:
-                    content_changed = True
-                is_updated = metadata_changed or content_changed
+                    is_new = True # Force record to be treated as new to migrate external_record_id to the normalized form
+                else:
+                    if existing_record.record_name != title:
+                        metadata_changed = True
+                    elif existing_record.parent_external_record_id != parent_url:
+                        metadata_changed = True
+                    if existing_record.external_revision_id != content_md5_hash:
+                        content_changed = True
+                    is_updated = metadata_changed or content_changed
             else:
                 is_new = True
 
@@ -1073,6 +1073,10 @@ class WebConnector(BaseConnector):
                 parent_external_record_id=parent_url,
                 parent_record_type=RecordType.FILE if parent_url else None,
             )
+
+            if existing_record and not content_changed:
+                file_record.indexing_status = existing_record.indexing_status
+                file_record.extraction_status = existing_record.extraction_status
 
             # Create permissions (org-level access for web pages)
             permissions = [
@@ -1168,6 +1172,9 @@ class WebConnector(BaseConnector):
         """Check if the record should be indexed."""
         mime_type = record.mime_type
         is_disabled = False
+
+        if record.indexing_status == IndexingStatus.COMPLETED.value:
+            return False
 
         if mime_type == MimeTypes.HTML.value:
             is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.WEBPAGES, default=True)
