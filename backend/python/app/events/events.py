@@ -354,20 +354,17 @@ class EventProcessor:
                     ):
                         yield event
                 else:
-                    # Use docling for PDFs that don't need OCR
-                    docling_failed = False
-                    async for event in self.processor.process_pdf_with_docling(
-                        recordName=record_name,
-                        recordId=record_id,
-                        pdf_binary=file_content,
-                        virtual_record_id=virtual_record_id
-                    ):
-                        if event.get("event") == "docling_failed":
-                            docling_failed = True
-                        else:
+                    # Use PyMuPDF+OpenCV for PDFs that don't need OCR, fall back to OCR on failure
+                    try:
+                        async for event in self.processor.process_pdf_with_docling(
+                            recordName=record_name,
+                            recordId=record_id,
+                            pdf_binary=file_content,
+                            virtual_record_id=virtual_record_id
+                        ):
                             yield event
-
-                    if docling_failed:
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ PyMuPDF+OpenCV processing failed, falling back to OCR: {e}")
                         async for event in self.processor.process_pdf_document_with_ocr(
                             recordName=record_name,
                             recordId=record_id,

@@ -32,9 +32,9 @@ from app.models.entities import Record, RecordType
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
+from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
-from app.services.docling.client import DoclingClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm
@@ -58,9 +58,9 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
     except ValueError:
         origin = OriginTypes.UPLOAD
 
-    mime_type = record_dict.get("mimeType", None)
+    mime_type = record_dict.get("mimeType")
 
-    record = Record(
+    return Record(
         id=record_dict.get("_key") or record_dict.get("id"),
         org_id=record_dict.get("orgId"),
         record_name=record_dict.get("recordName"),
@@ -81,7 +81,6 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
         connector_id=record_dict.get("connectorId"),
     )
-    return record
 
 class Processor:
     def __init__(
@@ -102,9 +101,6 @@ class Processor:
         self.config_service = config_service
         self.document_extraction = document_extractor
         self.sink_orchestrator = sink_orchestrator
-
-        # Initialize Docling client for external service
-        self.docling_client = DoclingClient()
 
     async def process_image(self, record_id, content, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
         """Process image content, yielding phase completion events."""
@@ -217,30 +213,26 @@ class Processor:
             raise
 
     async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
-        """Process PDF with Docling, yielding phase completion events."""
+        """Process PDF using PyMuPDF+OpenCV processor, yielding phase completion events."""
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
         try:
-            self.logger.debug("📄 Processing PDF binary content using external Docling service")
+            self.logger.debug("📄 Processing PDF binary content using PyMuPDF+OpenCV processor")
 
-            # Use external Docling service
             record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
 
-            # Phase 1: Parse PDF (no LLM calls)
-            parse_result = await self.docling_client.parse_pdf(record_name, pdf_binary)
-            if parse_result is None:
-                self.logger.error(f"❌ External Docling service failed to parse {recordName}")
-                yield {"event": "docling_failed", "data": {"record_id": recordId}}
-                return
+            processor = PyMuPDFOpenCVProcessor(
+                logger=self.logger,
+                config=self.config_service,
+            )
 
-            # Signal parsing complete after Docling parsing
+            # Phase 1: Parse PDF layout (no LLM calls)
+            parsed_data = await processor.parse_document(record_name, pdf_binary)
+
+            # Signal parsing complete
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
 
-
             # Phase 2: Create blocks (involves LLM calls for tables)
-            block_containers = await self.docling_client.create_blocks(parse_result)
-            if block_containers is None:
-                self.logger.error(f"❌ External Docling service failed to create blocks for {recordName}")
-                raise Exception(f"External Docling service failed to create blocks for {recordName}")
+            block_containers = await processor.create_blocks(parsed_data)
 
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -262,10 +254,10 @@ class Processor:
             # Signal indexing complete
             yield {"event": "indexing_complete", "data": {"record_id": recordId}}
 
-            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using external Docling service")
+            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using PyMuPDF+OpenCV processor")
             return
         except Exception as e:
-            self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
+            self.logger.error(f"❌ Error processing PDF document with PyMuPDF+OpenCV: {str(e)}")
             raise
 
     async def process_pdf_document_with_ocr(
@@ -920,7 +912,7 @@ class Processor:
                 caption = block.image_metadata.captions
                 if caption:
                     caption = caption[0] if isinstance(caption, list) else caption
-                    if caption in caption_map and caption_map[caption]:
+                    if caption_map.get(caption):
                         if block.data is None:
                             block.data = {}
                         if isinstance(block.data, dict):
@@ -1534,7 +1526,6 @@ class Processor:
             raise DocumentProcessingError(
                 "Failed to update indexing status", doc_id=record_id
             )
-        return
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id
@@ -1695,7 +1686,7 @@ class Processor:
                     caption = block.image_metadata.captions
                     if caption:
                         caption = caption[0]
-                        if caption in caption_map and caption_map[caption]:
+                        if caption_map.get(caption):
                             if block.data is None:
                                 block.data = {}
                             if isinstance(block.data, dict):
