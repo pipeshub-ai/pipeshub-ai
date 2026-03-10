@@ -935,17 +935,18 @@ class WebConnector(BaseConnector):
                 self.logger.debug(f"no HTML content, fetching from {file_record.weburl}")
                 if not self.session or not file_record.weburl:
                     return links
-                # Add referer header if provided
-                headers = {}
-                if referer:
-                    headers["Referer"] = referer
 
-                # Re-fetch and parse the page to extract links
-                async with self.session.get(file_record.weburl, headers=headers) as response:
-                    if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                        return links
+                # Re-fetch using the same multi-strategy fallback used everywhere else
+                result = await fetch_url_with_fallback(
+                    url=file_record.weburl,
+                    session=self.session,
+                    logger=self.logger,
+                    referer=referer,
+                )
+                if result is None or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                    return links
 
-                    html_content = await response.text()
+                html_content: bytes = result.content_bytes
             else:
                 html_content = html_bytes
 
