@@ -319,21 +319,16 @@ async def _execute_simple_sub_agent(
 
     try:
         # Build isolated context for this sub-agent.
-        # Retrieval tasks get recent conversation turns so the LLM can
-        # formulate meaningful search queries for follow-up messages.
-        task_domains = [d.lower() for d in task.get("domains", [])]
-        is_retrieval = any(d in ("retrieval", "knowledge") for d in task_domains)
-
+        # All sub-agents get recent conversation turns so they can interpret
+        # follow-up queries correctly (e.g., "tell me more about each file"
+        # needs context about what files were discussed previously).
         context_text = build_sub_agent_context(
             task=task,
             completed_tasks=completed_tasks,
             conversation_summary=state.get("conversation_summary"),
             query=state.get("query", ""),
             log=log,
-            recent_conversations=(
-                state.get("previous_conversations", [])[-3:]
-                if is_retrieval else None
-            ),
+            recent_conversations=state.get("previous_conversations", [])[-3:],
         )
 
         # Get filtered tools for this sub-agent (StructuredTools with args_schema)
@@ -523,6 +518,7 @@ async def _execute_complex_sub_agent(
         conversation_summary=state.get("conversation_summary"),
         query=state.get("query", ""),
         log=log,
+        recent_conversations=state.get("previous_conversations", [])[-3:],
     )
 
     tools = get_tools_for_sub_agent(task.get("tools", []), state)
@@ -829,6 +825,7 @@ async def _execute_multi_step_sub_agent(
         conversation_summary=state.get("conversation_summary"),
         query=state.get("query", ""),
         log=log,
+        recent_conversations=state.get("previous_conversations", [])[-3:],
     )
 
     tools = get_tools_for_sub_agent(task.get("tools", []), state)

@@ -27,7 +27,7 @@ from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
 from app.modules.agents.qna.chat_state import ChatState
-from app.modules.agents.qna.stream_utils import safe_stream_write
+from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.modules.qna.response_prompt import create_response_messages
 from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
 
@@ -4288,27 +4288,10 @@ async def _plan_with_validation_retry(
             # Build message list: SystemMessage + conversation history + current query
             llm_messages = [SystemMessage(content=system_prompt)] + messages
 
-            # Start periodic status updates task if writer is available
-            update_task = None
-            if writer and config:
-                async def send_periodic_updates() -> None:
-                    """Send periodic status updates during long planning operations"""
-                    try:
-                        await asyncio.sleep(3)  # Wait 3 seconds before first update
-                        safe_stream_write(writer, {
-                            "event": "status",
-                            "data": {"status": "planning", "message": "Still analyzing... this may take a moment"}
-                        }, config)
-                        await asyncio.sleep(5)  # Wait 5 more seconds
-                        safe_stream_write(writer, {
-                            "event": "status",
-                            "data": {"status": "planning", "message": "Reviewing available tools and planning steps..."}
-                        }, config)
-                    except asyncio.CancelledError:
-                        pass
-
-                update_task = asyncio.create_task(send_periodic_updates())
-
+            # Keepalive prevents SSE timeout during LLM planning call
+            keepalive_task = asyncio.create_task(
+                send_keepalive(writer, config, "Planning actions...")
+            )
             try:
                 # Call LLM with full conversation context as messages
                 response = await asyncio.wait_for(
@@ -4316,13 +4299,11 @@ async def _plan_with_validation_retry(
                     timeout=NodeConfig.PLANNER_TIMEOUT_SECONDS
                 )
             finally:
-                # Cancel update task if it's still running
-                if update_task and not update_task.done():
-                    update_task.cancel()
-                    try:
-                        await update_task
-                    except asyncio.CancelledError:
-                        pass
+                keepalive_task.cancel()
+                try:
+                    await keepalive_task
+                except asyncio.CancelledError:
+                    pass
 
             # Parse response
             plan = _parse_planner_response(
@@ -5501,13 +5482,23 @@ async def reflect_node(
             "data": {"status": "analyzing", "message": "Analyzing results..."}
         }, config)
 
-        response = await asyncio.wait_for(
-            llm.ainvoke([
-                SystemMessage(content=prompt),
-                HumanMessage(content="Analyze and decide.")
-            ]),
-            timeout=NodeConfig.REFLECTION_TIMEOUT_SECONDS
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, "Analyzing results...")
         )
+        try:
+            response = await asyncio.wait_for(
+                llm.ainvoke([
+                    SystemMessage(content=prompt),
+                    HumanMessage(content="Analyze and decide.")
+                ]),
+                timeout=NodeConfig.REFLECTION_TIMEOUT_SECONDS
+            )
+        finally:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
 
         reflection = _parse_reflection_response(response.content, log)
 
@@ -7252,10 +7243,20 @@ async def react_agent_node(
             "callbacks": react_callbacks,
         }
 
-        result = await agent.ainvoke(
-            {"messages": messages},
-            config=agent_config,
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, "Processing with tools...")
         )
+        try:
+            result = await agent.ainvoke(
+                {"messages": messages},
+                config=agent_config,
+            )
+        finally:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
 
         # Extract messages from the agent result
         final_messages = result.get("messages", [])

@@ -28,6 +28,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
 
+from app.modules.agents.deep.context_manager import (
+    build_respond_conversation_context,
+)
 from app.modules.agents.deep.state import DeepAgentState
 from app.modules.agents.qna.stream_utils import safe_stream_write
 
@@ -603,19 +606,18 @@ def _build_simple_retrieval_messages(
         len(messages[0].content),
     )
 
-    # ── 2. Conversation history (sliding window to bound prompt size) ─
-    # Cap at _MAX_HISTORY_PAIRS *pairs* (user+bot), not individual messages.
-    # Each entry is a single role/content dict, so we take last N*2 entries.
+    # ── 2. Conversation context (summary + recent turns) ────────────
+    # Uses compact context: summary for older turns (avoids flooding
+    # with long previous bot responses) + last 3 pairs truncated.
+    # Keeps the LLM focused on the retrieval blocks and analyses that follow.
     previous_conversations = state.get("previous_conversations", [])
-    _MAX_HISTORY_PAIRS = 5
-    recent_conversations = previous_conversations[-(_MAX_HISTORY_PAIRS * 2):]
-    for conv in recent_conversations:
-        role = conv.get("role")
-        content = conv.get("content", "")
-        if role == "user_query":
-            messages.append(HumanMessage(content=content))
-        elif role == "bot_response":
-            messages.append(AIMessage(content=content))
+    conv_messages = build_respond_conversation_context(
+        previous_conversations,
+        state.get("conversation_summary"),
+        log,
+    )
+    if conv_messages:
+        messages.extend(conv_messages)
 
     # ── 3. Current user message (qna_message_content) ────────────────
     qna_content = state.get("qna_message_content")
@@ -1021,10 +1023,12 @@ async def _handle_direct_answer(
 
     messages = [SystemMessage(content=system_content)]
 
-    # Include conversation history
+    # Include compact conversation context (summary + recent turns)
     previous = state.get("previous_conversations", [])
     if previous:
-        messages.extend(_build_conversation_history(previous))
+        messages.extend(build_respond_conversation_context(
+            previous, state.get("conversation_summary"), log,
+        ))
 
     messages.append(HumanMessage(content=user_content))
 
@@ -1153,21 +1157,3 @@ def _format_user_context(user_info: dict, org_info: dict) -> str:
     return ", ".join(parts)
 
 
-def _build_conversation_history(
-    previous_conversations: List[Dict[str, Any]],
-    max_pairs: int = 5,
-) -> list:
-    """Build LangChain messages from previous conversations (sliding window)."""
-    messages = []
-    recent = previous_conversations[-max_pairs:]
-
-    for conv in recent:
-        user_msg = conv.get("user", conv.get("query", ""))
-        bot_msg = conv.get("bot", conv.get("response", conv.get("answer", "")))
-
-        if user_msg:
-            messages.append(HumanMessage(content=str(user_msg)[:1000]))
-        if bot_msg:
-            messages.append(AIMessage(content=str(bot_msg)[:1500]))
-
-    return messages
