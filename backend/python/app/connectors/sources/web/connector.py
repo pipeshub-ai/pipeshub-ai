@@ -1411,13 +1411,15 @@ class WebConnector(BaseConnector):
         """
         try:
             parsed = urlparse(url)
+            # Don't touch URLs with query params — the param might be the identifier
+            if parsed.query:
+                return url
             last_segment = parsed.path.rstrip('/').rsplit('/', 1)[-1]
             if '.' not in last_segment:  # no file extension → treat as a page URL
                 path = parsed.path.rstrip('/') + '/'
                 return urlunparse((parsed.scheme, parsed.netloc, path, '', '', ''))
         except Exception as e:
             self.logger.warning(f"⚠️ Error in _ensure_trailing_slash for url '{url}': {e}")
-
         return url
 
     def _get_parent_url(self, url: str) -> Optional[str]:
