@@ -454,15 +454,12 @@ class WebConnector(BaseConnector):
             parsed_url = urlparse(url)
             base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
 
-            # Compute the path prefix to prevent crawling parent paths.
-            # If the start URL ends with '/', use it as-is (it's already a directory).
-            # Otherwise, use the directory portion (up to and including the last '/').
-            start_path = parsed_url.path
-            if start_path.endswith('/'):
-                start_path_prefix = start_path
-            else:
-                parent = start_path.rsplit('/', 1)[0]
-                start_path_prefix = (parent + '/') if parent else '/'
+            # Compute the path prefix for restrict_to_start_path.
+            # Strip any trailing slash then re-add one, so both
+            # "/globalprotect" and "/globalprotect/" produce "/globalprotect/".
+            # Comparisons are also normalised (strip trailing slash, then add
+            # one) so "/globalprotect" (the start URL itself) is accepted.
+            start_path_prefix = parsed_url.path.rstrip('/') + '/'
 
             return {
                 "url": url,
@@ -966,12 +963,15 @@ class WebConnector(BaseConnector):
                     return None
             
             # Guard against HTTP redirects that silently escape the start path prefix.
-            if self.start_path_prefix and self.restrict_to_start_path:
-                final_path = unquote(urlparse(final_url).path)
-                if not final_path.startswith(self.start_path_prefix):
-                    self.logger.debug(
+            if self.restrict_to_start_path and self.start_path_prefix:
+                # Normalise: strip trailing slash then add one so that both
+                # "/globalprotect" and "/globalprotect/" compare correctly.
+                prefix = self.start_path_prefix  # already ends with '/' from config
+                final_path = unquote(urlparse(final_url).path).rstrip('/') + '/'
+                if not final_path.startswith(prefix):
+                    self.logger.warning(
                         f"⚠️ Skipping {url}: HTTP redirect escaped start path prefix "
-                        f"({self.start_path_prefix!r} → {final_path!r})"
+                        f"({prefix!r} → {final_path!r})"
                     )
                     return None
 
@@ -1236,7 +1236,11 @@ class WebConnector(BaseConnector):
 
             # Prevent upward path traversal.
             if self.restrict_to_start_path and self.url:
-                decoded_path = unquote(parsed.path)
+                # Normalise both sides: strip trailing slash then add one so
+                # that "/globalprotect" (no slash) is accepted alongside
+                # "/globalprotect/getting-started/..." while "/content/dam"
+                # is correctly rejected.
+                decoded_path = unquote(parsed.path).rstrip('/') + '/'
                 if not decoded_path.startswith(self.start_path_prefix):
                     return False
 
