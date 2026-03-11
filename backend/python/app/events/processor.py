@@ -1,5 +1,6 @@
 import io
 import json
+from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
@@ -214,6 +215,54 @@ class Processor:
 
         except Exception as e:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
+            raise
+
+    async def process_pdf_with_pymupdf(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process PDF using PyMuPDF+OpenCV processor, yielding phase completion events."""
+        self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
+        try:
+            self.logger.debug("📄 Processing PDF binary content using PyMuPDF+OpenCV processor")
+
+            record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
+
+            processor = PyMuPDFOpenCVProcessor(
+                logger=self.logger,
+                config=self.config_service,
+            )
+
+            # Phase 1: Parse PDF layout (no LLM calls)
+            parsed_data = await processor.parse_document(record_name, pdf_binary)
+
+            # Signal parsing complete
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+            # Phase 2: Create blocks (involves LLM calls for tables)
+            block_containers = await processor.create_blocks(parsed_data)
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
+
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+
+            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using PyMuPDF+OpenCV processor")
+            return
+        except Exception as e:
+            self.logger.error(f"❌ Error processing PDF document with PyMuPDF+OpenCV: {str(e)}")
             raise
 
     async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:

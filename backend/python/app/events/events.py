@@ -1,6 +1,7 @@
 import hashlib
 from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
+import os
 
 import fitz
 
@@ -354,30 +355,54 @@ class EventProcessor:
                     ):
                         yield event
                 else:
+                    use_pymupdf = os.environ.get("ENABLE_PYMUPDF_PROCESSOR", "false").lower() == "true"
+                    if use_pymupdf:
+                        self.logger.info("📄 Using PyMuPDF+OpenCV processor (ENABLE_PYMUPDF_PROCESSOR=true)")
+                        try:
+                            async for event in self.processor.process_pdf_with_pymupdf(
+                                recordName=record_name,
+                                recordId=record_id,
+                                pdf_binary=file_content,
+                                virtual_record_id=virtual_record_id
+                            ):
+                                yield event
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ PyMuPDF+OpenCV processing failed, falling back to OCR: {e}")
+                            async for event in self.processor.process_pdf_document_with_ocr(
+                                recordName=record_name,
+                                recordId=record_id,
+                                version=record_version,
+                                source=connector,
+                                orgId=org_id,
+                                pdf_binary=file_content,
+                                virtual_record_id=virtual_record_id
+                            ):
+                                yield event
+                    else:
                     # Use docling for PDFs that don't need OCR
-                    docling_failed = False
-                    async for event in self.processor.process_pdf_with_docling(
-                        recordName=record_name,
-                        recordId=record_id,
-                        pdf_binary=file_content,
-                        virtual_record_id=virtual_record_id
-                    ):
-                        if event.get("event") == "docling_failed":
-                            docling_failed = True
-                        else:
-                            yield event
-
-                    if docling_failed:
-                        async for event in self.processor.process_pdf_document_with_ocr(
+                        docling_failed = False
+                        async for event in self.processor.process_pdf_with_docling(
                             recordName=record_name,
                             recordId=record_id,
-                            version=record_version,
-                            source=connector,
-                            orgId=org_id,
                             pdf_binary=file_content,
                             virtual_record_id=virtual_record_id
                         ):
-                            yield event
+                            if event.get("event") == "docling_failed":
+                                docling_failed = True
+                            else:
+                                yield event
+
+                        if docling_failed:
+                            async for event in self.processor.process_pdf_document_with_ocr(
+                                recordName=record_name,
+                                recordId=record_id,
+                                version=record_version,
+                                source=connector,
+                                orgId=org_id,
+                                pdf_binary=file_content,
+                                virtual_record_id=virtual_record_id
+                            ):
+                                yield event
 
             elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
                 async for event in self.processor.process_docx_document(
