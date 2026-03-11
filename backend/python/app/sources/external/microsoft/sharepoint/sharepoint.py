@@ -1,8 +1,6 @@
-import base64
 import io
 import json
 import logging
-import os
 import re
 import zipfile
 from datetime import datetime
@@ -44,6 +42,7 @@ from msgraph.generated.sites.sites_request_builder import (  # type: ignore
     SitesRequestBuilder,
 )
 
+from app.agents.actions.util.parse_file import FileContentParser
 from app.sources.client.microsoft.microsoft import MSGraphClient
 
 
@@ -605,10 +604,10 @@ class SharePointDataSource:
 
     async def list_drive_children(
         self,
-        site_id: str,
         drive_id: str,
         folder_id: Optional[str] = None,
         top: int = 10,
+        depth: int = 1,
     ) -> SharePointResponse:
         """List children (files and folders) inside a drive or folder.
 
@@ -618,53 +617,75 @@ class SharePointDataSource:
             GET /sites/{site-id}/drives/{drive-id}/items/{folder-id}/children
 
         Args:
-            site_id:   SharePoint site ID
             drive_id:  Drive (document library) ID
             folder_id: Item ID of the folder to list; None for drive root
             top:       Max items to return (default 10, max 50)
+            depth:     Folder traversal depth where 1 lists direct children only
 
         Returns:
             SharePointResponse with data={"items": List[Dict], "count": int}
         """
         try:
             capped_top = min(top, 50)
-
-            # Build the URL.
-            # For root: GET /drives/{drive-id}/root/children
-            # For sub-folder: GET /drives/{drive-id}/items/{folder-id}/children
-            # Note: we use /drives/{drive-id}/... (top-level) because the
-            # /sites/{site-id}/drives/{drive-id}/... typed path in the SDK
-            # only exposes Drive metadata — items must go through /drives/.
-            if folder_id:
-                url = (
-                    f"https://graph.microsoft.com/v1.0"
-                    f"/drives/{drive_id}/items/{folder_id}/children"
-                    f"?$top={capped_top}"
-                )
-            else:
-                url = (
-                    f"https://graph.microsoft.com/v1.0"
-                    f"/drives/{drive_id}/root/children"
-                    f"?$top={capped_top}"
-                )
-
-            ri = RequestInformation()
-            ri.http_method = Method.GET
-            ri.url_template = url
-            ri.path_parameters = {}
-
-            response = await self.client.request_adapter.send_async(
-                ri, DriveItemCollectionResponse, {}
-            )
-
+            capped_depth = max(depth, 1)
             items: List[Dict[str, Any]] = []
-            if response and hasattr(response, "value") and response.value:
-                items = [self._serialize_drive_item(i) for i in response.value]
+            folder_queue: List[tuple[Optional[str], int]] = [(folder_id, 1)]
+            queue_index = 0
+            visited_folders = set()
 
-            logger.info(f"✅ list_drive_children: {len(items)} items (drive={drive_id}, folder={folder_id})")
+            while queue_index < len(folder_queue):
+                current_folder_id, current_depth = folder_queue[queue_index]
+                queue_index += 1
+
+                folder_key = current_folder_id or "__root__"
+                if folder_key in visited_folders:
+                    continue
+                visited_folders.add(folder_key)
+
+                if current_folder_id:
+                    url = (
+                        f"https://graph.microsoft.com/v1.0"
+                        f"/drives/{drive_id}/items/{current_folder_id}/children"
+                        f"?$top={capped_top}"
+                    )
+                else:
+                    url = (
+                        f"https://graph.microsoft.com/v1.0"
+                        f"/drives/{drive_id}/root/children"
+                        f"?$top={capped_top}"
+                    )
+
+                ri = RequestInformation()
+                ri.http_method = Method.GET
+                ri.url_template = url
+                ri.path_parameters = {}
+
+                response = await self.client.request_adapter.send_async(
+                    ri, DriveItemCollectionResponse, {}
+                )
+
+                current_items: List[Dict[str, Any]] = []
+                if response and hasattr(response, "value") and response.value:
+                    current_items = [self._serialize_drive_item(i) for i in response.value]
+
+                for item in current_items:
+                    if not isinstance(item, dict):
+                        continue
+                    item["depth"] = current_depth
+                    items.append(item)
+
+                    is_folder = bool(item.get("folder")) or item.get("isFolder", False)
+                    child_folder_id = item.get("id")
+                    if is_folder and child_folder_id and current_depth < capped_depth:
+                        folder_queue.append((child_folder_id, current_depth + 1))
+
+            logger.info(
+                f"✅ list_drive_children: {len(items)} items "
+                f"(drive={drive_id}, folder={folder_id}, depth={capped_depth})"
+            )
             return SharePointResponse(
                 success=True,
-                data={"items": items, "count": len(items)},
+                data={"items": items, "count": len(items), "depth": capped_depth},
                 message=f"Found {len(items)} items",
             )
         except Exception as e:
@@ -823,92 +844,6 @@ class SharePointDataSource:
             },
             "isFolder": is_folder,
         }
-
-    async def list_all_drives_children(
-        self,
-        site_id: str,
-        top_per_drive: int = 10,
-    ) -> SharePointResponse:
-        """List root-level files from ALL document libraries in a site.
-
-        Fetches every drive for the site, then calls list_drive_children on each
-        one and merges the results.  Adds 'drive_name' and 'drive_web_url' to
-        every item so callers can tell which library each file came from.
-
-        Args:
-            site_id:        SharePoint site ID
-            top_per_drive:  Max items per drive (default 10, max 50)
-
-        Returns:
-            SharePointResponse with data={"items": List[Dict], "drives_searched": int, "count": int}
-        """
-        try:
-            # Step 1 — get all drives
-            drives_response = await self.list_drives_for_site(site_id=site_id, top=50)
-            if not drives_response.success:
-                return drives_response
-
-            drives = (drives_response.data or {}).get("drives") or []
-            if not drives:
-                return SharePointResponse(
-                    success=True,
-                    data={"items": [], "drives_searched": 0, "count": 0},
-                    message="No document libraries found in this site",
-                )
-
-            # Step 2 — iterate every drive and collect children
-            all_items: List[Dict[str, Any]] = []
-            errors: List[str] = []
-
-            for drive in drives:
-                if not isinstance(drive, dict):
-                    continue
-                drive_id = drive.get("id")
-                drive_name = drive.get("name") or "Unknown"
-                drive_web_url = drive.get("webUrl") or drive.get("web_url") or ""
-
-                if not drive_id:
-                    continue
-
-                try:
-                    children_response = await self.list_drive_children(
-                        site_id=site_id,
-                        drive_id=drive_id,
-                        folder_id=None,
-                        top=top_per_drive,
-                    )
-                    if children_response.success:
-                        items = (children_response.data or {}).get("items") or []
-                        for item in items:
-                            if isinstance(item, dict):
-                                item["drive_name"] = drive_name
-                                item["drive_web_url"] = drive_web_url
-                                all_items.append(item)
-                    else:
-                        errors.append(f"Drive '{drive_name}': {children_response.error}")
-                except Exception as drive_err:
-                    errors.append(f"Drive '{drive_name}': {str(drive_err)}")
-                    logger.warning(f"⚠️ list_all_drives_children: skipping drive {drive_id} — {drive_err}")
-
-            logger.info(
-                f"✅ list_all_drives_children: {len(all_items)} items across "
-                f"{len(drives)} drives for site {site_id}"
-            )
-            result: Dict[str, Any] = {
-                "items": all_items,
-                "drives_searched": len(drives),
-                "count": len(all_items),
-            }
-            if errors:
-                result["drive_errors"] = errors
-            return SharePointResponse(
-                success=True,
-                data=result,
-                message=f"Found {len(all_items)} items across {len(drives)} document libraries",
-            )
-        except Exception as e:
-            logger.error(f"❌ list_all_drives_children failed: {e}")
-            return SharePointResponse(success=False, error=str(e))
 
     async def create_folder(
         self,
@@ -1088,6 +1023,52 @@ class SharePointDataSource:
             logger.error(f"❌ create_word_document failed: {e}")
             return SharePointResponse(success=False, error=str(e))
 
+    async def move_drive_item(
+        self,
+        drive_id: str,
+        item_id: str,
+        destination_folder_id: str,
+        new_name: Optional[str] = None,
+    ) -> SharePointResponse:
+        """Move a SharePoint drive item to another folder in the same drive."""
+        try:
+            patch_data: Dict[str, Any] = {
+                "parentReference": {
+                    "id": destination_folder_id,
+                }
+            }
+            if new_name:
+                patch_data["name"] = new_name
+
+            ri = RequestInformation()
+            ri.http_method = Method.PATCH
+            ri.url_template = (
+                f"https://graph.microsoft.com/v1.0"
+                f"/drives/{drive_id}/items/{item_id}"
+            )
+            ri.path_parameters = {}
+            ri.content = json.dumps(patch_data).encode("utf-8")
+            ri.headers.try_add("Content-Type", "application/json")
+
+            response = await self.client.request_adapter.send_async(ri, DriveItem, {})
+            if response is None:
+                return SharePointResponse(success=False, error="Failed to move item — no response")
+
+            item_dict = self._serialize_drive_item(response)
+
+            logger.info(
+                f"✅ move_drive_item: item {item_id} moved in drive {drive_id} "
+                f"to parent {destination_folder_id}"
+            )
+            return SharePointResponse(
+                success=True,
+                data=item_dict,
+                message="Item moved successfully",
+            )
+        except Exception as e:
+            logger.error(f"❌ move_drive_item failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
     async def create_onenote_notebook(
         self,
         site_id: str,
@@ -1257,106 +1238,28 @@ class SharePointDataSource:
             logger.error(f"❌ get_drive_item_metadata failed: {e}")
             return SharePointResponse(success=False, error=str(e))
 
-    # Office MIME types that support ?format=html conversion via Microsoft Graph
-    _OFFICE_CONVERTIBLE_MIMES = {
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
-        "application/msword",                                                        # .doc
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",        # .xlsx
-        "application/vnd.ms-excel",                                                  # .xls
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation", # .pptx
-        "application/vnd.ms-powerpoint",                                             # .ppt
-        "application/vnd.oasis.opendocument.text",                                  # .odt
-    }
-
-    # Office file extensions that should use ?format=html when mime_type is unknown
-    _OFFICE_CONVERTIBLE_EXTS = {".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt", ".odt"}
-
     async def get_drive_item_content(
         self,
         site_id: str,
         drive_id: str,
         item_id: str,
         max_bytes: int = 512_000,
-        mime_type: Optional[str] = None,
-        file_name: Optional[str] = None,
     ) -> SharePointResponse:
         """Download the content of a drive item as readable text.
 
-        For Office files (.docx, .xlsx, .pptx, etc.) Microsoft Graph's
-        ``?format=html`` conversion is used, which returns HTML that the LLM
-        can read and summarise directly.  Plain-text files are returned as-is.
-        Truly binary files (PDFs, images) fall back to base64.
+        Downloads raw drive item bytes and parses them through the shared
+        FileContentParser helper for supported text, PDF, and OOXML formats.
 
         Args:
             site_id:   SharePoint site ID (unused in URL but kept for API consistency)
             drive_id:  Drive ID
             item_id:   DriveItem ID
             max_bytes: Maximum bytes to read (default 512 KB)
-            mime_type: MIME type of the file (if known); used to decide whether
-                       to request the HTML-converted version.
-            file_name: File name (if known); used as fallback to detect Office
-                       files by extension when mime_type is not available.
 
         Returns:
             SharePointResponse with data={"content": str, "encoding": str, ...}
         """
         try:
-            # Decide whether to request the HTML-converted version
-            use_html_conversion = False
-            if mime_type and mime_type in self._OFFICE_CONVERTIBLE_MIMES:
-                use_html_conversion = True
-            elif file_name:
-                ext = os.path.splitext(file_name)[1].lower()
-                if ext in self._OFFICE_CONVERTIBLE_EXTS:
-                    use_html_conversion = True
-
-            if use_html_conversion:
-                # Use Microsoft Graph's on-the-fly HTML conversion
-                # GET /drives/{drive-id}/items/{item-id}/content?format=html
-                html_url = (
-                    f"https://graph.microsoft.com/v1.0"
-                    f"/drives/{drive_id}/items/{item_id}/content?format=html"
-                )
-                ri_html = RequestInformation()
-                ri_html.http_method = Method.GET
-                ri_html.url_template = html_url
-                ri_html.path_parameters = {}
-
-                try:
-                    raw_html: Optional[bytes] = await self.client.request_adapter.send_primitive_async(
-                        ri_html, "bytes", {}
-                    )
-                    if raw_html:
-                        truncated = len(raw_html) > max_bytes
-                        chunk = raw_html[:max_bytes]
-                        html_text = chunk.decode("utf-8", errors="replace")
-                        logger.info(
-                            f"✅ get_drive_item_content (html): {item_id}, "
-                            f"{len(raw_html)} bytes"
-                        )
-                        return SharePointResponse(
-                            success=True,
-                            data={
-                                "content": html_text,
-                                "encoding": "utf-8",
-                                "format": "html",
-                                "size_bytes": len(raw_html),
-                                "truncated": truncated,
-                            },
-                            message=(
-                                f"Office document converted to HTML ({len(raw_html)} bytes"
-                                f"{', truncated' if truncated else ''})"
-                            ),
-                        )
-                except Exception as html_err:
-                    # HTML conversion failed (e.g. unsupported format on the server side),
-                    # fall through to the regular /content download below.
-                    logger.warning(
-                        f"⚠️ HTML conversion failed for {item_id} ({html_err}), "
-                        "falling back to raw content download"
-                    )
-
-            # Regular raw content download
             url = (
                 f"https://graph.microsoft.com/v1.0"
                 f"/drives/{drive_id}/items/{item_id}/content"
@@ -1377,38 +1280,30 @@ class SharePointDataSource:
                     message="Empty file",
                 )
 
-            truncated = len(raw) > max_bytes
-            chunk = raw[:max_bytes]
+            parser = FileContentParser()
+            parsed_success, parsed_json = parser.parse(raw, max_bytes=max_bytes)
+            if not parsed_success:
+                return SharePointResponse(success=False, error=json.loads(parsed_json).get("error", "Failed to parse file content"))
 
-            # Try to decode as text
-            for enc in ("utf-8", "utf-8-sig", "latin-1"):
-                try:
-                    text = chunk.decode(enc)
-                    logger.info(f"✅ get_drive_item_content: {item_id}, {len(raw)} bytes, enc={enc}")
-                    return SharePointResponse(
-                        success=True,
-                        data={
-                            "content": text,
-                            "encoding": enc,
-                            "size_bytes": len(raw),
-                            "truncated": truncated,
-                        },
-                        message=f"Content read ({len(raw)} bytes{', truncated' if truncated else ''})",
-                    )
-                except (UnicodeDecodeError, LookupError):
-                    continue
+            parsed = json.loads(parsed_json)
+            content = parsed.get("content", "")
+            truncated = bool(parsed.get("truncated", False))
+            format_label = parsed.get("format", "text")
+            size_bytes = parsed.get("bytes_read", len(raw))
 
-            # Binary fallback — return base64
-            b64 = base64.b64encode(chunk).decode("ascii")
+            logger.info(
+                f"✅ get_drive_item_content: {item_id}, {size_bytes} bytes, format={format_label}"
+            )
             return SharePointResponse(
                 success=True,
                 data={
-                    "content_base64": b64,
-                    "encoding": "base64",
-                    "size_bytes": len(raw),
+                    "content": content,
+                    "encoding": "utf-8",
+                    "format": format_label,
+                    "size_bytes": size_bytes,
                     "truncated": truncated,
-                    "note": "Binary file — content is base64-encoded. Use a specialised viewer.",
                 },
+                message=f"Content parsed as {format_label} ({size_bytes} bytes{', truncated' if truncated else ''})",
             )
         except Exception as e:
             logger.error(f"❌ get_drive_item_content failed: {e}")
