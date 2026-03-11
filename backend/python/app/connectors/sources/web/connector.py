@@ -964,6 +964,16 @@ class WebConnector(BaseConnector):
                         f"({base_netloc} → {final_netloc})"
                     )
                     return None
+            
+            # Guard against HTTP redirects that silently escape the start path prefix.
+            if self.start_path_prefix and self.restrict_to_start_path:
+                final_path = unquote(urlparse(final_url).path)
+                if not final_path.startswith(self.start_path_prefix):
+                    self.logger.debug(
+                        f"⚠️ Skipping {url}: HTTP redirect escaped start path prefix "
+                        f"({self.start_path_prefix!r} → {final_path!r})"
+                    )
+                    return None
 
             if len(content_bytes) > self.max_size_mb * 1024 * 1024:
                 size_mb = len(content_bytes) / (1024 * 1024)
