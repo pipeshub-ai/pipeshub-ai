@@ -1,7 +1,7 @@
 import hashlib
+import os
 from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
-import os
 
 import fitz
 
@@ -56,7 +56,7 @@ class EventProcessor:
                 f"to {status.value}: {repr(e)}"
             )
             if status == ProgressStatus.EMPTY:
-                raise Exception(f"Failed to mark record status to EMPTY: {repr(e)}")
+                raise Exception(f"Failed to mark record status to EMPTY: {repr(e)}") from e
 
 
 
