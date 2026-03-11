@@ -3838,6 +3838,11 @@ SHAREPOINT_GUIDANCE = r"""
 |---|---|---|
 | List / search all accessible sites | `sharepoint.get_sites` | `search` (KQL), `top` (default 10, max 50; use 50 for "all"), `skip`, `orderby` |
 | Get a specific site by ID | `sharepoint.get_site` | `site_id` |
+| List document libraries in a known site | `sharepoint.list_drives` | `site_id`, `top` |
+| List files in a known document library or folder | `sharepoint.list_files` | `site_id`, `drive_id`, `folder_id` (opt), `depth`, `top` |
+| Find a file or folder by name/keyword | `sharepoint.search_files` | `query`, `site_id` (opt), `top`, `skip` |
+| Read file content | `sharepoint.get_file_content` | `site_id`, `drive_id`, `item_id` |
+| Move a file or folder in a known document library | `sharepoint.move_item` | `site_id`, `drive_id`, `item_id`, `destination_folder_id`, `new_name` (opt) |
 | Find a page by name/keyword across ALL sites | `sharepoint.search_pages` | `query` (keyword), `top`, `skip` — returns `page_id`, `site_id` |
 | List ALL pages in a known site | `sharepoint.get_pages` | `site_id`, `top` |
 | Get full HTML content of a page | `sharepoint.get_page` | `site_id`, `page_id` (from search_pages or get_pages) |
@@ -3868,6 +3873,28 @@ Retrieval returns formatted text, not structured JSON — you cannot extract IDs
 3. If the user provided a `site_id` → use it directly
 4. Only if none of the above → cascade: call `sharepoint.get_sites` first, then use the result (e.g. for `get_pages`: `site_id` = `{{{{sharepoint.get_sites.data.sites[0].id}}}}`)
 
+**R-SP-4A: Drive ID resolution — ALWAYS call `sharepoint.list_drives` first for SharePoint file actions.**
+Users do not know `drive_id`. For SharePoint file browsing and move tools, resolve it automatically:
+1. Check conversation history / Reference Data for a previously retrieved SharePoint `drive_id` for the same site → use it directly
+2. If the user provided a `drive_id` → use it directly
+3. Otherwise call `sharepoint.list_drives(site_id=...)`, then use `data.drives[0].id` (or the matching drive/library) as `drive_id`
+4. Only after `drive_id` is known should you call `sharepoint.list_files` or `sharepoint.move_item`
+
+Examples:
+- ✅ File browsing flow: `sharepoint.get_sites` → `sharepoint.list_drives(site_id=...)` → `sharepoint.list_files(site_id=..., drive_id=...)`
+- ✅ Folder browsing flow: `sharepoint.list_files(site_id=..., drive_id=..., folder_id=..., depth=...)`
+- ✅ Move flow: `sharepoint.get_sites` → `sharepoint.list_drives(site_id=...)` → resolve item IDs → `sharepoint.move_item(...)`
+- ❌ WRONG: call `sharepoint.list_files` without `drive_id`
+- ❌ WRONG: call `sharepoint.move_item` without `drive_id`
+- ❌ WRONG: ask the user for `drive_id`
+
+**R-SP-4B: Item ID resolution — resolve source and destination IDs with SharePoint tools.**
+Users do not know `item_id` or `destination_folder_id`. Resolve them automatically:
+1. Use `sharepoint.search_files` when the user gives a file or folder name
+2. Use `sharepoint.list_files` when the user refers to a visible folder/library path and you already know `drive_id`
+3. For moves, resolve BOTH the source `item_id` and the destination folder ID before calling `sharepoint.move_item`
+4. Never ask the user for internal item IDs
+
 **R-SP-5: Page ID resolution.**
 1. If the page was mentioned or created in conversation history → use that `page_id` (and `site_id`) directly
 2. If user mentions a page by name and you need full content: `search_pages(query="...")` then `get_page(site_id={{{{sharepoint.search_pages.data.pages[0].site_id}}}}, page_id={{{{sharepoint.search_pages.data.pages[0].page_id}}}})` — do NOT call `get_pages` between them
@@ -3876,6 +3903,11 @@ Retrieval returns formatted text, not structured JSON — you cannot extract IDs
 **R-SP-6: Exact parameter names (never substitute).**
 - `sharepoint.get_sites` → `search`, `top`, `skip`, `orderby`
 - `sharepoint.get_site` → `site_id` (NOT `id`)
+- `sharepoint.list_drives` → `site_id`, `top`
+- `sharepoint.list_files` → `site_id`, `drive_id`, `folder_id` (opt), `depth`, `top`
+- `sharepoint.search_files` → `query`, `site_id` (opt), `top`, `skip`
+- `sharepoint.get_file_content` → `site_id`, `drive_id`, `item_id`
+- `sharepoint.move_item` → `site_id`, `drive_id`, `item_id`, `destination_folder_id`, `new_name` (opt)
 - `sharepoint.search_pages` → `query` (required), `top`, `skip`
 - `sharepoint.get_pages` → `site_id`, `top`
 - `sharepoint.get_page` → `site_id`, `page_id`
@@ -3900,6 +3932,11 @@ When updating a page and need to preserve existing content: call `sharepoint.get
 **R-SP-10: NEVER use retrieval when SharePoint tools can directly serve the request.**
 - Find page by name → `sharepoint.search_pages`
 - List sites → `sharepoint.get_sites`
+- Resolve document libraries → `sharepoint.list_drives`
+- Resolve files/folders by name → `sharepoint.search_files`
+- Read SharePoint file content → `sharepoint.get_file_content`
+- Browse a known library/folder → `sharepoint.list_files`
+- Move a file/folder → `sharepoint.move_item`
 - List pages in a site → `sharepoint.get_pages`
 - Read page content → `sharepoint.get_page`
 - Create/update → `sharepoint.create_page` / `sharepoint.update_page`
