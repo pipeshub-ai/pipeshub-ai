@@ -75,6 +75,18 @@ async def orchestrator_node(
             state["conversation_summary"] = summary
             log.info("Compacted %d conversations into summary", len(previous) - len(recent_convs))
 
+        # Step 1b: Resolve follow-up queries into self-contained queries.
+        # Short/vague follow-ups like "give me detailed" or "more info" lose
+        # their subject when passed to a sub-agent with no conversation history.
+        resolved_query = _resolve_followup_query(query, previous, log)
+        if resolved_query != query:
+            log.info(
+                "Orchestrator: resolved follow-up query: %r -> %r",
+                query[:80], resolved_query[:120],
+            )
+            query = resolved_query
+            state["resolved_query"] = resolved_query
+
         # Step 2: Group tools by domain (also captures tool descriptions)
         tool_groups = group_tools_by_domain(state)
         domain_desc = build_domain_description(tool_groups, state)
@@ -133,19 +145,70 @@ async def orchestrator_node(
 
         # Step 5: Handle direct answer
         if plan.get("can_answer_directly"):
-            state["task_plan"] = plan
-            state["sub_agent_tasks"] = []
-            state["execution_plan"] = {"can_answer_directly": True}
-            state["reflection_decision"] = "respond_success"
-            log.info("Orchestrator: direct answer (no tools needed)")
+            has_knowledge = bool(
+                state.get("kb") or state.get("apps") or state.get("agent_knowledge")
+            )
 
-            duration_ms = (time.perf_counter() - start_time) * 1000
-            log.info(f"Orchestrator completed in {duration_ms:.0f}ms")
-            return state
+            if has_knowledge:
+                # When knowledge is available, NEVER allow direct answers.
+                # The LLM doesn't have the org's private knowledge — it must
+                # search the knowledge base for any substantive question, and
+                # greetings/trivial queries still benefit from a KB check
+                # (the sub-agent simply finds nothing and responds naturally).
+                log.info(
+                    "Orchestrator: overriding can_answer_directly — knowledge base is "
+                    "configured, creating retrieval task"
+                )
+                plan["can_answer_directly"] = False
+                plan["tasks"] = [{
+                    "task_id": "retrieval_search",
+                    "description": (
+                        f"Search the internal knowledge base thoroughly for: {query}. "
+                        "Use multiple diverse search queries with different keywords, "
+                        "phrasings, and angles to maximize coverage of relevant documents."
+                    ),
+                    "domains": ["retrieval"],
+                    "depends_on": [],
+                }]
+            else:
+                state["task_plan"] = plan
+                state["sub_agent_tasks"] = []
+                state["execution_plan"] = {"can_answer_directly": True}
+                state["reflection_decision"] = "respond_success"
+                log.info("Orchestrator: direct answer (no tools needed)")
+
+                duration_ms = (time.perf_counter() - start_time) * 1000
+                log.info(f"Orchestrator completed in {duration_ms:.0f}ms")
+                return state
 
         # Step 6: Validate and normalize tasks
         raw_tasks = plan.get("tasks", [])
         normalized_tasks = _normalize_tasks(raw_tasks, tool_groups, log)
+
+        # Step 6b: Ensure retrieval task exists when knowledge base is configured
+        has_knowledge = bool(
+            state.get("kb") or state.get("apps") or state.get("agent_knowledge")
+        )
+        if has_knowledge:
+            has_retrieval = any(
+                "retrieval" in (t.get("domains") or [])
+                for t in normalized_tasks
+            )
+            if not has_retrieval:
+                log.info(
+                    "Orchestrator: injecting retrieval task — knowledge base is "
+                    "configured but LLM plan has no retrieval task"
+                )
+                normalized_tasks.append({
+                    "task_id": "retrieval_search",
+                    "description": (
+                        f"Search the internal knowledge base thoroughly for: {query}. "
+                        "Use multiple diverse search queries with different keywords, "
+                        "phrasings, and angles to maximize coverage of relevant documents."
+                    ),
+                    "domains": ["retrieval"],
+                    "depends_on": [],
+                })
 
         # Step 7: Build sub-agent tasks from plan
         from app.modules.agents.deep.tool_router import assign_tools_to_tasks
@@ -368,12 +431,22 @@ def _build_knowledge_context(state: DeepAgentState, log: logging.Logger) -> str:
     if has_knowledge:
         parts.append(
             "## Knowledge Base Available\n"
-            "An internal knowledge base is configured with indexed documents. "
-            "Create a task with domain 'retrieval' to search it.\n\n"
-            "**Hybrid strategy**: For services that have both indexed content AND API tools "
-            "(e.g., Confluence pages may be indexed AND accessible via API), you can create "
-            "BOTH a retrieval task and an API task in parallel. The retrieval finds indexed content "
-            "quickly, while the API fetches the latest live version. This gives the most comprehensive results."
+            "An internal knowledge base is configured with indexed documents.\n\n"
+            "**RULE**: When a knowledge base is available, you MUST set `can_answer_directly: false` "
+            "and create at least one retrieval task for ANY substantive question — even if you "
+            "think you know the answer. The knowledge base contains organization-specific content "
+            "that your training data does not have. Only greetings and trivial arithmetic skip retrieval.\n\n"
+            "Create a task with `\"domains\": [\"retrieval\"]` to search the knowledge base. "
+            "The retrieval sub-agent will use the `search_internal_knowledge` tool.\n\n"
+            "**Write descriptive retrieval task descriptions**: The task description IS the instruction "
+            "for the retrieval sub-agent. Specify what to search for, key topics to cover, and "
+            "what aspects matter. Example: instead of just \"Search KB for X\", write "
+            "\"Search the knowledge base for X. Cover aspects like features, pricing, integrations, "
+            "and differences between editions. Use multiple search queries with different phrasings.\"\n\n"
+            "**Hybrid strategy**: When the question involves services that have BOTH indexed content "
+            "AND API tools (e.g., Confluence pages may be indexed AND accessible via the Confluence API), "
+            "create BOTH a retrieval task and an API task in parallel. Retrieval finds indexed content "
+            "quickly, while the API fetches the latest live version."
         )
     else:
         parts.append(
@@ -455,6 +528,72 @@ def _build_time_context(state: DeepAgentState) -> str:
     if timezone:
         parts.append(f"Timezone: {timezone}")
     return "\n".join(parts) if parts else ""
+
+
+# ---------------------------------------------------------------------------
+# Follow-up query resolution
+# ---------------------------------------------------------------------------
+
+_FOLLOWUP_INDICATORS = {
+    "more", "detail", "detailed", "elaborate", "expand", "explain",
+    "deeper", "further", "again", "continue", "clarify", "specifics",
+    "about that", "about this", "tell me more", "go on", "what else",
+}
+
+
+def _resolve_followup_query(
+    query: str,
+    previous_conversations: List[Dict[str, Any]],
+    log: logging.Logger,
+) -> str:
+    """Resolve a vague follow-up query into a self-contained query.
+
+    Short/vague messages like "give me detailed", "more info", or "expand on
+    that" lose their subject when the sub-agent has no conversation history.
+    This function detects such follow-ups and prepends the prior topic so the
+    orchestrator generates a meaningful task description.
+
+    Returns the original query unchanged if it is already self-contained.
+    """
+    if not previous_conversations:
+        return query
+
+    # Heuristic: likely a follow-up if the query is short and contains
+    # follow-up indicator words.
+    words = query.lower().split()
+    if len(words) > 12:
+        # Long queries are usually self-contained
+        return query
+
+    query_lower = query.lower().strip()
+    is_followup = (
+        len(words) <= 6
+        or any(indicator in query_lower for indicator in _FOLLOWUP_INDICATORS)
+    )
+
+    if not is_followup:
+        return query
+
+    # Find the last user query from conversation history
+    last_user_query = None
+    for conv in reversed(previous_conversations):
+        role = conv.get("role")
+        content = conv.get("content", "")
+        if role == "user_query" and content.strip():
+            last_user_query = content.strip()
+            break
+
+    if not last_user_query:
+        return query
+
+    # Build a self-contained query that combines the follow-up with the
+    # prior topic so the orchestrator (and eventually the sub-agent)
+    # knows WHAT to elaborate on.
+    resolved = (
+        f"[Follow-up to: \"{last_user_query[:300]}\"]\n"
+        f"{query}"
+    )
+    return resolved
 
 
 def _build_iteration_context(state: DeepAgentState, log: logging.Logger) -> str:

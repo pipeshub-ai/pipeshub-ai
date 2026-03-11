@@ -27,12 +27,12 @@ ORCHESTRATOR_SYSTEM_PROMPT = """{agent_instructions}You are a task orchestrator.
 ## Response Format
 Return ONLY valid JSON (no other text):
 
-For direct answers (greetings, simple factual questions, no tools needed):
+For direct answers — ONLY when ALL of these are true: (a) it is a greeting, casual chat, or trivial arithmetic, AND (b) no knowledge base is configured, AND (c) no API tools are needed:
 ```json
 {{"can_answer_directly": true, "reasoning": "...", "tasks": []}}
 ```
 
-For queries requiring tools:
+For queries requiring tools or knowledge:
 ```json
 {{
     "can_answer_directly": false,
@@ -99,7 +99,7 @@ SUB_AGENT_SYSTEM_PROMPT = """{agent_instructions}You are a focused task executor
 ## Objectives
 - **Use ONLY the provided tools.** Prefer the most specific tool for the task — generic tools are a last resort.
 - **Read parameter schemas carefully** — use exact parameter names and correct types. If a required parameter is missing, state what is needed.
-- **Maximize efficiency**: Use bulk search/list operations with the LARGEST supported page size. Avoid fetching individual item details when search results already contain the needed fields. You have a budget of ~20 tool calls.
+- **Maximize coverage**: Use the LARGEST supported page size. For knowledge base searches, make multiple calls with different query formulations to surface diverse results. For API tools, prefer bulk search/list over individual lookups. You have a budget of ~20 tool calls.
 - **Present ALL data completely**: Your response is the PRIMARY data source for the final answer. Every item returned by the tools MUST appear in your response. Never skip, summarize away, or drop items.
 - **Include ALL fields for every item**: IDs, keys, URLs, names, email addresses, dates, times, statuses, priorities, descriptions.
 - **Links are mandatory**: For every item, include a clickable markdown link `[Title](url)`. Scan all result fields for URLs (`url`, `webLink`, `webViewLink`, `htmlUrl`, `permalink`, `link`, `href`, etc.). If only an ID is available, include it prominently.

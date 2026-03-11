@@ -11,18 +11,17 @@ ROOT CAUSE (why a dedicated node is needed):
 Pipeline:
     1. Collects analyses from sub_agent_analyses + completed_tasks
     2. Includes raw tool results as supplementary data for links/details
-    3. Includes conversation history for context
-    4. Builds a comprehensive prompt and streams the response
+    3. Fast-path for API-only results (no retrieval)
+    4. Full pipeline with stream_llm_response_with_tools for retrieval+citations
     5. Extracts reference links for the frontend
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -33,33 +32,7 @@ from app.modules.agents.qna.stream_utils import safe_stream_write
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Response prompts
-# ---------------------------------------------------------------------------
-
-_SYSTEM_PROMPT = """{instructions_prefix}{role_prefix}You are a highly capable AI assistant. Your job is to synthesize data from multiple specialized sub-agents into a comprehensive, well-organized response.
-
-## Objectives
-- **Reuse pre-formatted content** — the sub-agent analyses below may already contain well-formatted markdown tables and lists. Incorporate them directly into your response. Do NOT rebuild tables from scratch when a good one already exists.
-- **Present ALL data collected** — every item the sub-agents found must appear in your response. Do not drop, skip, or over-summarize items.
-- **Merge overlapping data** — if multiple analyses cover the same items, merge them into a single deduplicated list/table. Do not repeat the same item twice.
-- **Every item must be a clickable markdown link** `[Title](url)` using URLs from the data.
-- **Use tables** for lists of 5+ items. Each column must contain the CORRECT field value — Status column shows status, Priority column shows priority, etc. Never put the title/link in every column.
-- **Be precise** — exact dates, times, names, statuses, counts. No vague phrases like "several" or "multiple".
-- **Address every part** of the user's query. Note explicitly if data for any part is missing.
-- **Output clean markdown only** — no JSON, no code fences around the whole response.
-- **Do not fabricate** — only use data provided below.
-{user_context}"""
-
-_USER_PROMPT = """**User Query**: {query}
-
-## Sub-Agent Analyses (primary data — reuse formatting directly)
-{analyses_text}
-
-{tool_results_section}
-
-{conversation_context}Synthesize the sub-agent analyses into a single comprehensive response. The analyses already contain well-formatted tables and lists — reuse them directly, merging overlapping items. Do not rebuild tables from raw data. Ensure each table column contains the correct field value."""
+_MAX_TOTAL_ANALYSES_CHARS = 100_000
 
 
 # ---------------------------------------------------------------------------
@@ -134,45 +107,508 @@ async def deep_respond_node(
         len(analyses), len(tool_results),
     )
 
-    # Build prompt with all collected data
     query = state.get("query", "")
-    messages = _build_response_messages(state, query, analyses, tool_results, log)
+    all_tool_results = state.get("all_tool_results") or state.get("tool_results") or []
+    final_results = state.get("final_results", [])
+    virtual_record_map = state.get("virtual_record_id_to_result", {})
 
-    # Log prompt size for diagnostics
-    total_chars = sum(len(m.content) if isinstance(m.content, str) else 0 for m in messages)
+    # ================================================================
+    # FAST PATH: API-only results with sub-agent analyses
+    # When there are no retrieval results (no citations needed) and
+    # sub-agents already produced analyses, use a lightweight LLM call.
+    # ================================================================
+    log.info(
+        "Fast-path check: analyses=%d, final_results=%d, virtual_map=%d, tool_results=%d",
+        len(analyses), len(final_results), len(virtual_record_map), len(all_tool_results),
+    )
+    if analyses and not final_results and not virtual_record_map:
+        log.info("Fast-path: API-only results with sub-agent analysis, using lightweight response")
+        try:
+            from app.modules.agents.qna.nodes import _generate_fast_api_response
+            result = await _generate_fast_api_response(
+                state, llm, query, all_tool_results, analyses, log, writer, config,
+            )
+            if result:
+                # Supplement referenceData with deep-agent extraction
+                completion_data = state.get("completion_data", {})
+                if completion_data and not completion_data.get("referenceData"):
+                    deep_refs = _extract_reference_links(analyses, tool_results)
+                    if deep_refs:
+                        completion_data["referenceData"] = deep_refs
+                        state["completion_data"] = completion_data
+
+                duration_ms = (time.perf_counter() - start_time) * 1000
+                log.info("deep_respond_node (fast-path): %.0fms", duration_ms)
+                return state
+        except Exception as e:
+            log.warning("Fast-path failed, falling back to standard: %s", e)
+            # Fall through to standard path
+
+    # ================================================================
+    # Merge and deduplicate retrieval results from parallel calls.
+    # Sort by (virtual_record_id, block_index) for consistent R-labels.
+    # ================================================================
+    if final_results:
+        from app.modules.agents.qna.nodes import merge_and_number_retrieval_results
+        final_results = merge_and_number_retrieval_results(final_results, log)
+        final_results = sorted(
+            final_results,
+            key=lambda x: (
+                x.get("virtual_record_id") or x.get("metadata", {}).get("virtualRecordId", ""),
+                x.get("block_index", 0),
+            ),
+        )
+        state["final_results"] = final_results
+
+    log.info("Citation data: %d results, %d records", len(final_results), len(virtual_record_map))
+
+    # ================================================================
+    # Build qna_message_content using get_message_content() — identical
+    # to what the chatbot uses — for consistent R-label block numbers.
+    # ================================================================
+    if final_results and virtual_record_map:
+        from app.utils.chat_helpers import get_message_content as _get_msg_content
+
+        user_data = ""
+        user_info = state.get("user_info") or {}
+        org_info = state.get("org_info") or {}
+        if user_info:
+            account_type = (org_info.get("accountType") or "") if org_info else ""
+            if account_type in ("Enterprise", "Business"):
+                user_data = (
+                    "I am the user of the organization. "
+                    f"My name is {user_info.get('fullName', 'a user')} "
+                    f"({user_info.get('designation', '')}) "
+                    f"from {org_info.get('name', 'the organization')}. "
+                    "Please provide accurate and relevant information."
+                )
+            else:
+                user_data = (
+                    "I am the user. "
+                    f"My name is {user_info.get('fullName', 'a user')} "
+                    f"({user_info.get('designation', '')}). "
+                    "Please provide accurate and relevant information."
+                )
+
+        qna_content = _get_msg_content(
+            final_results, virtual_record_map, user_data, query, log, "json"
+        )
+        state["qna_message_content"] = qna_content
+        log.debug("Built qna_message_content via get_message_content()")
+    else:
+        state["qna_message_content"] = None
+
+    # Build R-label → virtual_record_id mapping
+    from app.modules.qna.response_prompt import build_record_label_mapping
+    record_label_map: dict = build_record_label_mapping(final_results) if final_results else {}
+    if record_label_map:
+        log.debug("Record label mapping: %s", record_label_map)
+    state["record_label_to_uuid_map"] = record_label_map
+
+    # ================================================================
+    # Build messages.
+    #
+    # KEY INSIGHT: The chatbot uses a 1-line system prompt and relies
+    # on get_message_content() for all instructions (citation rules,
+    # output format, tool guidance). It produces consistently better
+    # responses than the agent's 248-line system prompt from
+    # build_response_prompt(), which duplicates instructions already
+    # in the user message and over-constrains the LLM.
+    #
+    # For RETRIEVAL queries (qna_message_content present):
+    #   → Use a simple system prompt (chatbot-style)
+    #   → The user message from get_message_content() has everything
+    #
+    # For NON-RETRIEVAL or MIXED queries:
+    #   → Use create_response_messages (full system prompt)
+    #   → Append sub-agent analyses and API tool results
+    # ================================================================
+    qna_has_retrieval = bool(state.get("qna_message_content"))
+
+    if qna_has_retrieval:
+        # ── RETRIEVAL PATH: simple system prompt (chatbot-aligned) ──
+        log.info("deep_respond_node: using simple system prompt (retrieval path)")
+        messages = _build_simple_retrieval_messages(state, log)
+    else:
+        # ── NON-RETRIEVAL / MIXED PATH: full system prompt ──────────
+        from app.modules.qna.response_prompt import create_response_messages
+        messages = create_response_messages(state)
+
+    # Append non-retrieval tool results + sub-agent analyses context
+    non_retrieval_results = [
+        r for r in all_tool_results
+        if r.get("status") == "success"
+        and "retrieval" not in r.get("tool_name", "").lower()
+        and "knowledge" not in r.get("tool_name", "").lower()
+    ]
+    failed_results = [r for r in all_tool_results if r.get("status") == "error"]
+
+    has_api_results = non_retrieval_results or (
+        failed_results and not any(r.get("status") == "success" for r in all_tool_results)
+    )
+
+    if has_api_results or analyses:
+        from app.modules.agents.qna.nodes import _build_tool_results_context
+
+        context = _build_tool_results_context(
+            all_tool_results,
+            [] if qna_has_retrieval else final_results,
+            has_retrieval_in_context=qna_has_retrieval,
+        ) if has_api_results else ""
+
+        # Prepend sub-agent analyses — but SKIP retrieval-domain analyses when
+        # qna_message_content already has retrieval blocks.
+        if analyses:
+            effective_analyses = analyses
+            if qna_has_retrieval:
+                effective_analyses = [
+                    a for a in analyses
+                    if not _is_retrieval_analysis(a)
+                ]
+                skipped = len(analyses) - len(effective_analyses)
+                if skipped:
+                    log.info(
+                        "Skipped %d retrieval-domain analyses (raw blocks "
+                        "already in qna_message_content)", skipped,
+                    )
+
+            if effective_analyses:
+                trimmed_analyses = _trim_analyses_to_budget(effective_analyses, log)
+                analyses_text = "\n## Sub-Agent Analysis\n\n"
+                analyses_text += "The following analysis was generated by specialized sub-agents. "
+                if has_api_results:
+                    analyses_text += "Use it as a guide, but refer to the raw API data above for exact details and links.\n\n"
+                else:
+                    analyses_text += "Use this analysis to generate the response.\n\n"
+                for analysis in trimmed_analyses[:5]:
+                    analyses_text += f"{analysis}\n\n"
+                context = analyses_text + context
+
+        if context.strip():
+            if messages and isinstance(messages[-1], HumanMessage):
+                last_content = messages[-1].content
+                if isinstance(last_content, list):
+                    last_content.append({"type": "text", "text": context})
+                else:
+                    messages[-1].content = last_content + context
+            else:
+                messages.append(HumanMessage(content=context))
+
+    # Log prompt size
+    total_chars = sum(
+        len(m.content) if isinstance(m.content, str)
+        else sum(len(p.get("text", "")) for p in m.content if isinstance(p, dict))
+        if isinstance(m.content, list) else 0
+        for m in messages
+    )
     log.info("deep_respond_node: prompt built, %d chars total", total_chars)
 
-    # Stream response
-    full_content = await _stream_llm_response(llm, messages, writer, config, log)
+    # ================================================================
+    # Setup tools (fetch_full_record for retrieval)
+    # ================================================================
+    tools: list = []
+    if virtual_record_map:
+        from app.utils.agent_fetch_full_record import create_agent_fetch_full_record_tool
+        fetch_tool = create_agent_fetch_full_record_tool(
+            virtual_record_map,
+            label_to_virtual_record_id=record_label_map if record_label_map else None,
+        )
+        tools = [fetch_tool]
+        log.debug(
+            "Added agent fetch_full_record tool (%d records, %d labels)",
+            len(virtual_record_map), len(record_label_map),
+        )
 
-    if not full_content.strip():
-        log.warning("LLM returned empty response, using fallback")
-        full_content = _build_fallback_response(analyses)
-        safe_stream_write(writer, {
-            "event": "answer_chunk",
-            "data": {"chunk": full_content, "accumulated": full_content, "citations": []},
-        }, config)
+    # Initialize blob_store if missing
+    graph_provider = state.get("graph_provider")
+    blob_store = state.get("blob_store")
+    if blob_store is None:
+        try:
+            from app.modules.transformers.blob_storage import BlobStorage
+            config_svc = state.get("config_service")
+            blob_store = BlobStorage(
+                logger=log,
+                config_service=config_svc,
+                graph_provider=graph_provider,
+            )
+            state["blob_store"] = blob_store
+        except Exception as _bs_err:
+            log.warning("Could not initialise BlobStorage: %s", _bs_err)
 
-    # Build completion data
-    completion_data = {
-        "answer": full_content.strip(),
-        "citations": [],
-        "confidence": "High",
-        "answerMatchType": "Derived From Tool Execution",
+    tool_runtime_kwargs = {
+        "blob_store": blob_store,
+        "graph_provider": graph_provider,
+        "org_id": state.get("org_id", ""),
     }
 
-    # Extract reference links from both analyses and tool results
-    reference_data = _extract_reference_links(analyses, tool_results)
-    if reference_data:
-        completion_data["referenceData"] = reference_data
+    # Construct all_queries — prefer decomposed_queries from planner,
+    # fall back to task descriptions from the orchestrator plan, then
+    # just the original query.
+    decomposed_queries = state.get("decomposed_queries", [])
+    if decomposed_queries:
+        all_queries = [
+            q.get("query", query)
+            for q in decomposed_queries
+            if isinstance(q, dict) and q.get("query")
+        ]
+        if not all_queries:
+            all_queries = [query]
+    else:
+        # Build from orchestrator task descriptions for richer context
+        _tasks = (task_plan.get("tasks") or []) if task_plan else []
+        all_queries = [query]
+        for t in _tasks:
+            desc = t.get("description", "")
+            if desc and desc != query:
+                all_queries.append(desc)
 
-    safe_stream_write(writer, {"event": "complete", "data": completion_data}, config)
-    state["response"] = full_content.strip()
-    state["completion_data"] = completion_data
+    # ================================================================
+    # Stream with tools (full pipeline — citations, tool execution)
+    # ================================================================
+    try:
+        from app.utils.streaming import stream_llm_response_with_tools
+
+        log.info("Using stream_llm_response_with_tools...")
+
+        DEFAULT_CONTEXT_LENGTH = 128000
+
+        answer_text = ""
+        citations: list = []
+        reason = None
+        confidence = None
+        reference_data: list = []
+
+        async for stream_event in stream_llm_response_with_tools(
+            llm=llm,
+            messages=messages,
+            final_results=final_results,
+            all_queries=all_queries,
+            retrieval_service=state.get("retrieval_service"),
+            user_id=state.get("user_id", ""),
+            org_id=state.get("org_id", ""),
+            virtual_record_id_to_result=virtual_record_map,
+            blob_store=blob_store,
+            is_multimodal_llm=state.get("is_multimodal_llm", False),
+            context_length=DEFAULT_CONTEXT_LENGTH,
+            tools=tools,
+            tool_runtime_kwargs=tool_runtime_kwargs,
+            target_words_per_chunk=1,
+            mode="json",
+            is_agent=True,
+        ):
+            event_type = stream_event.get("event")
+            event_data = stream_event.get("data", {})
+
+            # ── Citation enrichment (second-pass extraction) ──────────
+            if (
+                event_type == "complete"
+                and final_results
+                and not event_data.get("citations")
+            ):
+                _raw_answer = event_data.get("answer", "")
+                _enriched: list = []
+                if _raw_answer:
+                    try:
+                        from app.utils.citations import (
+                            normalize_citations_and_chunks_for_agent as _ncc_agent,
+                        )
+                        _, _enriched = _ncc_agent(
+                            _raw_answer, final_results, virtual_record_map, []
+                        )
+                        if _enriched:
+                            log.info(
+                                "Citation enrichment: extracted %d citations",
+                                len(_enriched),
+                            )
+                    except Exception as _ce:
+                        log.debug("Citation enrichment error: %s", _ce)
+                if _enriched:
+                    event_data = {**event_data, "citations": _enriched}
+            # ──────────────────────────────────────────────────────────
+
+            safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
+
+            if event_type == "complete":
+                answer_text = event_data.get("answer", "")
+                citations = event_data.get("citations", [])
+                reason = event_data.get("reason")
+                confidence = event_data.get("confidence")
+                reference_data = event_data.get("referenceData", [])
+
+        # Handle empty response
+        if not answer_text or not answer_text.strip():
+            log.warning("Empty response, using fallback")
+            answer_text = _build_fallback_response(analyses) if analyses else (
+                "I wasn't able to generate a response. Please try rephrasing."
+            )
+            fallback_response = {
+                "answer": answer_text,
+                "citations": [],
+                "confidence": "Low",
+                "answerMatchType": "Fallback Response",
+            }
+            safe_stream_write(writer, {
+                "event": "answer_chunk",
+                "data": {"chunk": answer_text, "accumulated": answer_text, "citations": []},
+            }, config)
+            safe_stream_write(writer, {"event": "complete", "data": fallback_response}, config)
+            state["response"] = answer_text
+            state["completion_data"] = fallback_response
+        else:
+            completion_data = {
+                "answer": answer_text,
+                "citations": citations,
+                "reason": reason,
+                "confidence": confidence or "High",
+            }
+            # Merge reference data: pipeline's referenceData is primary,
+            # supplement with deep-agent URL extraction as fallback
+            if reference_data:
+                completion_data["referenceData"] = reference_data
+            else:
+                deep_refs = _extract_reference_links(analyses, tool_results)
+                if deep_refs:
+                    completion_data["referenceData"] = deep_refs
+
+            state["response"] = answer_text
+            state["completion_data"] = completion_data
+
+        log.info("Generated response: %d chars, %d citations", len(answer_text), len(citations))
+
+    except Exception as e:
+        log.error("Response generation failed: %s", e, exc_info=True)
+        error_msg = "I encountered an issue. Please try again."
+        error_response = {
+            "answer": error_msg,
+            "citations": [],
+            "confidence": "Low",
+            "answerMatchType": "Error",
+        }
+        safe_stream_write(writer, {
+            "event": "answer_chunk",
+            "data": {"chunk": error_msg, "accumulated": error_msg, "citations": []},
+        }, config)
+        safe_stream_write(writer, {"event": "complete", "data": error_response}, config)
+        state["response"] = error_msg
+        state["completion_data"] = error_response
 
     duration_ms = (time.perf_counter() - start_time) * 1000
-    log.info("deep_respond_node completed in %.0fms (%d chars response)", duration_ms, len(full_content))
+    log.info("deep_respond_node: %.0fms", duration_ms)
     return state
+
+
+# ---------------------------------------------------------------------------
+# Simple retrieval message builder (chatbot-aligned)
+# ---------------------------------------------------------------------------
+
+def _build_simple_retrieval_messages(
+    state: DeepAgentState,
+    log: logging.Logger,
+) -> list:
+    """Build messages for retrieval queries using a simple system prompt.
+
+    Mirrors the chatbot approach: short system prompt + conversation history +
+    qna_message_content as the user message. The user message (built by
+    get_message_content) already contains all citation rules, output format,
+    tool instructions, and R-labeled blocks — no need for the 248-line
+    system prompt from build_response_prompt().
+    """
+    messages: list = []
+
+    # ── 1. System prompt (short, chatbot-style) ──────────────────────
+    parts: list[str] = []
+
+    # Include agent-level instructions if configured
+    instructions = state.get("instructions", "")
+    if instructions and instructions.strip():
+        parts.append(f"## Agent Instructions\n{instructions.strip()}")
+
+    system_prompt = state.get("system_prompt", "")
+    if system_prompt and system_prompt.strip():
+        parts.append(system_prompt.strip())
+
+    # Core role — matches the chatbot's approach but tuned for deep agent
+    parts.append(
+        "You are an enterprise questions answering expert. "
+        "Provide comprehensive, well-structured answers with detailed explanations. "
+        "Use ALL the information available in the provided context blocks to give "
+        "the most thorough and complete answer possible.\n\n"
+        "When the user asks for more detail or a deeper explanation, use every "
+        "relevant piece of information from the context blocks. Do not summarize "
+        "briefly — expand on each point with the specific details found in the blocks."
+    )
+
+    messages.append(SystemMessage(content="\n\n".join(parts)))
+    log.debug(
+        "Simple retrieval system prompt: %d chars",
+        len(messages[0].content),
+    )
+
+    # ── 2. Conversation history ──────────────────────────────────────
+    previous_conversations = state.get("previous_conversations", [])
+    for conv in previous_conversations:
+        role = conv.get("role")
+        content = conv.get("content", "")
+        if role == "user_query":
+            messages.append(HumanMessage(content=content))
+        elif role == "bot_response":
+            messages.append(AIMessage(content=content))
+
+    # ── 3. Current user message (qna_message_content) ────────────────
+    qna_content = state.get("qna_message_content")
+    if qna_content:
+        messages.append(HumanMessage(content=qna_content))
+    else:
+        # Shouldn't happen (caller checks), but fallback to raw query
+        messages.append(HumanMessage(content=state.get("query", "")))
+
+    return messages
+
+
+# ---------------------------------------------------------------------------
+# Analysis domain detection
+# ---------------------------------------------------------------------------
+
+_RETRIEVAL_DOMAIN_MARKERS = {"retrieval", "knowledge", "kb_"}
+
+def _is_retrieval_analysis(analysis: str) -> bool:
+    """Check if an analysis string is from a retrieval/knowledge domain.
+
+    Analyses are prefixed like '[task_id (domain)]:', so we check the
+    domain label and task_id for retrieval indicators.
+    """
+    lower = analysis[:200].lower()
+    # Check for domain label in the [task_id (domains)]: prefix
+    if "(retrieval)" in lower or "(knowledge)" in lower:
+        return True
+    # Check for task_id patterns like [retrieval_search ...] or [kb_...]
+    if any(marker in lower for marker in _RETRIEVAL_DOMAIN_MARKERS):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Analyses budget trimming
+# ---------------------------------------------------------------------------
+
+def _trim_analyses_to_budget(
+    analyses: List[str],
+    log: logging.Logger,
+    budget: int = _MAX_TOTAL_ANALYSES_CHARS,
+) -> List[str]:
+    """Proportionally trim analyses to fit within budget."""
+    total = sum(len(a) for a in analyses)
+    if total <= budget:
+        return analyses
+    log.info("Trimming analyses from %d to %d chars (budget)", total, budget)
+    trimmed = []
+    for a in analyses:
+        share = int(budget * len(a) / total)
+        if len(a) > share:
+            trimmed.append(a[:share] + "\n... [trimmed for context budget]")
+        else:
+            trimmed.append(a)
+    return trimmed
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +637,12 @@ def _log_state_diagnostic(state: DeepAgentState, log: logging.Logger) -> None:
 
     plan = state.get("task_plan")
     diag["task_plan"] = "present" if plan else "EMPTY"
+
+    final_results = state.get("final_results")
+    diag["final_results"] = len(final_results) if final_results else "EMPTY"
+
+    virtual_map = state.get("virtual_record_id_to_result")
+    diag["virtual_record_map"] = len(virtual_map) if virtual_map else "EMPTY"
 
     log.info("deep_respond_node state: %s", diag)
 
@@ -346,223 +788,6 @@ def _collect_tool_results(state: DeepAgentState, log: logging.Logger) -> List[Di
 
 
 # ---------------------------------------------------------------------------
-# Prompt building
-# ---------------------------------------------------------------------------
-
-def _build_response_messages(
-    state: DeepAgentState,
-    query: str,
-    analyses: List[str],
-    tool_results: List[Dict[str, Any]],
-    log: logging.Logger,
-) -> list:
-    """Build the complete LLM message list for response generation."""
-    messages = []
-
-    # --- System message ---
-    instructions_prefix = ""
-    agent_instructions = state.get("instructions")
-    if agent_instructions and agent_instructions.strip():
-        instructions_prefix = f"## Agent Instructions\n{agent_instructions.strip()}\n\n"
-
-    role_prefix = ""
-    base_system_prompt = state.get("system_prompt", "")
-    if (base_system_prompt
-            and base_system_prompt.strip()
-            and base_system_prompt != "You are an enterprise questions answering expert"):
-        role_prefix = f"{base_system_prompt.strip()}\n\n"
-
-    user_context = _format_user_context(state)
-    user_context_section = ""
-    if user_context:
-        user_context_section = (
-            f"\n\n## Current User\n{user_context}\n"
-            "When the user asks about themselves, use the provided info DIRECTLY."
-        )
-
-    system_content = _SYSTEM_PROMPT.format(
-        instructions_prefix=instructions_prefix,
-        role_prefix=role_prefix,
-        user_context=user_context_section,
-    )
-    messages.append(SystemMessage(content=system_content))
-
-    # --- Conversation history (sliding window) ---
-    previous = state.get("previous_conversations", [])
-    if previous:
-        history = _build_conversation_history(previous)
-        messages.extend(history)
-
-    # --- User message with analyses + tool results ---
-    analyses_text = "\n\n".join(analyses)
-
-    # Build tool results section if we have supplementary API data
-    tool_results_section = _format_tool_results_for_prompt(tool_results, log)
-
-    # Build conversation context hint
-    conversation_context = ""
-    conversation_summary = state.get("conversation_summary")
-    if conversation_summary:
-        conversation_context = f"## Previous Conversation Context\n{conversation_summary}\n\n"
-
-    user_content = _USER_PROMPT.format(
-        query=query,
-        analyses_text=analyses_text,
-        tool_results_section=tool_results_section,
-        conversation_context=conversation_context,
-    )
-
-    messages.append(HumanMessage(content=user_content))
-
-    return messages
-
-
-def _format_tool_results_for_prompt(
-    tool_results: List[Dict[str, Any]],
-    log: logging.Logger,
-) -> str:
-    """
-    Format raw tool results as supplementary data for the LLM.
-
-    These are only included when analyses are missing or insufficient
-    (smart consolidation in _collect_tool_results skips results for
-    domains that already have comprehensive summaries). What remains
-    here is the primary data source and must be included in full.
-    """
-    if not tool_results:
-        return ""
-
-    parts = ["## Raw API Data (use for extracting exact links, details, and any items not in the analyses above)"]
-
-    for r in tool_results:
-        tool_name = r.get("tool_name", "unknown")
-        content = r.get("result", "")
-
-        # Convert to string
-        if isinstance(content, (dict, list)):
-            try:
-                content_str = json.dumps(content, indent=2, default=str, ensure_ascii=False)
-            except (TypeError, ValueError):
-                content_str = str(content)
-        else:
-            content_str = str(content)
-
-        section = f"### {tool_name}\n```json\n{content_str}\n```"
-        parts.append(section)
-
-    return "\n\n".join(parts)
-
-
-def _format_user_context(state: DeepAgentState) -> str:
-    """Format user info for the prompt."""
-    user_info = state.get("user_info") or {}
-    org_info = state.get("org_info") or {}
-
-    user_email = (
-        state.get("user_email")
-        or user_info.get("userEmail")
-        or user_info.get("email")
-        or ""
-    )
-    user_name = (
-        user_info.get("fullName")
-        or user_info.get("name")
-        or user_info.get("displayName")
-        or ""
-    )
-
-    if not user_email and not user_name:
-        return ""
-
-    parts = []
-    if user_name:
-        parts.append(f"Name: {user_name}")
-    if user_email:
-        parts.append(f"Email: {user_email}")
-    if org_info.get("name"):
-        parts.append(f"Organization: {org_info['name']}")
-
-    return ", ".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# LLM streaming
-# ---------------------------------------------------------------------------
-
-async def _stream_llm_response(
-    llm: Any,
-    messages: list,
-    writer: StreamWriter,
-    config: RunnableConfig,
-    log: logging.Logger,
-) -> str:
-    """Stream LLM response to the frontend."""
-    full_content = ""
-    opik_config = get_opik_config()
-
-    try:
-        if hasattr(llm, "astream"):
-            async for chunk in llm.astream(messages, config=opik_config):
-                if not chunk:
-                    continue
-
-                chunk_text = _extract_chunk_text(chunk)
-                if chunk_text:
-                    full_content += chunk_text
-                    safe_stream_write(writer, {
-                        "event": "answer_chunk",
-                        "data": {
-                            "chunk": chunk_text,
-                            "accumulated": full_content,
-                            "citations": [],
-                        },
-                    }, config)
-        else:
-            response = await llm.ainvoke(messages, config=opik_config)
-            full_content = response.content if hasattr(response, "content") else str(response)
-            safe_stream_write(writer, {
-                "event": "answer_chunk",
-                "data": {
-                    "chunk": full_content,
-                    "accumulated": full_content,
-                    "citations": [],
-                },
-            }, config)
-
-    except Exception as e:
-        log.error("LLM response generation failed: %s", e, exc_info=True)
-        full_content = (
-            "I encountered an error while generating the response. "
-            "The data was successfully collected but could not be formatted. "
-            "Please try again."
-        )
-        safe_stream_write(writer, {
-            "event": "answer_chunk",
-            "data": {"chunk": full_content, "accumulated": full_content, "citations": []},
-        }, config)
-
-    return full_content
-
-
-def _extract_chunk_text(chunk: Any) -> str:
-    """Extract text from an LLM streaming chunk."""
-    if not hasattr(chunk, "content"):
-        return ""
-    content = chunk.content
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                parts.append(part.get("text", ""))
-            elif isinstance(part, str):
-                parts.append(part)
-        return "".join(parts)
-    return ""
-
-
-# ---------------------------------------------------------------------------
 # Fallback response (when LLM returns empty)
 # ---------------------------------------------------------------------------
 
@@ -636,6 +861,74 @@ def _extract_urls_from_value(value: Any, seen: set, links: list, depth: int = 0)
     elif isinstance(value, list):
         for item in value[:20]:  # Cap list traversal
             _extract_urls_from_value(item, seen, links, depth + 1)
+
+
+# ---------------------------------------------------------------------------
+# Simple LLM streaming (for direct answers — no tools/citations needed)
+# ---------------------------------------------------------------------------
+
+async def _simple_stream_llm_response(
+    llm: Any,
+    messages: list,
+    writer: StreamWriter,
+    config: RunnableConfig,
+    log: logging.Logger,
+) -> str:
+    """Stream a simple LLM response to the frontend (no tool/citation pipeline)."""
+    full_content = ""
+    opik_config = get_opik_config()
+
+    try:
+        if hasattr(llm, "astream"):
+            async for chunk in llm.astream(messages, config=opik_config):
+                if not chunk:
+                    continue
+                chunk_text = ""
+                if hasattr(chunk, "content"):
+                    content = chunk.content
+                    if isinstance(content, str):
+                        chunk_text = content
+                    elif isinstance(content, list):
+                        for part in content:
+                            if isinstance(part, dict) and part.get("type") == "text":
+                                chunk_text += part.get("text", "")
+                            elif isinstance(part, str):
+                                chunk_text += part
+                if chunk_text:
+                    full_content += chunk_text
+                    safe_stream_write(writer, {
+                        "event": "answer_chunk",
+                        "data": {
+                            "chunk": chunk_text,
+                            "accumulated": full_content,
+                            "citations": [],
+                        },
+                    }, config)
+        else:
+            response = await llm.ainvoke(messages, config=opik_config)
+            full_content = response.content if hasattr(response, "content") else str(response)
+            safe_stream_write(writer, {
+                "event": "answer_chunk",
+                "data": {
+                    "chunk": full_content,
+                    "accumulated": full_content,
+                    "citations": [],
+                },
+            }, config)
+
+    except Exception as e:
+        log.error("LLM response generation failed: %s", e, exc_info=True)
+        full_content = (
+            "I encountered an error while generating the response. "
+            "The data was successfully collected but could not be formatted. "
+            "Please try again."
+        )
+        safe_stream_write(writer, {
+            "event": "answer_chunk",
+            "data": {"chunk": full_content, "accumulated": full_content, "citations": []},
+        }, config)
+
+    return full_content
 
 
 # ---------------------------------------------------------------------------
@@ -739,7 +1032,9 @@ async def _handle_direct_answer(
 
     system_content = f"{instructions_prefix}You are a helpful, friendly AI assistant. Respond naturally and concisely."
 
-    user_context = _format_user_context(state)
+    user_info = state.get("user_info") or {}
+    org_info = state.get("org_info") or {}
+    user_context = _format_user_context(user_info, org_info)
     user_content = query
     if user_context:
         user_content += f"\n\n{user_context}"
@@ -754,7 +1049,7 @@ async def _handle_direct_answer(
 
     messages.append(HumanMessage(content=user_content))
 
-    full_content = await _stream_llm_response(llm, messages, writer, config, log)
+    full_content = await _simple_stream_llm_response(llm, messages, writer, config, log)
 
     completion = {
         "answer": full_content.strip() or "I'm here to help! How can I assist you?",
@@ -815,8 +1110,36 @@ async def _handle_no_data(
 
 
 # ---------------------------------------------------------------------------
-# Conversation history
+# Helpers (kept for _handle_direct_answer)
 # ---------------------------------------------------------------------------
+
+def _format_user_context(user_info: dict, org_info: dict) -> str:
+    """Format user info for the prompt."""
+    user_email = (
+        user_info.get("userEmail")
+        or user_info.get("email")
+        or ""
+    )
+    user_name = (
+        user_info.get("fullName")
+        or user_info.get("name")
+        or user_info.get("displayName")
+        or ""
+    )
+
+    if not user_email and not user_name:
+        return ""
+
+    parts = []
+    if user_name:
+        parts.append(f"Name: {user_name}")
+    if user_email:
+        parts.append(f"Email: {user_email}")
+    if org_info.get("name"):
+        parts.append(f"Organization: {org_info['name']}")
+
+    return ", ".join(parts)
+
 
 def _build_conversation_history(
     previous_conversations: List[Dict[str, Any]],

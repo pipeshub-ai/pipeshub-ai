@@ -270,6 +270,7 @@ def build_sub_agent_context(
     conversation_summary: Optional[str],
     query: str,
     log: logging.Logger,
+    recent_conversations: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     Build isolated context for a sub-agent.
@@ -279,6 +280,7 @@ def build_sub_agent_context(
     - Results from dependency tasks (compacted)
     - A compact conversation summary (not full history)
     - The original user query for reference
+    - Recent conversation turns (for retrieval tasks that need context)
 
     This prevents context bloating - each sub-agent sees only what it needs.
     """
@@ -286,6 +288,24 @@ def build_sub_agent_context(
 
     # Original query
     parts.append(f"Original user query: {query}")
+
+    # Recent conversation turns (for retrieval tasks — helps the LLM
+    # understand follow-up queries and formulate meaningful search terms)
+    if recent_conversations:
+        conv_parts = []
+        for conv in recent_conversations[-3:]:
+            role = conv.get("role", "")
+            content = conv.get("content", "")
+            if role == "user_query" and content:
+                conv_parts.append(f"User: {content[:300]}")
+            elif role == "bot_response" and content:
+                # Include enough of the response to understand the topic
+                conv_parts.append(f"Assistant: {content[:500]}")
+        if conv_parts:
+            parts.append(
+                "\nRecent conversation (for context):\n"
+                + "\n".join(conv_parts)
+            )
 
     # Conversation summary (if any)
     if conversation_summary:

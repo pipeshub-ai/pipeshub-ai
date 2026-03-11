@@ -42,6 +42,9 @@ logger = logging.getLogger(__name__)
 MAX_SUB_AGENT_RECURSION = 25
 _MAX_TOOL_CALLS_PER_AGENT = 20  # Max tool calls before budget exhaustion
 
+# Constants — retrieval tasks (hard cap to prevent wasteful duplicate queries)
+_MAX_TOOL_CALLS_RETRIEVAL = 5
+
 # Constants — complex tasks (higher budgets for data-heavy work)
 _MAX_TOOL_CALLS_COMPLEX = 35
 
@@ -239,8 +242,14 @@ async def _execute_single_sub_agent(
 
     # Route by complexity / multi-step
     complexity = task.get("complexity", "simple")
+    task_domains = [d.lower() for d in task.get("domains", [])]
 
-    if complexity == "complex":
+    # Retrieval tasks ALWAYS use simple execution — the respond node handles
+    # citation pipeline (R-labels, fetch_full_record). Complex phased execution
+    # would summarize the raw blocks, losing detail needed for citations.
+    is_retrieval_task = any(d in ("retrieval", "knowledge") for d in task_domains)
+
+    if complexity == "complex" and not is_retrieval_task:
         log.info("Sub-agent %s: using complex phased execution", task_id)
         try:
             return await _execute_complex_sub_agent(
@@ -252,6 +261,11 @@ async def _execute_single_sub_agent(
                 task_id, e,
             )
             # Fall through to simple execution
+    elif complexity == "complex" and is_retrieval_task:
+        log.info(
+            "Sub-agent %s: forcing simple execution for retrieval task "
+            "(respond node handles citation pipeline)", task_id,
+        )
 
     if task.get("multi_step") and task.get("sub_steps"):
         log.info("Sub-agent %s: using multi-step execution (%d steps)", task_id, len(task["sub_steps"]))
@@ -299,20 +313,31 @@ async def _execute_simple_sub_agent(
     }, config)
 
     try:
-        # Build isolated context for this sub-agent
+        # Build isolated context for this sub-agent.
+        # Retrieval tasks get recent conversation turns so the LLM can
+        # formulate meaningful search queries for follow-up messages.
+        task_domains = [d.lower() for d in task.get("domains", [])]
+        is_retrieval = any(d in ("retrieval", "knowledge") for d in task_domains)
+
         context_text = build_sub_agent_context(
             task=task,
             completed_tasks=completed_tasks,
             conversation_summary=state.get("conversation_summary"),
-            query=state.get("query", ""),
+            query=state.get("resolved_query", state.get("query", "")),
             log=log,
+            recent_conversations=(
+                state.get("previous_conversations", [])[-3:]
+                if is_retrieval else None
+            ),
         )
 
         # Get filtered tools for this sub-agent (StructuredTools with args_schema)
         tools = get_tools_for_sub_agent(task.get("tools", []), state)
 
         # Wrap tools with call budget to prevent runaway tool loops
-        budget = _ToolCallBudget(_MAX_TOOL_CALLS_PER_AGENT)
+        is_retrieval = any(d in ("retrieval", "knowledge") for d in task.get("domains", []))
+        max_calls = _MAX_TOOL_CALLS_RETRIEVAL if is_retrieval else _MAX_TOOL_CALLS_PER_AGENT
+        budget = _ToolCallBudget(max_calls)
         tools = _wrap_tools_with_budget(tools, budget, log)
 
         # Build tool schemas description for the system prompt
@@ -1232,19 +1257,41 @@ def _build_sub_agent_tool_guidance(
         "only if the task requires comprehensive data (reports, summaries)."
     )
 
-    # Generic link extraction guidance
-    parts.append(
-        "\n## Link Extraction (MANDATORY)\n"
-        "For EVERY item in your results, you MUST include a clickable link.\n"
-        "1. **Scan ALL result fields** for URLs — common field names: "
-        "`url`, `webLink`, `webViewLink`, `htmlUrl`, `permalink`, `link`, `href`, "
-        "`self`, `joinUrl`, `joinWebUrl`, `htmlLink`, `alternateLink`.\n"
-        "2. **If a direct URL field exists**, use it: `[Item Title](url_value)`\n"
-        "3. **If only an ID is available**, check if the tool description mentions "
-        "a URL pattern. Many services follow `https://<service-domain>/<path>/<id>`.\n"
-        "4. **If no URL can be determined**, include the item ID prominently so "
-        "the user can find it manually."
-    )
+    # Retrieval-specific guidance — maximise coverage via diverse queries
+    is_retrieval = any(d in ("retrieval", "knowledge") for d in domains)
+    if is_retrieval:
+        parts.append(
+            "\n## Knowledge Base Search Strategy\n"
+            "Your goal is to retrieve the MOST COMPREHENSIVE set of relevant information.\n"
+            "1. **Derive search queries from the TASK DESCRIPTION**, not the raw user message. "
+            "The task description contains the resolved topic.\n"
+            "2. **Make 3-5 diverse search calls** with DIFFERENT query formulations:\n"
+            "   - First: a broad semantic query capturing the main topic\n"
+            "   - Then: rephrase using synonyms, related terms, or different angles\n"
+            "   - Then: targeted queries for specific sub-topics or details\n"
+            "3. **Use limit=100** on each call to maximise results per query.\n"
+            "4. **You have a hard budget of 5 search calls.** The retrieval system "
+            "returns ALL matching blocks per query, so additional queries with similar "
+            "terms will return the same results. Quality of query diversity matters "
+            "more than quantity of calls.\n"
+            "5. The retrieval results will be processed downstream for citations — "
+            "your job is to surface as much relevant content as possible."
+        )
+
+    # Generic link extraction guidance (for non-retrieval tasks)
+    if not is_retrieval:
+        parts.append(
+            "\n## Link Extraction (MANDATORY)\n"
+            "For EVERY item in your results, you MUST include a clickable link.\n"
+            "1. **Scan ALL result fields** for URLs — common field names: "
+            "`url`, `webLink`, `webViewLink`, `htmlUrl`, `permalink`, `link`, `href`, "
+            "`self`, `joinUrl`, `joinWebUrl`, `htmlLink`, `alternateLink`.\n"
+            "2. **If a direct URL field exists**, use it: `[Item Title](url_value)`\n"
+            "3. **If only an ID is available**, check if the tool description mentions "
+            "a URL pattern. Many services follow `https://<service-domain>/<path>/<id>`.\n"
+            "4. **If no URL can be determined**, include the item ID prominently so "
+            "the user can find it manually."
+        )
 
     # List available tools for reference
     if tool_names:
