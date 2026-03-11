@@ -218,7 +218,7 @@ class Processor:
 
     async def process_pdf_with_pymupdf(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PDF using PyMuPDF+OpenCV processor, yielding phase completion events."""
-        self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
+        self.logger.info(f"🚀 Starting PDF document processing for record: {recordId}")
         try:
             self.logger.debug("📄 Processing PDF binary content using PyMuPDF+OpenCV processor")
 
