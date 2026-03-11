@@ -7,16 +7,18 @@ decomposes it into focused sub-tasks, and manages execution flow.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
 
 from app.modules.agents.deep.context_manager import (
+    build_conversation_messages,
     compact_conversation_history_async,
 )
 from app.modules.agents.deep.prompts import ORCHESTRATOR_SYSTEM_PROMPT
@@ -25,7 +27,7 @@ from app.modules.agents.deep.tool_router import (
     build_domain_description,
     group_tools_by_domain,
 )
-from app.modules.agents.qna.stream_utils import safe_stream_write
+from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 
 logger = logging.getLogger(__name__)
 
@@ -66,14 +68,17 @@ async def orchestrator_node(
     }, config)
 
     try:
-        # Step 1: Compact conversation history
+        # Step 1: Build conversation context
+        # Compact older history into a summary for sub-agents, but use the
+        # same sliding-window approach as the react agent for the orchestrator
+        # messages so the LLM sees the actual conversation flow.
         previous = state.get("previous_conversations", [])
-        summary, recent_convs = await compact_conversation_history_async(
+        summary, _ = await compact_conversation_history_async(
             previous, llm, log,
         )
         if summary:
             state["conversation_summary"] = summary
-            log.info("Compacted %d conversations into summary", len(previous) - len(recent_convs))
+            log.info("Compacted older conversations into summary for sub-agents")
 
         # Step 2: Group tools by domain (also captures tool descriptions)
         tool_groups = group_tools_by_domain(state)
@@ -94,9 +99,16 @@ async def orchestrator_node(
         # Build messages
         messages = [SystemMessage(content=system_prompt)]
 
-        # Add conversation summary as context
-        if summary:
-            messages.append(HumanMessage(content=f"[Conversation context]\n{summary}"))
+        # Add recent conversation history for follow-up resolution.
+        # Cap at 10 pairs — enough to resolve references like "tell me more
+        # about each file" without overwhelming the orchestrator's focus on
+        # the current query.  Reference data (IDs, keys) is included so the
+        # LLM can reuse them in task descriptions.
+        conv_messages = build_conversation_messages(
+            previous, log, max_pairs=10, include_reference_data=True,
+        )
+        if conv_messages:
+            messages.extend(conv_messages)
 
         # Add continue/retry context from previous iterations
         if iteration > 0:
@@ -104,7 +116,8 @@ async def orchestrator_node(
             if continue_ctx:
                 messages.append(HumanMessage(content=continue_ctx))
 
-        # Add current query
+        # Add current query — this MUST be the last message so the LLM
+        # focuses on it rather than getting distracted by conversation history.
         user_content = query
         time_ctx = _build_time_context(state)
         if time_ctx:
@@ -112,9 +125,19 @@ async def orchestrator_node(
 
         messages.append(HumanMessage(content=user_content))
 
-        # Step 4: Get plan from LLM
+        # Step 4: Get plan from LLM (keepalive prevents SSE timeout)
         log.info("Requesting task plan from LLM...")
-        response = await llm.ainvoke(messages, config=get_opik_config())
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, "Planning tasks...")
+        )
+        try:
+            response = await llm.ainvoke(messages, config=get_opik_config())
+        finally:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
         plan = _parse_orchestrator_response(
             response.content if hasattr(response, "content") else str(response),
             log,
@@ -146,6 +169,22 @@ async def orchestrator_node(
         # Step 6: Validate and normalize tasks
         raw_tasks = plan.get("tasks", [])
         normalized_tasks = _normalize_tasks(raw_tasks, tool_groups, log)
+
+        # Step 6b: Ensure retrieval task exists when knowledge base is configured
+        has_knowledge = bool(
+            state.get("kb") or state.get("apps") or state.get("agent_knowledge")
+        )
+        if has_knowledge:
+            has_retrieval = any(
+                "retrieval" in (t.get("domains") or [])
+                for t in normalized_tasks
+            )
+            if not has_retrieval:
+                log.info(
+                    "Orchestrator: injecting retrieval task — knowledge base is "
+                    "configured but LLM plan has no retrieval task"
+                )
+                normalized_tasks.append(_create_retrieval_task(query))
 
         # Step 7: Build sub-agent tasks from plan
         from app.modules.agents.deep.tool_router import assign_tools_to_tasks
@@ -221,6 +260,24 @@ async def orchestrator_node(
 
 
 # ---------------------------------------------------------------------------
+# Helper: create a standard retrieval task dict (DRY)
+# ---------------------------------------------------------------------------
+
+def _create_retrieval_task(query: str) -> Dict[str, Any]:
+    """Return a standard retrieval task definition for the given query."""
+    return {
+        "task_id": "retrieval_search",
+        "description": (
+            f"Search the internal knowledge base thoroughly for: {query}. "
+            "Use multiple diverse search queries with different keywords, "
+            "phrasings, and angles to maximize coverage of relevant documents."
+        ),
+        "domains": ["retrieval"],
+        "depends_on": [],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Routing function
 # ---------------------------------------------------------------------------
 
@@ -256,7 +313,6 @@ def _normalize_tasks(
     separate tasks (one per domain) to ensure proper tool isolation.
     """
     normalized: List[Dict[str, Any]] = []
-    available_domains = set(tool_groups.keys())
 
     for task_spec in raw_tasks:
         domains = task_spec.get("domains", [])
@@ -368,12 +424,22 @@ def _build_knowledge_context(state: DeepAgentState, log: logging.Logger) -> str:
     if has_knowledge:
         parts.append(
             "## Knowledge Base Available\n"
-            "An internal knowledge base is configured with indexed documents. "
-            "Create a task with domain 'retrieval' to search it.\n\n"
-            "**Hybrid strategy**: For services that have both indexed content AND API tools "
-            "(e.g., Confluence pages may be indexed AND accessible via API), you can create "
-            "BOTH a retrieval task and an API task in parallel. The retrieval finds indexed content "
-            "quickly, while the API fetches the latest live version. This gives the most comprehensive results."
+            "An internal knowledge base is configured with indexed documents.\n\n"
+            "**RULE**: When a knowledge base is available, you MUST set `can_answer_directly: false` "
+            "and create at least one retrieval task for ANY substantive question — even if you "
+            "think you know the answer. The knowledge base contains organization-specific content "
+            "that your training data does not have. Only greetings and trivial arithmetic skip retrieval.\n\n"
+            "Create a task with `\"domains\": [\"retrieval\"]` to search the knowledge base. "
+            "The retrieval sub-agent will use the `search_internal_knowledge` tool.\n\n"
+            "**Write descriptive retrieval task descriptions**: The task description IS the instruction "
+            "for the retrieval sub-agent. Specify what to search for, key topics to cover, and "
+            "what aspects matter. Example: instead of just \"Search KB for X\", write "
+            "\"Search the knowledge base for X. Cover aspects like features, pricing, integrations, "
+            "and differences between editions. Use multiple search queries with different phrasings.\"\n\n"
+            "**Hybrid strategy**: When the question involves services that have BOTH indexed content "
+            "AND API tools (e.g., Confluence pages may be indexed AND accessible via the Confluence API), "
+            "create BOTH a retrieval task and an API task in parallel. Retrieval finds indexed content "
+            "quickly, while the API fetches the latest live version."
         )
     else:
         parts.append(
@@ -417,10 +483,11 @@ def _build_tool_guidance(state: DeepAgentState) -> str:
         "over individual item lookups."
     )
 
+    _MAX_TOOLS_DISPLAY = 10
     for domain, tool_list in sorted(domain_tools.items()):
-        tool_names = ", ".join(f"`{domain}.{t}`" for t in tool_list[:10])
-        if len(tool_list) > 10:
-            tool_names += f", ... ({len(tool_list) - 10} more)"
+        tool_names = ", ".join(f"`{domain}.{t}`" for t in tool_list[:_MAX_TOOLS_DISPLAY])
+        if len(tool_list) > _MAX_TOOLS_DISPLAY:
+            tool_names += f", ... ({len(tool_list) - _MAX_TOOLS_DISPLAY} more)"
         parts.append(f"- **{domain}**: {tool_names}")
 
     return "\n".join(parts)
@@ -455,6 +522,8 @@ def _build_time_context(state: DeepAgentState) -> str:
     if timezone:
         parts.append(f"Timezone: {timezone}")
     return "\n".join(parts) if parts else ""
+
+
 
 
 def _build_iteration_context(state: DeepAgentState, log: logging.Logger) -> str:

@@ -27,7 +27,7 @@ from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
 from app.modules.agents.qna.chat_state import ChatState
-from app.modules.agents.qna.stream_utils import safe_stream_write
+from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.modules.qna.response_prompt import create_response_messages
 from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
 
@@ -51,6 +51,12 @@ BOT_RESPONSE_MAX_LENGTH = 20000  # Increased significantly to preserve full bot 
 MAX_TOOL_RESULT_PREVIEW_LENGTH = 500
 MAX_AVAILABLE_TOOLS_DISPLAY = 20
 MAX_CONVERSATION_HISTORY = 20  # Number of user+bot message pairs to include (sliding window)
+
+# Truncation / display limits
+_RAW_DATA_SIZE_LIMIT = 8000
+_TOOL_LOG_LIMIT = 5
+_PARAM_DESC_TRUNCATE = 60
+_REASONING_DISPLAY_LEN = 200
 
 # Content detection constants
 MIN_CONTENT_LENGTH_FOR_REUSE = 500  # Minimum chars for content to be considered reusable
@@ -4028,27 +4034,10 @@ async def _plan_with_validation_retry(
             # Build message list: SystemMessage + conversation history + current query
             llm_messages = [SystemMessage(content=system_prompt)] + messages
 
-            # Start periodic status updates task if writer is available
-            update_task = None
-            if writer and config:
-                async def send_periodic_updates() -> None:
-                    """Send periodic status updates during long planning operations"""
-                    try:
-                        await asyncio.sleep(3)  # Wait 3 seconds before first update
-                        safe_stream_write(writer, {
-                            "event": "status",
-                            "data": {"status": "planning", "message": "Still analyzing... this may take a moment"}
-                        }, config)
-                        await asyncio.sleep(5)  # Wait 5 more seconds
-                        safe_stream_write(writer, {
-                            "event": "status",
-                            "data": {"status": "planning", "message": "Reviewing available tools and planning steps..."}
-                        }, config)
-                    except asyncio.CancelledError:
-                        pass
-
-                update_task = asyncio.create_task(send_periodic_updates())
-
+            # Keepalive prevents SSE timeout during LLM planning call
+            keepalive_task = asyncio.create_task(
+                send_keepalive(writer, config, "Planning actions...")
+            )
             try:
                 # Call LLM with full conversation context as messages
                 response = await asyncio.wait_for(
@@ -4056,13 +4045,11 @@ async def _plan_with_validation_retry(
                     timeout=NodeConfig.PLANNER_TIMEOUT_SECONDS
                 )
             finally:
-                # Cancel update task if it's still running
-                if update_task and not update_task.done():
-                    update_task.cancel()
-                    try:
-                        await update_task
-                    except asyncio.CancelledError:
-                        pass
+                keepalive_task.cancel()
+                try:
+                    await keepalive_task
+                except asyncio.CancelledError:
+                    pass
 
             # Parse response
             plan = _parse_planner_response(
@@ -5241,13 +5228,23 @@ async def reflect_node(
             "data": {"status": "analyzing", "message": "Analyzing results..."}
         }, config)
 
-        response = await asyncio.wait_for(
-            llm.ainvoke([
-                SystemMessage(content=prompt),
-                HumanMessage(content="Analyze and decide.")
-            ]),
-            timeout=NodeConfig.REFLECTION_TIMEOUT_SECONDS
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, "Analyzing results...")
         )
+        try:
+            response = await asyncio.wait_for(
+                llm.ainvoke([
+                    SystemMessage(content=prompt),
+                    HumanMessage(content="Analyze and decide.")
+                ]),
+                timeout=NodeConfig.REFLECTION_TIMEOUT_SECONDS
+            )
+        finally:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
 
         reflection = _parse_reflection_response(response.content, log)
 
@@ -5763,16 +5760,7 @@ async def respond_node(
     tool_results = state.get("all_tool_results", [])
 
     if execution_plan.get("can_answer_directly") and not tool_results:
-        response = await _generate_direct_response(state, llm, log, writer, config)
-        completion = {
-            "answer": response,
-            "citations": [],
-            "confidence": "High",
-            "answerMatchType": "Direct Response"
-        }
-        safe_stream_write(writer, {"event": "complete", "data": completion}, config)
-        state["response"] = response
-        state["completion_data"] = completion
+        await _generate_direct_response(state, llm, log, writer, config)
         return state
 
     # Handle clarification
@@ -6002,11 +5990,21 @@ async def respond_node(
         # Include sub-agent analyses (deep agent: pre-analyzed summaries)
         if _sub_analyses:
             analyses_text = "\n## Sub-Agent Analysis\n\n"
-            analyses_text += "The following analysis was generated by specialized sub-agents. "
+            analyses_text += (
+                "The following detailed analysis was produced by specialized sub-agents "
+                "that studied the raw data in depth. "
+            )
             if has_api_results:
-                analyses_text += "Use it as a guide, but refer to the raw API data above for exact details and links.\n\n"
+                analyses_text += (
+                    "Preserve ALL items and findings from this analysis in your response. "
+                    "Cross-reference with the raw API data above for exact details, links, "
+                    "and any additional information.\n\n"
+                )
             else:
-                analyses_text += "Use this analysis to generate the response.\n\n"
+                analyses_text += (
+                    "Preserve ALL items and findings from this analysis in your response. "
+                    "Include every data point, link, and detail.\n\n"
+                )
             for analysis in _sub_analyses[:5]:
                 analyses_text += f"{analysis}\n\n"
             context = analyses_text + context
@@ -6145,7 +6143,7 @@ async def respond_node(
                 if _raw_answer:
                     try:
                         from app.utils.citations import (
-                            normalize_citations_and_chunks_for_agent as _ncc_agent,  # noqa: PLC0415
+                            normalize_citations_and_chunks_for_agent as _ncc_agent,
                         )
                         _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [])
                         if _enriched:
@@ -6233,9 +6231,16 @@ async def _generate_direct_response(
     llm: BaseChatModel,
     log: logging.Logger,
     writer: StreamWriter,
-    config: RunnableConfig
-) -> str:
-    """Generate direct response with full conversation context as LangChain messages"""
+    config: RunnableConfig,
+) -> None:
+    """Generate direct response with full conversation context.
+
+    Streams the LLM response to the frontend, sends the completion event,
+    and stores the result in state. Fully self-contained — the caller just
+    needs to ``return state`` after this returns.
+    """
+    from app.utils.streaming import stream_llm_response
+
     query = state.get("query", "")
     previous = state.get("previous_conversations", [])
 
@@ -6298,51 +6303,47 @@ async def _generate_direct_response(
         user_content += f"\n\n{user_context}"
     messages.append(HumanMessage(content=user_content))
 
+    answer_text = ""
+    citations: list = []
+
     try:
-        full_content = ""
-        opik_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
+        async for stream_event in stream_llm_response(
+            llm=llm,
+            messages=messages,
+            final_results=[],
+            logger=log,
+            target_words_per_chunk=1,
+            mode="simple",
+        ):
+            event_type = stream_event.get("event")
+            event_data = stream_event.get("data", {})
 
-        if hasattr(llm, 'astream'):
-            async for chunk in llm.astream(messages, config=opik_config):
-                if not chunk:
-                    continue
+            safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
 
-                chunk_text = ""
-                if hasattr(chunk, 'content'):
-                    content = chunk.content
-                    if isinstance(content, str):
-                        chunk_text = content
-                    elif isinstance(content, list):
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "text":
-                                chunk_text += part.get("text", "")
-                            elif isinstance(part, str):
-                                chunk_text += part
-
-                if chunk_text:
-                    full_content += chunk_text
-                    safe_stream_write(writer, {
-                        "event": "answer_chunk",
-                        "data": {"chunk": chunk_text, "accumulated": full_content, "citations": []}
-                    }, config)
-        else:
-            response = await llm.ainvoke(messages, config=opik_config)
-            full_content = response.content if hasattr(response, 'content') else str(response)
-            safe_stream_write(writer, {
-                "event": "answer_chunk",
-                "data": {"chunk": full_content, "accumulated": full_content, "citations": []}
-            }, config)
-
-        return full_content
+            if event_type == "complete":
+                answer_text = event_data.get("answer", "")
+                citations = event_data.get("citations", [])
 
     except Exception as e:
-        log.error(f"💥 Direct response failed: {e}")
-        fallback = "I'm here to help! How can I assist you today?"
+        log.error("Direct response failed: %s", e, exc_info=True)
+        answer_text = "I'm here to help! How can I assist you today?"
         safe_stream_write(writer, {
             "event": "answer_chunk",
-            "data": {"chunk": fallback, "accumulated": fallback, "citations": []}
+            "data": {"chunk": answer_text, "accumulated": answer_text, "citations": []},
         }, config)
-        return fallback
+        safe_stream_write(writer, {
+            "event": "complete",
+            "data": {"answer": answer_text, "citations": [], "confidence": "Low"},
+        }, config)
+
+    answer = answer_text.strip() or "I'm here to help! How can I assist you today?"
+    state["response"] = answer
+    state["completion_data"] = {
+        "answer": answer,
+        "citations": citations,
+        "confidence": "High",
+        "answerMatchType": "Direct Response",
+    }
 
 
 async def _generate_fast_api_response(
@@ -6383,8 +6384,8 @@ async def _generate_fast_api_response(
         else:
             content_str = str(content)
         # Limit raw data size to keep the prompt small
-        if len(content_str) > 8000:
-            content_str = content_str[:8000] + "\n... (truncated)"
+        if len(content_str) > _RAW_DATA_SIZE_LIMIT:
+            content_str = content_str[:_RAW_DATA_SIZE_LIMIT] + "\n... (truncated)"
         raw_data_parts.append(f"### {tool_name}\n```json\n{content_str}\n```")
 
     raw_data_text = "\n\n".join(raw_data_parts) if raw_data_parts else ""
@@ -6402,22 +6403,44 @@ async def _generate_fast_api_response(
 
     system_prompt = (
         f"{instructions_prefix}{role_prefix}"
-        "You are a helpful AI assistant. Format the provided analysis and data into a clear, "
-        "professional markdown response for the user.\n\n"
-        "Rules:\n"
-        "- Output ONLY the markdown response — no JSON wrapper, no code fences around the whole response\n"
-        "- Present data in clean markdown (tables for lists, bullet points for details)\n"
-        "- Include ALL clickable links: scan raw data for ANY URL field (http:// or https://) "
-        "and format as `[Title](url)`\n"
-        "- Be specific: show exact dates, times, names, emails, statuses\n"
-        "- Do NOT fabricate data — only use what is provided\n"
+        "You are an expert data analyst producing comprehensive, detailed reports.\n\n"
+        "You will receive:\n"
+        "1. **Sub-Agent Analysis** — pre-analyzed, structured findings from specialized agents "
+        "that have already studied the raw data in depth\n"
+        "2. **Raw API Data** — the original data for cross-referencing and extracting additional "
+        "details (links, exact values) that the analysis may reference\n\n"
+        "## Objective\n"
+        "Produce a thorough, detailed response — NOT a brief summary. The user expects "
+        "deep analysis with every relevant data point preserved.\n\n"
+        "## Quality Standards\n"
+        "- **Comprehensive**: Include EVERY item, finding, and data point from the analysis. "
+        "Do not drop, skip, or summarize away any items\n"
+        "- **Accurate**: Cross-reference the sub-agent analysis with raw API data to verify "
+        "details and extract additional information (exact timestamps, IDs, URLs, emails)\n"
+        "- **Specific**: Use exact values — dates, times, names, emails, statuses, priorities, "
+        "counts. Never use vague quantifiers ('several', 'multiple', 'some') when exact "
+        "counts are available\n"
+        "- **Linked**: Include ALL clickable URLs found in BOTH the analysis AND raw data. "
+        "Format as `[Title](url)`. Links are mandatory for every item that has one\n"
+        "- **Well-structured**: Use tables for list data, headers for sections, bullet points "
+        "for details. Choose the format that best presents each type of data\n"
+        "- **Actionable**: Surface critical items prominently (overdue, high-priority, errors, "
+        "action required). Include follow-ups and recommendations where supported by data\n"
+        "- **No fabrication**: Only use data that is explicitly provided\n"
+        "- Output ONLY markdown — no JSON wrapper, no code fences around the whole response\n"
     )
 
     user_content = f"**User Query**: {query}\n\n"
     user_content += f"## Sub-Agent Analysis\n{analyses_text}\n\n"
     if raw_data_text:
-        user_content += f"## Raw API Data (for extracting links and details)\n{raw_data_text}\n\n"
-    user_content += "Respond with a well-formatted markdown answer. Do NOT wrap in JSON."
+        user_content += (
+            f"## Raw API Data (for cross-referencing and extracting exact details)\n"
+            f"{raw_data_text}\n\n"
+        )
+    user_content += (
+        "Produce a comprehensive, detailed markdown response. Preserve ALL items and data points "
+        "from the analysis. Cross-reference with raw data for accuracy and links. Do NOT wrap in JSON."
+    )
 
     messages = [
         SystemMessage(content=system_prompt),
@@ -6426,36 +6449,28 @@ async def _generate_fast_api_response(
 
     full_content = ""
     reference_data = []
-    opik_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
 
-    if hasattr(llm, "astream"):
-        async for chunk in llm.astream(messages, config=opik_config):
-            if not chunk:
-                continue
-            chunk_text = ""
-            if hasattr(chunk, "content"):
-                content = chunk.content
-                if isinstance(content, str):
-                    chunk_text = content
-                elif isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            chunk_text += part.get("text", "")
-                        elif isinstance(part, str):
-                            chunk_text += part
-            if chunk_text:
-                full_content += chunk_text
-                safe_stream_write(writer, {
-                    "event": "answer_chunk",
-                    "data": {"chunk": chunk_text, "accumulated": full_content, "citations": []},
-                }, config)
-    else:
-        response = await llm.ainvoke(messages, config=opik_config)
-        full_content = response.content if hasattr(response, "content") else str(response)
-        safe_stream_write(writer, {
-            "event": "answer_chunk",
-            "data": {"chunk": full_content, "accumulated": full_content, "citations": []},
-        }, config)
+    try:
+        async for stream_event in stream_llm_response(
+            llm=llm,
+            messages=messages,
+            final_results=[],
+            logger=log,
+            target_words_per_chunk=1,
+            mode="simple",
+        ):
+            event_type = stream_event.get("event")
+            event_data = stream_event.get("data", {})
+
+            if event_type == "complete":
+                # Capture the full answer but don't forward — we emit our own complete event below
+                full_content = event_data.get("answer", "")
+            else:
+                safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
+
+    except Exception as e:
+        log.error("Fast API response generation failed: %s", e, exc_info=True)
+        full_content = ""
 
     if not full_content.strip():
         return False
@@ -6481,7 +6496,7 @@ async def _generate_fast_api_response(
     return True
 
 
-def _extract_urls_for_reference_data(content: Any, reference_data: List[Dict]) -> None:
+def _extract_urls_for_reference_data(content: object, reference_data: List[Dict]) -> None:
     """Extract URLs from tool result content and add to referenceData list."""
     if isinstance(content, str):
         try:
@@ -6582,7 +6597,7 @@ def _build_tool_results_context(
 
             parts.append(f"### {tool_name}\n")
             parts.append(f"```json\n{content_str}\n```\n\n")
-    
+
 
 
     parts.append("\n---\n## 📝 RESPONSE INSTRUCTIONS\n\n")
@@ -6759,7 +6774,7 @@ def _process_retrieval_output(result: object, state: ChatState, log: logging.Log
     return str(result)
 
 
-def _detect_tool_result_status(result_content: Any) -> str:
+def _detect_tool_result_status(result_content: object) -> str:
     """
     Detect whether a tool result indicates success or error.
 
@@ -6796,7 +6811,7 @@ def _detect_tool_result_status(result_content: Any) -> str:
                 return "error"
 
             # Check for error key
-            if "error" in parsed and parsed["error"]:
+            if parsed.get("error"):
                 return "error"
 
             # Check for success=False pattern (tuple-style result)
@@ -6804,7 +6819,7 @@ def _detect_tool_result_status(result_content: Any) -> str:
                 return "error"
 
         # Check tuple-style: (False, "error message")
-        if isinstance(parsed, (list, tuple)) and len(parsed) >= 2:
+        if isinstance(parsed, (list, tuple)) and len(parsed) >= TOOL_RESULT_TUPLE_LENGTH:
             if parsed[0] is False:
                 return "error"
 
@@ -6827,7 +6842,7 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
     the context conflicts that occur with nested agent.astream() calls.
     """
 
-    def __init__(self, writer: StreamWriter, config: RunnableConfig, log: logging.Logger):
+    def __init__(self, writer: StreamWriter, config: RunnableConfig, log: logging.Logger) -> None:
         super().__init__()
         self.writer = writer
         self.config = config
@@ -6933,8 +6948,8 @@ async def react_agent_node(
         log.info(f"ReAct agent loaded {len(tools)} tools with schemas")
 
         # Stream tool count info
-        tool_names_for_log = [getattr(t, 'name', str(t)) for t in tools[:5]]
-        log.info(f"Available tools: {tool_names_for_log}{'...' if len(tools) > 5 else ''}")
+        tool_names_for_log = [getattr(t, 'name', str(t)) for t in tools[:_TOOL_LOG_LIMIT]]
+        log.info(f"Available tools: {tool_names_for_log}{'...' if len(tools) > _TOOL_LOG_LIMIT else ''}")
 
         # Build system prompt
         system_prompt = _build_react_system_prompt(state, log)
@@ -6974,10 +6989,20 @@ async def react_agent_node(
             "callbacks": react_callbacks,
         }
 
-        result = await agent.ainvoke(
-            {"messages": messages},
-            config=agent_config,
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, "Processing with tools...")
         )
+        try:
+            result = await agent.ainvoke(
+                {"messages": messages},
+                config=agent_config,
+            )
+        finally:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
 
         # Extract messages from the agent result
         final_messages = result.get("messages", [])
@@ -7126,7 +7151,7 @@ def _build_tool_schema_reference(state: ChatState, log: logging.Logger) -> str:
                     for pname, pinfo in params_info.items():
                         ptype = pinfo.get("type", "any")
                         desc = pinfo.get("description", "")
-                        short_desc = (desc[:60] + "...") if len(desc) > 60 else desc
+                        short_desc = (desc[:_PARAM_DESC_TRUNCATE] + "...") if len(desc) > _PARAM_DESC_TRUNCATE else desc
                         entry = f"`{pname}` ({ptype})"
                         if short_desc:
                             entry += f": {short_desc}"
@@ -7722,7 +7747,7 @@ def _process_react_chunk(
                             "event": "status",
                             "data": {
                                 "status": "thinking",
-                                "message": reasoning[:200] + ("..." if len(reasoning) > 200 else "")
+                                "message": reasoning[:_REASONING_DISPLAY_LEN] + ("..." if len(reasoning) > _REASONING_DISPLAY_LEN else "")
                             }
                         }, config)
                 else:
@@ -7859,7 +7884,7 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
 
         # Unwrap tuple format (success, data)
         # Tools return (bool, str) tuple - extract the data part
-        if isinstance(result, tuple) and len(result) == 2:  # noqa: PLR2004
+        if isinstance(result, tuple) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
             result = result[1]
             if isinstance(result, str):
                 try:
