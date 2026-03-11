@@ -1,4 +1,5 @@
 import hashlib
+import os
 from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
 
@@ -55,7 +56,7 @@ class EventProcessor:
                 f"to {status.value}: {repr(e)}"
             )
             if status == ProgressStatus.EMPTY:
-                raise Exception(f"Failed to mark record status to EMPTY: {repr(e)}")
+                raise Exception(f"Failed to mark record status to EMPTY: {repr(e)}") from e
 
 
 
@@ -325,24 +326,19 @@ class EventProcessor:
                 return
 
             if extension == ExtensionTypes.PDF.value or mime_type == MimeTypes.PDF.value:
-                # Check if document needs OCR before using docling
-
                 self.logger.info("🔍 Checking if PDF needs OCR processing")
                 try:
                     with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
-
-                        # Check if 50% or more pages need OCR
                         ocr_pages = [OCRStrategy.needs_ocr(page, self.logger) for page in temp_doc]
                         needs_ocr = sum(ocr_pages) >= len(ocr_pages) * 0.5 if ocr_pages else False
 
-                    self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using Docling'}")
+                    self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO'}")
                 except Exception as e:
                     self.logger.warning(f"⚠️ Error checking OCR need: {str(e)}, defaulting to Docling")
                     needs_ocr = False
 
                 if needs_ocr:
-                    # Skip docling and use OCR handler directly
-                    self.logger.info("🤖 PDF needs OCR, skipping Docling")
+                    self.logger.info("🤖 PDF needs OCR, skipping layout processors")
                     async for event in self.processor.process_pdf_document_with_ocr(
                         recordName=record_name,
                         recordId=record_id,
@@ -354,27 +350,51 @@ class EventProcessor:
                     ):
                         yield event
                 else:
-                    # Use PyMuPDF+OpenCV for PDFs that don't need OCR, fall back to OCR on failure
-                    try:
-                        async for event in self.processor.process_pdf_with_docling(
-                            recordName=record_name,
-                            recordId=record_id,
-                            pdf_binary=file_content,
-                            virtual_record_id=virtual_record_id
-                        ):
-                            yield event
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ PyMuPDF+OpenCV processing failed, falling back to OCR: {e}")
-                        async for event in self.processor.process_pdf_document_with_ocr(
-                            recordName=record_name,
-                            recordId=record_id,
-                            version=record_version,
-                            source=connector,
-                            orgId=org_id,
-                            pdf_binary=file_content,
-                            virtual_record_id=virtual_record_id
-                        ):
-                            yield event
+                    use_pymupdf = os.environ.get("ENABLE_PYMUPDF_PROCESSOR", "false").lower() == "true"
+                    if use_pymupdf:
+                        self.logger.info("📄 Using PyMuPDF+OpenCV processor (ENABLE_PYMUPDF_PROCESSOR=true)")
+                        try:
+                            async for event in self.processor.process_pdf_with_pymupdf(
+                                recordName=record_name,
+                                recordId=record_id,
+                                pdf_binary=file_content,
+                                virtual_record_id=virtual_record_id
+                            ):
+                                yield event
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ PyMuPDF+OpenCV processing failed, falling back to OCR: {e}")
+                            async for event in self.processor.process_pdf_document_with_ocr(
+                                recordName=record_name,
+                                recordId=record_id,
+                                version=record_version,
+                                source=connector,
+                                orgId=org_id,
+                                pdf_binary=file_content,
+                                virtual_record_id=virtual_record_id
+                            ):
+                                yield event
+                    else:
+                        self.logger.info("📄 Using Docling processor for PDF")
+                        try:
+                            async for event in self.processor.process_pdf_with_docling(
+                                recordName=record_name,
+                                recordId=record_id,
+                                pdf_binary=file_content,
+                                virtual_record_id=virtual_record_id
+                            ):
+                                yield event
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Docling processing failed, falling back to OCR: {e}")
+                            async for event in self.processor.process_pdf_document_with_ocr(
+                                recordName=record_name,
+                                recordId=record_id,
+                                version=record_version,
+                                source=connector,
+                                orgId=org_id,
+                                pdf_binary=file_content,
+                                virtual_record_id=virtual_record_id
+                            ):
+                                yield event
 
             elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
                 async for event in self.processor.process_docx_document(

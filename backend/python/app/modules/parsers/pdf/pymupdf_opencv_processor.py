@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -12,6 +13,7 @@ import cv2
 import fitz
 import numpy as np
 
+from app.config.configuration_service import ConfigurationService
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -32,16 +34,20 @@ from app.utils.indexing_helpers import get_rows_text, get_table_summary_n_header
 DEFAULT_RENDER_DPI = 150
 DPI_SCALE = 72.0
 MIN_TABLE_AREA_RATIO = 0.002
+MAX_TABLE_AREA_RATIO = 0.7
 MIN_IMAGE_AREA_RATIO = 0.003
 MIN_TEXT_AREA_RATIO = 0.0005
 HEADING_FONT_SIZE_RATIO = 1.3
 BOLD_FLAG = 0b10000
 OVERLAP_THRESHOLD = 0.5
 TABLE_CELL_COUNT_THRESHOLD = 4
+MIN_TABLE_GRID_LINES = 3
 HORIZONTAL_KERNEL_SCALE = 40
 VERTICAL_KERNEL_SCALE = 40
-TEXT_DILATE_KERNEL_WIDTH = 30
-TEXT_DILATE_KERNEL_HEIGHT = 10
+TEXT_DILATE_KERNEL_WIDTH_FRAC = 1 / 40
+TEXT_DILATE_KERNEL_HEIGHT_FRAC = 1 / 150
+BLOCK_MATCH_OVERLAP_THRESHOLD = 0.3
+MIN_LIST_LINES = 2
 LIST_BULLET_PATTERNS = ("•", "●", "○", "■", "□", "▪", "▫", "–", "—", "-")
 ORDERED_LIST_PATTERN_CHARS = frozenset("0123456789.)")
 
@@ -106,6 +112,15 @@ def _pixel_to_pdf(val: float, dpi: int) -> float:
     return val * DPI_SCALE / dpi
 
 
+def _count_distinct_lines(projection: np.ndarray) -> int:
+    """Count distinct contiguous runs of True values in a 1-D boolean array."""
+    if projection.size == 0:
+        return 0
+    transitions = np.diff(projection.astype(np.int8))
+    rising_edges = int(np.sum(transitions == 1))
+    return rising_edges + (1 if projection[0] else 0)
+
+
 def _reading_order_key(region: LayoutRegion) -> Tuple[float, float]:
     return (region.bbox[1], region.bbox[0])
 
@@ -113,7 +128,7 @@ def _reading_order_key(region: LayoutRegion) -> Tuple[float, float]:
 class OpenCVLayoutAnalyzer:
     """Lightweight ML-free layout analysis using OpenCV morphological operations."""
 
-    def __init__(self, logger: Any, render_dpi: int = DEFAULT_RENDER_DPI) -> None:
+    def __init__(self, logger: logging.Logger, render_dpi: int = DEFAULT_RENDER_DPI) -> None:
         self.logger = logger
         self.render_dpi = render_dpi
 
@@ -165,7 +180,33 @@ class OpenCVLayoutAnalyzer:
                 _pixel_to_pdf(x + cw, self.render_dpi),
                 _pixel_to_pdf(y + ch, self.render_dpi),
             )
-            if _rect_area(pdf_bbox) < page_area * MIN_TABLE_AREA_RATIO:
+            region_area = _rect_area(pdf_bbox)
+            if region_area < page_area * MIN_TABLE_AREA_RATIO:
+                continue
+
+            # Reject regions covering most of the page (borders / frames)
+            if region_area > page_area * MAX_TABLE_AREA_RATIO:
+                self.logger.debug(
+                    f"Skipping oversized table candidate "
+                    f"({region_area / page_area:.0%} of page) — likely a border"
+                )
+                continue
+
+            # Verify real grid structure: need multiple horizontal AND vertical
+            # internal lines, not just a surrounding border.
+            roi_h = horiz_lines[y : y + ch, x : x + cw]
+            roi_v = vert_lines[y : y + ch, x : x + cw]
+
+            h_projection = np.any(roi_h > 0, axis=1)
+            v_projection = np.any(roi_v > 0, axis=0)
+            num_h_lines = _count_distinct_lines(h_projection)
+            num_v_lines = _count_distinct_lines(v_projection)
+
+            if num_h_lines < MIN_TABLE_GRID_LINES or num_v_lines < MIN_TABLE_GRID_LINES:
+                self.logger.debug(
+                    f"Skipping table candidate with insufficient grid "
+                    f"(h_lines={num_h_lines}, v_lines={num_v_lines})"
+                )
                 continue
 
             roi = grid_mask[y : y + ch, x : x + cw]
@@ -184,9 +225,12 @@ class OpenCVLayoutAnalyzer:
         page_width_pt: float,
         page_height_pt: float,
     ) -> List[Tuple[float, float, float, float]]:
+        h, w = binary.shape
         page_area = page_width_pt * page_height_pt
+        dilate_w = max(int(w * TEXT_DILATE_KERNEL_WIDTH_FRAC), 5)
+        dilate_h = max(int(h * TEXT_DILATE_KERNEL_HEIGHT_FRAC), 3)
         dilate_kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT, (TEXT_DILATE_KERNEL_WIDTH, TEXT_DILATE_KERNEL_HEIGHT)
+            cv2.MORPH_RECT, (dilate_w, dilate_h)
         )
         dilated = cv2.dilate(binary, dilate_kernel, iterations=2)
 
@@ -265,7 +309,7 @@ class OpenCVLayoutAnalyzer:
             if not bb:
                 continue
             block_bbox = (bb[0], bb[1], bb[2], bb[3])
-            if _overlap_ratio(block_bbox, region_bbox) > 0.3:
+            if _overlap_ratio(block_bbox, region_bbox) > BLOCK_MATCH_OVERLAP_THRESHOLD:
                 matched.append(block)
         return matched
 
@@ -313,7 +357,7 @@ class OpenCVLayoutAnalyzer:
 
     def _classify_list_type(self, text: str) -> Optional[LayoutRegionType]:
         lines = [line.strip() for line in text.split("\n") if line.strip()]
-        if len(lines) < 2:
+        if len(lines) < MIN_LIST_LINES:
             return None
         bullet_count = sum(
             1 for line in lines if any(line.startswith(p) for p in LIST_BULLET_PATTERNS)
@@ -450,7 +494,7 @@ class OpenCVLayoutAnalyzer:
             block_bbox = (bb[0], bb[1], bb[2], bb[3])
 
             claimed = any(
-                _overlap_ratio(block_bbox, eb) > 0.3 for eb in existing_bboxes
+                _overlap_ratio(block_bbox, eb) > BLOCK_MATCH_OVERLAP_THRESHOLD for eb in existing_bboxes
             )
             if claimed:
                 continue
@@ -504,8 +548,8 @@ class PyMuPDFOpenCVProcessor:
 
     def __init__(
         self,
-        logger: Any,
-        config: Any,
+        logger: logging.Logger,
+        config: ConfigurationService,
         render_dpi: int = DEFAULT_RENDER_DPI,
     ) -> None:
         self.logger = logger
@@ -566,7 +610,7 @@ class PyMuPDFOpenCVProcessor:
                         best_region = region
 
                 grid = table.extract()
-                if best_region and best_overlap > 0.3:
+                if best_region and best_overlap > BLOCK_MATCH_OVERLAP_THRESHOLD:
                     best_region.table_grid = grid
                     best_region.bbox = t_bbox
                 else:

@@ -154,7 +154,7 @@ class Processor:
                         "Error updating record status: " + str(e),
                         doc_id=record_id,
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             mime_type = record.get("mimeType")
             if mime_type is None:
@@ -212,7 +212,7 @@ class Processor:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
             raise
 
-    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+    async def process_pdf_with_pymupdf(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PDF using PyMuPDF+OpenCV processor, yielding phase completion events."""
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
         try:
@@ -258,6 +258,47 @@ class Processor:
             return
         except Exception as e:
             self.logger.error(f"❌ Error processing PDF document with PyMuPDF+OpenCV: {str(e)}")
+            raise
+
+    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process PDF using Docling processor, yielding phase completion events."""
+        self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
+        try:
+            self.logger.debug("📄 Processing PDF binary content using Docling processor")
+
+            record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
+
+            processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+
+            conv_res = await processor.parse_document(record_name, pdf_binary)
+
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+            block_containers = await processor.create_blocks(conv_res)
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
+
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+
+            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using Docling processor")
+            return
+        except Exception as e:
+            self.logger.error(f"❌ Error processing PDF document with Docling: {str(e)}")
             raise
 
     async def process_pdf_document_with_ocr(
@@ -1632,7 +1673,7 @@ class Processor:
                         "Error updating record status: " + str(e),
                         doc_id=recordId,
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
@@ -1640,11 +1681,7 @@ class Processor:
 
             modified_markdown, images = parser.extract_and_replace_images(markdown)
             caption_map = {}
-            urls_to_convert = []
-
-            # Collect all image URLs
-            for image in images:
-                urls_to_convert.append(image["url"])
+            urls_to_convert = [image["url"] for image in images]
 
             # Convert URLs to base64 if there are any images
             if urls_to_convert:
