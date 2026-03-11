@@ -8,6 +8,7 @@ the next action: respond | retry | continue.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -19,7 +20,7 @@ from langgraph.types import StreamWriter
 
 from app.modules.agents.deep.prompts import EVALUATOR_PROMPT
 from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, get_opik_config
-from app.modules.agents.qna.stream_utils import safe_stream_write
+from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +106,19 @@ async def aggregator_node(
         log.info(f"Aggregator completed in {duration_ms:.0f}ms (partial success)")
         return state
 
-    # Ambiguous case: use LLM to evaluate
+    # Ambiguous case: use LLM to evaluate (keepalive prevents SSE timeout)
     try:
-        evaluation = await _evaluate_with_llm(state, completed, log)
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, "Evaluating results...", interval=1)
+        )
+        try:
+            evaluation = await _evaluate_with_llm(state, completed, log)
+        finally:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
         state["evaluation"] = evaluation
         decision = evaluation.get("decision", "respond_success")
 

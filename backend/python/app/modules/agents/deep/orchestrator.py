@@ -7,6 +7,7 @@ decomposes it into focused sub-tasks, and manages execution flow.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -25,7 +26,7 @@ from app.modules.agents.deep.tool_router import (
     build_domain_description,
     group_tools_by_domain,
 )
-from app.modules.agents.qna.stream_utils import safe_stream_write
+from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +113,19 @@ async def orchestrator_node(
 
         messages.append(HumanMessage(content=user_content))
 
-        # Step 4: Get plan from LLM
+        # Step 4: Get plan from LLM (keepalive prevents SSE timeout)
         log.info("Requesting task plan from LLM...")
-        response = await llm.ainvoke(messages, config=get_opik_config())
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, "Planning tasks...", interval=1)
+        )
+        try:
+            response = await llm.ainvoke(messages, config=get_opik_config())
+        finally:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
         plan = _parse_orchestrator_response(
             response.content if hasattr(response, "content") else str(response),
             log,

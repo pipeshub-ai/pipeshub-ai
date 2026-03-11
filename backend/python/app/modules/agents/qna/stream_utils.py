@@ -5,6 +5,7 @@ Provides shared utilities for streaming operations across the agent system.
 Consolidates context restoration logic to avoid code duplication.
 """
 
+import asyncio
 import logging
 from typing import Any, Dict, Optional
 
@@ -146,3 +147,45 @@ def stream_error(
     }
     return safe_stream_write(writer, event_data, config, log_errors=False)
 
+
+async def send_keepalive(
+    writer: StreamWriter,
+    config: RunnableConfig,
+    message: str,
+    interval: float = 1,
+) -> None:
+    """Send periodic keepalive status events to prevent SSE connection timeouts.
+
+    During long-running LLM calls or processing phases, the SSE connection
+    can idle with no events, causing proxy/nginx to close it (~120s timeout).
+    This coroutine sends periodic status events to keep the connection alive.
+
+    Usage:
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, "Processing...", interval=10)
+        )
+        try:
+            result = await some_long_operation()
+        finally:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
+
+    Args:
+        writer: StreamWriter for sending events
+        config: RunnableConfig for context preservation
+        message: Status message to include in keepalive events
+        interval: Seconds between keepalive events (default: 10)
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            safe_stream_write(writer, {
+                "event": "status",
+                "data": {"status": "keepalive", "message": message},
+            }, config)
+        except Exception:
+            # Client likely disconnected — stop sending keepalives
+            return

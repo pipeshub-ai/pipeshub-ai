@@ -34,7 +34,7 @@ from app.modules.agents.deep.context_manager import build_sub_agent_context
 from app.modules.agents.deep.prompts import SUB_AGENT_SYSTEM_PROMPT
 from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, _opik_tracer
 from app.modules.agents.deep.tool_router import get_tools_for_sub_agent
-from app.modules.agents.qna.stream_utils import safe_stream_write
+from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 
 logger = logging.getLogger(__name__)
 
@@ -410,8 +410,20 @@ async def _execute_simple_sub_agent(
         }
 
         # Execute — no wall-clock timeout for deep agent; tool call budget
-        # (_ToolCallBudget) stops the agent after _MAX_TOOL_CALLS_PER_AGENT calls
-        result = await agent.ainvoke({"messages": messages}, config=agent_config)
+        # (_ToolCallBudget) stops the agent after _MAX_TOOL_CALLS_PER_AGENT calls.
+        # Keepalive prevents proxy/nginx from closing the SSE connection during
+        # long-running API calls.
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, task_display, interval=1)
+        )
+        try:
+            result = await agent.ainvoke({"messages": messages}, config=agent_config)
+        finally:
+            keepalive_task.cancel()
+            try:
+                await keepalive_task
+            except asyncio.CancelledError:
+                pass
 
         # Extract results
         final_messages = result.get("messages", [])
@@ -459,32 +471,6 @@ async def _execute_simple_sub_agent(
 # Complex sub-agent execution (phased: fetch → summarize → consolidate)
 # ---------------------------------------------------------------------------
 
-
-async def _send_keepalive(
-    writer: StreamWriter,
-    config: RunnableConfig,
-    message: str,
-    interval: float = 15,
-) -> None:
-    """Send periodic keepalive status events to prevent connection timeouts.
-
-    During long-running phases (SUMMARIZE, CONSOLIDATE) the SSE connection
-    can idle for 60+ seconds with no events, causing proxy/nginx timeouts.
-    This task sends periodic status events to keep the connection alive.
-
-    Exits silently on write failure (client disconnect) to avoid noisy
-    background exceptions accumulating during long-running phases.
-    """
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            safe_stream_write(writer, {
-                "event": "status",
-                "data": {"status": "executing", "message": message},
-            }, config)
-        except Exception:
-            # Client likely disconnected — stop sending keepalives
-            return
 
 
 async def _execute_complex_sub_agent(
@@ -615,8 +601,21 @@ async def _execute_complex_sub_agent(
     }
 
     # Execute — no wall-clock timeout for deep agent; tool call budget
-    # (_ToolCallBudget) stops the agent after _MAX_TOOL_CALLS_COMPLEX calls
-    result = await agent.ainvoke({"messages": messages}, config=agent_config)
+    # (_ToolCallBudget) stops the agent after _MAX_TOOL_CALLS_COMPLEX calls.
+    # Keepalive prevents proxy/nginx from closing the SSE connection during
+    # long-running API calls (Phase 1 can run 60-180+ seconds).
+    keepalive_task = asyncio.create_task(
+        send_keepalive(writer, config, f"Fetching {domain_name} data...", interval=1)
+    )
+    try:
+        result = await agent.ainvoke({"messages": messages}, config=agent_config)
+    finally:
+        keepalive_task.cancel()
+        try:
+            await keepalive_task
+        except asyncio.CancelledError:
+            pass
+
     final_messages = result.get("messages", [])
     tool_results = _extract_tool_results(final_messages, state, log)
 
@@ -702,7 +701,7 @@ async def _execute_complex_sub_agent(
     ]
 
     keepalive_task = asyncio.create_task(
-        _send_keepalive(writer, config, f"Summarizing {domain_name} data...", interval=15)
+        send_keepalive(writer, config, f"Summarizing {domain_name} data...", interval=1)
     )
     try:
         batch_summaries = await asyncio.gather(*summarize_coros, return_exceptions=True)
@@ -745,7 +744,7 @@ async def _execute_complex_sub_agent(
     log.info("Phase 3 (CONSOLIDATE): merging batch summaries for %s", task_id)
 
     keepalive_task = asyncio.create_task(
-        _send_keepalive(writer, config, f"Consolidating {domain_name} summary...", interval=15)
+        send_keepalive(writer, config, f"Consolidating {domain_name} summary...", interval=1)
     )
     try:
         domain_summary = await consolidate_batch_summaries(
@@ -925,8 +924,23 @@ async def _execute_multi_step_sub_agent(
                 "callbacks": callbacks,
             }
 
-            # No wall-clock timeout — budget per step limits tool calls
-            result = await agent.ainvoke({"messages": messages}, config=agent_config)
+            # No wall-clock timeout — budget per step limits tool calls.
+            # Keepalive prevents proxy timeout during each step's execution.
+            keepalive_task = asyncio.create_task(
+                send_keepalive(
+                    writer, config,
+                    f"Step {step_num}/{len(sub_steps)}: {step_desc[:80]}",
+                    interval=1,
+                )
+            )
+            try:
+                result = await agent.ainvoke({"messages": messages}, config=agent_config)
+            finally:
+                keepalive_task.cancel()
+                try:
+                    await keepalive_task
+                except asyncio.CancelledError:
+                    pass
 
             final_messages = result.get("messages", [])
             response_text = _extract_response(final_messages, log)

@@ -1039,6 +1039,11 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
                 org_info,
             ),
             media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
     except HTTPException:
         raise
@@ -2687,6 +2692,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 agent=agent,
             ),
             media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
     except HTTPException:
         raise
