@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 MAX_SUB_AGENT_RECURSION = 25
 _MAX_TOOL_CALLS_PER_AGENT = 20  # Max tool calls before budget exhaustion
 
-# Constants — retrieval tasks (hard cap to prevent wasteful duplicate queries)
-_MAX_TOOL_CALLS_RETRIEVAL = 5
+# Constants — retrieval tasks (allows 3-5 diverse searches + retries/refinement)
+_MAX_TOOL_CALLS_RETRIEVAL = 10
 
 # Constants — complex tasks (higher budgets for data-heavy work)
 _MAX_TOOL_CALLS_COMPLEX = 35
@@ -323,7 +323,7 @@ async def _execute_simple_sub_agent(
             task=task,
             completed_tasks=completed_tasks,
             conversation_summary=state.get("conversation_summary"),
-            query=state.get("resolved_query", state.get("query", "")),
+            query=state.get("query", ""),
             log=log,
             recent_conversations=(
                 state.get("previous_conversations", [])[-3:]
@@ -466,13 +466,20 @@ async def _send_keepalive(
     During long-running phases (SUMMARIZE, CONSOLIDATE) the SSE connection
     can idle for 60+ seconds with no events, causing proxy/nginx timeouts.
     This task sends periodic status events to keep the connection alive.
+
+    Exits silently on write failure (client disconnect) to avoid noisy
+    background exceptions accumulating during long-running phases.
     """
     while True:
         await asyncio.sleep(interval)
-        safe_stream_write(writer, {
-            "event": "status",
-            "data": {"status": "executing", "message": message},
-        }, config)
+        try:
+            safe_stream_write(writer, {
+                "event": "status",
+                "data": {"status": "executing", "message": message},
+            }, config)
+        except Exception:
+            # Client likely disconnected — stop sending keepalives
+            return
 
 
 async def _execute_complex_sub_agent(

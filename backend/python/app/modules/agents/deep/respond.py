@@ -420,6 +420,7 @@ async def _deep_respond_impl(
         reason = None
         confidence = None
         reference_data: list = []
+        any_chunks_sent = False  # Track whether we already sent chunks to the client
 
         async for stream_event in stream_llm_response_with_tools(
             llm=llm,
@@ -471,6 +472,8 @@ async def _deep_respond_impl(
 
             safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
 
+            if event_type == "answer_chunk":
+                any_chunks_sent = True
             if event_type == "complete":
                 answer_text = event_data.get("answer", "")
                 citations = event_data.get("citations", [])
@@ -478,9 +481,10 @@ async def _deep_respond_impl(
                 confidence = event_data.get("confidence")
                 reference_data = event_data.get("referenceData", [])
 
-        # Handle empty response
+        # Handle empty response — only emit fallback events if no chunks
+        # were already sent to the client (avoids duplicate/contradictory output)
         if not answer_text or not answer_text.strip():
-            log.warning("Empty response, using fallback")
+            log.warning("Empty response (chunks_sent=%s), using fallback", any_chunks_sent)
             answer_text = _build_fallback_response(analyses) if analyses else (
                 "I wasn't able to generate a response. Please try rephrasing."
             )
@@ -490,11 +494,12 @@ async def _deep_respond_impl(
                 "confidence": "Low",
                 "answerMatchType": "Fallback Response",
             }
-            safe_stream_write(writer, {
-                "event": "answer_chunk",
-                "data": {"chunk": answer_text, "accumulated": answer_text, "citations": []},
-            }, config)
-            safe_stream_write(writer, {"event": "complete", "data": fallback_response}, config)
+            if not any_chunks_sent:
+                safe_stream_write(writer, {
+                    "event": "answer_chunk",
+                    "data": {"chunk": answer_text, "accumulated": answer_text, "citations": []},
+                }, config)
+                safe_stream_write(writer, {"event": "complete", "data": fallback_response}, config)
             state["response"] = answer_text
             state["completion_data"] = fallback_response
         else:
