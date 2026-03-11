@@ -68,6 +68,9 @@ class Connectors(Enum):
     ZOOM = "ZOOM"
 
     GITLAB = "GITLAB"
+    SNOWFLAKE = "SNOWFLAKE"
+    POSTGRESQL = "POSTGRESQL"
+
     UNKNOWN = "UNKNOWN"
 
     RSS = "RSS"
@@ -101,6 +104,8 @@ class AppGroups(Enum):
     RSS = "RSS"
     GITLAB = "GitLab"
 
+    SNOWFLAKE = "Snowflake"
+    POSTGRESQL = "PostgreSQL"  
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -156,6 +161,8 @@ class CollectionNames(Enum):
     DEALS = "deals"
     ARTIFACTS = "artifacts"
     CODE_FILES = "codeFiles"
+    SQL_TABLES = "sqlTables"
+    SQL_VIEWS = "sqlViews"
 
     # Users and groups
     PEOPLE = "people"
@@ -250,6 +257,9 @@ class ExtensionTypes(Enum):
     SVG = "svg"
     HEIC = "heic"
     HEIF = "heif"
+    SQL_TABLE = "sql_table"  
+    SQL_VIEW = "sql_view"    
+
 
 
 class MimeTypes(Enum):
@@ -290,6 +300,33 @@ class MimeTypes(Enum):
     HEIF = "image/heif"
     ZIP = "application/zip"
     GIF = "image/gif"
+    SQL_TABLE = "application/vnd.sql.table"  
+    SQL_VIEW = "application/vnd.sql.view"  
+
+RECONCILIATION_ENABLED_MIME_TYPES = {
+    MimeTypes.SQL_TABLE.value,
+    MimeTypes.SQL_VIEW.value,
+    MimeTypes.GOOGLE_DOCS.value,
+    MimeTypes.GOOGLE_SHEETS.value,
+    MimeTypes.GOOGLE_SLIDES.value,
+    MimeTypes.PDF.value,
+    MimeTypes.DOCX.value,
+    MimeTypes.DOC.value,
+    MimeTypes.TEXT.value,
+    MimeTypes.HTML.value,
+}
+
+RECONCILIATION_ENABLED_EXTENSIONS = {
+    ExtensionTypes.SQL_TABLE.value,
+    ExtensionTypes.SQL_VIEW.value,
+    ExtensionTypes.PDF.value,
+    ExtensionTypes.DOCX.value,
+    ExtensionTypes.DOC.value,
+    ExtensionTypes.TXT.value,
+    ExtensionTypes.MD.value,
+    ExtensionTypes.MDX.value,
+    ExtensionTypes.HTML.value
+}
 
 
 class ProgressStatus(Enum):
@@ -345,6 +382,7 @@ class RecordRelations(Enum):
     REVIEWS = "REVIEWS"
     CAUSES = "CAUSES"
     RELATED = "RELATED"
+    FOREIGN_KEY = "FOREIGN_KEY"
 
 
 class EntityRelations(Enum):
@@ -403,9 +441,11 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "DEAL": CollectionNames.DEALS.value,
     "DATABASE": CollectionNames.WEBPAGES.value,
     "DATASOURCE": CollectionNames.WEBPAGES.value,
-    "PULL_REQUEST": CollectionNames.PULLREQUESTS.value,
     "MEETING": CollectionNames.MEETINGS.value,
     "ARTIFACT": CollectionNames.ARTIFACTS.value,
     "CODE_FILE": CollectionNames.CODE_FILES.value,
+    "PULL_REQUEST":CollectionNames.PULLREQUESTS.value,
+    "SQL_TABLE": CollectionNames.SQL_TABLES.value,
+    "SQL_VIEW": CollectionNames.SQL_VIEWS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

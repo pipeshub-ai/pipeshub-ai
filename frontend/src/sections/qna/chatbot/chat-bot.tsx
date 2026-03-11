@@ -1006,6 +1006,7 @@ const ChatInterface = () => {
 
       const hasCreatedMessage = { current: false };
       const conversationIdRef = { current: null as string | null };
+      const pendingConversationTasks: any[] = [];
 
       // Define the event handler
       const handleStreamingEvent = async (
@@ -1056,8 +1057,12 @@ const ChatInterface = () => {
             break;
 
           case 'metadata':
-            // Status message is already handled by getEngagingStatusMessage above
-            // This event indicates metadata is being saved, so we keep the status visible
+            break;
+
+          case 'conversation_task':
+            if (data) {
+              pendingConversationTasks.push(data);
+            }
             break;
 
           case 'complete': {
@@ -1073,8 +1078,21 @@ const ChatInterface = () => {
               }
               streamingManager.finalizeStreaming(finalKey, context.streamingBotMessageId, data);
 
+              if (pendingConversationTasks.length > 0) {
+                const finalBotMsg = completedConversation.messages
+                  ?.filter((m: any) => m.messageType === 'bot_response')
+                  .pop();
+                const resolvedId = finalBotMsg?._id || context.streamingBotMessageId;
+                streamingManager.updateConversationMessages(finalKey, (prev) =>
+                  prev.map((msg) =>
+                    msg.id === resolvedId
+                      ? { ...msg, conversationTasks: [...pendingConversationTasks] }
+                      : msg
+                  )
+                );
+              }
+
               // Update selectedChat with fresh conversation data to reflect updated modelInfo
-              // This ensures the model selection is updated when switching back to this conversation
               const finalConvId = finalKey === 'new' ? context.conversationIdRef.current : finalKey;
               if (finalConvId === currentConvId || finalConvId === context.conversationIdRef.current) {
                 // Use setTimeout to ensure this runs after state updates

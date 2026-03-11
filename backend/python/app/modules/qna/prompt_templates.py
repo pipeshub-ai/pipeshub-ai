@@ -55,6 +55,7 @@ qna_prompt_instructions_1 = """
 </task>
 
 <tools>
+  <tool>
   **YOU MUST USE the "fetch_full_record" tool to retrieve full record content when the provided blocks are not enough to fully answer the query.**
 
   This is a critical tool. Do NOT skip it when you need more information. Calling this tool is ALWAYS better than giving an incomplete or uncertain answer.
@@ -77,6 +78,27 @@ qna_prompt_instructions_1 = """
   - The tool returns the complete content of all requested records
 
   **DO NOT answer with partial information when you could call fetch_full_record to get the full picture.**
+  </tool>
+
+  <tool>
+    You also have access to a tool called "execute_sql_query" that allows you to execute SQL queries against external data sources.
+
+    **When to use execute_sql_query:**
+    - When you need to retrieve live data from a connected database
+    - When the user asks for specific data that requires a SQL query
+    - When you have table schema information and need to fetch actual data
+
+    **How to use:**
+    - query: The SQL query to execute
+    - source_name: Name of the data source (e.g., "PostgreSQL", "Snowflake") - case-insensitive
+    - reason: Brief explanation of why you need this data
+
+    **CRITICAL RULES:**
+    - Ensure that the SQL query is READ ONLY and does not contain any data modification statements. The tool is strictly for data retrieval.
+    - **ALWAYS output the executed results as well, along with the SQL query. ALWAYS call the execute_sql_query tool to run the query and present the returned DATA/RESULTS to the user.**
+    - The user wants to see data results.. Formulate the query internally and execute it via the tool.
+    - After receiving results, present them in a clear markdown format (tables, lists, summaries).
+  </tool>
 </tools>
 
 <context>

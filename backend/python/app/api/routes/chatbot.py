@@ -16,8 +16,16 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
-from app.utils.chat_helpers import CitationRefMapper, get_flattened_results, get_message_content
+from app.utils.chat_helpers import (
+    CitationRefMapper,
+    enrich_virtual_record_id_to_result_with_fk_children,
+    get_flattened_results,
+    get_message_content,
+)
 from app.utils.fetch_full_record import create_fetch_full_record_tool
+from app.utils.citations import process_citations
+from app.utils.execute_query import create_execute_query_tool
+from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
 from app.utils.streaming import (
     create_sse_event,
@@ -44,6 +52,7 @@ class ChatQuery(BaseModel):
     mode: str | None = "json"  # "json" for full metadata, "simple" for answer only
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
+    conversationId: str | None = None  # Passed by Node.js layer for background task tracking
 
 
 # Dependency injection functions
@@ -336,12 +345,13 @@ async def askAIStream(
 
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
+            
             container = request.app.container
             logger = container.logger()
-
+            logger.info("Processing query...")
             # Send initial status immediately upon connection
             yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
-
+            logger.info("Processing query2...")
             # Process query inline with real-time status updates
             try:
                 # Get LLM based on user selection or fallback to default
@@ -401,6 +411,9 @@ async def askAIStream(
                 flattened_results = await get_flattened_results(
                     search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, virtual_to_record_map, graph_provider=graph_provider
                 )
+                await enrich_virtual_record_id_to_result_with_fk_children(
+                    virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+                )
 
                 final_results = sorted(flattened_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
@@ -420,8 +433,17 @@ async def askAIStream(
                 )
 
                 # Prepare tools
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
-                tools = [fetch_tool]
+                fetch_tool = create_fetch_full_record_tool(
+                    virtual_record_id_to_result, org_id, graph_provider, blob_store
+                )
+                execute_query_tool = create_execute_query_tool(
+                    config_service=config_service,
+                    graph_provider=graph_provider,
+                    org_id=org_id,
+                    conversation_id=query_info.conversationId,
+                    blob_store=blob_store,
+                )
+                tools = [fetch_tool, execute_query_tool]
 
                 tool_runtime_kwargs = {
                     "blob_store": blob_store,
@@ -470,6 +492,7 @@ async def askAIStream(
                     target_words_per_chunk=1,
                     mode=query_info.mode,
                     ref_mapper=ref_mapper,
+                    conversation_id=query_info.conversationId,
                 ):
                     event_type = stream_event["event"]
                     event_data = stream_event["data"]
