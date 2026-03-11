@@ -1667,7 +1667,7 @@ class VectorStore(Transformer):
                         regular_table_blocks.append(block)
                 
                 # Process SQL Tables and Views (for text-to-SQL use case)
-                MAX_SQL_ROWS_TO_EMBED = 1000
+                MAX_SQL_ROWS_TO_EMBED = 1000000
                 
                 self.logger.info(f"📊 Processing {len(sql_block_groups)} sql_block_groups, {len(sql_row_blocks)} sql_row_blocks, {len(regular_table_blocks)} regular_table_blocks")
                 
