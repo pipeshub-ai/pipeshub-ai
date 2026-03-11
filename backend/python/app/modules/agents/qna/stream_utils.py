@@ -162,7 +162,7 @@ async def send_keepalive(
 
     Usage:
         keepalive_task = asyncio.create_task(
-            send_keepalive(writer, config, "Processing...", interval=10)
+            send_keepalive(writer, config, "Processing...")
         )
         try:
             result = await some_long_operation()
@@ -177,15 +177,18 @@ async def send_keepalive(
         writer: StreamWriter for sending events
         config: RunnableConfig for context preservation
         message: Status message to include in keepalive events
-        interval: Seconds between keepalive events (default: 10)
+        interval: Seconds between keepalive events (default: 1)
     """
     while True:
         await asyncio.sleep(interval)
         try:
-            safe_stream_write(writer, {
+            ok = safe_stream_write(writer, {
                 "event": "status",
                 "data": {"status": "keepalive", "message": message},
             }, config)
+            if not ok:
+                logger.debug("Keepalive: stream write returned False, stopping")
+                return
         except Exception:
-            # Client likely disconnected — stop sending keepalives
+            logger.debug("Keepalive: exception during write, client likely disconnected")
             return

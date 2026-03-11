@@ -603,9 +603,13 @@ def _build_simple_retrieval_messages(
         len(messages[0].content),
     )
 
-    # ── 2. Conversation history ──────────────────────────────────────
+    # ── 2. Conversation history (sliding window to bound prompt size) ─
+    # Cap at _MAX_HISTORY_PAIRS *pairs* (user+bot), not individual messages.
+    # Each entry is a single role/content dict, so we take last N*2 entries.
     previous_conversations = state.get("previous_conversations", [])
-    for conv in previous_conversations:
+    _MAX_HISTORY_PAIRS = 5
+    recent_conversations = previous_conversations[-(_MAX_HISTORY_PAIRS * 2):]
+    for conv in recent_conversations:
         role = conv.get("role")
         content = conv.get("content", "")
         if role == "user_query":

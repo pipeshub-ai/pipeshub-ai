@@ -414,7 +414,7 @@ async def _execute_simple_sub_agent(
         # Keepalive prevents proxy/nginx from closing the SSE connection during
         # long-running API calls.
         keepalive_task = asyncio.create_task(
-            send_keepalive(writer, config, task_display, interval=1)
+            send_keepalive(writer, config, task_display)
         )
         try:
             result = await agent.ainvoke({"messages": messages}, config=agent_config)
@@ -605,7 +605,7 @@ async def _execute_complex_sub_agent(
     # Keepalive prevents proxy/nginx from closing the SSE connection during
     # long-running API calls (Phase 1 can run 60-180+ seconds).
     keepalive_task = asyncio.create_task(
-        send_keepalive(writer, config, f"Fetching {domain_name} data...", interval=1)
+        send_keepalive(writer, config, f"Fetching {domain_name} data...")
     )
     try:
         result = await agent.ainvoke({"messages": messages}, config=agent_config)
@@ -701,7 +701,7 @@ async def _execute_complex_sub_agent(
     ]
 
     keepalive_task = asyncio.create_task(
-        send_keepalive(writer, config, f"Summarizing {domain_name} data...", interval=1)
+        send_keepalive(writer, config, f"Summarizing {domain_name} data...")
     )
     try:
         batch_summaries = await asyncio.gather(*summarize_coros, return_exceptions=True)
@@ -744,7 +744,7 @@ async def _execute_complex_sub_agent(
     log.info("Phase 3 (CONSOLIDATE): merging batch summaries for %s", task_id)
 
     keepalive_task = asyncio.create_task(
-        send_keepalive(writer, config, f"Consolidating {domain_name} summary...", interval=1)
+        send_keepalive(writer, config, f"Consolidating {domain_name} summary...")
     )
     try:
         domain_summary = await consolidate_batch_summaries(
@@ -930,7 +930,6 @@ async def _execute_multi_step_sub_agent(
                 send_keepalive(
                     writer, config,
                     f"Step {step_num}/{len(sub_steps)}: {step_desc[:80]}",
-                    interval=1,
                 )
             )
             try:

@@ -109,7 +109,7 @@ async def aggregator_node(
     # Ambiguous case: use LLM to evaluate (keepalive prevents SSE timeout)
     try:
         keepalive_task = asyncio.create_task(
-            send_keepalive(writer, config, "Evaluating results...", interval=1)
+            send_keepalive(writer, config, "Evaluating results...")
         )
         try:
             evaluation = await _evaluate_with_llm(state, completed, log)

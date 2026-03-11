@@ -116,7 +116,7 @@ async def orchestrator_node(
         # Step 4: Get plan from LLM (keepalive prevents SSE timeout)
         log.info("Requesting task plan from LLM...")
         keepalive_task = asyncio.create_task(
-            send_keepalive(writer, config, "Planning tasks...", interval=1)
+            send_keepalive(writer, config, "Planning tasks...")
         )
         try:
             response = await llm.ainvoke(messages, config=get_opik_config())
@@ -301,7 +301,6 @@ def _normalize_tasks(
     separate tasks (one per domain) to ensure proper tool isolation.
     """
     normalized: List[Dict[str, Any]] = []
-    set(tool_groups.keys())
 
     for task_spec in raw_tasks:
         domains = task_spec.get("domains", [])

@@ -207,9 +207,6 @@ class Retrieval:
                 })
 
             # === FLATTEN ===
-            # Default to "standard" (not "quick") so reranking is enabled by default,
-            # matching the chatbot's behaviour.
-            self.state.get("chat_mode", "standard")
 
             blob_store = BlobStorage(
                 logger=logger_instance,
@@ -249,13 +246,12 @@ class Retrieval:
             final_results = search_results if not flattened_results else flattened_results
 
             # === TRIM ===
-            # Do NOT sort here. The reranker has already ordered results by relevance.
-            # merge_and_number_retrieval_results() in nodes.py will correctly:
+            # Do NOT sort here. The upstream retrieval service returns results
+            # ranked by relevance. merge_and_number_retrieval_results() in
+            # nodes.py will correctly:
             #   1. Deduplicate blocks across parallel retrieval calls
             #   2. Group blocks by document (by best-score descending)
             #   3. Sort blocks within each document by block_index
-            # Any intermediate sort here would discard the reranker's ordering and
-            # produce incorrect document-to-R-label assignments.
             final_results = final_results[:adjusted_limit]
 
             # ================================================================
