@@ -8,7 +8,10 @@ from collections.abc import AsyncGenerator
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 from typing import Any
+import json
 from uuid import uuid4
+
+from bs4 import BeautifulSoup
 
 import fitz
 
@@ -124,6 +127,54 @@ class EventProcessor:
 
 
 
+    def _normalize_content_for_dedup(self, content: bytes, record_type: str) -> bytes:
+        if record_type not in {"SQL_TABLE", "SQL_VIEW", "WEBPAGE", "DATASOURCE", "TICKET", "PROJECT", "COMMENT", "INLINE_COMMENT", "CONFLUENCE_PAGE", "CONFLUENCE_BLOGPOST"}:
+            return content
+
+        # html normalise
+        if record_type in {"CONFLUENCE_PAGE", "CONFLUENCE_BLOGPOST", "COMMENT", "INLINE_COMMENT"}:
+            try: 
+                # self.logger.info(f"🔍 Normalizing HTML for dedup: {content}")
+                html_str = content.decode("utf-8") if isinstance(content, bytes) else content
+                # self.logger.info(f"🔍 HTML string: {html_str}")
+                soup = BeautifulSoup(html_str, "html.parser")
+                for tag in soup(["script", "style", "noscript"]):
+                    tag.decompose()
+                for tag in soup.find_all(True):
+                    tag.attrs.pop("local-id", None)
+                    tag.attrs.pop("id", None)
+                    tag.attrs.pop("src", None)
+                    tag.attrs.pop("href", None)
+                    tag.attrs.pop("data-emoji-id", None)
+                    tag.attrs.pop("data-emoji-fallback", None)
+                text = soup.get_text(separator="\n", strip=True)
+                if text:
+                    return text.encode("utf-8")
+                # self.info(f"🔍 HTML normalized for dedup: {text}")  
+                return content    
+            except Exception as e:
+                self.logger.error(f"❌ Error normalizing HTML for dedup: {repr(e)}")
+                return content
+        try:
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                return content
+
+            if "block_groups" in parsed or "blocks" in parsed:
+                parts: list[str] = []
+                for bg in parsed.get("block_groups", []):
+                    if bg.get("data") is not None:
+                        parts.append(json.dumps(bg["data"], sort_keys=True, default=str))
+                for b in parsed.get("blocks", []):
+                    if b.get("data") is not None:
+                        parts.append(json.dumps(b["data"], sort_keys=True, default=str))
+                if parts:
+                    return "\n".join(parts).encode("utf-8")
+                return content
+            return json.dumps(parsed, sort_keys=True, default=str).encode("utf-8")
+        except (json.JSONDecodeError, Exception):
+            return content
+
     async def _check_duplicate_by_md5(
         self,
         content: bytes | str,
@@ -149,7 +200,8 @@ class EventProcessor:
         if content:
             if isinstance(content, str):
                 content = content.encode('utf-8')
-            md5_checksum = hashlib.md5(content).hexdigest()
+            content_for_hash = self._normalize_content_for_dedup(content, record_type)
+            md5_checksum = hashlib.md5(content_for_hash).hexdigest()
             if existing_md5_checksum != md5_checksum:
                 doc.update({"md5Checksum": md5_checksum})
                 await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
@@ -194,9 +246,10 @@ class EventProcessor:
             await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
             # Copy all relationships from the processed duplicate to this document
             await self.graph_provider.copy_document_relationships(
-                processed_duplicate.get("_key"),
+                processed_duplicate.get("_key") or processed_duplicate.get("id"),
                 doc.get("_key") or doc.get("id")
             )
+            self.logger.info(f"✅ Duplicate record {processed_duplicate.get('_key')} returning TRUE")
             return True  # Duplicate handled
 
         # Check if any duplicate is in progress
@@ -205,7 +258,6 @@ class EventProcessor:
             None
         )
 
-        # TODO: handle race condition here
         if in_progress:
             self.logger.info(f"🚀 Duplicate record {in_progress.get('_key')} is being processed, changing status to QUEUED.")
 
@@ -230,7 +282,7 @@ class EventProcessor:
                 - signed_url: Signed URL to download the file
                 - connector_name: Name of the connector
                 - metadata_route: Route to get metadata
-
+                
         Yields:
             Dict with 'event' key:
             - {'event': 'parsing_complete', 'data': {...}}
@@ -278,11 +330,18 @@ class EventProcessor:
 
             file_content = event_data.get("buffer")
 
-            if file_content is None:
-                self.logger.error("❌ No file content (buffer) in event data")
-                return
-
-            self.logger.debug(f"file_content type: {type(file_content)} length: {len(file_content)}")
+            # Debug: log buffer used for MD5 (to trace why Google Doc copies get different MD5)
+            content_len = len(file_content) if file_content else 0
+            doc_md5_from_connector = doc.get("md5Checksum")
+            self.logger.debug(
+                f"🔍 [DEBUG] file_content for MD5: type={type(file_content).__name__} len={content_len} "
+                f"doc.md5Checksum(from connector)={doc_md5_from_connector}"
+            )
+            if file_content and content_len > 0:
+                content_bytes = file_content.encode("utf-8") if isinstance(file_content, str) else file_content
+                computed_md5 = hashlib.md5(content_bytes).hexdigest()
+                self.logger.debug(f"🔍 [DEBUG] MD5 computed from buffer: {computed_md5}")
+            self.logger.debug(f"file_content type: {type(file_content)} length: {content_len}")
 
             record_type = doc.get("recordType")
 
@@ -299,11 +358,47 @@ class EventProcessor:
 
             await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
 
-            if event_type == EventTypes.UPDATE_RECORD.value:
-                virtual_record_id = str(uuid4())
+            prev_virtual_record_id = None  
+            if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value :
+                # For reconciliation-enabled types, decide whether to keep or generate new vrid
+                from app.config.constants.arangodb import (
+                    RECONCILIATION_ENABLED_EXTENSIONS,
+                    RECONCILIATION_ENABLED_MIME_TYPES,
+                )
+                is_reconciliation_type = (
+                    mime_type in RECONCILIATION_ENABLED_MIME_TYPES
+                    or extension in RECONCILIATION_ENABLED_EXTENSIONS
+                )
+                if is_reconciliation_type:
+                    prev_virtual_record_id = virtual_record_id
+                    if prev_virtual_record_id:
+                        # Check how many records share this vrid
+                        records_with_vrid = await self.graph_provider.get_records_by_virtual_record_id(
+                            prev_virtual_record_id
+                        )
+                        if len(records_with_vrid) > 1:
+                            # N:1 case: multiple records share this vrid, isolate with new vrid
+                            virtual_record_id = str(uuid4())
+                            self.logger.info(
+                                f"📊 Multiple records ({len(records_with_vrid)}) share vrid {prev_virtual_record_id}, "
+                                f"generated new vrid: {virtual_record_id}"
+                            )
+                        else:
+                            # 1:1 case: only this record uses the vrid, keep for diff-based reconciliation
+                            self.logger.info(
+                                f"📊 Keeping existing virtual_record_id for reconciliation: {virtual_record_id}"
+                            )
+                    else:
+                        # No existing vrid, treat as new record
+                        self.logger.info("📊 No existing virtual_record_id for reconciliation type, treating as new")
+                else:
+                    virtual_record_id = str(uuid4())
 
             if virtual_record_id is None:
                 virtual_record_id = str(uuid4())
+
+            # Set prev_virtual_record_id on processor for pipeline reconciliation context
+            self.processor._prev_virtual_record_id = prev_virtual_record_id
 
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
@@ -314,7 +409,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     pptx_binary=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
                 return
@@ -328,7 +424,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     docx_binary=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
                 return
@@ -342,7 +439,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     excel_binary=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
                 return
@@ -356,6 +454,7 @@ class EventProcessor:
                     orgId=org_id,
                     html_binary=file_content,
                     virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
                 return
@@ -371,7 +470,8 @@ class EventProcessor:
                     virtual_record_id=virtual_record_id,
                     recordType=record_type,
                     connectorName=connector,
-                    origin=origin
+                    origin=origin,
+                    event_type=event_type
                 ):
                     yield event
                 return
@@ -386,6 +486,7 @@ class EventProcessor:
                     orgId=org_id,
                     blocks_data=file_content,
                     virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
                 return
@@ -398,7 +499,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     html_content=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
                 return
@@ -424,7 +526,8 @@ class EventProcessor:
                         source=connector,
                         orgId=org_id,
                         pdf_binary=file_content,
-                        virtual_record_id=virtual_record_id
+                        virtual_record_id=virtual_record_id,
+                        event_type=event_type
                     ):
                         yield event
                 else:
@@ -458,7 +561,8 @@ class EventProcessor:
                             recordName=record_name,
                             recordId=record_id,
                             pdf_binary=file_content,
-                            virtual_record_id=virtual_record_id
+                            virtual_record_id=virtual_record_id,
+                            event_type=event_type
                         ):
                             if event.get("event") == "docling_failed":
                                 docling_failed = True
@@ -485,7 +589,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     docx_binary=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -497,7 +602,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     doc_binary=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -509,7 +615,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     excel_binary=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -521,7 +628,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     xls_binary=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -531,6 +639,7 @@ class EventProcessor:
                     recordId=record_id,
                     file_binary=file_content,
                     virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -540,7 +649,8 @@ class EventProcessor:
                     recordId=record_id,
                     file_binary=file_content,
                     virtual_record_id=virtual_record_id,
-                    extension=ExtensionTypes.TSV.value
+                    extension=ExtensionTypes.TSV.value,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -553,6 +663,7 @@ class EventProcessor:
                     orgId=org_id,
                     html_binary=file_content,
                     virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -564,7 +675,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     pptx_binary=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -576,7 +688,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     ppt_binary=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -585,7 +698,8 @@ class EventProcessor:
                     recordName=record_name,
                     recordId=record_id,
                     md_binary=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -597,7 +711,8 @@ class EventProcessor:
                     source=connector,
                     orgId=org_id,
                     mdx_content=file_content,
-                    virtual_record_id=virtual_record_id
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
@@ -612,7 +727,32 @@ class EventProcessor:
                     virtual_record_id=virtual_record_id,
                     recordType=record_type,
                     connectorName=connector,
-                    origin=origin
+                    origin=origin,
+                    event_type=event_type
+                ):
+                    yield event
+
+            elif mime_type == MimeTypes.SQL_TABLE.value or extension == ExtensionTypes.SQL_TABLE.value:
+                self.logger.info(f"🚀 Processing SQL Table: {record_name}")
+                async for event in self.processor.process_sql_structured_data(
+                    recordName=record_name,
+                    recordId=record_id,
+                    json_content=file_content,
+                    virtual_record_id=virtual_record_id,
+                    record_type="SQL_TABLE",
+                    event_type=event_type,
+                ):
+                    yield event
+
+            elif mime_type == MimeTypes.SQL_VIEW.value or extension == ExtensionTypes.SQL_VIEW.value:
+                self.logger.info(f"🚀 Processing SQL View: {record_name}")
+                async for event in self.processor.process_sql_structured_data(
+                    recordName=record_name,
+                    recordId=record_id,
+                    json_content=file_content,
+                    virtual_record_id=virtual_record_id,
+                    record_type="SQL_VIEW",
+                    event_type=event_type,
                 ):
                     yield event
 
@@ -637,6 +777,7 @@ class EventProcessor:
                     record_id,
                     file_content,
                     virtual_record_id,
+                    event_type=event_type
                 ):
                     yield event
 
