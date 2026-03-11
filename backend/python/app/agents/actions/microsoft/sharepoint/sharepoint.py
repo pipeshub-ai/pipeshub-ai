@@ -69,10 +69,11 @@ class ListDrivesInput(BaseModel):
     top: Optional[int] = Field(default=10, description="Max drives to return (default 10, max 50)")
 
 class ListFilesInput(BaseModel):
-    """List files and folders in a site or a specific document library/folder."""
+    """List files and folders in a specific SharePoint document library/folder."""
     site_id: str = Field(description="SharePoint site ID")
-    drive_id: Optional[str] = Field(default=None, description="Drive ID from list_drives. Omit to list from all drives in the site.")
-    folder_id: Optional[str] = Field(default=None, description="Folder item ID to list inside (requires drive_id). Omit for drive root.")
+    drive_id: str = Field(description="Drive ID from list_drives.")
+    folder_id: Optional[str] = Field(default=None, description="Folder item ID to list inside. Omit for drive root.")
+    depth: Optional[int] = Field(default=1, description="Folder traversal depth. 1 lists direct children only; 2 includes one nested level.")
     top: Optional[int] = Field(default=10, description="Max items per drive (default 10, max 50)")
 
 class SearchFilesInput(BaseModel):
@@ -123,6 +124,14 @@ class CreateWordDocumentInput(BaseModel):
     file_name: str = Field(description="Document name without .docx (e.g. 'Meeting Notes' → Meeting Notes.docx)")
     parent_folder_id: Optional[str] = Field(default=None, description="Folder ID (from list_files). Omit for drive root.")
     content_text: Optional[str] = Field(default=None, description="Optional plain-text body (newlines = paragraphs). Omit for blank doc.")
+
+class MoveItemInput(BaseModel):
+    """Move a SharePoint file or folder within the same document library."""
+    site_id: str = Field(description="SharePoint site ID")
+    drive_id: str = Field(description="Drive ID (from list_drives or search_files)")
+    item_id: str = Field(description="DriveItem ID of the file or folder to move")
+    destination_folder_id: str = Field(description="Destination folder ID (from list_files or search_files). Use 'root' for drive root.")
+    new_name: Optional[str] = Field(default=None, description="Optional new name after moving. Omit to keep the current name.")
 
 class CreateOneNoteNotebookInput(BaseModel):
     """Create a OneNote notebook in a SharePoint site; optionally add first section and page."""
@@ -689,13 +698,13 @@ class SharePoint:
         app_name="sharepoint",
         tool_name="list_drives",
         description="List document libraries in a site",
-        llm_description="List document libraries for a site; for all files omit drive_id on list_files instead of chaining here.",
+        llm_description="List document libraries for a site; use this first to resolve drive_id before calling list_files.",
         args_schema=ListDrivesInput,
         when_to_use=[
             "User asks which document libraries/drives exist in a site",
+            "User wants to browse files in a site but no drive_id is known yet",
         ],
         when_not_to_use=[
-            "User wants all files in site without naming a library (use list_files without drive_id)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
@@ -775,18 +784,19 @@ class SharePoint:
         app_name="sharepoint",
         tool_name="list_files",
         description="List files in site or folder",
-        llm_description="List files; omit drive_id for all drives, add drive_id/folder_id to browse one path; use search_files to find by name.",
+        llm_description="List files in a specific document library or folder; requires drive_id from list_drives; use search_files to find by name.",
         args_schema=ListFilesInput,
         when_to_use=[
-            "User wants to browse/list files (omit drive_id for all libraries)",
+            "User wants to browse/list files in a known document library or folder",
         ],
         when_not_to_use=[
             "User wants a file by name (use search_files)",
+            "No drive_id is known yet (use list_drives first)",
             "No SharePoint mention",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "List all files in this site",
+            "List files in the Documents library",
             "Show folder contents",
         ],
         category=ToolCategory.DOCUMENTATION,
@@ -794,8 +804,9 @@ class SharePoint:
     async def list_files(
         self,
         site_id: str,
-        drive_id: Optional[str] = None,
+        drive_id: str,
         folder_id: Optional[str] = None,
+        depth: Optional[int] = 1,
         top: Optional[int] = 10,
     ) -> tuple[bool, str]:
         """
@@ -803,72 +814,19 @@ class SharePoint:
         """
         try:
             capped_top = min(top or 10, 50)
+            traversal_depth = depth or 1
 
-            # ── All drives mode: no drive_id provided ──────────────────────
+            if traversal_depth < 1:
+                return False, json.dumps({"error": "depth must be >= 1"})
+
             if not drive_id:
-                response = await self.client.list_all_drives_children(
-                    site_id=site_id,
-                    top_per_drive=capped_top,
-                )
-                if response.success:
-                    data = response.data or {}
-                    raw_items = data.get("items") or []
-                    drives_searched = data.get("drives_searched", 0)
-                    drive_errors = data.get("drive_errors") or []
+                return False, json.dumps({"error": "drive_id is required. Call list_drives(site_id) first."})
 
-                    normalized = []
-                    for item in raw_items:
-                        if not isinstance(item, dict):
-                            continue
-                        parent_ref = item.get("parentReference") or {}
-                        file_facet = item.get("file") or {}
-                        folder_facet = item.get("folder") or {}
-                        is_folder = bool(folder_facet) or item.get("isFolder", False)
-                        normalized.append({
-                            "id": item.get("id"),
-                            "name": item.get("name"),
-                            "is_folder": is_folder,
-                            "size_bytes": item.get("size"),
-                            "mime_type": file_facet.get("mimeType") if isinstance(file_facet, dict) else None,
-                            "web_url": item.get("webUrl") or item.get("web_url"),
-                            "created": item.get("createdDateTime") or item.get("created_date_time"),
-                            "last_modified": item.get("lastModifiedDateTime") or item.get("last_modified_date_time"),
-                            "drive_id": parent_ref.get("driveId") or item.get("drive_id"),
-                            "drive_name": item.get("drive_name"),
-                            "parent_id": parent_ref.get("id"),
-                            "site_id": parent_ref.get("siteId") or site_id,
-                            "child_count": folder_facet.get("childCount") if isinstance(folder_facet, dict) else None,
-                        })
-
-                    logger.info(
-                        f"✅ list_files (all drives): {len(normalized)} items across "
-                        f"{drives_searched} drives for site {site_id}"
-                    )
-                    result: Dict[str, Any] = {
-                        "items": normalized,
-                        "files": [i for i in normalized if not i["is_folder"]],
-                        "folders": [i for i in normalized if i["is_folder"]],
-                        "count": len(normalized),
-                        "drives_searched": drives_searched,
-                        "usage_hint": (
-                            "Results are from ALL document libraries. "
-                            "Each item has 'drive_name' to show which library it came from. "
-                            "Call get_file_content(site_id, drive_id=item['drive_id'], item_id=item['id']) to read a file. "
-                            "To navigate into a folder call list_files(site_id, drive_id=item['drive_id'], folder_id=item['id'])."
-                        ),
-                    }
-                    if drive_errors:
-                        result["drive_errors"] = drive_errors
-                    return True, json.dumps(result)
-                else:
-                    return False, json.dumps({"error": response.error or "Failed to list files"})
-
-            # ── Single drive mode: drive_id provided ───────────────────────
             response = await self.client.list_drive_children(
-                site_id=site_id,
                 drive_id=drive_id,
                 folder_id=folder_id,
                 top=capped_top,
+                depth=traversal_depth,
             )
             if response.success:
                 data = response.data or {}
@@ -894,6 +852,8 @@ class SharePoint:
                         "parent_id": parent_ref.get("id"),
                         "site_id": parent_ref.get("siteId") or site_id,
                         "child_count": folder_facet.get("childCount") if isinstance(folder_facet, dict) else None,
+                        "depth": item.get("depth"),
+                        "parent_path": parent_ref.get("path"),
                     })
                 logger.info(f"✅ list_files: {len(normalized)} items (drive={drive_id}, folder={folder_id})")
                 return True, json.dumps({
@@ -903,9 +863,11 @@ class SharePoint:
                     "count": len(normalized),
                     "drive_id": drive_id,
                     "folder_id": folder_id,
+                    "depth": traversal_depth,
                     "usage_hint": (
                         "To read a file's content call get_file_content(site_id, drive_id, item_id=item['id']). "
-                        "To navigate into a folder call list_files(site_id, drive_id, folder_id=item['id'])."
+                        "To navigate into a folder call list_files(site_id, drive_id, folder_id=item['id']). "
+                        "Use the 'depth' parameter to include nested folders."
                     ),
                 })
             else:
@@ -1094,8 +1056,8 @@ class SharePoint:
     @tool(
         app_name="sharepoint",
         tool_name="get_file_content",
-        description="Download file content as text/HTML",
-        llm_description="Read file content as text/HTML (Office converted); needs ids from search_files or list_files.",
+        description="Read file content",
+        llm_description="Read file content as parsed text using the shared file parser; needs ids from search_files or list_files.",
         args_schema=GetFileContentInput,
         when_to_use=[
             "User wants to read or summarize file content; has ids from search_files or list_files",
@@ -1120,9 +1082,7 @@ class SharePoint:
     ) -> tuple[bool, str]:
         """Download and read the content of a SharePoint file.
 
-        Office documents (.docx, .xlsx, .pptx) are automatically converted to
-        HTML via Microsoft Graph's ?format=html so the LLM can read and
-        summarise them.  Plain-text files are returned as-is.
+        Supported formats are parsed into text through the shared file parser.
         """
         try:
             mime_type: Optional[str] = None
@@ -1147,8 +1107,6 @@ class SharePoint:
                 site_id=site_id,
                 drive_id=drive_id,
                 item_id=item_id,
-                mime_type=mime_type,
-                file_name=file_name,
             )
             if response.success:
                 data = response.data or {}
@@ -1168,19 +1126,6 @@ class SharePoint:
                         "truncation_note": (
                             "Content was truncated to 512 KB. The file may have more content."
                             if truncated else None
-                        ),
-                    })
-                elif "content_base64" in data:
-                    return True, json.dumps({
-                        "content_base64": data["content_base64"],
-                        "encoding": "base64",
-                        "file_name": file_name,
-                        "mime_type": mime_type,
-                        "size_bytes": data.get("size_bytes", 0),
-                        "truncated": data.get("truncated", False),
-                        "note": (
-                            "This is a binary file that could not be converted to text. "
-                            "Advise the user to open the file via its web_url in SharePoint."
                         ),
                     })
                 else:
@@ -1462,6 +1407,82 @@ class SharePoint:
                 return False, json.dumps({"error": response.error or "Failed to create Word document"})
         except Exception as e:
             return self._handle_error(e, f"create Word document '{file_name}'")
+
+    @tool(
+        app_name="sharepoint",
+        tool_name="move_item",
+        description="Move a file or folder",
+        llm_description="Move a SharePoint file or folder within the same drive; resolve drive_id via list_drives and item IDs via list_files or search_files first.",
+        args_schema=MoveItemInput,
+        when_to_use=[
+            "User wants to move, relocate, or transfer a SharePoint file or folder",
+            "User wants to move a document into another SharePoint folder",
+        ],
+        when_not_to_use=[
+            "User wants to copy instead of move",
+            "User wants rename only without moving",
+            "drive_id or item IDs are unknown — resolve them with list_drives, list_files, or search_files first",
+            "No SharePoint mention",
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Move budget.docx to Archive",
+            "Move this folder into 2025",
+        ],
+        category=ToolCategory.DOCUMENTATION,
+    )
+    async def move_item(
+        self,
+        site_id: str,
+        drive_id: str,
+        item_id: str,
+        destination_folder_id: str,
+        new_name: Optional[str] = None,
+    ) -> tuple[bool, str]:
+        """Move a SharePoint file or folder within the same document library."""
+        try:
+            if not drive_id.strip():
+                return False, json.dumps({"error": "drive_id is required"})
+            if not item_id.strip():
+                return False, json.dumps({"error": "item_id is required"})
+            if not destination_folder_id.strip():
+                return False, json.dumps({"error": "destination_folder_id is required"})
+            if item_id == destination_folder_id:
+                return False, json.dumps({"error": "item_id and destination_folder_id cannot be the same"})
+
+            response = await self.client.move_drive_item(
+                drive_id=drive_id,
+                item_id=item_id,
+                destination_folder_id=destination_folder_id,
+                new_name=new_name,
+            )
+            if response.success:
+                data = response.data or {}
+                result: Dict[str, Any] = {
+                    "message": response.message or "Item moved successfully",
+                    "item_id": data.get("id") or item_id,
+                    "name": data.get("name"),
+                    "web_url": data.get("webUrl") or data.get("web_url"),
+                    "site_id": site_id,
+                    "drive_id": (data.get("parentReference") or {}).get("driveId") or drive_id,
+                    "destination_folder_id": (data.get("parentReference") or {}).get("id") or destination_folder_id,
+                }
+                if "parentReference" in data:
+                    result["parent_reference"] = data.get("parentReference")
+                if "warning" in data:
+                    result["warning"] = data.get("warning")
+                result["usage_hint"] = (
+                    "Use list_files(site_id, drive_id, folder_id=destination_folder_id) to verify the moved item, "
+                    "or get_file_metadata(site_id, drive_id, item_id) for updated details."
+                )
+                logger.info(
+                    f"✅ move_item tool: item {item_id} moved in drive {drive_id} "
+                    f"to {result['destination_folder_id']}"
+                )
+                return True, json.dumps(result)
+            return False, json.dumps({"error": response.error or "Failed to move item"})
+        except Exception as e:
+            return self._handle_error(e, f"move item '{item_id}'")
 
     @tool(
         app_name="sharepoint",
