@@ -13,12 +13,12 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
-    from app.modules.agents.deep.state import DeepAgentState, SubAgentTask
+    from app.modules.agents.deep.state import SubAgentTask
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 MAX_RESULT_CHARS = 3000  # Max chars per tool result in compacted form
 MAX_SUMMARY_WORDS = 200
 MAX_RECENT_PAIRS = 5  # Keep last N conversation pairs verbatim
+_USER_MSG_TRUNCATE = 200
+_BOT_MSG_TRUNCATE = 300
+_STR_VALUE_MAX_LEN = 200
+_MIN_BUDGET_FOR_NESTED = 100
+_LIST_PREVIEW_ITEMS = 3
+_MAX_SUMMARIES_TEXT_LEN = 50000
 TRUNCATION_MARKER = "\n... [truncated for brevity]"
 
 
@@ -106,11 +112,11 @@ def _summarize_conversations_sync(
 
         if user_msg:
             # Truncate long messages
-            user_short = user_msg[:200] + "..." if len(user_msg) > 200 else user_msg
+            user_short = user_msg[:_USER_MSG_TRUNCATE] + "..." if len(user_msg) > _USER_MSG_TRUNCATE else user_msg
             parts.append(f"User: {user_short}")
 
         if bot_msg:
-            bot_short = bot_msg[:300] + "..." if len(bot_msg) > 300 else bot_msg
+            bot_short = bot_msg[:_BOT_MSG_TRUNCATE] + "..." if len(bot_msg) > _BOT_MSG_TRUNCATE else bot_msg
             parts.append(f"Assistant: {bot_short}")
 
     return "Previous conversation summary:\n" + "\n".join(parts)
@@ -226,18 +232,18 @@ def _compact_dict(d: Dict, max_chars: int) -> Dict:
             budget -= len(str(value))
         elif isinstance(value, (str, int, float, bool, type(None))):
             val_str = str(value)
-            if len(val_str) <= 200:
+            if len(val_str) <= _STR_VALUE_MAX_LEN:
                 compacted[key] = value
                 budget -= len(val_str)
             else:
-                compacted[key] = val_str[:200] + "..."
-                budget -= 200
+                compacted[key] = val_str[:_STR_VALUE_MAX_LEN] + "..."
+                budget -= _STR_VALUE_MAX_LEN
         elif isinstance(value, dict):
-            if budget > 100:
+            if budget > _MIN_BUDGET_FOR_NESTED:
                 compacted[key] = _compact_dict(value, min(budget, 500))
                 budget -= 500
         elif isinstance(value, list):
-            if budget > 100:
+            if budget > _MIN_BUDGET_FOR_NESTED:
                 compacted[key] = _compact_list(value, min(budget, 500))
                 budget -= 500
 
@@ -253,10 +259,10 @@ def _compact_list(lst: List, max_chars: int) -> List:
     except (TypeError, ValueError):
         pass
 
-    # Keep first 3 items, note total
-    result = lst[:3]
-    if len(lst) > 3:
-        result.append({"_note": f"... and {len(lst) - 3} more items"})
+    # Keep first few items, note total
+    result = lst[:_LIST_PREVIEW_ITEMS]
+    if len(lst) > _LIST_PREVIEW_ITEMS:
+        result.append({"_note": f"... and {len(lst) - _LIST_PREVIEW_ITEMS} more items"})
     return result
 
 
@@ -475,8 +481,8 @@ async def consolidate_batch_summaries(
     summaries_text = "\n\n".join(summaries_parts)
 
     # Cap total input to prevent context overflow
-    if len(summaries_text) > 50000:
-        summaries_text = summaries_text[:50000] + "\n\n[... additional batches truncated]"
+    if len(summaries_text) > _MAX_SUMMARIES_TEXT_LEN:
+        summaries_text = summaries_text[:_MAX_SUMMARIES_TEXT_LEN] + "\n\n[... additional batches truncated]"
 
     prompt = DOMAIN_CONSOLIDATION_PROMPT.format(
         domain=domain,

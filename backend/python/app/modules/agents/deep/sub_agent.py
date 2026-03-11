@@ -22,7 +22,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -47,6 +47,11 @@ _MAX_TOOL_CALLS_RETRIEVAL = 10
 
 # Constants — complex tasks (higher budgets for data-heavy work)
 _MAX_TOOL_CALLS_COMPLEX = 35
+
+# Display / truncation constants
+_TASK_DESC_DISPLAY_LEN = 80
+_TOOL_DESC_TRUNCATE_LEN = 300
+_WARM_LOG_THRESHOLD_MS = 50
 
 
 async def execute_sub_agents_node(
@@ -218,7 +223,7 @@ async def _execute_single_sub_agent(
     otherwise uses the standard ReAct agent execution.
     """
     task_id = task.get("task_id", "unknown")
-    task_desc = task.get("description", "")
+    task.get("description", "")
     start_time = time.perf_counter()
 
     log.info("Starting sub-agent: %s", task_id)
@@ -306,7 +311,7 @@ async def _execute_simple_sub_agent(
     start_time = time.perf_counter()
 
     # Stream status
-    task_display = task_desc[:80] + "..." if len(task_desc) > 80 else task_desc
+    task_display = task_desc[:_TASK_DESC_DISPLAY_LEN] + "..." if len(task_desc) > _TASK_DESC_DISPLAY_LEN else task_desc
     safe_stream_write(writer, {
         "event": "status",
         "data": {"status": "executing", "message": task_display},
@@ -1079,7 +1084,7 @@ def _extract_tool_results(
     return tool_results
 
 
-def _detect_status(result_content: Any) -> str:
+def _detect_status(result_content: object) -> str:
     """Detect success/error from tool result content."""
     try:
         from app.modules.agents.qna.nodes import _detect_tool_result_status
@@ -1098,7 +1103,7 @@ def _detect_status(result_content: Any) -> str:
 class _ToolCallBudget:
     """Shared counter that limits tool calls within a single sub-agent."""
 
-    def __init__(self, max_calls: int):
+    def __init__(self, max_calls: int) -> None:
         self.max_calls = max_calls
         self.count = 0
 
@@ -1153,10 +1158,10 @@ def _wrap_tools_with_budget(
     return wrapped
 
 
-def _make_budgeted_coro(orig_coro, orig_func, budget, tool_name, log):
+def _make_budgeted_coro(orig_coro, orig_func, budget, tool_name, log) -> callable:
     """Factory: create a budget-enforced async wrapper for a tool coroutine."""
 
-    async def _coro(**kwargs):
+    async def _coro(**kwargs) -> str:
         if not budget.consume():
             log.warning(
                 "Tool call budget exhausted (%d/%d) for %s",
@@ -1246,7 +1251,7 @@ async def _prewarm_clients(
         return_exceptions=True,
     )
     warm_ms = (time.perf_counter() - warm_start) * 1000
-    if warm_ms > 50:
+    if warm_ms > _WARM_LOG_THRESHOLD_MS:
         log.info("Pre-warmed %d API client(s) in %.0fms", len(seen), warm_ms)
 
 
@@ -1371,7 +1376,7 @@ def _format_tools_for_prompt(tools: List, log: logging.Logger) -> str:
 
         lines.append(f"### {name}")
         if description:
-            desc_text = description[:300] if len(description) > 300 else description
+            desc_text = description[:_TOOL_DESC_TRUNCATE_LEN] if len(description) > _TOOL_DESC_TRUNCATE_LEN else description
             lines.append(f"  {desc_text}")
 
         # Extract parameter schema
@@ -1411,7 +1416,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
         config: RunnableConfig,
         log: logging.Logger,
         task_id: str,
-    ):
+    ) -> None:
         super().__init__()
         self.writer = writer
         self.config = config
@@ -1429,7 +1434,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
         finally:
             var_child_runnable_config.reset(token)
 
-    async def on_tool_start(self, serialized, input_str, *, run_id, **kwargs):
+    async def on_tool_start(self, serialized, input_str, *, run_id, **kwargs) -> None:
         tool_name = serialized.get("name", kwargs.get("name", "unknown"))
         self._tool_names[str(run_id)] = tool_name
         display = tool_name.replace("_", " ").title()
@@ -1438,7 +1443,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
             "data": {"status": "executing", "message": f"Executing {display}..."},
         })
 
-    async def on_tool_end(self, output, *, run_id, **kwargs):
+    async def on_tool_end(self, output, *, run_id, **kwargs) -> None:
         tool_name = self._tool_names.pop(str(run_id), "unknown")
         status = _detect_status(output)
         # Collect tool results for partial recovery on timeout
@@ -1452,7 +1457,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
             "data": {"tool": tool_name, "status": status},
         })
 
-    async def on_tool_error(self, error, *, run_id, **kwargs):
+    async def on_tool_error(self, error, *, run_id, **kwargs) -> None:
         tool_name = self._tool_names.pop(str(run_id), "unknown")
         self._write({
             "event": "status",

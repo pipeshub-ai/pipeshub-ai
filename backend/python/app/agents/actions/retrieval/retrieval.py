@@ -209,7 +209,7 @@ class Retrieval:
             # === FLATTEN ===
             # Default to "standard" (not "quick") so reranking is enabled by default,
             # matching the chatbot's behaviour.
-            chat_mode = self.state.get("chat_mode", "standard")
+            self.state.get("chat_mode", "standard")
 
             blob_store = BlobStorage(
                 logger=logger_instance,

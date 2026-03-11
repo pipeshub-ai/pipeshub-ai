@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
@@ -290,7 +290,7 @@ def _normalize_tasks(
     separate tasks (one per domain) to ensure proper tool isolation.
     """
     normalized: List[Dict[str, Any]] = []
-    available_domains = set(tool_groups.keys())
+    set(tool_groups.keys())
 
     for task_spec in raw_tasks:
         domains = task_spec.get("domains", [])
@@ -461,10 +461,11 @@ def _build_tool_guidance(state: DeepAgentState) -> str:
         "over individual item lookups."
     )
 
+    _MAX_TOOLS_DISPLAY = 10
     for domain, tool_list in sorted(domain_tools.items()):
-        tool_names = ", ".join(f"`{domain}.{t}`" for t in tool_list[:10])
-        if len(tool_list) > 10:
-            tool_names += f", ... ({len(tool_list) - 10} more)"
+        tool_names = ", ".join(f"`{domain}.{t}`" for t in tool_list[:_MAX_TOOLS_DISPLAY])
+        if len(tool_list) > _MAX_TOOLS_DISPLAY:
+            tool_names += f", ... ({len(tool_list) - _MAX_TOOLS_DISPLAY} more)"
         parts.append(f"- **{domain}**: {tool_names}")
 
     return "\n".join(parts)

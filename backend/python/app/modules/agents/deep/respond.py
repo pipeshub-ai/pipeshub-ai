@@ -23,16 +23,19 @@ import re
 import time
 from typing import Any, Dict, List
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
 
-from app.modules.agents.deep.state import DeepAgentState, get_opik_config
+from app.modules.agents.deep.state import DeepAgentState
 from app.modules.agents.qna.stream_utils import safe_stream_write
 
 logger = logging.getLogger(__name__)
 
 _MAX_TOTAL_ANALYSES_CHARS = 100_000
+_SUBSTANTIAL_RESPONSE_CHARS = 500
+_MAX_URL_EXTRACT_DEPTH = 3
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +354,9 @@ async def _deep_respond_impl(
     # ================================================================
     tools: list = []
     if virtual_record_map:
-        from app.utils.agent_fetch_full_record import create_agent_fetch_full_record_tool
+        from app.utils.agent_fetch_full_record import (
+            create_agent_fetch_full_record_tool,
+        )
         fetch_tool = create_agent_fetch_full_record_tool(
             virtual_record_map,
             label_to_virtual_record_id=record_label_map if record_label_map else None,
@@ -750,7 +755,7 @@ def _collect_tool_results(state: DeepAgentState, log: logging.Logger) -> List[Di
     3. Only include raw results when analyses are missing or very short
     """
     completed = state.get("completed_tasks") or []
-    analyses = state.get("sub_agent_analyses") or []
+    state.get("sub_agent_analyses") or []
 
     # Build set of domains that already have comprehensive data in analyses.
     covered_domains: set = set()
@@ -774,7 +779,7 @@ def _collect_tool_results(state: DeepAgentState, log: logging.Logger) -> List[Di
 
         # If the sub-agent produced a substantial formatted response (>500 chars),
         # the raw API data would just be redundant and confuse the LLM.
-        if len(response_text) > 500:
+        if len(response_text) > _SUBSTANTIAL_RESPONSE_CHARS:
             for d in task_domains:
                 covered_domains.add(d)
 
@@ -866,9 +871,9 @@ def _extract_reference_links(
     return links[:100]
 
 
-def _extract_urls_from_value(value: Any, seen: set, links: list, depth: int = 0) -> None:
+def _extract_urls_from_value(value: object, seen: set, links: list, depth: int = 0) -> None:
     """Recursively extract URLs from tool result values."""
-    if depth > 3:
+    if depth > _MAX_URL_EXTRACT_DEPTH:
         return
 
     if isinstance(value, str):
@@ -981,7 +986,7 @@ def _handle_error_decision(
 
 async def _handle_direct_answer(
     state: DeepAgentState,
-    llm: Any,
+    llm: BaseChatModel,
     writer: StreamWriter,
     config: RunnableConfig,
     log: logging.Logger,
@@ -1068,7 +1073,7 @@ async def _handle_direct_answer(
 
 async def _handle_no_data(
     state: DeepAgentState,
-    llm: Any,
+    llm: BaseChatModel,
     writer: StreamWriter,
     config: RunnableConfig,
     log: logging.Logger,

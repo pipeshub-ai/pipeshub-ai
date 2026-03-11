@@ -52,6 +52,12 @@ MAX_TOOL_RESULT_PREVIEW_LENGTH = 500
 MAX_AVAILABLE_TOOLS_DISPLAY = 20
 MAX_CONVERSATION_HISTORY = 20  # Number of user+bot message pairs to include (sliding window)
 
+# Truncation / display limits
+_RAW_DATA_SIZE_LIMIT = 8000
+_TOOL_LOG_LIMIT = 5
+_PARAM_DESC_TRUNCATE = 60
+_REASONING_DISPLAY_LEN = 200
+
 # Content detection constants
 MIN_CONTENT_LENGTH_FOR_REUSE = 500  # Minimum chars for content to be considered reusable
 MIN_PLACEHOLDER_PARTS = 2  # Minimum parts in placeholder for fuzzy matching
@@ -6400,7 +6406,7 @@ async def respond_node(
                 if _raw_answer:
                     try:
                         from app.utils.citations import (
-                            normalize_citations_and_chunks_for_agent as _ncc_agent,  # noqa: PLC0415
+                            normalize_citations_and_chunks_for_agent as _ncc_agent,
                         )
                         _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [])
                         if _enriched:
@@ -6641,8 +6647,8 @@ async def _generate_fast_api_response(
         else:
             content_str = str(content)
         # Limit raw data size to keep the prompt small
-        if len(content_str) > 8000:
-            content_str = content_str[:8000] + "\n... (truncated)"
+        if len(content_str) > _RAW_DATA_SIZE_LIMIT:
+            content_str = content_str[:_RAW_DATA_SIZE_LIMIT] + "\n... (truncated)"
         raw_data_parts.append(f"### {tool_name}\n```json\n{content_str}\n```")
 
     raw_data_text = "\n\n".join(raw_data_parts) if raw_data_parts else ""
@@ -6753,7 +6759,7 @@ async def _generate_fast_api_response(
     return True
 
 
-def _extract_urls_for_reference_data(content: Any, reference_data: List[Dict]) -> None:
+def _extract_urls_for_reference_data(content: object, reference_data: List[Dict]) -> None:
     """Extract URLs from tool result content and add to referenceData list."""
     if isinstance(content, str):
         try:
@@ -6854,7 +6860,7 @@ def _build_tool_results_context(
 
             parts.append(f"### {tool_name}\n")
             parts.append(f"```json\n{content_str}\n```\n\n")
-    
+
 
 
     parts.append("\n---\n## 📝 RESPONSE INSTRUCTIONS\n\n")
@@ -7031,7 +7037,7 @@ def _process_retrieval_output(result: object, state: ChatState, log: logging.Log
     return str(result)
 
 
-def _detect_tool_result_status(result_content: Any) -> str:
+def _detect_tool_result_status(result_content: object) -> str:
     """
     Detect whether a tool result indicates success or error.
 
@@ -7068,7 +7074,7 @@ def _detect_tool_result_status(result_content: Any) -> str:
                 return "error"
 
             # Check for error key
-            if "error" in parsed and parsed["error"]:
+            if parsed.get("error"):
                 return "error"
 
             # Check for success=False pattern (tuple-style result)
@@ -7076,7 +7082,7 @@ def _detect_tool_result_status(result_content: Any) -> str:
                 return "error"
 
         # Check tuple-style: (False, "error message")
-        if isinstance(parsed, (list, tuple)) and len(parsed) >= 2:
+        if isinstance(parsed, (list, tuple)) and len(parsed) >= TOOL_RESULT_TUPLE_LENGTH:
             if parsed[0] is False:
                 return "error"
 
@@ -7099,7 +7105,7 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
     the context conflicts that occur with nested agent.astream() calls.
     """
 
-    def __init__(self, writer: StreamWriter, config: RunnableConfig, log: logging.Logger):
+    def __init__(self, writer: StreamWriter, config: RunnableConfig, log: logging.Logger) -> None:
         super().__init__()
         self.writer = writer
         self.config = config
@@ -7205,8 +7211,8 @@ async def react_agent_node(
         log.info(f"ReAct agent loaded {len(tools)} tools with schemas")
 
         # Stream tool count info
-        tool_names_for_log = [getattr(t, 'name', str(t)) for t in tools[:5]]
-        log.info(f"Available tools: {tool_names_for_log}{'...' if len(tools) > 5 else ''}")
+        tool_names_for_log = [getattr(t, 'name', str(t)) for t in tools[:_TOOL_LOG_LIMIT]]
+        log.info(f"Available tools: {tool_names_for_log}{'...' if len(tools) > _TOOL_LOG_LIMIT else ''}")
 
         # Build system prompt
         system_prompt = _build_react_system_prompt(state, log)
@@ -7398,7 +7404,7 @@ def _build_tool_schema_reference(state: ChatState, log: logging.Logger) -> str:
                     for pname, pinfo in params_info.items():
                         ptype = pinfo.get("type", "any")
                         desc = pinfo.get("description", "")
-                        short_desc = (desc[:60] + "...") if len(desc) > 60 else desc
+                        short_desc = (desc[:_PARAM_DESC_TRUNCATE] + "...") if len(desc) > _PARAM_DESC_TRUNCATE else desc
                         entry = f"`{pname}` ({ptype})"
                         if short_desc:
                             entry += f": {short_desc}"
@@ -7994,7 +8000,7 @@ def _process_react_chunk(
                             "event": "status",
                             "data": {
                                 "status": "thinking",
-                                "message": reasoning[:200] + ("..." if len(reasoning) > 200 else "")
+                                "message": reasoning[:_REASONING_DISPLAY_LEN] + ("..." if len(reasoning) > _REASONING_DISPLAY_LEN else "")
                             }
                         }, config)
                 else:
@@ -8131,7 +8137,7 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
 
         # Unwrap tuple format (success, data)
         # Tools return (bool, str) tuple - extract the data part
-        if isinstance(result, tuple) and len(result) == 2:  # noqa: PLR2004
+        if isinstance(result, tuple) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
             result = result[1]
             if isinstance(result, str):
                 try:
