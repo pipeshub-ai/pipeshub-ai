@@ -13038,8 +13038,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0
 
-                LET record_connector = DOCUMENT(CONCAT("recordGroups/", record.connectorId)) || DOCUMENT(CONCAT("apps/", record.connectorId))
-                LET source = (record_connector != null AND record_connector.connectorName == "KB") ? "KB" : "CONNECTOR"
+                LET source = record.connectorName == "KB" ? "KB" : "CONNECTOR"
 
                 RETURN {{
                     id: record._key,

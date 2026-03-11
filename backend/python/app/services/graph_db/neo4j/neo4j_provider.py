@@ -12621,17 +12621,8 @@ class Neo4jProvider(IGraphDBProvider):
             WITH record, rg_nodes, file_info,
                  count(DISTINCT child) > 0 AS has_children
 
-            OPTIONAL MATCH (record_connector:RecordGroup {id: record.connectorId})
-            WHERE record IS NOT NULL
-            OPTIONAL MATCH (record_app:App {id: record.connectorId})
-            WHERE record IS NOT NULL
-            WITH record, rg_nodes, file_info, has_children, record_connector, record_app,
-                 CASE
-                   WHEN record IS NOT NULL AND record_connector IS NOT NULL AND record_connector.connectorName = 'KB' THEN 'KB'
-                   WHEN record IS NOT NULL AND record_app IS NOT NULL THEN 'CONNECTOR'
-                   WHEN record IS NOT NULL THEN 'CONNECTOR'
-                   ELSE null
-                 END AS source
+            WITH record, rg_nodes, file_info, has_children,
+                 CASE WHEN record IS NOT NULL AND record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END AS source
 
             WITH rg_nodes,
                  collect(
