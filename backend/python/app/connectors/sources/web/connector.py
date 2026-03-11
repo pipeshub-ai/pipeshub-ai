@@ -124,8 +124,16 @@ DOCUMENT_MIME_TYPES = {
     MimeTypes.DOCX.value,
     MimeTypes.XLS.value,
     MimeTypes.XLSX.value,
+    MimeTypes.CSV.value,
     MimeTypes.PPT.value,
     MimeTypes.PPTX.value,
+    MimeTypes.MARKDOWN.value,
+    MimeTypes.MDX.value,
+    MimeTypes.TEXT.value,
+    MimeTypes.TSV.value,
+    MimeTypes.JSON.value,
+    MimeTypes.XML.value,
+    MimeTypes.YAML.value,
 }
 
 IMAGE_MIME_TYPES = {
@@ -187,8 +195,8 @@ class WebApp(App):
             required=False,
             default_value="100",
             min_length=1,
-            max_length=1000,
-            description="Maximum number of pages to crawl (1-1000)"
+            max_length=10000,
+            description="Maximum number of pages to crawl (1-10,000)"
         ))
         .add_sync_custom_field(CustomField(
             name="max_size_mb",
@@ -423,9 +431,9 @@ class WebConnector(BaseConnector):
                 follow_external = False
 
             # Validate max_pages and max_depth
-            if max_pages > 1000:
+            if max_pages > 10000:
                 self.logger.warning("⚠️ WebPage max_pages is greater than 1000, setting to 1000")
-                max_pages = 1000
+                max_pages = 10000
             elif max_pages < 1:
                 self.logger.warning("⚠️ WebPage max_pages is less than 1, setting to 1")
                 max_pages = 1
@@ -678,10 +686,140 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error crawling single page {url}: {e}", exc_info=True)
 
+    async def _create_ancestor_placeholder_records(self, start_url: str) -> None:
+        """Create and upsert placeholder WEBPAGE records for every intermediate path
+        segment of *start_url* (all segments except the last one).
+
+        Example
+        -------
+        start_url = "https://developer.mozilla.org/en-US/docs/Web/HTTP/"
+
+        Creates placeholders for:
+          - https://developer.mozilla.org/en-US/
+          - https://developer.mozilla.org/en-US/docs/
+
+        The name of each record is set to the URL without the scheme
+        (e.g. ``developer.mozilla.org/en-US/``).
+        """
+        try:
+            parsed = urlparse(start_url)
+            segments = [s for s in parsed.path.split("/") if s]
+
+            # Need at least 2 segments to have any intermediate ancestors
+            if len(segments) < 2:
+                return
+
+            timestamp = get_epoch_timestamp_in_ms()
+            placeholder_records: List[Tuple[FileRecord, List[Permission]]] = []
+
+            # Build prefix URLs for every segment except the last one
+            for i in range(1, len(segments)):
+                prefix_path = "/" + "/".join(segments[:i]) + "/"
+                ancestor_url = urlunparse(
+                    (parsed.scheme, parsed.netloc, prefix_path, "", "", "")
+                )
+                # external_record_id is always the trailing-slash-normalised URL
+                external_id = self._ensure_trailing_slash(ancestor_url)
+
+                # name = URL without scheme  (e.g. "developer.mozilla.org/en-US/")
+                record_name = parsed.netloc + prefix_path
+
+                # Resolve parent URL one level up (returns None when parent would be the domain root)
+                parent_url = self._get_parent_url(ancestor_url)
+
+                # Upsert-safe id resolution
+                existing = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=external_id,
+                )
+
+                # Migration compatibility: old records may have been saved WITHOUT a trailing slash.
+                # If not found by the new normalized id, fall back to the legacy (no-slash) form.
+                if not existing:
+                    legacy_external_id = external_id.rstrip('/')
+                    if legacy_external_id != external_id:
+                        existing = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=legacy_external_id,
+                        )
+
+                        if existing:
+                            self.logger.info(
+                                f"🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
+                                f"will migrate external_record_id to {external_id}"
+                            )
+
+                record_id = existing.id if existing else str(uuid.uuid4())
+
+                file_record = FileRecord(
+                    id=record_id,
+                    org_id=self.data_entities_processor.org_id,
+                    record_name=record_name,
+                    record_type=RecordType.FILE,
+                    record_group_type=RecordGroupType.WEB,
+                    external_record_id=external_id,
+                    external_record_group_id=self.url,
+                    version=0,
+                    origin=OriginTypes.CONNECTOR.value,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                    source_created_at=timestamp,
+                    source_updated_at=timestamp,
+                    weburl=ancestor_url,
+                    size_in_bytes=None,
+                    is_file=True,
+                    extension=None,
+                    path=prefix_path,
+                    mime_type=MimeTypes.HTML.value,
+                    preview_renderable=False,
+                    parent_external_record_id=parent_url,
+                    parent_record_type=RecordType.FILE if parent_url else None,
+                    indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                )
+
+                permissions = [
+                    Permission(
+                        external_id=self.data_entities_processor.org_id,
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                    )
+                ]
+
+                placeholder_records.append((file_record, permissions))
+                self.logger.info(
+                    f"📁 Queued ancestor placeholder: {record_name}"
+                )
+
+            if placeholder_records:
+                await self.data_entities_processor.on_new_records(placeholder_records)
+                self.logger.info(
+                    f"✅ Upserted {len(placeholder_records)} ancestor placeholder record(s) "
+                    f"for start URL: {start_url}"
+                )
+
+        except ValueError as e:
+            # Raised by urlparse/urlunparse when start_url is structurally invalid
+            self.logger.error(
+                f"❌ Invalid URL while building ancestor placeholders for {start_url}: {e}",
+                exc_info=True,
+            )
+        except Exception as e:
+            # Covers data-store transaction failures and Kafka messaging errors
+            self.logger.error(
+                f"❌ Persistence error while upserting ancestor placeholder records for {start_url}: {e}",
+                exc_info=True,
+            )
+
     async def _crawl_recursive(self, start_url: str, depth: int) -> None:
         """Recursively crawl pages starting from start_url."""
         try:
-            batch_records: List[Tuple[Record, List[Permission]]] = []
+            # Upsert placeholder WEBPAGE records for every intermediate path
+            # segment of the start URL before we begin crawling.
+            await self._create_ancestor_placeholder_records(start_url)
+
+            batch_records: List[Tuple[FileRecord, List[Permission]]] = []
 
             async for record_update in self._crawl_recursive_generator(start_url, depth):
 
@@ -830,15 +968,31 @@ class WebConnector(BaseConnector):
                 return None
             html_bytes = content_bytes if mime_type == MimeTypes.HTML else None
 
-            # Generate unique ID
-            record_id = str(uuid.uuid4())
-            external_id = final_url
+            # Normalize external_id to always end with '/' for extensionless (page) URLs
+            # to prevent duplicate records for e.g. /docs and /docs/
+            external_id = self._ensure_trailing_slash(final_url)
 
-            # Generate unique ID
             record_id = None
-            external_id = final_url
+            existing_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=external_id
+            )
 
-            existing_record = await self.data_entities_processor.get_record_by_external_id(connector_id=self.connector_id, external_record_id=external_id)
+            # Migration compatibility: old records may have been saved WITHOUT a trailing slash.
+            # If not found by the new normalized id, fall back to the legacy (no-slash) form.
+            legacy_lookup = False
+            if not existing_record:
+                legacy_external_id = external_id.rstrip('/')
+                if legacy_external_id != external_id:
+                    existing_record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id, external_record_id=legacy_external_id
+                    )
+                    if existing_record:
+                        legacy_lookup = True
+                        self.logger.info(
+                            f"🔄 Found legacy record (no trailing slash) for {legacy_external_id}, "
+                            f"will migrate external_record_id to {external_id}"
+                        )
+
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
             # Get title and clean content for HTML
@@ -875,12 +1029,22 @@ class WebConnector(BaseConnector):
                     parsed = urlparse(final_url)
                     title = parsed.netloc or final_url
 
+            # Resolve parent URL (returns None when parent would be the domain root)
+            parent_url = self._get_parent_url(final_url)
+
+            await self._ensure_parent_records_exist(parent_url)
+
             if existing_record:
-                if existing_record.record_name != title:
-                    metadata_changed = True
-                if existing_record.external_revision_id != content_md5_hash:
-                    content_changed = True
-                is_updated = metadata_changed or content_changed
+                if legacy_lookup:
+                    is_new = True # Force record to be treated as new to migrate external_record_id to the normalized form
+                else:
+                    if existing_record.record_name != title:
+                        metadata_changed = True
+                    elif existing_record.parent_external_record_id != parent_url:
+                        metadata_changed = True
+                    if existing_record.external_revision_id != content_md5_hash:
+                        content_changed = True
+                    is_updated = metadata_changed or content_changed
             else:
                 is_new = True
 
@@ -910,7 +1074,13 @@ class WebConnector(BaseConnector):
                 mime_type=mime_type.value,
                 md5_hash=content_md5_hash,
                 preview_renderable=False,
+                parent_external_record_id=parent_url,
+                parent_record_type=RecordType.FILE if parent_url else None,
             )
+
+            if existing_record and not content_changed:
+                file_record.indexing_status = existing_record.indexing_status
+                file_record.extraction_status = existing_record.extraction_status
 
             # Create permissions (org-level access for web pages)
             permissions = [
@@ -1006,6 +1176,9 @@ class WebConnector(BaseConnector):
         """Check if the record should be indexed."""
         mime_type = record.mime_type
         is_disabled = False
+
+        if record.indexing_status == IndexingStatus.COMPLETED.value:
+            return False
 
         if mime_type == MimeTypes.HTML.value:
             is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.WEBPAGES, default=True)
@@ -1231,6 +1404,164 @@ class WebConnector(BaseConnector):
             return title if title else url
 
         return parsed.netloc
+
+    def _ensure_trailing_slash(self, url: str) -> str:
+        """Append a trailing slash to extensionless (page) URLs to prevent duplicate records.
+        File URLs containing a dot in the last path segment (e.g. /doc.pdf) are returned unchanged.
+        """
+        try:
+            parsed = urlparse(url)
+            # Don't touch URLs with query params — the param might be the identifier
+            if parsed.query:
+                return url
+            last_segment = parsed.path.rstrip('/').rsplit('/', 1)[-1]
+            if '.' not in last_segment:  # no file extension → treat as a page URL
+                path = parsed.path.rstrip('/') + '/'
+                return urlunparse((parsed.scheme, parsed.netloc, path, '', '', ''))
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error in _ensure_trailing_slash for url '{url}': {e}")
+        return url
+
+    def _get_parent_url(self, url: str) -> Optional[str]:
+        """Derive the parent URL by stripping the last non-empty path segment.
+
+        Returns ``None`` when the URL is already at the domain root or when
+        the resolved parent path would itself be the root (``/``), so callers
+        never need to perform that check themselves.
+        """
+        parsed = urlparse(url)
+        path = parsed.path.rstrip('/')
+        if not path or '/' not in path:
+            return None  # Already at root, no parent
+        parent_path = path.rsplit('/', 1)[0] + '/'
+        if parent_path == '/':
+            return None  # Parent is the domain root — no parent record exists
+        return urlunparse((parsed.scheme, parsed.netloc, parent_path, '', '', ''))
+
+    async def _ensure_parent_records_exist(self, parent_url: Optional[str]) -> None:
+        """Ensure that every ancestor record up to (and including) *parent_url*
+        exists in the data store before the child record is upserted.
+
+        Strategy
+        --------
+        1. Return immediately when *parent_url* is ``None``.
+        2. Walk up the URL hierarchy from *parent_url* to build an ordered
+           segment list::
+
+               [parent_url, grandparent_url, great-grandparent_url, ...]
+
+        3. Iterate through that list, checking the DB for each URL.
+           - If the record **already exists** → break (all ancestors above it
+             are assumed to exist too).
+           - If it **does not exist** → build a placeholder ``FileRecord`` and
+             append it to ``batch_parent_records``.
+        4. Reverse ``batch_parent_records`` so the highest ancestor comes first.
+        5. Upsert via ``on_new_records``.  Because the list is ordered
+           root-first, ``_process_record`` will always find a parent already
+           in the DB and will never need to create its own placeholder via
+           ``_handle_parent_record``.
+        """
+        if not parent_url:
+            return
+
+        try:
+            # ── Step 1: build the segment list (closest → root) ─────────────
+            segments: List[str] = []
+            current: Optional[str] = parent_url
+            while current:
+                segments.append(current)
+                current = self._get_parent_url(current)
+
+            # ── Step 2: walk segments, collect the ones that are missing ─────
+            batch_parent_records: List[Tuple[FileRecord, List[Permission]]] = []
+            timestamp = get_epoch_timestamp_in_ms()
+
+            for segment_url in segments:
+                external_id = self._ensure_trailing_slash(segment_url)
+
+                # Primary lookup
+                existing = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_record_id=external_id,
+                )
+
+                # Legacy fallback: old records may have been stored without a trailing slash
+                if not existing:
+                    legacy_id = external_id.rstrip("/")
+                    if legacy_id != external_id:
+                        existing = await self.data_entities_processor.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_record_id=legacy_id,
+                        )
+
+                if existing:
+                    # This ancestor (and everything above it) already exists → stop
+                    break
+
+                # Record is missing — build a placeholder
+                parsed = urlparse(segment_url)
+                prefix_path = parsed.path if parsed.path.endswith("/") else parsed.path + "/"
+                record_name = parsed.netloc + prefix_path
+
+                segment_parent_url = self._get_parent_url(segment_url)
+
+                file_record = FileRecord(
+                    id=str(uuid.uuid4()),
+                    org_id=self.data_entities_processor.org_id,
+                    record_name=record_name,
+                    record_type=RecordType.FILE,
+                    record_group_type=RecordGroupType.WEB,
+                    external_record_id=external_id,
+                    external_record_group_id=self.url,
+                    version=0,
+                    origin=OriginTypes.CONNECTOR.value,
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                    source_created_at=timestamp,
+                    source_updated_at=timestamp,
+                    weburl=segment_url,
+                    size_in_bytes=None,
+                    is_file=True,
+                    extension=None,
+                    path=prefix_path,
+                    mime_type=MimeTypes.HTML.value,
+                    preview_renderable=False,
+                    parent_external_record_id=segment_parent_url,
+                    parent_record_type=RecordType.FILE if segment_parent_url else None,
+                    indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                )
+
+                permissions = [
+                    Permission(
+                        external_id=self.data_entities_processor.org_id,
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                    )
+                ]
+
+                batch_parent_records.append((file_record, permissions))
+                self.logger.debug(f"📁 Queued missing ancestor placeholder: {record_name}")
+
+            if not batch_parent_records:
+                return
+
+            # ── Step 3: reverse so root-level ancestors are processed first ──
+            batch_parent_records.reverse()
+
+            await self.data_entities_processor.on_new_records(batch_parent_records)
+            self.logger.info(
+                f"✅ Upserted {len(batch_parent_records)} missing ancestor record(s) "
+                f"for parent URL: {parent_url}"
+            )
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Error ensuring parent records exist for {parent_url}: {e}",
+                exc_info=True,
+            )
+
 
     @classmethod
     async def create_connector(
@@ -1788,111 +2119,6 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"⚠️ Failed to parse/clean HTML: {e}")
             raise
-
-    # ==================== Retryable Fetch Method ====================
-
-    async def _fetch_with_retry(
-        self,
-        url: str,
-        headers: dict,
-        max_retries: int = 3,
-        base_delay: float = 1.0,
-        max_delay: float = 10.0,
-    ) -> bytes:
-        """
-        Fetch a URL with exponential backoff retry for transient errors.
-
-        Args:
-            url: The URL to fetch
-            headers: Request headers
-            max_retries: Maximum number of retry attempts
-            base_delay: Initial delay in seconds before first retry
-            max_delay: Maximum delay cap in seconds
-
-        Returns:
-            The response content as bytes
-
-        Raises:
-            HTTPException: On non-retryable HTTP errors or after exhausting retries
-        """
-
-        for attempt in range(max_retries + 1):
-            try:
-                async with self.session.get(url, headers=headers) as response:
-                    # Non-retryable client errors — fail immediately
-                    if (
-                        response.status >= HttpStatusCode.BAD_REQUEST.value
-                        and response.status not in RETRYABLE_STATUS_CODES
-                    ):
-                        raise HTTPException(
-                            status_code=response.status,
-                            detail=f"HTTP {response.status} for {url}",
-                        )
-
-                    # Retryable status codes
-                    if response.status in RETRYABLE_STATUS_CODES:
-                        if attempt == max_retries:
-                            raise HTTPException(
-                                status_code=response.status,
-                                detail=f"HTTP {response.status} for {url} after {max_retries} retries",
-                            )
-
-                        delay = self._calculate_retry_delay(
-                            attempt, base_delay, max_delay,
-                            retry_after=response.headers.get("Retry-After"),
-                        )
-                        self.logger.warning(
-                            f"\n\n\n⚠️ Retryable HTTP {response.status} for {url}. "
-                            f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-
-                    # Success
-                    return await response.read()
-
-            except RETRYABLE_EXCEPTIONS as e:
-                if attempt == max_retries:
-                    self.logger.error(
-                        f"❌ Failed to fetch {url} after {max_retries} retries: {e}"
-                    )
-                    raise HTTPException(
-                        status_code=HttpStatusCode.BAD_GATEWAY.value,
-                        detail=f"Failed to fetch {url} after {max_retries} retries: {e}",
-                    ) from e
-
-                delay = self._calculate_retry_delay(attempt, base_delay, max_delay)
-                self.logger.warning(
-                    f"⚠️ Connection error for {url}: {e}. "
-                    f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
-                )
-                await asyncio.sleep(delay)
-
-        # Should not be reached, but just in case
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_GATEWAY.value,
-            detail=f"Failed to fetch {url} after {max_retries} retries",
-        )
-
-    @staticmethod
-    def _calculate_retry_delay(
-        attempt: int,
-        base_delay: float,
-        max_delay: float,
-        retry_after: Optional[str] = None,
-    ) -> float:
-        """
-        Calculate delay using exponential backoff with jitter,
-        respecting Retry-After header if present.
-        """
-        if retry_after:
-            try:
-                return min(float(retry_after), max_delay)
-            except (ValueError, TypeError):
-                pass
-
-        delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-        return min(delay, max_delay)
 
     # ==================== Main Stream Record Method ====================
 
