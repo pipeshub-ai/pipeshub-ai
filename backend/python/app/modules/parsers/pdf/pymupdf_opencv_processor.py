@@ -71,9 +71,7 @@ class LayoutRegion:
     image_data: Optional[bytes] = None
     image_ext: str = "png"
     table_grid: Optional[List[List[str]]] = None
-    table_bbox_cells: Optional[List[Tuple[float, float, float, float]]] = None
     list_items: List[str] = field(default_factory=list)
-    sub_regions: List[LayoutRegion] = field(default_factory=list)
 
 
 def _normalize_bbox_to_points(
@@ -580,7 +578,7 @@ class PyMuPDFOpenCVProcessor:
                     f"Page {page_idx + 1}: detected {len(regions)} layout regions"
                 )
 
-            self._extract_tables_with_pymupdf(doc, pages_data)
+            await asyncio.to_thread(self._extract_tables_with_pymupdf, doc, pages_data)
             return pages_data
         finally:
             doc.close()
