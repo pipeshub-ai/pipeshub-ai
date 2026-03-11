@@ -12622,7 +12622,11 @@ class Neo4jProvider(IGraphDBProvider):
                  count(DISTINCT child) > 0 AS has_children
 
             WITH record, rg_nodes, file_info, has_children,
-                 CASE WHEN record IS NOT NULL AND record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END AS source
+                 CASE
+                   WHEN record IS NULL THEN null
+                   WHEN record.connectorName = 'KB' THEN 'KB'
+                   ELSE 'CONNECTOR'
+                 END AS source
 
             WITH rg_nodes,
                  collect(
