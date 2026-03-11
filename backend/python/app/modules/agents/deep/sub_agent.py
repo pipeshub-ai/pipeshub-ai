@@ -454,6 +454,27 @@ async def _execute_simple_sub_agent(
 # Complex sub-agent execution (phased: fetch → summarize → consolidate)
 # ---------------------------------------------------------------------------
 
+
+async def _send_keepalive(
+    writer: StreamWriter,
+    config: RunnableConfig,
+    message: str,
+    interval: float = 15,
+) -> None:
+    """Send periodic keepalive status events to prevent connection timeouts.
+
+    During long-running phases (SUMMARIZE, CONSOLIDATE) the SSE connection
+    can idle for 60+ seconds with no events, causing proxy/nginx timeouts.
+    This task sends periodic status events to keep the connection alive.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        safe_stream_write(writer, {
+            "event": "status",
+            "data": {"status": "executing", "message": message},
+        }, config)
+
+
 async def _execute_complex_sub_agent(
     task: SubAgentTask,
     state: DeepAgentState,
@@ -668,7 +689,17 @@ async def _execute_complex_sub_agent(
         for i, batch in enumerate(batches)
     ]
 
-    batch_summaries = await asyncio.gather(*summarize_coros, return_exceptions=True)
+    keepalive_task = asyncio.create_task(
+        _send_keepalive(writer, config, f"Summarizing {domain_name} data...", interval=15)
+    )
+    try:
+        batch_summaries = await asyncio.gather(*summarize_coros, return_exceptions=True)
+    finally:
+        keepalive_task.cancel()
+        try:
+            await keepalive_task
+        except asyncio.CancelledError:
+            pass
 
     # Filter out failures
     valid_summaries = []
@@ -701,14 +732,24 @@ async def _execute_complex_sub_agent(
 
     log.info("Phase 3 (CONSOLIDATE): merging batch summaries for %s", task_id)
 
-    domain_summary = await consolidate_batch_summaries(
-        batch_summaries=valid_summaries,
-        domain=domain_name,
-        task_description=task_desc,
-        time_context=time_ctx,
-        llm=llm,
-        log=log,
+    keepalive_task = asyncio.create_task(
+        _send_keepalive(writer, config, f"Consolidating {domain_name} summary...", interval=15)
     )
+    try:
+        domain_summary = await consolidate_batch_summaries(
+            batch_summaries=valid_summaries,
+            domain=domain_name,
+            task_description=task_desc,
+            time_context=time_ctx,
+            llm=llm,
+            log=log,
+        )
+    finally:
+        keepalive_task.cancel()
+        try:
+            await keepalive_task
+        except asyncio.CancelledError:
+            pass
 
     duration_ms = (time.perf_counter() - start_time) * 1000
     consolidate_duration = duration_ms - fetch_duration - summarize_duration

@@ -49,9 +49,45 @@ async def deep_respond_node(
 
     This node is typed as DeepAgentState (not ChatState) so LangGraph passes
     ALL state keys including completed_tasks, sub_agent_analyses, etc.
+
+    Wraps _deep_respond_impl with a top-level safety net: if anything in the
+    message-building section (imports, retrieval merge, prompt construction)
+    throws an unhandled exception, we still send error events to the frontend
+    instead of silently dying.
     """
     start_time = time.perf_counter()
     log = state.get("logger", logger)
+    try:
+        return await _deep_respond_impl(state, config, writer, start_time, log)
+    except Exception as e:
+        log.error("deep_respond_node unhandled error: %s", e, exc_info=True)
+        error_msg = "I encountered an issue generating the response. Please try again."
+        error_response = {
+            "answer": error_msg,
+            "citations": [],
+            "confidence": "Low",
+            "answerMatchType": "Error",
+        }
+        safe_stream_write(writer, {
+            "event": "answer_chunk",
+            "data": {"chunk": error_msg, "accumulated": error_msg, "citations": []},
+        }, config)
+        safe_stream_write(writer, {"event": "complete", "data": error_response}, config)
+        state["response"] = error_msg
+        state["completion_data"] = error_response
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log.info("deep_respond_node (error recovery): %.0fms", duration_ms)
+        return state
+
+
+async def _deep_respond_impl(
+    state: DeepAgentState,
+    config: RunnableConfig,
+    writer: StreamWriter,
+    start_time: float,
+    log: logging.Logger,
+) -> DeepAgentState:
+    """Core implementation of deep_respond_node."""
     llm = state.get("llm")
 
     # ---------------------------------------------------------------

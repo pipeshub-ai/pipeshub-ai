@@ -128,7 +128,6 @@ class Retrieval:
 
             retrieval_service = self.state.get("retrieval_service")
             graph_provider = self.state.get("graph_provider")
-            reranker_service = self.state.get("reranker_service")
             config_service = self.state.get("config_service")
 
             if not retrieval_service or not graph_provider:
@@ -246,23 +245,8 @@ class Retrieval:
             )
             logger_instance.info(f"Processed {len(flattened_results)} flattened results")
 
-            # === RERANK ===
-            # Match chatbot behaviour: rerank unless explicitly in quick mode.
-            # Default was "quick" which silently disabled reranking — fixed here.
-            should_rerank = (
-                len(flattened_results) > 1
-                and chat_mode not in ("quick",)
-            )
 
-            if should_rerank and reranker_service:
-                logger_instance.debug("Re-ranking results")
-                final_results = await reranker_service.rerank(
-                    query=search_query,
-                    documents=flattened_results,
-                    top_k=adjusted_limit,
-                )
-            else:
-                final_results = search_results if not flattened_results else flattened_results
+            final_results = search_results if not flattened_results else flattened_results
 
             # === TRIM ===
             # Do NOT sort here. The reranker has already ordered results by relevance.
