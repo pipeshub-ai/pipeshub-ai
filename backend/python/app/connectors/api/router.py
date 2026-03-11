@@ -130,19 +130,19 @@ async def _stream_google_api_request(request, error_context: str = "download") -
                 raise HTTPException(
                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                     detail=f"Error during {error_context}: {str(http_error)}",
-                )
+                ) from http_error
             except Exception as chunk_error:
                 logger.error(f"Error during {error_context} chunk: {str(chunk_error)}")
                 raise HTTPException(
                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                     detail=f"Error during {error_context}",
-                )
+                ) from chunk_error
     except Exception as stream_error:
         logger.error(f"Error in {error_context} stream: {str(stream_error)}")
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error setting up {error_context} stream",
-        )
+        ) from stream_error
     finally:
         buffer.close()
 
@@ -359,7 +359,7 @@ async def get_signed_url(
         return {"signedUrl": signed_url}
     except Exception as e:
         logger.error(f"Error getting signed URL: {repr(e)}")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e))
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
 
 @router.delete("/api/v1/delete/record/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 @inject
@@ -386,7 +386,7 @@ async def handle_record_deletion(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Internal server error while deleting record: {str(e)}",
-        )
+        ) from e
 
 @router.get("/api/v1/internal/stream/record/{record_id}/", response_model=None)
 @inject
@@ -488,15 +488,15 @@ async def stream_record_internal(
 
     except JWTError as e:
         logger.error("JWT validation error: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token")
+        raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token") from e
     except ValidationError as e:
         logger.error("Payload validation error: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload")
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload") from e
     except HTTPException:
         raise
     except Exception as e:
         logger.error("Unexpected error in stream_record_internal: %s", str(e), exc_info=True)
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error streaming record")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error streaming record") from e
 
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
@@ -575,14 +575,14 @@ async def download_file(
             logger.error(f"Error downloading file: {str(e)}")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
-            )
+            ) from e
 
     except HTTPException as e:
         logger.error("HTTPException: %s", str(e))
         raise e
     except Exception as e:
         logger.error("Error downloading file: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file") from e
 
 
 @router.get("/api/v1/stream/record/{record_id}", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -619,13 +619,13 @@ async def stream_record(
             user_id = payload.get("userId")
         except JWTError as e:
             logger.error("JWT validation error: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token")
+            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token") from e
         except ValidationError as e:
             logger.error("Payload validation error: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload")
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload") from e
         except Exception as e:
             logger.error("Unexpected error during token validation: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
+            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token") from e
 
         org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
         record_task = graph_provider.get_record_by_id(
@@ -718,7 +718,7 @@ async def stream_record(
                         raise HTTPException(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                             detail="Failed to convert file to PDF"
-                        )
+                        ) from e
 
             return buffer
         except HTTPException:
@@ -729,13 +729,13 @@ async def stream_record(
             logger.error(f"Error downloading file: {str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
-            )
+            ) from e
 
     except HTTPException as e:
         raise e
     except Exception as e:
         logger.error("Error downloading file: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file") from e
 
 
 @router.post("/api/v1/record/buffer/convert", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -770,7 +770,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                         conversion_output, conversion_error = await asyncio.wait_for(
                             process.communicate(), timeout=30.0
                         )
-                    except asyncio.TimeoutError:
+                    except asyncio.TimeoutError as te:
                         process.terminate()
                         try:
                             await asyncio.wait_for(process.wait(), timeout=5.0)
@@ -781,7 +781,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                         )
                         raise HTTPException(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out"
-                        )
+                        ) from te
 
                     pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
                     pdf_path = os.path.join(tmpdir, pdf_filename)
@@ -807,7 +807,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                             raise HTTPException(
                                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                                 detail="Error reading converted PDF file",
-                            )
+                            ) from e
 
                     return create_stream_record_response(
                         file_iterator(),
@@ -818,12 +818,12 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
 
                 except FileNotFoundError as e:
                     logger.error(str(e))
-                    raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e))
+                    raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
                 except Exception as e:
                     logger.error(f"Conversion error: {str(e)}")
                     raise HTTPException(
                         status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Conversion error: {str(e)}"
-                    )
+                    ) from e
         finally:
             await file.close()
 
@@ -866,7 +866,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
             conversion_output, conversion_error = await asyncio.wait_for(
                 process.communicate(), timeout=30.0
             )
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as te:
             process.terminate()
             try:
                 await asyncio.wait_for(process.wait(), timeout=5.0)
@@ -876,7 +876,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail="PDF conversion timed out"
-            )
+            ) from te
 
         if process.returncode != 0:
             error_msg = conversion_error.decode('utf-8', errors='replace')
@@ -901,7 +901,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Error converting file to PDF"
-        )
+        ) from e
 
 
 async def convert_buffer_to_pdf_stream(
@@ -1132,7 +1132,7 @@ async def get_record_by_id(
             )
     except Exception as e:
         logger.error(f"Error checking record access: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to check record access")
+        raise HTTPException(status_code=500, detail="Failed to check record access") from e
 
 @router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 @inject
@@ -1194,7 +1194,7 @@ async def delete_record(
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error while deleting record: {str(e)}"
-        )
+        ) from e
 
 @router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
 @inject
@@ -1277,7 +1277,7 @@ async def reindex_single_record(
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error while reindexing record: {str(e)}"
-        )
+        ) from e
 
 @router.get("/api/v1/stats", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_stats_endpoint(
@@ -1297,7 +1297,7 @@ async def get_connector_stats_endpoint(
         raise
     except Exception as e:
         logger.error(f"Error getting connector stats: {str(e)}")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}") from e
 
 @router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
 @inject
@@ -1383,7 +1383,7 @@ async def reindex_record_group(
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to publish reindex event: {str(event_error)}"
-            )
+            ) from event_error
 
     except HTTPException:
         raise
@@ -1392,7 +1392,7 @@ async def reindex_record_group(
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error while reindexing record group: {str(e)}"
-        )
+        ) from e
 
 def _validate_connector_deletion_permissions(
     instance: Dict[str, Any],
@@ -1521,7 +1521,7 @@ def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
         state_data = json.loads(decoded)
         return state_data
     except Exception as e:
-        raise ValueError(f"Invalid state format: {e}")
+        raise ValueError(f"Invalid state format: {e}") from e
 
 
 def _get_config_path_for_instance(connector_id: str) -> str:
@@ -1645,7 +1645,7 @@ async def get_connector_registry(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting connector registry: {str(e)}"
-        )
+        ) from e
 
 
 
@@ -1712,7 +1712,7 @@ async def get_connector_instances(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting connector instances: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/api/v1/connectors/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -1755,7 +1755,7 @@ async def get_active_connector_instances(request: Request) -> Dict[str, Any]:
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get active connector instances: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/api/v1/connectors/inactive", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -1797,7 +1797,7 @@ async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get inactive connector instances: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/api/v1/connectors/configured", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -1859,7 +1859,7 @@ async def get_configured_connector_instances(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting configured connector instances: {str(e)}"
-        )
+        ) from e
 
 # ============================================================================
 # Instance Configuration Endpoints
@@ -2254,12 +2254,15 @@ async def create_connector_instance(
             logger.info(f"Using auto-selected auth type: {selected_auth_type}")
 
         # Validate auth type compatibility
-        if supported_auth_types and selected_auth_type not in supported_auth_types:
-            if not (selected_auth_type.upper() == "NONE" and len(supported_auth_types) == 0):
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail=f"Auth type '{selected_auth_type}' is not supported. Supported: {', '.join(supported_auth_types)}"
-                )
+        if (
+            supported_auth_types
+            and selected_auth_type not in supported_auth_types
+            and not (selected_auth_type.upper() == "NONE" and len(supported_auth_types) == 0)
+        ):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Auth type '{selected_auth_type}' is not supported. Supported: {', '.join(supported_auth_types)}"
+            )
 
         # ============================================================
         # 7. Pre-validate OAuth Config (if applicable)
@@ -2328,7 +2331,7 @@ async def create_connector_instance(
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=str(e)
-            )
+            ) from e
 
         if not instance:
             raise HTTPException(
@@ -2427,7 +2430,7 @@ async def create_connector_instance(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to create connector instance: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -2492,7 +2495,7 @@ async def get_connector_instance(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting connector instance: {str(e)}"
-        )
+        ) from e
 
 @router.get("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instance_config(
@@ -2612,7 +2615,7 @@ async def get_connector_instance_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get connector configuration: {str(e)}"
-        )
+        ) from e
 
 
 @router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
@@ -2933,7 +2936,7 @@ async def update_connector_instance_auth_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector authentication configuration: {str(e)}"
-        )
+        ) from e
 
 
 @router.put("/api/v1/connectors/{connector_id}/config/filters-sync", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
@@ -3083,7 +3086,7 @@ async def update_connector_instance_filters_sync_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector filters and sync configuration: {str(e)}"
-        )
+        ) from e
 
 
 @router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
@@ -3248,7 +3251,7 @@ async def update_connector_instance_config(
                         raise HTTPException(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                             detail=f"Failed to fetch OAuth configuration: {str(e)}"
-                        )
+                        ) from e
 
                 metadata = await connector_registry.get_connector_metadata(connector_type)
                 auth_metadata = metadata.get("config", {}).get("auth", {})
@@ -3348,7 +3351,7 @@ async def update_connector_instance_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector configuration: {str(e)}"
-        )
+        ) from e
 @router.put("/api/v1/connectors/{connector_id}/name", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def update_connector_instance_name(
     connector_id: str,
@@ -3442,7 +3445,7 @@ async def update_connector_instance_name(
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=str(e)
-            )
+            ) from e
 
         if not updated:
             logger.error(f"Failed to update {instance.get('name')} connector instance name")
@@ -3468,7 +3471,7 @@ async def update_connector_instance_name(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector instance name: {str(e)}"
-        )
+        ) from e
 
 
 # ============================================================================
@@ -4008,7 +4011,7 @@ async def get_oauth_authorization_url(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to generate OAuth URL: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/api/v1/connectors/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
@@ -4420,46 +4423,29 @@ def _parse_filter_response(
 
         if connector_upper == "GMAIL" and filter_type == "labels":
             labels = data.get("labels", [])
-            for label in labels:
-                if label.get("type") == "user":
-                    options.append({
-                        "value": label["id"],
-                        "label": label["name"]
-                    })
+            options.extend(
+                [{"value": label["id"], "label": label["name"]} for label in labels if label.get("type") == "user"]
+            )
 
         elif connector_upper == "DRIVE" and filter_type == "folders":
             files = data.get("files", [])
-            for file in files:
-                options.append({
-                    "value": file["id"],
-                    "label": file["name"]
-                })
+            options.extend([{"value": f["id"], "label": f["name"]} for f in files])
 
         elif connector_upper == "ONEDRIVE" and filter_type == "folders":
             items = data.get("value", [])
-            for item in items:
-                if item.get("folder"):
-                    options.append({
-                        "value": item["id"],
-                        "label": item["name"]
-                    })
+            options.extend(
+                [{"value": item["id"], "label": item["name"]} for item in items if item.get("folder")]
+            )
 
         elif connector_upper == "SLACK" and filter_type == "channels":
             channels = data.get("channels", [])
-            for channel in channels:
-                if not channel.get("is_archived"):
-                    options.append({
-                        "value": channel["id"],
-                        "label": f"#{channel['name']}"
-                    })
+            options.extend(
+                [{"value": ch["id"], "label": f"#{ch['name']}"} for ch in channels if not ch.get("is_archived")]
+            )
 
         elif connector_upper == "CONFLUENCE" and filter_type == "spaces":
             spaces = data.get("results", [])
-            for space in spaces:
-                options.append({
-                    "value": space["key"],
-                    "label": space["name"]
-                })
+            options.extend([{"value": space["key"], "label": space["name"]} for space in spaces])
 
     except Exception as e:
         logger.error(f"Error parsing {filter_type} response: {e}")
@@ -4664,7 +4650,7 @@ async def get_connector_instance_filters(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get filter options: {str(e)}"
-        )
+        ) from e
 
 @router.get("/api/v1/connectors/{connector_id}/filters/{filter_key}/options", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_filter_field_options(
@@ -4805,7 +4791,7 @@ async def get_filter_field_options(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get filter options: {str(e)}"
-        )
+        ) from e
 
 
 def _get_connector_from_container(container, connector_id: str) -> Optional[BaseConnector]:
@@ -4923,7 +4909,7 @@ async def save_connector_instance_filters(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to save filter selections: {str(e)}"
-        )
+        ) from e
 
 
 async def _ensure_connector_initialized(
@@ -5039,7 +5025,7 @@ async def _ensure_connector_initialized(
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=error_msg
-            )
+            ) from test_error
 
         # Success! Store connector in container
         logger.info(f"✅ Successfully initialized and tested {connector_type} connector")
@@ -5066,7 +5052,7 @@ async def _ensure_connector_initialized(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=error_msg
-        )
+        ) from e
 
 
 # ============================================================================
@@ -5316,7 +5302,7 @@ async def toggle_connector_instance(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to toggle connector instance {connector_id} {toggle_type}: {str(e)}"
-        )
+        ) from e
 
 
 @router.delete("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
@@ -5499,8 +5485,8 @@ async def delete_connector_instance(
         logger.error(f"❌ Failed to delete connector instance {connector_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Failed to delete connector instance. Please try again."
-        )
+            detail="Failed to initiate connector deletion. Please try again."
+        ) from e
 
 
 # ============================================================================
@@ -5600,7 +5586,7 @@ async def get_connector_schema(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get connector schema: {str(e)}"
-        )
+        ) from e
 
 @router.get("/api/v1/connectors/agents/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_active_agent_instances(
@@ -5662,7 +5648,7 @@ async def get_active_agent_instances(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get active agent instances: {str(e)}"
-        )
+        ) from e
 
 
 # ============================================================================
@@ -5724,7 +5710,7 @@ async def get_oauth_config_registry(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting OAuth config registry: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/api/v1/oauth/registry/{connector_type}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -5782,7 +5768,7 @@ async def get_oauth_config_registry_by_type(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting OAuth config registry: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/api/v1/oauth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -5925,7 +5911,7 @@ async def get_all_oauth_configs(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get all OAuth configurations: {str(e)}"
-        )
+        ) from e
 
 
 def _get_oauth_config_path(connector_type: str) -> str:
@@ -6300,7 +6286,7 @@ async def create_oauth_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to create OAuth configuration: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/api/v1/oauth/{connector_type}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -6377,7 +6363,7 @@ async def list_oauth_configs(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to list OAuth configurations: {str(e)}"
-        )
+        ) from e
 
 
 @router.get("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
@@ -6463,7 +6449,7 @@ async def get_oauth_config_by_id(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get OAuth configuration: {str(e)}"
-        )
+        ) from e
 
 
 @router.put("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
@@ -6570,7 +6556,7 @@ async def update_oauth_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update OAuth configuration: {str(e)}"
-        )
+        ) from e
 
 
 @router.delete("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
@@ -6647,4 +6633,4 @@ async def delete_oauth_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to delete OAuth configuration: {str(e)}"
-        )
+        ) from e
