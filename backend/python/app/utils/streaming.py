@@ -648,11 +648,14 @@ async def execute_tool_calls(
         for tool_result in tool_results_inner:
             if tool_result.get("ok"):
                 tool_msg = {
-                    "ok": True,
-                    "records": message_contents,
-                    "record_count": tool_result.get("record_count", None),
-                    "not_found": tool_result.get("not_found", None),
-                }
+                        "ok": True,
+                        "records": message_contents,
+                        "record_count": tool_result.get("record_count", None),
+                        "sql_result": tool_result.get("markdown_result", None),
+                        "row_count": tool_result.get("row_count", None),
+                        "column_count": tool_result.get("column_count", None),
+                        "not_found": tool_result.get("not_found", None),
+                    }
 
                 # tool_msgs.append(HumanMessage(content=f"Full record: {message_content}"))
                 tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
@@ -1266,6 +1269,7 @@ async def stream_llm_response_with_tools(
     target_words_per_chunk: int = 1,
     mode: Optional[str] = "json",
     is_agent: bool = False,  # Use is_agent flag instead of schema
+    conversation_id: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Enhanced streaming with tool support.
@@ -1276,6 +1280,8 @@ async def stream_llm_response_with_tools(
     Args:
         is_agent: If True, use agent schemas (with referenceData support).
                   If False, use chatbot schemas (default).
+        conversation_id: Optional conversation ID for awaiting background tasks
+                         (e.g. CSV export) before closing the stream.
     """
     logger.info(
         "stream_llm_response_with_tools: START | messages=%d tools=%s target_words_per_chunk=%d mode=%s user_id=%s org_id=%s is_agent=%s",
@@ -1350,6 +1356,26 @@ async def stream_llm_response_with_tools(
                     yield tool_event
                 elif tool_event.get("event") == "complete" or tool_event.get("event") == "error":
                     yield tool_event
+                    # The LLM answered directly during tool execution (e.g., on hop 2
+                    # after a successful tool call). We still need to collect any
+                    # background conversation tasks (like CSV export) before closing.
+                    if conversation_id:
+                        from app.utils.conversation_tasks import await_and_collect_results
+
+                        logger.info(
+                            "stream_llm_response_with_tools: early-return path — awaiting conversation tasks for %s",
+                            conversation_id,
+                        )
+                        task_results = await await_and_collect_results(conversation_id)
+                        for task_result in task_results:
+                            logger.info(
+                                "stream_llm_response_with_tools: yielding conversation_task event: %s",
+                                task_result,
+                            )
+                            yield {
+                                "event": "conversation_task",
+                                "data": task_result,
+                            }
                     return
                 else:
                     yield tool_event
@@ -1386,6 +1412,30 @@ async def stream_llm_response_with_tools(
         else:
             async for event in handle_simple_mode(llm, messages, final_results, records, logger, target_words_per_chunk, virtual_record_id_to_result):
                 yield event
+
+        # Await background conversation tasks (e.g. CSV export) and send
+        # their results *after* the complete event so the answer is not delayed.
+        if conversation_id:
+            from app.utils.conversation_tasks import await_and_collect_results
+
+            logger.info(
+                "stream_llm_response_with_tools: awaiting conversation tasks for %s",
+                conversation_id,
+            )
+            task_results = await await_and_collect_results(conversation_id)
+            logger.info(
+                "stream_llm_response_with_tools: got %d task results for %s",
+                len(task_results), conversation_id,
+            )
+            for task_result in task_results:
+                logger.info(
+                    "stream_llm_response_with_tools: yielding conversation_task event: %s",
+                    task_result,
+                )
+                yield {
+                    "event": "conversation_task",
+                    "data": task_result,
+                }
 
         logger.info("stream_llm_response_with_tools: COMPLETE | Successfully completed streaming")
     except Exception as e:
@@ -1580,6 +1630,7 @@ async def call_aiter_llm_stream(
     # Try to parse the full JSON buffer
     try:
         response_text = state.full_json_buf
+        logger.debug("[streaming] before cleanup_content (full_json_buf) type=%s", type(response_text).__name__)
         if  isinstance(response_text, str):
             response_text = cleanup_content(response_text)
 
@@ -1727,9 +1778,17 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
 
 
 def cleanup_content(response_text: str) -> str:
+    # Diagnostic: catch 'tuple' (or other non-str) has no attribute 'startswith'
+    if not isinstance(response_text, str):
+        logger.warning(
+            "[streaming cleanup_content] response_text is not str | type=%s repr=%s",
+            type(response_text).__name__, repr(response_text)[:300],
+        )
+        response_text = str(response_text)
     response_text = response_text.strip()
     if '</think>' in response_text:
             response_text = response_text.split('</think>')[-1]
+    logger.debug("[streaming cleanup_content] before startswith/endswith type=%s", type(response_text).__name__)
     if response_text.startswith("```json"):
         response_text = response_text.replace("```json", "", 1)
     if response_text.endswith("```"):
@@ -1773,6 +1832,7 @@ async def invoke_with_structured_output_and_reflection(
                 # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
                 logger.debug("Response is a dict with 'content' key, extracting content for parsing")
                 response_content = response['content']
+                logger.debug("[streaming] before cleanup_content (dict content) type=%s", type(response_content).__name__)
                 response_text = cleanup_content(response_content)
                 logger.debug(f"Cleaned response content length: {len(response_text)} chars")
                 parsed_response = schema.model_validate_json(response_text)
@@ -1787,6 +1847,7 @@ async def invoke_with_structured_output_and_reflection(
                 # Response is an AIMessage or string
                 logger.debug("Response is AIMessage, extracting content for parsing")
                 response_content = response.content
+                logger.debug("[streaming] before cleanup_content (AIMessage.content) type=%s", type(response_content).__name__)
                 response_text = cleanup_content(response_content)
                 logger.debug(f"Cleaned response content length: {len(response_text)} chars")
                 parsed_response = schema.model_validate_json(response_text)
@@ -1825,6 +1886,7 @@ Respond only with valid JSON that matches the schema."""
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
                         logger.debug("Reflection response is a dict with 'content' key, extracting content for parsing")
                         reflection_content = reflection_response['content']
+                        logger.debug("[streaming] before cleanup_content (reflection dict content) type=%s", type(reflection_content).__name__)
                         reflection_text = cleanup_content(reflection_content)
                         logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
                         parsed_response = schema.model_validate_json(reflection_text)
@@ -1836,6 +1898,7 @@ Respond only with valid JSON that matches the schema."""
                     if hasattr(reflection_response, 'content'):
                         logger.debug("Reflection response is AIMessage, extracting content")
                         reflection_content = reflection_response.content
+                        logger.debug("[streaming] before cleanup_content (reflection AIMessage.content) type=%s", type(reflection_content).__name__)
                         reflection_text = cleanup_content(reflection_content)
                         logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
                         parsed_response = schema.model_validate_json(reflection_text)
