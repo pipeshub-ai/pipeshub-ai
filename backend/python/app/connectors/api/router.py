@@ -5341,19 +5341,9 @@ async def delete_connector_instance(
 
         logger.info(f"🗑️ Initiating async deletion of connector {connector_id} by user {user_id}")
 
-        # 5. Mark connector as DELETING in the graph DB so the UI can reflect it
-        await graph_provider.batch_upsert_nodes(
-            [{
-                "id": connector_id,
-                "status": "DELETING",
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            }],
-            CollectionNames.APPS.value
-        )
-
         producer = container.messaging_producer
 
-        # 6. Stop any running sync for this connector
+        # 5. Stop any running sync for this connector
         try:
             disable_message = {
                 "eventType": "appDisabled",
@@ -5375,7 +5365,7 @@ async def delete_connector_instance(
                 f"Sync services may continue running. Proceeding with deletion event."
             )
 
-        # 7. Publish the async deletion event — consumed by the sync consumer
+        # 6. Publish the async deletion event — consumed by the sync consumer (before status update so a failed publish cannot leave the connector stuck in DELETING)
         event_type = f"{connector_type.replace(' ', '').lower()}.delete"
         delete_message = {
             "eventType": event_type,
@@ -5393,6 +5383,16 @@ async def delete_connector_instance(
         }
         await producer.send_message(topic="sync-events", message=delete_message)
         logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")
+
+        # 7. Mark connector as DELETING in the graph DB so the UI can reflect it
+        await graph_provider.batch_upsert_nodes(
+            [{
+                "id": connector_id,
+                "status": "DELETING",
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }],
+            CollectionNames.APPS.value
+        )
 
         return JSONResponse(
             status_code=202,
