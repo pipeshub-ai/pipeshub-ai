@@ -19,7 +19,7 @@ import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 import { useConnectors } from '../accountdetails/connectors/context';
-import { getExtensionFromMimeType, getWebUrlWithFragment } from './utils/utils';
+import { getExtensionFromMimeType, getWebUrl } from './utils/utils';
 
 import type { Filters } from './types/knowledge-base';
 import type { PipesHub, SearchResult, AggregatedDocument } from './types/search-response';
@@ -261,7 +261,7 @@ export default function KnowledgeBaseSearch() {
 
     if (previewRenderable === false) {
       const record = recordsMap[recordId];
-      const webUrl = getWebUrlWithFragment(record, recordCitation);
+      const webUrl = getWebUrl(record, recordCitation);
 
       if (webUrl) {
         window.open(webUrl, '_blank', 'noopener,noreferrer');

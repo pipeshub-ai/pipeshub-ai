@@ -22,10 +22,6 @@ import {
   Link,
 } from '@mui/material';
 
-import {
-  extractCleanTextFragment,
-  addTextFragmentToUrl,
-} from 'src/sections/knowledgebase/utils/utils';
 import { createScrollableContainerStyle } from '../utils/styles/scrollbar';
 
 // Styled components for consistent design
@@ -236,15 +232,6 @@ const CitationHoverCard = ({
       if (citation?.metadata?.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
         const baseUrl = `${window.location.protocol}//${window.location.host}`;
         webUrl = baseUrl + webUrl;
-      }
-
-      // Check if blockText exists and is not empty before adding text fragment
-      const blockText = citation?.metadata?.blockText;
-      if (blockText && typeof blockText === 'string' && blockText.trim().length > 0) {
-        const textFragment = extractCleanTextFragment(blockText);
-        if (textFragment) {
-          return addTextFragmentToUrl(webUrl, textFragment);
-        }
       }
 
       return webUrl;
