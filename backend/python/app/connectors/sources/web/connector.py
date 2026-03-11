@@ -961,7 +961,7 @@ class WebConnector(BaseConnector):
                         f"({base_netloc} → {final_netloc})"
                     )
                     return None
-            
+
             # Guard against HTTP redirects that silently escape the start path prefix.
             if self.restrict_to_start_path and self.start_path_prefix:
                 # Normalise: strip trailing slash then add one so that both
