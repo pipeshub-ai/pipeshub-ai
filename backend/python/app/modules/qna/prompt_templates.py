@@ -25,7 +25,8 @@ web_search_system_prompt = """You are a helpful web research assistant."""
 
 web_search_user_prompt = """Query: {{ query }}
 
-CRITICAL: Use fetch_url tool only if the existing context/snippets, if any, are insufficient to answer the query.
+CRITICAL: You MUST use tools to find information. Do NOT answer from your own training knowledge — only use information retrieved from the web_search and fetch_url tools.
+Use fetch_url tool only if the existing context/snippets, if any, are insufficient to answer the query.
 
 - If the query includes URLs and can be answered entirely using the content from those URLs, use the fetch_url tool directly instead of calling the web_search tool first
 - Generate answer in fully valid markdown format with proper headings and formatting
