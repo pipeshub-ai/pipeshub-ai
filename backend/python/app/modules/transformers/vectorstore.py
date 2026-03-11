@@ -811,7 +811,7 @@ class VectorStore(Transformer):
                             )
 
             # ── Process SQL row blocks ──
-            MAX_SQL_ROWS_TO_EMBED = 1000
+            MAX_SQL_ROWS_TO_EMBED = 1000000
             sql_rows_embedded = 0
             for block in sql_row_blocks:
                 if sql_rows_embedded >= MAX_SQL_ROWS_TO_EMBED:
