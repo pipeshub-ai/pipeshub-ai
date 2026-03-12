@@ -5,12 +5,13 @@ from typing import Any, Dict, Optional
 
 from dependency_injector import providers
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import AppStatus, CollectionNames, Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import sync_task_manager
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class EventService:
@@ -25,6 +26,31 @@ class EventService:
         self.logger = logger
         self.graph_provider = graph_provider
         self.app_container = app_container
+
+    async def _update_app_status(
+        self,
+        connector_id: str,
+        *,
+        status: Optional[str] = None,
+        is_locked: Optional[bool] = None,
+    ) -> None:
+        """Update app document status and/or isLocked for a connector.
+
+        Pass status (an AppStatus value string) and/or is_locked (bool).
+        Omitted arguments (None) are not written to the DB.
+        Always sets updatedAtTimestamp.
+        """
+        payload: Dict[str, Any] = {
+            "id": connector_id,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+        if status is not None:
+            payload["status"] = status
+        if is_locked is not None:
+            payload["isLocked"] = is_locked
+        await self.graph_provider.batch_upsert_nodes(
+            [payload], CollectionNames.APPS.value
+        )
 
     def _get_connector(self, connector_id: str) -> Optional[BaseConnector]:
         """
@@ -122,22 +148,36 @@ class EventService:
 
     async def _handle_start_sync(self, connector_name: str, payload: Dict[str, Any]) -> bool:
         """Queue immediate start of the sync service"""
-        try:
-            org_id = payload.get("orgId")
-            connector_id = payload.get("connectorId")
-            full_sync = payload.get("fullSync", False)
-            if not org_id:
-                raise ValueError("orgId is required")
+        org_id = payload.get("orgId")
+        connector_id = payload.get("connectorId")
+        full_sync = payload.get("fullSync", False)
 
-            self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {full_sync}")
+        if not org_id:
+            self.logger.error("orgId is required in start sync payload")
+            return False
 
-            connector = self._get_connector(connector_id)
-            if not connector:
-                self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
+        self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {full_sync}")
+
+        connector = self._get_connector(connector_id)
+        if not connector:
+            self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
+            return False
+
+        if full_sync:
+            # --- Full sync: acquire lock for the prep phase ---
+            try:
+                await self._update_app_status(
+                    connector_id,
+                    status=AppStatus.FULL_SYNCING.value,
+                    is_locked=True,
+                )
+                self.logger.info(f"🔒 Set status=FULL_SYNCING, isLocked=True for connector {connector_id}")
+            except Exception as lock_err:
+                self.logger.error(f"❌ Failed to set lock for connector {connector_id}: {lock_err}")
                 return False
 
-            # If fullSync flag is set, delete all sync points for this connector
-            if full_sync:
+            try:
+                # Delete sync points
                 self.logger.info(f"Full sync requested - deleting sync points for connector {connector_id}")
                 try:
                     deleted_count, success = await self.graph_provider.delete_sync_points_by_connector_id(
@@ -148,10 +188,10 @@ class EventService:
                     else:
                         self.logger.warning(f"⚠️ Failed to delete sync points for connector {connector_id}, continuing with sync")
                 except Exception as sync_point_error:
-                    self.logger.error(f"❌ Error deleting sync points for connector {connector_id}: {str(sync_point_error)}")
-                    # Continue with sync even if sync point deletion fails
+                    self.logger.error(f"❌ Error deleting sync points for connector {connector_id}: {sync_point_error}")
                     self.logger.warning("Continuing with sync despite sync point deletion failure")
 
+                # Delete sync edges
                 try:
                     deleted_edges, success = await self.graph_provider.delete_connector_sync_edges(
                         connector_id=connector_id
@@ -161,16 +201,54 @@ class EventService:
                     else:
                         self.logger.warning(f"Failed to delete some sync edges for connector {connector_id}, continuing with sync")
                 except Exception as edge_error:
-                    self.logger.error(f"Error deleting connector sync edges for {connector_id}: {str(edge_error)}")
+                    self.logger.error(f"Error deleting connector sync edges for {connector_id}: {edge_error}")
 
-            # Run the sync — at most one task per connector at a time
-            await sync_task_manager.start_sync(connector_id, connector.run_sync())
-            self.logger.info(f"Started sync for {connector_name} {connector_id} connector")
-            return True
+                # Schedule the background sync task
+                await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id))
+                self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
 
-        except Exception as e:
-            self.logger.error(f"Failed to queue {connector_name.capitalize()} {connector_id} sync service start: {str(e)}")
-            return False
+            except Exception as e:
+                self.logger.error(f"❌ Failed during full sync prep for {connector_id}: {e}")
+                # Release lock immediately so the connector is not stuck
+                try:
+                    await self._update_app_status(connector_id, status=AppStatus.IDLE.value, is_locked=False)
+                except Exception as revert_err:
+                    self.logger.error(f"❌ Failed to revert lock for connector {connector_id}: {revert_err}")
+                return False
+
+            # Prep done and task scheduled — release the lock now.
+            # Status stays FULL_SYNCING until run_sync() finishes.
+            try:
+                await self._update_app_status(connector_id, is_locked=False)
+                self.logger.info(f"🔓 Released lock for connector {connector_id} (status remains FULL_SYNCING)")
+            except Exception as unlock_err:
+                self.logger.error(f"❌ Failed to release lock for connector {connector_id}: {unlock_err}")
+                # Non-fatal: sync task is already running; log and continue
+
+        else:
+            # --- Normal sync: set status only, no lock ---
+            try:
+                await self._update_app_status(connector_id, status=AppStatus.SYNCING.value)
+                self.logger.info(f"Set status=SYNCING for connector {connector_id}")
+            except Exception as status_err:
+                self.logger.error(f"❌ Failed to set SYNCING status for connector {connector_id}: {status_err}")
+                # Non-fatal: proceed with sync even if status write failed
+
+            await sync_task_manager.start_sync(connector_id, self._run_sync_and_clear_status(connector, connector_id))
+            self.logger.info(f"Started sync task for {connector_name} {connector_id}")
+
+        return True
+
+    async def _run_sync_and_clear_status(self, connector: Any, connector_id: str) -> None:
+        """Wrap run_sync() so that status is cleared to null when the task finishes."""
+        try:
+            await connector.run_sync()
+        finally:
+            try:
+                await self._update_app_status(connector_id, status=AppStatus.IDLE.value)
+                self.logger.info(f"✅ Cleared status for connector {connector_id} after sync")
+            except Exception as clear_err:
+                self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")
 
     async def _handle_reindex(self, connector_name: str, payload: Dict[str, Any]) -> bool:
         """Handle reindex event for a connector with pagination support.

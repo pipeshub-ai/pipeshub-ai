@@ -230,6 +230,7 @@ const getFilterFieldOptionsSchema = z.object({
 const connectorToggleSchema = z.object({
   body: z.object({
     type: z.enum(['sync', 'agent']),
+    fullSync: z.boolean().optional(),
   }),
   params: z.object({
     connectorId: z.string().min(1, 'Connector ID is required'),
