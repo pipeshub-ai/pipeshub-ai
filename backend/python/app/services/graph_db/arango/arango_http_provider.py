@@ -17740,8 +17740,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
                 FILTER edge._to IN @toolset_ids
                 LET agent = DOCUMENT(edge._from)
-                FILTER agent != null 
-                    AND agent.isDeleted != true 
+                FILTER agent != null
+                    AND agent.isDeleted != true
                 RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
             """
             agents = await self.http_client.execute_aql(agent_query, bind_vars={
