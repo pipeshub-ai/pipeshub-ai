@@ -19,9 +19,14 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
-from app.utils.chat_helpers import get_flattened_results, get_message_content
+from app.utils.chat_helpers import (
+    enrich_virtual_record_id_to_result_with_fk_children,
+    get_flattened_results,
+    get_message_content,
+)
 from app.utils.citations import process_citations
 from app.utils.fetch_full_record import create_fetch_full_record_tool
+from app.utils.execute_query import create_execute_query_tool
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
 from app.utils.streaming import (
@@ -47,6 +52,7 @@ class ChatQuery(BaseModel):
     modelName: Optional[str] = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
     chatMode: Optional[str] = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
     mode: Optional[str] = "json"  # "json" for full metadata, "simple" for answer only
+    conversationId: Optional[str] = None  # Passed by Node.js layer for background task tracking
 
 
 # Dependency injection functions
@@ -305,6 +311,16 @@ async def process_chat_query_with_status(
     flattened_results = await get_flattened_results(
         search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result
     )
+    await enrich_virtual_record_id_to_result_with_fk_children(
+        virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+    )
+
+    fk_blocks_in_flattened = [r for r in flattened_results if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
+    logger.debug(
+        "chatbot: after FK enrichment flattened_results=%d, FK_ENRICHMENT blocks=%d",
+        len(flattened_results),
+        len(fk_blocks_in_flattened),
+    )
 
     # Re-rank results
     if len(flattened_results) > 1 and not query_info.quickMode and query_info.chatMode != "quick":
@@ -497,12 +513,13 @@ async def askAIStream(
 
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
+            
             container = request.app.container
             logger = container.logger()
-
+            logger.info("Processing query...")
             # Send initial status immediately upon connection
             yield create_sse_event("status", {"status": "started", "message": "Processing your query..."})
-
+            logger.info("Processing query2...")
             # Process query inline with real-time status updates
             try:
                 # Get LLM based on user selection or fallback to default
@@ -578,7 +595,9 @@ async def askAIStream(
                 flattened_results = await get_flattened_results(
                     search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, virtual_to_record_map, graph_provider=graph_provider
                 )
-
+                await enrich_virtual_record_id_to_result_with_fk_children(
+                    virtual_record_id_to_result, blob_store, org_id, graph_provider, flattened_results
+                )
                 # Re-rank results
                 if len(flattened_results) > 1 and not query_info.quickMode and query_info.chatMode != "quick":
                     yield create_sse_event("status", {"status": "ranking", "message": "Ranking relevant information..."})
@@ -641,8 +660,19 @@ async def askAIStream(
                 messages.append({"role": "user", "content": content})
 
                 # Prepare tools
-                fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result)
-                tools = [fetch_tool]
+                #!!!
+                fetch_tool = create_fetch_full_record_tool(
+                    virtual_record_id_to_result, graph_provider, blob_store, org_id
+                )
+                # tools = [fetch_tool]
+                execute_query_tool = create_execute_query_tool(
+                    config_service=config_service,
+                    graph_provider=graph_provider,
+                    org_id=org_id,
+                    conversation_id=query_info.conversationId,
+                    blob_store=blob_store,
+                )
+                tools = [fetch_tool, execute_query_tool]
 
                 tool_runtime_kwargs = {
                     "blob_store": blob_store,
@@ -653,7 +683,7 @@ async def askAIStream(
                 all_queries = all_queries
 
             except HTTPException as e:
-                logger.error(f"HTTPException: {str(e)}", exc_info=True)
+                logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
                 result = e.detail
                 yield create_sse_event("error", {
                     "status": result.get("status", "error"),
@@ -661,9 +691,8 @@ async def askAIStream(
                 })
                 return
             except Exception as e:
-                logger.error(f"Exception: {str(e)}", exc_info=True)
-                yield create_sse_event("error", {"error": str(e)})
                 logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
+                yield create_sse_event("error", {"error": str(e)})
                 return
 
             # Stream response with enhanced tool support using your existing implementation
@@ -687,6 +716,7 @@ async def askAIStream(
                     tool_runtime_kwargs=tool_runtime_kwargs,
                     target_words_per_chunk=1,
                     mode=query_info.mode,
+                    conversation_id=query_info.conversationId,
                 ):
                     event_type = stream_event["event"]
                     event_data = stream_event["data"]
