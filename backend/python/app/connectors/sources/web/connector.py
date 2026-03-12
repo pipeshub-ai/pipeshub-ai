@@ -981,8 +981,7 @@ class WebConnector(BaseConnector):
                 if final_netloc.lower() != base_netloc.lower():
                     self.logger.debug(
                         "⚠️ Skipping %s: HTTP redirect crossed domain boundary "
-                        + "(%s → %s)", url, base_netloc, final_netloc
-                        + "(%s → %s)", base_netloc, final_netloc
+                        +"(%s → %s)", url, base_netloc, final_netloc
                     )
                     return None
 
