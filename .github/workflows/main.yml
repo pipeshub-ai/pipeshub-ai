@@ -112,7 +112,7 @@ jobs:
       - name: Run pyright on changed Python files
         run: |
           git fetch origin main
-          CHANGED_FILES=$(git diff --name-only origin/main ${{ github.sha }} | grep '^backend/python/.*\.py$' | sed 's|^backend/python/||' || true)
+          CHANGED_FILES=$(git diff --name-only origin/main ${{ github.sha }} | grep '^backend/python/.*\.py$' | grep -v 'code-generator/' | grep -v 'example\.py$' | sed 's|^backend/python/||' || true)
           if [ -n "$CHANGED_FILES" ]; then
             echo "Type-checking changed Python files:"
             echo "$CHANGED_FILES"

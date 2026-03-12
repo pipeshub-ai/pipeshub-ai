@@ -26,6 +26,7 @@ from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import Record
@@ -48,7 +49,7 @@ class KBApp(App):
     .with_categories(["Knowledge Management", "Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
     .configure(lambda builder: builder
-        .with_sync_strategies(["MANUAL"])\
+        .with_sync_strategies([SyncStrategy.MANUAL])\
         .with_scheduled_config(False, 0)\
         .with_sync_support(True)
         .with_agent_support(True)

@@ -20,7 +20,11 @@ from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
-from app.modules.agents.qna.graph import agent_graph
+from app.modules.agents.qna.graph import agent_graph, modern_agent_graph
+from app.modules.agents.deep.graph import deep_agent_graph
+from app.modules.agents.deep.state import build_deep_agent_state
+
+
 from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
     check_memory_health,
@@ -50,7 +54,7 @@ class ChatQuery(BaseModel):
     systemPrompt: Optional[str] = None
     instructions: Optional[str] = None
     tools: Optional[List[str]] = None
-    chatMode: Optional[str] = "quick"
+    chatMode: Optional[str] = "auto"
     modelKey: Optional[str] = None
     modelName: Optional[str] = None
     timezone: Optional[str] = None
@@ -160,6 +164,188 @@ def _get_user_context(request: Request) -> Dict[str, Any]:
         "orgId": org_id,
         "sendUserInfo": request.query_params.get("sendUserInfo", True),
     }
+
+
+def _extract_tool_names_for_routing(query_info: Dict[str, Any]) -> List[str]:
+    """Extract flattened tool names from query payload (tools or toolsets)."""
+    names: List[str] = []
+
+    def _normalize_tool_name(tool_obj: Any) -> Optional[str]:
+        """Return canonical tool name in `app.tool` format when possible."""
+        if isinstance(tool_obj, str):
+            return tool_obj
+        if not isinstance(tool_obj, dict):
+            return None
+
+        # Prefer fully-qualified keys first
+        for k in ("fullName", "full_name", "toolFullName"):
+            v = tool_obj.get(k)
+            if isinstance(v, str) and v:
+                return v
+
+        # Fallback to plain name
+        name = tool_obj.get("name")
+        if not isinstance(name, str) or not name:
+            return None
+        if "." in name:
+            return name
+
+        # Rebuild app.tool from additional fields if available
+        app_name = tool_obj.get("app") or tool_obj.get("appName") or tool_obj.get("toolsetName")
+        if isinstance(app_name, str) and app_name:
+            return f"{app_name}.{name}"
+        return name
+
+    # Direct tools list (legacy / explicit payloads)
+    for t in query_info.get("tools", []) or []:
+        normalized = _normalize_tool_name(t)
+        if normalized:
+            names.append(normalized)
+
+    # Toolsets list (graph-based payloads)
+    for toolset in query_info.get("toolsets", []) or []:
+        if not isinstance(toolset, dict):
+            continue
+        toolset_name = toolset.get("name")
+        for t in toolset.get("tools", []) or []:
+            normalized = _normalize_tool_name(t)
+            if not normalized and isinstance(t, dict):
+                # Last-resort fallback using toolset name as app prefix
+                tn = t.get("name")
+                if isinstance(toolset_name, str) and isinstance(tn, str) and tn:
+                    normalized = f"{toolset_name}.{tn}"
+            if normalized:
+                names.append(normalized)
+
+    # De-duplicate while preserving order
+    seen = set()
+    deduped: List[str] = []
+    for n in names:
+        if n and n not in seen:
+            deduped.append(n)
+            seen.add(n)
+    return deduped
+
+
+async def _select_agent_graph_for_query(
+    query_info: Dict[str, Any],
+    logger: Logger,
+    llm: BaseChatModel,
+    agent: Dict[str, Any] = None,
+):
+    """
+    Graph selection based on chatMode from the chat input:
+    - quick: legacy agent graph (fast, no tool loops)
+    - verification: modern ReAct agent graph (tool calling with reflection)
+    - deep: deep agent graph (orchestrator + sub-agents)
+    - auto: LLM router decides based on query complexity (default: quick)
+    """
+    chat_mode = (query_info.get("chatMode") or "auto").lower().strip()
+
+    if chat_mode == "deep":
+        logger.info("Agent graph route: deep | chatMode=deep")
+        return deep_agent_graph
+
+    if chat_mode == "verification":
+        logger.info("Agent graph route: react | chatMode=verification")
+        return modern_agent_graph
+
+    if chat_mode == "auto":
+        # Auto-detect: use LLM to pick the right graph
+        selected = await _auto_select_graph(query_info, logger, llm)
+        return selected
+
+    # Default: "auto" → LLM router decides
+    logger.info("Agent graph route: legacy | chatMode=%s", chat_mode)
+    return agent_graph
+
+
+async def _auto_select_graph(
+    query_info: Dict[str, Any],
+    logger: Logger,
+    llm: BaseChatModel,
+):
+    """
+    Auto-select graph using an LLM call to classify the query into one of
+    three agent types: quick, verification, or deep.
+    Falls back to 'verification' if parsing fails.
+    """
+    from langchain_core.messages import HumanMessage
+
+    tool_names = _extract_tool_names_for_routing(query_info)
+    apps = sorted({
+        name.split(".", 1)[0]
+        for name in tool_names
+        if isinstance(name, str) and "." in name
+    })
+    user_query = query_info.get("query", "")
+    domains_str = ", ".join(apps) if apps else "none"
+
+    prompt = (
+        "You are a query router. Classify the user query into exactly one agent type "
+        "based on the structural complexity of the work required.\n\n"
+
+        "## Agent Types\n\n"
+
+        "**quick**: The task requires ZERO or exactly ONE tool call with no dependency resolution. "
+        "This covers anything answerable from general knowledge, simple greetings, "
+        "or a single straightforward read/write operation where the parameters are obvious "
+        "from the query itself.\n\n"
+
+        "**verification**: The task requires MULTIPLE tool calls that form a SEQUENTIAL chain — "
+        "the output of one step feeds as input to the next. This includes multi-step workflows "
+        "even if they span different services, as long as the steps depend on each other in a "
+        "linear sequence (A → B → C). Also use this when a single tool call requires a "
+        "preceding lookup to resolve a parameter (e.g. finding an ID before using it).\n\n"
+
+        "**deep**: The task requires PARALLEL independent work streams, BULK processing of many items, "
+        "or SYNTHESIS across multiple unrelated data sources. The defining characteristic is that "
+        "the work CANNOT be serialized into one sequential chain — it needs fan-out to gather data "
+        "from independent sources, batch processing of large volumes, or aggregation/comparison "
+        "across separate result sets to produce a combined output.\n\n"
+
+        "## Decision Rule\n"
+        "1. Count the minimum tool calls needed and check their dependency structure.\n"
+        "2. Zero or one independent call → quick\n"
+        "3. Multiple calls where each depends on the previous result → verification\n"
+        "4. Multiple INDEPENDENT calls that must be gathered and combined → deep\n\n"
+
+        f"Available tool domains: {domains_str}\n"
+        f"User query: {user_query}\n\n"
+        "Respond with exactly one word: quick, verification, or deep."
+    )
+
+    try:
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        raw = response.content.strip().lower().strip(".,!\"' ")
+
+        route_map = {
+            "quick": agent_graph,
+            "verification": modern_agent_graph,
+            "deep": deep_agent_graph,
+        }
+
+        for keyword, graph in route_map.items():
+            if keyword in raw:
+                logger.info(
+                    "Agent graph route: %s | LLM auto-select (domains=%s, query=%s)",
+                    keyword,
+                    domains_str,
+                    user_query[:80],
+                )
+                return graph
+
+        logger.warning(
+            "Agent graph route: verification (default) | LLM returned unparseable: %s",
+            raw[:100],
+        )
+        return modern_agent_graph
+
+    except Exception as e:
+        logger.warning(
+            "Agent graph route: verification (fallback) | LLM router failed: %s", e
+        )
+        return modern_agent_graph
 
 
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> Dict[str, Any]:
@@ -678,20 +864,38 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Build and execute graph
-        initial_state = build_initial_state(
-            query_info.model_dump(),
-            enriched_user_info,
-            services["llm"],
-            logger,
-            retrieval_service,
-            graph_provider,
-            reranker_service,
-            config_service,
-            org_info,
-        )
+        selected_graph = await _select_agent_graph_for_query(query_info.model_dump(), logger, services["llm"])
 
+        if selected_graph == deep_agent_graph:
+            initial_state = build_deep_agent_state(
+                query_info.model_dump(),
+                enriched_user_info,
+                services["llm"],
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+            )
+        else:
+            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+            initial_state = build_initial_state(
+                query_info.model_dump(),
+                enriched_user_info,
+                services["llm"],
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                graph_type,
+            )
+
+        graph_to_use = selected_graph
         config = {"recursion_limit": 30}
-        final_state = await agent_graph.ainvoke(initial_state, config=config)
+        final_state = await graph_to_use.ainvoke(initial_state, config=config)
         final_state = auto_optimize_state(final_state, logger)
 
         # Check memory health
@@ -752,33 +956,57 @@ async def stream_response(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: Dict[str, Any] = None,
+    agent: Dict[str, Any] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
-    initial_state = build_initial_state(
-        query_info,
-        user_info,
-        llm,
-        logger,
-        retrieval_service,
-        graph_provider,
-        reranker_service,
-        config_service,
-        org_info,
-    )
+    try:
+        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm, agent=agent)
 
-    config = {"recursion_limit": 30}
-    chunk_count = 0
-
-    async for chunk in agent_graph.astream(initial_state, config=config, stream_mode="custom"):
-        chunk_count += 1
-        if isinstance(chunk, dict) and "event" in chunk:
-            event_type = chunk.get('event', 'unknown')
-            data = chunk.get('data', {})
-            yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+        if selected_graph == deep_agent_graph:
+            graph_type = "deep"
+            initial_state = build_deep_agent_state(
+                query_info,
+                user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+            )
         else:
-            logger.warning(f"Unexpected chunk format: {type(chunk)}")
+            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+            initial_state = build_initial_state(
+                query_info,
+                user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                graph_type,
+            )
 
-    logger.info(f"Streaming completed. Total chunks: {chunk_count}")
+        config = {"recursion_limit": 50}
+        chunk_count = 0
+
+        graph_to_use = selected_graph
+        async for chunk in graph_to_use.astream(initial_state, config=config, stream_mode="custom"):
+            chunk_count += 1
+            if isinstance(chunk, dict) and "event" in chunk:
+                event_type = chunk.get('event', 'unknown')
+                data = chunk.get('data', {})
+                yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+            else:
+                logger.warning(f"Unexpected chunk format: {type(chunk)}")
+
+        logger.info(f"Streaming completed. Total chunks: {chunk_count}")
+    except Exception as e:
+        logger.error(f"Error in stream_response: {e}", exc_info=True)
+        yield f"event: error\ndata: {json.dumps({'message': str(e), 'type': 'stream_error'})}\n\n"
 
 
 @router.post("/agent-chat-stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
@@ -800,9 +1028,22 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
 
         return StreamingResponse(
             stream_response(
-                query_info.model_dump(), enriched_user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info
+                query_info.model_dump(),
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
             ),
             media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
     except HTTPException:
         raise
@@ -2112,22 +2353,38 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
         }
+        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm, agent=agent)
 
-        # Execute graph
-        initial_state = build_initial_state(
-            query_info,
-            enriched_user_info,
-            llm,
-            logger,
-            retrieval_service,
-            graph_provider,
-            reranker_service,
-            config_service,
-            org_info,
-        )
+        if selected_graph == deep_agent_graph:
+            initial_state = build_deep_agent_state(
+                query_info,
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+            )
+        else:
+            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+            initial_state = build_initial_state(
+                query_info,
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                graph_type,
+            )
 
+        graph_to_use = selected_graph
         config = {"recursion_limit": 50}
-        final_state = await agent_graph.ainvoke(initial_state, config=config)
+        final_state = await graph_to_use.ainvoke(initial_state, config=config)
 
         # Handle errors
         if final_state.get("error"):
@@ -2423,9 +2680,23 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         return StreamingResponse(
             stream_response(
-                query_info, enriched_user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info
+                query_info,
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                agent=agent,
             ),
             media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
     except HTTPException:
         raise

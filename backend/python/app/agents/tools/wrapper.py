@@ -21,7 +21,12 @@ ToolResult = Union[tuple, str, dict, list, int, float, bool]
 
 
 class ToolInstanceCreator:
-    """Handles creation of tool instances with proper client initialization"""
+    """Handles creation of tool instances with proper client initialization.
+
+    Caches created clients per (app_name, toolset_id) so that multiple
+    tool calls within the same request reuse the same authenticated client
+    instead of re-creating OAuth/MSAL/Graph from scratch each time.
+    """
 
     def __init__(self, state: ChatState) -> None:
         """Initialize tool instance creator.
@@ -34,6 +39,15 @@ class ToolInstanceCreator:
         self.state = state
         self.logger = state.get("logger")
         self.config_service = self._get_config_service()
+        # Per-request client cache lives on state so it's shared across all
+        # ToolInstanceCreator instances within the same request/sub-agent.
+        if "_client_cache" not in state:
+            state["_client_cache"] = {}
+        self._client_cache: Dict[tuple, object] = state["_client_cache"]
+        # Lock to prevent parallel tool calls from creating duplicate clients
+        if "_client_cache_locks" not in state:
+            state["_client_cache_locks"] = {}
+        self._cache_locks: Dict[tuple, asyncio.Lock] = state["_client_cache_locks"]
 
     def _get_config_service(self) -> object:
         """Get configuration service from state.
@@ -95,6 +109,9 @@ class ToolInstanceCreator:
     ) -> object:
         """Create instance using factory with async client creation (no thread-pool loop).
 
+        Uses per-request client cache to avoid re-creating OAuth/MSAL/Graph
+        clients on every tool call within the same request.
+
         Args:
             factory: Client factory instance
             action_class: Class to instantiate
@@ -109,21 +126,55 @@ class ToolInstanceCreator:
 
             config = toolset_config if toolset_config else {}
 
-            if self.logger:
-                if toolset_config:
-                    self.logger.debug(f"Using toolset auth for {app_name} (ID: {tool_full_name})")
-                else:
-                    self.logger.warning(
-                        f"No toolset config for {app_name} (tool: {tool_full_name}), "
-                        f"falling back to legacy auth"
-                    )
+            # Build cache key from app_name + toolset_id + user_id
+            # Client is per-toolset per-user (different users have different OAuth tokens)
+            toolset_id = None
+            if tool_full_name:
+                tool_to_toolset_map = self.state.get("tool_to_toolset_map", {})
+                toolset_id = tool_to_toolset_map.get(tool_full_name)
+            user_id = self.state.get("user_id", "default")
+            cache_key = (app_name, toolset_id or "default", user_id)
 
-            client = await factory.create_client(
-                self.config_service,
-                self.logger,
-                config,
-                self.state
-            )
+            # Check cache first (fast path, no lock needed)
+            client = self._client_cache.get(cache_key)
+            if client is not None:
+                if self.logger:
+                    self.logger.debug(f"Reusing cached client for {app_name} (toolset: {toolset_id})")
+                return action_class(client)
+
+            # Acquire per-key lock to prevent parallel tool calls from
+            # each creating their own client for the same cache key
+            if cache_key not in self._cache_locks:
+                self._cache_locks[cache_key] = asyncio.Lock()
+            async with self._cache_locks[cache_key]:
+                # Double-check after acquiring lock
+                client = self._client_cache.get(cache_key)
+                if client is not None:
+                    if self.logger:
+                        self.logger.debug(f"Reusing cached client for {app_name} (toolset: {toolset_id})")
+                    return action_class(client)
+
+                if self.logger:
+                    if toolset_config:
+                        self.logger.debug(f"Using toolset auth for {app_name} (ID: {tool_full_name})")
+                    else:
+                        self.logger.warning(
+                            f"No toolset config for {app_name} (tool: {tool_full_name}), "
+                            f"falling back to legacy auth"
+                        )
+
+                client = await factory.create_client(
+                    self.config_service,
+                    self.logger,
+                    config,
+                    self.state
+                )
+
+                # Cache the client for subsequent calls
+                self._client_cache[cache_key] = client
+                if self.logger:
+                    self.logger.debug(f"Cached client for {app_name} (toolset: {toolset_id})")
+
             return action_class(client)
         except Exception as e:
             if self.logger:

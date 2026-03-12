@@ -8,12 +8,6 @@ from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.factories.base import ClientFactory
 from app.agents.tools.factories.confluence import ConfluenceClientFactory
 from app.agents.tools.factories.dropbox import DropboxClientFactory
-from app.agents.tools.factories.google import GoogleClientFactory
-from app.agents.tools.factories.jira import JiraClientFactory
-from app.agents.tools.factories.linear import LinearClientFactory
-from app.agents.tools.factories.microsoft import MSGraphClientFactory
-from app.agents.tools.factories.notion import NotionClientFactory
-from app.agents.tools.factories.slack import SlackClientFactory
 
 # from app.agents.tools.factories.linkedin import LinkedInClientFactory
 # from app.agents.tools.factories.freshdesk import FreshDeskClientFactory
@@ -25,7 +19,14 @@ from app.agents.tools.factories.slack import SlackClientFactory
 # from app.agents.tools.factories.airtable import AirtableClientFactory
 # from app.agents.tools.factories.evernote import EvernoteClientFactory
 # from app.agents.tools.factories.s3 import S3ClientFactory
-# from app.agents.tools.factories.github import GitHubClientFactory
+from app.agents.tools.factories.github import GitHubClientFactory
+from app.agents.tools.factories.google import GoogleClientFactory
+from app.agents.tools.factories.jira import JiraClientFactory
+from app.agents.tools.factories.linear import LinearClientFactory
+from app.agents.tools.factories.microsoft import MSGraphClientFactory
+from app.agents.tools.factories.notion import NotionClientFactory
+from app.agents.tools.factories.slack import SlackClientFactory
+
 # from app.agents.tools.factories.gitlab import GitLabClientFactory
 
 
@@ -135,6 +136,15 @@ class ClientFactoryRegistry:
                 for subdir in config.subdirectories:
                     cls.register(subdir, MSGraphClientFactory(subdir))
 
+            elif app_name == "outlook":
+                cls.register(app_name, MSGraphClientFactory(app_name))
+
+            elif app_name == "teams":
+                cls.register(app_name, MSGraphClientFactory(app_name))
+
+            elif app_name == "onedrive":
+                cls.register(app_name, MSGraphClientFactory(app_name))
+
             elif app_name == "linear":
                 cls.register(app_name, LinearClientFactory())
 
@@ -171,8 +181,8 @@ class ClientFactoryRegistry:
             # elif app_name == "s3":
             #     cls.register(app_name, S3ClientFactory())
 
-            # elif app_name == "github":
-            #     cls.register(app_name, GitHubClientFactory())
+            elif app_name == "github":
+                cls.register(app_name, GitHubClientFactory())
 
             # elif app_name == "gitlab":
             #     cls.register(app_name, GitLabClientFactory())

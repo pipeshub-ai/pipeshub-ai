@@ -114,6 +114,18 @@ class ToolDiscoveryConfig:
             subdirectories=["one_drive", "sharepoint"],
             client_builder="MSGraphClient",
         ),
+        "outlook": AppConfiguration(
+            app_name="outlook",
+            client_builder="MSGraphClient",
+        ),
+        "teams": AppConfiguration(
+            app_name="teams",
+            client_builder="MSGraphClient",
+        ),
+        "onedrive": AppConfiguration(
+            app_name="onedrive",
+            client_builder="MSGraphClient",
+        ),
         # "discord": AppConfiguration(
         #     app_name="discord",
         #     client_builder="DiscordClient",
@@ -154,10 +166,10 @@ class ToolDiscoveryConfig:
             app_name="dropbox",
             client_builder="DropboxClient",
         ),
-        # "github": AppConfiguration(
-        #     app_name="github",
-        #     client_builder="GitHubClient",
-        # ),
+        "github": AppConfiguration(
+            app_name="github",
+            client_builder="GitHubClient",
+        ),
         # "gitlab": AppConfiguration(
         #     app_name="gitlab",
         #     client_builder="GitLabClient",

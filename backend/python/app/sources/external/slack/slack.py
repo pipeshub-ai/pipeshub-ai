@@ -5663,6 +5663,77 @@ class SlackDataSource:
         except Exception as e:
             return await self._handle_slack_error(e)
 
+    async def files_upload_v2(
+        self,
+        *,
+        filename: str,
+        content: Optional[str] = None,
+        file: Optional[str] = None,
+        channel: Optional[str] = None,
+        title: Optional[str] = None,
+        initial_comment: Optional[str] = None,
+        thread_ts: Optional[str] = None,
+        **kwargs
+    ) -> SlackResponse:
+        """files_upload_v2
+
+        Slack method: `files_upload_v2`
+        Requires scope: `files:write`
+
+        Uploads a file using the SDK's built-in v2 method which internally
+        handles getUploadURLExternal + POST + completeUploadExternal.
+
+        Pass either `content` (string data) or `file` (disk path), not both.
+        The `channel` param MUST be a channel ID (e.g. 'C0123456789'),
+        not a channel name — names will fail with 'invalid_channel'.
+
+        Args:
+            filename (required): Name with extension (e.g. 'transcript.txt').
+            content (optional): String content to upload as a file.
+            file (optional): Path to a file on disk to upload.
+            channel (optional): Channel ID to share in. If omitted, file stays private.
+            title (optional): Display title in Slack.
+            initial_comment (optional): Message text alongside the file.
+            thread_ts (optional): Thread timestamp to upload into a thread.
+
+        Returns:
+            SlackResponse: Standardized response wrapper with success/data/error
+
+        Notes:
+            Auto-generated style matching existing SlackDataSource methods.
+            Requires slack_sdk >= 3.19.0 for files_upload_v2 support.
+        """
+        kwargs_api: Dict[str, Any] = {}
+        if filename is not None:
+            kwargs_api['filename'] = filename
+        if content is not None:
+            kwargs_api['content'] = content
+        if file is not None:
+            kwargs_api['file'] = file
+        if channel is not None:
+            kwargs_api['channel'] = channel
+        if title is not None:
+            kwargs_api['title'] = title
+        if initial_comment is not None:
+            kwargs_api['initial_comment'] = initial_comment
+        if thread_ts is not None:
+            kwargs_api['thread_ts'] = thread_ts
+        if kwargs:
+            kwargs_api.update(kwargs)
+
+        if not hasattr(self.client, 'files_upload_v2') or not callable(getattr(self.client, 'files_upload_v2')):
+            return SlackResponse(
+                success=False,
+                error="Slack client is missing required method: files_upload_v2. "
+                      "Ensure slack_sdk >= 3.19.0 is installed."
+            )
+
+        try:
+            response = getattr(self.client, 'files_upload_v2')(**kwargs_api)
+            return await self._handle_slack_response(response)
+        except Exception as e:
+            return await self._handle_slack_error(e)
+
     async def migration_exchange(self,
         *,
         users: List[str],

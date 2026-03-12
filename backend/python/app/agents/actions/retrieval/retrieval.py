@@ -128,7 +128,6 @@ class Retrieval:
 
             retrieval_service = self.state.get("retrieval_service")
             graph_provider = self.state.get("graph_provider")
-            reranker_service = self.state.get("reranker_service")
             config_service = self.state.get("config_service")
 
             if not retrieval_service or not graph_provider:
@@ -208,9 +207,6 @@ class Retrieval:
                 })
 
             # === FLATTEN ===
-            # Default to "standard" (not "quick") so reranking is enabled by default,
-            # matching the chatbot's behaviour.
-            chat_mode = self.state.get("chat_mode", "standard")
 
             blob_store = BlobStorage(
                 logger=logger_instance,
@@ -246,32 +242,16 @@ class Retrieval:
             )
             logger_instance.info(f"Processed {len(flattened_results)} flattened results")
 
-            # === RERANK ===
-            # Match chatbot behaviour: rerank unless explicitly in quick mode.
-            # Default was "quick" which silently disabled reranking — fixed here.
-            should_rerank = (
-                len(flattened_results) > 1
-                and chat_mode not in ("quick",)
-            )
 
-            if should_rerank and reranker_service:
-                logger_instance.debug("Re-ranking results")
-                final_results = await reranker_service.rerank(
-                    query=search_query,
-                    documents=flattened_results,
-                    top_k=adjusted_limit,
-                )
-            else:
-                final_results = search_results if not flattened_results else flattened_results
+            final_results = search_results if not flattened_results else flattened_results
 
             # === TRIM ===
-            # Do NOT sort here. The reranker has already ordered results by relevance.
-            # merge_and_number_retrieval_results() in nodes.py will correctly:
+            # Do NOT sort here. The upstream retrieval service returns results
+            # ranked by relevance. merge_and_number_retrieval_results() in
+            # nodes.py will correctly:
             #   1. Deduplicate blocks across parallel retrieval calls
             #   2. Group blocks by document (by best-score descending)
             #   3. Sort blocks within each document by block_index
-            # Any intermediate sort here would discard the reranker's ordering and
-            # produce incorrect document-to-R-label assignments.
             final_results = final_results[:adjusted_limit]
 
             # ================================================================

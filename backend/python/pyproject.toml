@@ -134,6 +134,7 @@ dependencies = [
     "cryptography==44.0.1",
     "ddgs==9.10.0",
     "curl-cffi==0.14.0",
+    # "databricks-sdk>=0.85.0",
     "dependency-injector==4.44.0",
     "discord.py==2.6.3",
     "docling==2.60.0",

@@ -101,7 +101,7 @@ export class OIDCProviderController {
     res: Response,
     _next: NextFunction,
   ): Promise<void> {
-    const backendUrl = this.appConfig.oauthBackendUrl;
+    const backendUrl = this.appConfig.oauthIssuer;
     const baseUrl = `${backendUrl}/api/v1/oauth2`;
 
     const config: OpenIDConfiguration = {
@@ -159,11 +159,11 @@ export class OIDCProviderController {
     res: Response,
     _next: NextFunction,
   ): Promise<void> {
-    const backendUrl = this.appConfig.oauthBackendUrl;
+    const backendUrl = this.appConfig.oauthIssuer;
 
     const metadata: OAuthProtectedResourceMetadata = {
       resource: `${backendUrl}/mcp`,
-      authorization_servers: [this.appConfig.oauthIssuer],
+      authorization_servers: [backendUrl],
       scopes_supported: this.appConfig.mcpScopes,
       bearer_methods_supported: ['header'],
       resource_documentation: `${backendUrl}/api/v1/docs`,

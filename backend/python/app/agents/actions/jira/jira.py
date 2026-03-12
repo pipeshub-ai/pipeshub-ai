@@ -40,6 +40,7 @@ class CreateIssueInput(BaseModel):
     priority_name: Optional[str] = Field(default=None, description="Priority")
     labels: Optional[List[str]] = Field(default=None, description="List of labels")
     components: Optional[List[str]] = Field(default=None, description="List of component names")
+    parent_key: Optional[str] = Field(default=None, description="Parent issue key")
 
     @model_validator(mode='before')
     @classmethod
@@ -1206,7 +1207,8 @@ class Jira:
         assignee_query: Optional[str] = None,
         priority_name: Optional[str] = None,
         labels: Optional[List[str]] = None,
-        components: Optional[List[str]] = None
+        components: Optional[List[str]] = None,
+        parent_key: Optional[str] = None
     ) -> Tuple[bool, str]:
         """Create a new JIRA issue"""
         try:
@@ -1238,6 +1240,9 @@ class Jira:
 
             if components:
                 fields["components"] = [{"name": comp} for comp in components]
+            
+            if parent_key:
+                fields["parent"] = {"key": parent_key}
 
             # Validate fields
             is_valid, validation_msg = self._validate_issue_fields(fields)
