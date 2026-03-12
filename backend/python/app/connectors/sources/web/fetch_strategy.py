@@ -368,10 +368,10 @@ async def fetch_url_with_fallback(
 
     # Define the strategy chain: (name, async callable returning Optional[FetchResponse])
     all_strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
-        ("aiohttp", lambda: _try_aiohttp(session, url, headers, timeout, logger)),
         ("curl_cffi(H2)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=True, logger=logger)),
         # ("curl_cffi(H1)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=False, logger=logger)),
         ("cloudscraper", lambda: _try_cloudscraper(url, headers, timeout, logger=logger)),
+        ("aiohttp", lambda: _try_aiohttp(session, url, headers, timeout, logger)),
     ]
 
     # When a preferred strategy is given (e.g. from a cached page-level fetch),
