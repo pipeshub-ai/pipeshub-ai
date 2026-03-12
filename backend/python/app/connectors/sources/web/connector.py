@@ -435,7 +435,7 @@ class WebConnector(BaseConnector):
             if isinstance(_usc_raw, list):
                 url_should_contain = [s for s in _usc_raw if isinstance(s, str) and s.strip()]
             else:
-                self.logger.warning(f"⚠️ WebPage url_should_contain is not a list, setting to empty list: {_usc_raw}")
+                self.logger.warning("⚠️ WebPage url_should_contain is not a list, setting to empty list: %s", _usc_raw)
                 url_should_contain = []
 
             # restrict_to_start_path implies staying on the starting domain,
@@ -932,7 +932,7 @@ class WebConnector(BaseConnector):
                     yield record_update
 
             except Exception as e:
-                self.logger.warning(f"⚠️ Failed to process {current_url}: {e}")
+                self.logger.warning("⚠️ Failed to process %s: %s", current_url, e)
                 continue
 
             # Small delay to be respectful to the server; also yields control to
@@ -980,8 +980,9 @@ class WebConnector(BaseConnector):
                 base_netloc = urlparse(self.base_domain).netloc
                 if final_netloc.lower() != base_netloc.lower():
                     self.logger.debug(
-                        f"⚠️ Skipping {url}: HTTP redirect crossed domain boundary "
-                        f"({base_netloc} → {final_netloc})"
+                        "⚠️ Skipping %s: HTTP redirect crossed domain boundary "
+                        + "(%s → %s)", url, base_netloc, final_netloc
+                        + "(%s → %s)", base_netloc, final_netloc
                     )
                     return None
 
@@ -995,18 +996,18 @@ class WebConnector(BaseConnector):
                     final_url_lower = final_url.lower()
                     matched = any(s.lower() in final_url_lower for s in self.url_should_contain)
                     if not matched:
-                        self.logger.warning(
-                            f"⚠️ Skipping {final_url}: URL does not match any of the required substrings "
-                            f"{self.url_should_contain}"
+                        self.logger.debug(
+                            "⚠️ Skipping %s: URL does not match any of the required substrings "
+                            + "%s", final_url, self.url_should_contain
                         )
                         return None
 
 
             if len(content_bytes) > self.max_size_mb * 1024 * 1024:
                 size_mb = len(content_bytes) / (1024 * 1024)
-                self.logger.warning(
-                    f"⚠️ Skipping {url}: downloaded size {size_mb:.1f}MB "
-                    + f"exceeds limit of {self.max_size_mb:.0f}MB"
+                self.logger.debug(
+                    "⚠️ Skipping %s: downloaded size %.1fMB "
+                    + "exceeds limit of %.0fMB", url, size_mb, self.max_size_mb
                 )
                 return None
 
