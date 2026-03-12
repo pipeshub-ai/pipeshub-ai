@@ -1,4 +1,8 @@
 """
+
+#### DEPRECATED: This migration is no longer needed as the toolset instance path migration is now handled by the connector app.
+#### This file is kept here for reference only.
+
 Toolset Instance Migration Service
 
 Migrates from old per-user toolset architecture to new instance-based architecture.
