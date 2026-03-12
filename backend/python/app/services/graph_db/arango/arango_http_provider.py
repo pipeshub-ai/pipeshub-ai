@@ -14823,10 +14823,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         direct_records = direct_records_result[0] if direct_records_result else []
 
         # Combine results: use internal_records if available, otherwise use child_rgs + direct_records
-        if internal_records:
-            all_children = internal_records
-        else:
-            all_children = child_rgs + direct_records
+        all_children = internal_records or child_rgs + direct_records
 
         filtered_children = [
             node for node in all_children
