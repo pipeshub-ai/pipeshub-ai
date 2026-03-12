@@ -63,11 +63,13 @@ async function refreshAccessToken(): Promise<string | null> {
       const newAccessToken = res.data.accessToken;
       if (newAccessToken) {
         localStorage.setItem(STORAGE_KEY, newAccessToken);
-        localStorage.setItem(STORAGE_KEY_REFRESH, refreshToken);
       }
       return newAccessToken as string;
     })
-    .catch(() => null)
+    .catch((error) => {
+      console.error('Failed to refresh access token:', error);
+      return null;
+    })
     .finally(() => {
       isRefreshing = false;
       refreshPromise = null;
