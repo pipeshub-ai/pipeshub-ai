@@ -628,6 +628,8 @@ class ConnectorRegistry:
                 'scope': instance_data.get('scope', ConnectorScope.PERSONAL.value),
                 'createdBy': instance_data.get('createdBy'),
                 'updatedBy': instance_data.get('updatedBy'),
+                'status': instance_data.get('status'),
+                'isLocked': instance_data.get('isLocked', False),
             })
 
         return connector_info
