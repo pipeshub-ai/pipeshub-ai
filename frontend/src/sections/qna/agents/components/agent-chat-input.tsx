@@ -183,6 +183,14 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
 
+  const clearInput = useCallback(() => {
+    setLocalValue('');
+    setHasText(false);
+    if (inputRef.current) {
+      inputRef.current.style.height = '40px';
+    }
+  }, []);
+
   // Clear input text when user actively switches conversations (sidebar click)
   // Skip: initial mount (prevRef starts as undefined)
   // Skip: null→id transition (backend assigning ID to the current new conversation — user may be typing next message)
@@ -191,29 +199,21 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
     if (prev !== undefined && prev !== conversationId) {
       const isNewConversationCreated = prev === null && conversationId !== null;
       if (!isNewConversationCreated) {
-        setLocalValue('');
-        setHasText(false);
-        if (inputRef.current) {
-          inputRef.current.style.height = '40px';
-        }
+        clearInput();
       }
     }
     prevConversationIdRef.current = conversationId;
-  }, [conversationId]);
+  }, [conversationId, clearInput]);
 
   // Clear input text on explicit trigger (e.g. "New Chat" when already on a new chat)
   // Skip the first render (trigger starts at 0)
   const prevClearTriggerRef = useRef(clearInputTrigger);
   useEffect(() => {
     if (prevClearTriggerRef.current !== clearInputTrigger) {
-      setLocalValue('');
-      setHasText(false);
-      if (inputRef.current) {
-        inputRef.current.style.height = '40px';
-      }
+      clearInput();
       prevClearTriggerRef.current = clearInputTrigger;
     }
-  }, [clearInputTrigger]);
+  }, [clearInputTrigger, clearInput]);
 
   // Note: Model and chat mode defaults are handled by the parent component (agent-chat.tsx)
   // The parent will set the model from conversation if available, or set defaults if not
