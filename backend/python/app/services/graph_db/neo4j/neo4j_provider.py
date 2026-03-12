@@ -1127,7 +1127,7 @@ class Neo4jProvider(IGraphDBProvider):
                 grouped_edges[key].append(edge)
 
             # Process each group separately
-            for (from_label, to_label, edge_type), group_edges in grouped_edges.items():
+            for (from_label, to_label, _edge_type), group_edges in grouped_edges.items():
                 query = f"""
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_id}})

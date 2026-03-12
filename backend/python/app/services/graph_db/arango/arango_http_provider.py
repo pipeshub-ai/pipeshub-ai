@@ -2493,7 +2493,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             # Generate conditions for each collection
-            for collection, record_types in collection_to_types.items():
+            for record_types in collection_to_types.values():
                 # Create condition for checking if record type matches any in this group
                 if len(record_types) == 1:
                     type_check = f"record.recordType == @type_{record_types[0].lower()}"
@@ -2653,7 +2653,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             '''
 
             # Build dynamic typeDoc conditions
-            for collection, record_types in collection_to_types.items():
+            for record_types in collection_to_types.values():
                 if len(record_types) == 1:
                     type_check = f"record.recordType == @type_{record_types[0].lower()}"
                     bind_vars[f"type_{record_types[0].lower()}"] = record_types[0]
@@ -10570,9 +10570,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     return {"success": False, "reason": "Knowledge base not found", "code": 404}
             users_to_insert = result.get("users_to_insert", [])
             teams_to_insert = result.get("teams_to_insert", [])
-            insert_docs = []
-            for u in users_to_insert:
-                insert_docs.append({
+            insert_docs = [
+                {
                     "from_id": u["user_key"],
                     "from_collection": CollectionNames.USERS.value,
                     "to_id": kb_id,
@@ -10583,9 +10582,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                     "lastUpdatedTimestampAtSource": timestamp,
-                })
-            for t in teams_to_insert:
-                insert_docs.append({
+                }
+                for u in users_to_insert
+            ]
+            insert_docs.extend(
+                {
                     "from_id": t["team_key"],
                     "from_collection": CollectionNames.TEAMS.value,
                     "to_id": kb_id,
@@ -10595,7 +10596,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                     "lastUpdatedTimestampAtSource": timestamp,
-                })
+                }
+                for t in teams_to_insert
+            )
             if insert_docs:
                 await self.batch_create_edges(insert_docs, CollectionNames.PERMISSION.value)
             granted_count = len(users_to_insert) + len(teams_to_insert)
@@ -11802,10 +11805,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # Delete type-specific documents (files, mails, etc.)
         for collection in type_collections:
-            try:
+            with contextlib.suppress(Exception):  # Collection might not have this document
                 await self.delete_nodes([record_key], collection, transaction)
-            except Exception:
-                pass  # Collection might not have this document
 
         # Delete main record
         await self.delete_nodes([record_key], CollectionNames.RECORDS.value, transaction)

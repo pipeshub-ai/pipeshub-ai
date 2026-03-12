@@ -719,10 +719,8 @@ class ConnectorRegistry:
             haystacks.append(str(info.get('appGroup', '')).lower())
             haystacks.append(str(info.get('appDescription', '')).lower())
             # Search in supported auth types
-            for auth_type in info.get('supportedAuthTypes', []) or []:
-                haystacks.append(str(auth_type).lower())
-            for cat in info.get('appCategories', []) or []:
-                haystacks.append(str(cat).lower())
+            haystacks.extend(str(auth_type).lower() for auth_type in (info.get('supportedAuthTypes', []) or []))
+            haystacks.extend(str(cat).lower() for cat in (info.get('appCategories', []) or []))
             combined = ' '.join(haystacks)
             return all(tok in combined for tok in tokens)
 
