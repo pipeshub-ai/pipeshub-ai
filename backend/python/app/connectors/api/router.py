@@ -35,6 +35,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     MimeTypes,
+    OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
@@ -243,6 +244,94 @@ async def get_graph_provider(request: Request) -> IGraphDBProvider:
 async def get_kafka_service(request: Request) -> KafkaService:
     container: ConnectorAppContainer = request.app.container
     return container.kafka_service()
+
+
+_LOCK_STATUS_MESSAGES: Dict[str, str] = {
+    AppStatus.FULL_SYNCING.value: "A full sync is in progress. Please wait and try again.",
+    AppStatus.SYNCING.value: "A sync is already in progress. Please wait and try again.",
+}
+
+
+def _check_connector_not_locked(instance: Dict[str, Any]) -> None:
+    """Raise 409 if the connector instance is currently locked (isLocked=True).
+
+    Picks a descriptive message based on the current app status so the user
+    understands exactly what is blocking their operation.
+    """
+    if instance.get("isLocked"):
+        status = instance.get("status", "")
+        detail = _LOCK_STATUS_MESSAGES.get(
+            status,
+            "Another operation is in progress. Please wait and try again.",
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=detail,
+        )
+
+
+async def require_connector_not_locked(
+    connector_id: str,
+    request: Request,
+) -> None:
+    """FastAPI dependency that raises 409 if the connector instance is currently locked.
+
+    Fetches the connector instance using the authenticated user context (populated
+    by the global authMiddleware) and delegates to _check_connector_not_locked.
+    If the instance is not found, this dependency does nothing — the route handler
+    is responsible for its own 404 check.
+    """
+    connector_registry = request.app.state.connector_registry
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+    )
+
+    if instance:
+        _check_connector_not_locked(instance)
+
+
+async def require_connector_not_locked_for_record(
+    record_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Raise 409 if the record's connector is locked. Used by reindex record route."""
+    record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+    if not record:
+        return
+    if record.get("origin") != OriginTypes.CONNECTOR.value:
+        return
+    connector_id = record.get("connectorId")
+    if not connector_id:
+        return
+    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if app_doc:
+        _check_connector_not_locked(app_doc)
+
+
+async def require_connector_not_locked_for_record_group(
+    record_group_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Raise 409 if the record group's connector is locked. Used by reindex record group route."""
+    record_group = await graph_provider.get_document(
+        record_group_id, CollectionNames.RECORD_GROUPS.value
+    )
+    if not record_group:
+        return
+    connector_id = record_group.get("connectorId")
+    if not connector_id:
+        return
+    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if app_doc:
+        _check_connector_not_locked(app_doc)
+
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
@@ -1201,7 +1290,7 @@ async def delete_record(
             detail=f"Internal server error while deleting record: {str(e)}"
         ) from e
 
-@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked_for_record)])
 @inject
 async def reindex_single_record(
     record_id: str,
@@ -1304,7 +1393,7 @@ async def get_connector_stats_endpoint(
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}") from e
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked_for_record_group)])
 @inject
 async def reindex_record_group(
     record_group_id: str,
@@ -1440,57 +1529,6 @@ def _validate_connector_deletion_permissions(
             status_code=HttpStatusCode.FORBIDDEN.value,
             detail="Only the creator can delete this personal connector"
         )
-
-
-_LOCK_STATUS_MESSAGES: Dict[str, str] = {
-    AppStatus.FULL_SYNCING.value: "A full sync is in progress. Please wait and try again.",
-    AppStatus.SYNCING.value: "A sync is already in progress. Please wait and try again.",
-}
-
-
-def _check_connector_not_locked(instance: Dict[str, Any]) -> None:
-    """Raise 409 if the connector instance is currently locked (isLocked=True).
-
-    Picks a descriptive message based on the current app status so the user
-    understands exactly what is blocking their operation.
-    """
-    if instance.get("isLocked"):
-        status = instance.get("status", "")
-        detail = _LOCK_STATUS_MESSAGES.get(
-            status,
-            "Another operation is in progress. Please wait and try again.",
-        )
-        raise HTTPException(
-            status_code=HttpStatusCode.CONFLICT.value,
-            detail=detail,
-        )
-
-
-async def require_connector_not_locked(
-    connector_id: str,
-    request: Request,
-) -> None:
-    """FastAPI dependency that raises 409 if the connector instance is currently locked.
-
-    Fetches the connector instance using the authenticated user context (populated
-    by the global authMiddleware) and delegates to _check_connector_not_locked.
-    If the instance is not found, this dependency does nothing — the route handler
-    is responsible for its own 404 check.
-    """
-    connector_registry = request.app.state.connector_registry
-    user_id = request.state.user.get("userId")
-    org_id = request.state.user.get("orgId")
-    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-
-    instance = await connector_registry.get_connector_instance(
-        connector_id=connector_id,
-        user_id=user_id,
-        org_id=org_id,
-        is_admin=is_admin,
-    )
-
-    if instance:
-        _check_connector_not_locked(instance)
 
 
 async def check_beta_connector_access(
