@@ -94,6 +94,26 @@ qna_prompt_instructions_1 = """
   Rephrased queries are AI-generated to provide more context to what the user might mean.
 </task>
 
+<tools>
+  You have access to a tool called "fetch_full_record" that retrieves the complete content of multiple records when provided blocks are insufficient.
+
+  **IMPORTANT: If the provided blocks contain sufficient information to answer the query, do NOT call this tool. Answer directly using the blocks.**
+
+  **When to use:**
+  - Provided blocks contain partial information with gaps in understanding
+  - Need more context from specific records for a complete answer
+  - Blocks suggest important information exists but isn't fully captured
+  - References to content that should be in records but isn't in provided blocks
+  - Query asks for comprehensive details ("full details", "complete overview", "all information")
+  - DEFAULT: If blocks seem incomplete or you're uncertain, USE THE TOOL rather than providing a partial answer
+
+  **How to use:**
+  - Call fetch_full_record with a LIST of virtualRecordIds: ["80b50ab4-b775-46bf-b061-f0241c0dfa19", "90c60bc5-c886-57cg-c172-g1352d1egb2a"]
+  - Provide a clear reason explaining why you need the full records
+  - The tool returns the complete content of all requested records including all blocks
+  - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
+</tools>
+
 <context>
   User Information: {{ user_data }}
   Query from user: {{ query }}
@@ -119,8 +139,7 @@ qna_prompt_instructions_2 = """
   - For queries about user information (like "who am I?", "where do I work?"), refer to the User Information section above. These queries don't require block citations.
   - You can integrate user information with the context to answer the query where user information is highly relevant to the query
   - IMPORTANT:ENSURE THAT DOCUMENT RECORDS REFERENCED IN THE ANSWER ARE ACTUALLY RELEVANT TO THE QUERY AND ANSWER. FOR EXAMPLE, ORGANIZATION OF USER IS ACCOUNTED IN THE USER INFORMATION. HE MIGHT BE ASKING QUERIES ABOUT HIS ORGANIZATION DOCUMENTS BUT OTHER ORGANIZATION DOCUMENTS MIGHT BE RETRIEVED DURING SEARCH.
-
-  **MANDATORY TOOL CHECK**: Before writing your final answer, explicitly evaluate whether the provided blocks contain complete information. If the user's query includes phrases such as "full details", "all information", "complete overview", or similar requests for comprehensive data, you must verify that the blocks are sufficient. Also check for gaps in block indices (for example: blocks 1, 2, then 15). Such gaps may indicate that the content is incomplete. If the information appears incomplete or fragmented, you MUST consider using an appropriate tool (e.g., `fetch_full_record`) to retrieve the complete information before generating the answer.
+  - **Balanced Tool Usage**: The provided blocks are optimized semantic search results. Use them when adequate, but don't hesitate to fetch full records when they would materially improve answer quality.
 
   -Guidelines-
   When answering queries, follow these guidelines:
@@ -143,22 +162,36 @@ qna_prompt_instructions_2 = """
   - When a code block ends, put citations on the next line after ```, not on the same line
   - Ensure cited block numbers appear in the `blockNumbers` field
 
-  3. Improvements Focus:
+  3. Tool Usage Strategy (FOLLOW THIS DECISION TREE):
+  - **STEP 1 - Evaluate completeness:** Ask yourself: "Can I provide a COMPLETE and COMPREHENSIVE answer with just these blocks? Does query demand FULL CONTENT from the record?"
+  - **STEP 2 - Identify gaps:** Look for:
+    * Missing context or background information. Use block numbers to detect gaps.
+    * Incomplete explanations or partial information
+    * Queries asking for "full details", "complete overview", "comprehensive summary", or "all information"
+    * References to concepts or sections that aren't fully explained in blocks
+    * Blocks that appear to be excerpts or snippets from larger content
+  - **STEP 3 - Apply these TRIGGERS for tool use:**
+    * The record name/summary suggests more relevant content exists
+    * Multiple queries are asked but blocks only partially address them
+  - **STEP 4 - Default to calling the tool:** When in doubt between answering with blocks vs. fetching full record, ALWAYS choose to fetch the full record
+  - **Tool call format:** When using the tool, explain your reasoning clearly in the "reason" parameter
+  - **Integration:** After receiving tool results, seamlessly integrate the information with existing blocks
+
+  4. Improvements Focus:
   - When suggesting improvements, focus only on those that directly address the query
   - If there are No 'SIGNIFICANT' improvements that can be done, return an empty improvements array. Do not hallucinate trivial improvements.
-
-  4. Quality Control:
+  5. Quality Control:
   - Double-check that each referenced block supports the answer
   - Do not include irrelevant blocks
   - If blocks are referenced in `blockNumbers`, their citation numbers MUST appear in the answer
 
   5. Source Prioritization:
   - For user-specific queries (identity, role, workplace), use the User Information section
-  - If neither Current Query Context nor User Information contains the answer, consider whether available tools could help before stating "Information not found in your knowledge sources"
+  - If neither Current Query Context nor User Information contains the answer, use the fetch_full_record tool before stating "Information not found in your knowledge sources"
 
   6. Multi-query handling:
       i. Identify and number each distinct query in the user's query
-      ii. For any query that cannot be answered with current blocks, consider whether available tools could help
+      ii. For any query that cannot be answered with current blocks, attempt to use fetch_full_record tool
       iii. Only if still insufficient after tool use, say "Based on the available information, I cannot answer this specific query"
       iv. Ensure all queries receive equal attention with proper citations
 </instructions>
