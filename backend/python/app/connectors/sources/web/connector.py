@@ -230,7 +230,7 @@ class WebApp(App):
             field_type="TAGS",
             required=False,
             default_value=[],
-            description="Index pages whose URL contains these strings; others are set to manual indexing. Leave empty to index all pages."
+            description="Sync only pages whose URL contains these strings; others are skipped. Leave empty to sync all pages."
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(CommonFields.file_extension_filter())
@@ -998,6 +998,23 @@ class WebConnector(BaseConnector):
                     )
                     return None
 
+            # Apply url_should_contain filter (OR logic: at least one substring must match).
+            # When the list is non-empty, a URL that matches NONE of the substrings
+            # is skipped (case-insensitive comparison).
+            if self.url_should_contain:
+                # Always allow the configured start URL through, regardless of the filter.
+                is_start_url = self._normalize_url(final_url) == self._normalize_url(self.url or "")
+                if not is_start_url:
+                    final_url_lower = final_url.lower()
+                    matched = any(s.lower() in final_url_lower for s in self.url_should_contain)
+                    if not matched:
+                        self.logger.warning(
+                            f"⚠️ Skipping {final_url}: URL does not match any of the required substrings "
+                            f"{self.url_should_contain}"
+                        )
+                        return None
+
+
             if len(content_bytes) > self.max_size_mb * 1024 * 1024:
                 size_mb = len(content_bytes) / (1024 * 1024)
                 self.logger.warning(
@@ -1230,21 +1247,6 @@ class WebConnector(BaseConnector):
             is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS, default=True)
         elif mime_type in IMAGE_MIME_TYPES:
             is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
-
-        # Apply url_should_contain filter (OR logic: at least one substring must match).
-        # When the list is non-empty, a URL that matches NONE of the substrings
-        # is excluded from indexing (case-insensitive comparison).
-        if self.url_should_contain:
-            url_lower = (record.weburl or "").lower()
-            matched = any(s.lower() in url_lower for s in self.url_should_contain)
-            if not matched:
-                self.logger.debug(
-                    "⚠️ %s: URL does not match any of the required substrings %s "
-                    "— marking as AUTO_INDEX_OFF",
-                    record.weburl,
-                    self.url_should_contain,
-                )
-                is_disabled = True
 
         return is_disabled
 
