@@ -221,8 +221,16 @@ class WebApp(App):
             display_name="Restrict to Start Path",
             field_type="BOOLEAN",
             required=False,
-            default_value="true",
+            default_value="false",
             description="Only crawl URLs within the same path as the starting URL (prevents crawling parent directories)"
+        ))
+        .add_sync_custom_field(CustomField(
+            name="url_should_contain",
+            display_name="URL Should Contain",
+            field_type="TAGS",
+            required=False,
+            default_value=[],
+            description="Sync only pages whose URL contains these strings; others are skipped. Leave empty to sync all pages."
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(CommonFields.file_extension_filter())
@@ -305,6 +313,7 @@ class WebConnector(BaseConnector):
         self.follow_external: bool = False
         self.restrict_to_start_path: bool = True
         self.start_path_prefix: str = "/"
+        self.url_should_contain: List[str] = []
 
         # Crawling state
         self.visited_urls: Set[str] = set()
@@ -332,6 +341,7 @@ class WebConnector(BaseConnector):
             self.base_domain = config_values["base_domain"]
             self.restrict_to_start_path = config_values["restrict_to_start_path"]
             self.start_path_prefix = config_values["start_path_prefix"]
+            self.url_should_contain = config_values["url_should_contain"]
 
             # Initialize aiohttp session with realistic browser headers
             # These headers mimic a real Chrome browser to avoid being blocked by websites
@@ -420,6 +430,13 @@ class WebConnector(BaseConnector):
             max_size_mb = int(sync_config.get("max_size_mb") or 10)
             follow_external = sync_config.get("follow_external", False)
             restrict_to_start_path = sync_config.get("restrict_to_start_path", True)
+            # Accept both a legacy plain string and the new list-of-strings format.
+            _usc_raw = sync_config.get("url_should_contain", [])
+            if isinstance(_usc_raw, list):
+                url_should_contain = [s for s in _usc_raw if isinstance(s, str) and s.strip()]
+            else:
+                self.logger.warning("⚠️ WebPage url_should_contain is not a list, setting to empty list: %s", _usc_raw)
+                url_should_contain = []
 
             # restrict_to_start_path implies staying on the starting domain,
             # so follow_external must be False — override with a warning.
@@ -471,6 +488,7 @@ class WebConnector(BaseConnector):
                 "base_domain": base_domain,
                 "restrict_to_start_path": restrict_to_start_path,
                 "start_path_prefix": start_path_prefix,
+                "url_should_contain": url_should_contain,
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch and parse config: {e}")
@@ -614,6 +632,11 @@ class WebConnector(BaseConnector):
             if new_restrict_to_start_path != self.restrict_to_start_path:
                 self.logger.info(f"🔄 Restrict to start path changed from {self.restrict_to_start_path} to {new_restrict_to_start_path}")
                 self.restrict_to_start_path = new_restrict_to_start_path
+
+            new_url_should_contain = config_values["url_should_contain"]
+            if new_url_should_contain != self.url_should_contain:
+                self.logger.info("🔄 URL should contain changed from %s to %s", self.url_should_contain, new_url_should_contain)
+                self.url_should_contain = new_url_should_contain
 
         except Exception as e:
             self.logger.error(f"❌ Failed to reload config: {e}", exc_info=True)
@@ -909,12 +932,12 @@ class WebConnector(BaseConnector):
                     yield record_update
 
             except Exception as e:
-                self.logger.warning(f"⚠️ Failed to process {current_url}: {e}")
+                self.logger.warning("⚠️ Failed to process %s: %s", current_url, e)
                 continue
 
             # Small delay to be respectful to the server; also yields control to
             # other async tasks (mirrors the OneDrive generator pattern).
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
 
     async def _fetch_and_process_url(
         self, url: str, depth: int, referer: Optional[str] = None
@@ -957,29 +980,33 @@ class WebConnector(BaseConnector):
                 base_netloc = urlparse(self.base_domain).netloc
                 if final_netloc.lower() != base_netloc.lower():
                     self.logger.debug(
-                        f"⚠️ Skipping {url}: HTTP redirect crossed domain boundary "
-                        f"({base_netloc} → {final_netloc})"
+                        "⚠️ Skipping %s: HTTP redirect crossed domain boundary "
+                        +"(%s → %s)", url, base_netloc, final_netloc
                     )
                     return None
 
-            # Guard against HTTP redirects that silently escape the start path prefix.
-            if self.restrict_to_start_path and self.start_path_prefix:
-                # Normalise: strip trailing slash then add one so that both
-                # "/globalprotect" and "/globalprotect/" compare correctly.
-                prefix = self.start_path_prefix  # already ends with '/' from config
-                final_path = unquote(urlparse(final_url).path).rstrip('/') + '/'
-                if not final_path.startswith(prefix):
-                    self.logger.warning(
-                        f"⚠️ Skipping {url}: HTTP redirect escaped start path prefix "
-                        f"({prefix!r} → {final_path!r})"
-                    )
-                    return None
+            # Apply url_should_contain filter (OR logic: at least one substring must match).
+            # When the list is non-empty, a URL that matches NONE of the substrings
+            # is skipped (case-insensitive comparison).
+            if self.url_should_contain:
+                # Always allow the configured start URL through, regardless of the filter.
+                is_start_url = self._normalize_url(final_url) == self._normalize_url(self.url or "")
+                if not is_start_url:
+                    final_url_lower = final_url.lower()
+                    matched = any(s.lower() in final_url_lower for s in self.url_should_contain)
+                    if not matched:
+                        self.logger.debug(
+                            "⚠️ Skipping %s: URL does not match any of the required substrings "
+                            + "%s", final_url, self.url_should_contain
+                        )
+                        return None
+
 
             if len(content_bytes) > self.max_size_mb * 1024 * 1024:
                 size_mb = len(content_bytes) / (1024 * 1024)
-                self.logger.warning(
-                    f"⚠️ Skipping {url}: downloaded size {size_mb:.1f}MB "
-                    + f"exceeds limit of {self.max_size_mb:.0f}MB"
+                self.logger.debug(
+                    "⚠️ Skipping %s: downloaded size %.1fMB "
+                    + "exceeds limit of %.0fMB", url, size_mb, self.max_size_mb
                 )
                 return None
 
