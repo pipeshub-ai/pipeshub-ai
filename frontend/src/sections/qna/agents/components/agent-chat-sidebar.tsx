@@ -232,9 +232,11 @@ const AgentChatSidebar = ({
     }
   }, [shouldRefresh, fetchConversations, onRefreshComplete]);
 
-  // Initial fetch and tab change effect
+  // Initial fetch and tab/agent change effect
   useEffect(() => {
     if (isMounted.current) {
+      // Clear stale conversations immediately so old agent's chats don't flash
+      setConversations([]);
       setPage(1);
       setInitialLoading(true);
       fetchConversations(1);
