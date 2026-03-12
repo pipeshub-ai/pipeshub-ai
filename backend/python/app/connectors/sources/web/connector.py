@@ -985,19 +985,6 @@ class WebConnector(BaseConnector):
                     )
                     return None
 
-            # Guard against HTTP redirects that silently escape the start path prefix.
-            if self.restrict_to_start_path and self.start_path_prefix:
-                # Normalise: strip trailing slash then add one so that both
-                # "/globalprotect" and "/globalprotect/" compare correctly.
-                prefix = self.start_path_prefix  # already ends with '/' from config
-                final_path = unquote(urlparse(final_url).path).rstrip('/') + '/'
-                if not final_path.startswith(prefix):
-                    self.logger.warning(
-                        f"⚠️ Skipping {url}: HTTP redirect escaped start path prefix "
-                        f"({prefix!r} → {final_path!r})"
-                    )
-                    return None
-
             # Apply url_should_contain filter (OR logic: at least one substring must match).
             # When the list is non-empty, a URL that matches NONE of the substrings
             # is skipped (case-insensitive comparison).
