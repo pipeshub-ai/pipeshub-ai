@@ -337,6 +337,11 @@ class ConnectorScopes(Enum):
     PERSONAL = "personal"
     TEAM = "team"
 
+class AppStatus(Enum):
+    IDLE = "IDLE"
+    FULL_SYNCING = "FULL_SYNCING"
+    SYNCING = "SYNCING"
+
 RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,
     "MAIL": CollectionNames.MAILS.value,

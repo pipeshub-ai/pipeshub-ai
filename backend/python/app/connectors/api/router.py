@@ -30,10 +30,12 @@ from pydantic import BaseModel, ValidationError
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AppStatus,
     CollectionNames,
     Connectors,
     EventTypes,
     MimeTypes,
+    OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
@@ -243,6 +245,94 @@ async def get_kafka_service(request: Request) -> KafkaService:
     container: ConnectorAppContainer = request.app.container
     kafka_service = container.kafka_service()
     return kafka_service
+
+
+_LOCK_STATUS_MESSAGES: Dict[str, str] = {
+    AppStatus.FULL_SYNCING.value: "A full sync is in progress. Please wait and try again.",
+    AppStatus.SYNCING.value: "A sync is already in progress. Please wait and try again.",
+}
+
+
+def _check_connector_not_locked(instance: Dict[str, Any]) -> None:
+    """Raise 409 if the connector instance is currently locked (isLocked=True).
+
+    Picks a descriptive message based on the current app status so the user
+    understands exactly what is blocking their operation.
+    """
+    if instance.get("isLocked"):
+        status = instance.get("status", "")
+        detail = _LOCK_STATUS_MESSAGES.get(
+            status,
+            "Another operation is in progress. Please wait and try again.",
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=detail,
+        )
+
+
+async def require_connector_not_locked(
+    connector_id: str,
+    request: Request,
+) -> None:
+    """FastAPI dependency that raises 409 if the connector instance is currently locked.
+
+    Fetches the connector instance using the authenticated user context (populated
+    by the global authMiddleware) and delegates to _check_connector_not_locked.
+    If the instance is not found, this dependency does nothing — the route handler
+    is responsible for its own 404 check.
+    """
+    connector_registry = request.app.state.connector_registry
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+    )
+
+    if instance:
+        _check_connector_not_locked(instance)
+
+
+async def require_connector_not_locked_for_record(
+    record_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Raise 409 if the record's connector is locked. Used by reindex record route."""
+    record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+    if not record:
+        return
+    if record.get("origin") != OriginTypes.CONNECTOR.value:
+        return
+    connector_id = record.get("connectorId")
+    if not connector_id:
+        return
+    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if app_doc:
+        _check_connector_not_locked(app_doc)
+
+
+async def require_connector_not_locked_for_record_group(
+    record_group_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Raise 409 if the record group's connector is locked. Used by reindex record group route."""
+    record_group = await graph_provider.get_document(
+        record_group_id, CollectionNames.RECORD_GROUPS.value
+    )
+    if not record_group:
+        return
+    connector_id = record_group.get("connectorId")
+    if not connector_id:
+        return
+    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if app_doc:
+        _check_connector_not_locked(app_doc)
+
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
@@ -1163,7 +1253,7 @@ async def delete_record(
             detail=f"Internal server error while deleting record: {str(e)}"
         )
 
-@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked_for_record)])
 @inject
 async def reindex_single_record(
     record_id: str,
@@ -1266,7 +1356,7 @@ async def get_connector_stats_endpoint(
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}")
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked_for_record_group)])
 @inject
 async def reindex_record_group(
     record_group_id: str,
@@ -2582,7 +2672,7 @@ async def get_connector_instance_config(
         )
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_auth_config(
     connector_id: str,
     request: Request,
@@ -2903,7 +2993,7 @@ async def update_connector_instance_auth_config(
         )
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/filters-sync", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/connectors/{connector_id}/config/filters-sync", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_filters_sync_config(
     connector_id: str,
     request: Request,
@@ -2974,6 +3064,9 @@ async def update_connector_instance_filters_sync_config(
         # Only update sections that are provided in the request
         new_config = existing_config.copy() if existing_config else {}
 
+        # Snapshot old sync filters before merge
+        old_sync_filters = existing_config.get("filters", {}).get("sync", {})
+
         # Update sync section if provided
         if "sync" in body and isinstance(body["sync"], dict):
             if "sync" in new_config and isinstance(new_config["sync"], dict):
@@ -2992,29 +3085,19 @@ async def update_connector_instance_filters_sync_config(
                 if key in body["filters"]:
                     new_config["filters"][key] = body["filters"][key]
 
+        # Only delete sync points and edges when sync filters change
+        new_sync_filters = new_config.get("filters", {}).get("sync", {})
+        first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
+        sync_filters_changed = old_sync_filters != new_sync_filters
+        needs_full_resync = sync_filters_changed or first_time_sync_filters
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated filters-sync config for instance {connector_id}")
 
-        # Cancel any running sync task for this connector (safety net — normally the
-        # connector must be disabled before filters can be changed, but a task may
-        # still be winding down from a previous run)
-        await sync_task_manager.cancel_sync(connector_id)
-        logger.info(f"Cancelled any running sync task for connector {connector_id}")
-
-        # Delete all sync points so the next sync is a clean full sweep based on
-        # the updated filter configuration
-        try:
-            deleted_count, success = await graph_provider.delete_sync_points_by_connector_id(
-                connector_id=connector_id
-            )
-            if success:
-                logger.info(f"Deleted {deleted_count} sync points for connector {connector_id} after filter change")
-            else:
-                logger.warning(f"Failed to delete sync points for connector {connector_id} after filter change, continuing anyway")
-        except Exception as sp_error:
-            logger.error(f"Error deleting sync points for connector {connector_id} after filter change: {sp_error}")
-            # Non-fatal — continue with the config update response
+        if needs_full_resync:
+            logger.info(f"Sync filters changed for connector {connector_id}; frontend will trigger full resync")
+        else:
+            logger.info(f"No sync filter change for connector {connector_id}")
 
         # For filters/sync updates, keep connector status as is
         # Only update the timestamp
@@ -3040,7 +3123,8 @@ async def update_connector_instance_filters_sync_config(
         return {
             "success": True,
             "config": new_config,
-            "message": "Filters and sync configuration saved successfully."
+            "message": "Filters and sync configuration saved successfully.",
+            "syncFiltersChanged": needs_full_resync,
         }
 
     except HTTPException:
@@ -3053,7 +3137,7 @@ async def update_connector_instance_filters_sync_config(
         )
 
 
-@router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_config(
     connector_id: str,
     request: Request,
@@ -3089,6 +3173,7 @@ async def update_connector_instance_config(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         connector_type = instance.get("type", "")
+
         body = await request.json()
         base_url = body.get("baseUrl", "")
         oauth_config_id = body.get("oauthConfigId")  # Reference to stored OAuth config
@@ -3316,7 +3401,7 @@ async def update_connector_instance_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector configuration: {str(e)}"
         )
-@router.put("/api/v1/connectors/{connector_id}/name", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/connectors/{connector_id}/name", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_name(
     connector_id: str,
     request: Request,
@@ -4807,7 +4892,7 @@ def _find_filter_field_config(
     return None
 
 
-@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def save_connector_instance_filters(
     connector_id: str,
     request: Request,
@@ -5040,7 +5125,7 @@ async def _ensure_connector_initialized(
 # Connector Toggle Endpoint
 # ============================================================================
 
-@router.post("/api/v1/connectors/{connector_id}/toggle", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/connectors/{connector_id}/toggle", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked)])
 async def toggle_connector_instance(
     connector_id: str,
     request: Request,
@@ -5074,6 +5159,7 @@ async def toggle_connector_instance(
     try:
         body = await request.json()
         toggle_type = body.get("type")
+        full_sync = body.get("fullSync", False)
         if not toggle_type or toggle_type not in ["sync", "agent"]:
             logger.error(f"Toggle type is required and must be 'sync' or 'agent'. Got {toggle_type}")
             raise HTTPException(
@@ -5258,7 +5344,8 @@ async def toggle_connector_instance(
                 "apps": [connector_type.replace(" ", "").lower()],
                 "connectorId": connector_id,
                 "syncAction": "immediate",
-                "scope": instance.get("scope")
+                "scope": instance.get("scope"),
+                "fullSync": full_sync,
             }
 
             message = {
@@ -5267,8 +5354,6 @@ async def toggle_connector_instance(
                 "timestamp": get_epoch_timestamp_in_ms()
             }
 
-            # Send message to sync-events topic
-            logger.info(f"Sending message to sync-events topic: {message}")
             await producer.send_message(topic="entity-events", message=message)
 
         return {
@@ -5286,7 +5371,7 @@ async def toggle_connector_instance(
         )
 
 
-@router.delete("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE)), Depends(require_connector_not_locked)])
 async def delete_connector_instance(
     connector_id: str,
     request: Request,

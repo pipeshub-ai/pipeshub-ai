@@ -292,6 +292,8 @@ interface Connector {
   supportsSync: boolean;
   supportsAgent: boolean;
   scope: 'personal' | 'team';
+  status?: 'IDLE' | 'FULL_SYNCING' | 'SYNCING';
+  isLocked?: boolean;
   createdBy?: string;
   updatedBy?: string;
   createdAtTimestamp: number;

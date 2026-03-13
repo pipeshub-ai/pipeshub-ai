@@ -9,6 +9,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.sync.task_manager import sync_task_manager
 from app.containers.connector import (
     ConnectorAppContainer,
 )
@@ -395,6 +396,7 @@ class EntityEventService(BaseEventService):
             sync_action = payload.get("syncAction", "none")
             connector_id = payload.get("connectorId", "")
             scope = payload.get("scope", ConnectorScopes.PERSONAL.value)
+            full_sync = payload.get("fullSync", False)
             # Get org details to check account type
             org = await self.graph_provider.get_document(
                 org_id, CollectionNames.ORGS.value
@@ -410,9 +412,10 @@ class EntityEventService(BaseEventService):
                         event_type=f"{app_name.lower()}.start",
                         value={
                             "orgId": org_id,
-                            "connector":app_name,
-                            "connectorId":connector_id,
+                            "connector": app_name,
+                            "connectorId": connector_id,
                             "scope": scope,
+                            "fullSync": full_sync,
                         },
                     )
 
@@ -461,6 +464,13 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 app_updates, CollectionNames.APPS.value
             )
+
+            # Cancel any running sync task so it stops promptly
+            try:
+                await sync_task_manager.cancel_sync(connector_id)
+                self.logger.info(f"✅ Cancelled running sync for connector {connector_id}")
+            except Exception as cancel_err:
+                self.logger.error(f"❌ Failed to cancel sync for connector {connector_id}: {cancel_err}")
 
             self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
             return True
