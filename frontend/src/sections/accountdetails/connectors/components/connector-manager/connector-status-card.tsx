@@ -7,6 +7,7 @@ import {
   Tooltip,
   Stack,
   Chip,
+  Alert,
   alpha,
   useTheme,
 } from '@mui/material';
@@ -34,6 +35,7 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
   const isDark = theme.palette.mode === 'dark';
   const isConfigured = connector.isConfigured || false;
   const isActive = connector.isActive || false;
+  const isDeleting = connector.status === 'DELETING';
   const authType = (connector.authType || '').toUpperCase();
   const isOauth = authType === 'OAUTH';
   const canEnable = isActive
@@ -48,6 +50,9 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
   const supportsSync = connector.supportsSync || false;
 
   const getTooltipMessage = () => {
+    if (isDeleting) {
+      return 'Connector deletion is in progress';
+    }
     if (!isActive && !canEnable) {
       if (isOauth) {
         return hideAuthenticate
@@ -90,6 +95,20 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
             boxShadow: `0 0 0 2px ${theme.palette.background.paper}`,
           }}
         />
+      )}
+
+      {/* Deletion in progress banner */}
+      {isDeleting && (
+        <Alert
+          severity="warning"
+          sx={{
+            mb: 2,
+            borderRadius: 1,
+            fontSize: '0.8125rem',
+          }}
+        >
+          Deletion in progress — this connector is being removed and will disappear shortly.
+        </Alert>
       )}
 
       {/* Connector Info */}
@@ -266,13 +285,14 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
               title={getTooltipMessage()}
               placement="top"
               arrow
-              disableHoverListener={!enableBlocked}
+              disableHoverListener={!isDeleting && !enableBlocked}
             >
               <div>
                 <Switch
                   key='sync-switch'
                   checked={isActive}
                   onChange={(e) => {
+                    if (isDeleting) return;
                     const next = e.target.checked;
                     if (next && !canEnable) {
                       // Block enabling if prerequisites not met
@@ -280,7 +300,7 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
                     }
                     onToggle(next, 'sync');
                   }}
-                  disabled={!isActive && !canEnable}
+                  disabled={isDeleting || (!isActive && !canEnable)}
                   color="primary"
                   size="medium"
                   sx={{

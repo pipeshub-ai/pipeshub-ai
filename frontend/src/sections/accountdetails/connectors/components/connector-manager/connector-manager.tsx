@@ -799,7 +799,22 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
           }}
         >
           <Box sx={{ mb: 3 }}>
-            {connector?.isActive ? (
+            {connector?.status === 'DELETING' ? (
+              <Alert
+                severity="info"
+                icon={<Iconify icon={warningIcon} width={20} height={20} />}
+                sx={{
+                  borderRadius: 1.25,
+                }}
+              >
+                <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5, fontSize: '0.875rem' }}>
+                  Deletion Already in Progress
+                </Typography>
+                <Typography variant="body2" sx={{ fontSize: '0.8125rem', lineHeight: 1.5 }}>
+                  <strong>&quot;{connector?.name}&quot;</strong> is already being deleted. You can close this dialog.
+                </Typography>
+              </Alert>
+            ) : connector?.isActive ? (
               <Stack spacing={2}>
                 <Alert
                   severity="warning"
@@ -951,7 +966,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                 setDeleteLoading(false);
               }
             }}
-            disabled={deleteLoading || connector?.isActive}
+            disabled={deleteLoading || connector?.isActive || connector?.status === 'DELETING'}
             sx={{
               bgcolor: theme.palette.error.main,
               boxShadow: 'none',

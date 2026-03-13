@@ -292,6 +292,8 @@ interface Connector {
   supportsSync: boolean;
   supportsAgent: boolean;
   scope: 'personal' | 'team';
+  /** Generic operational status. null/undefined = idle. */
+  status?: 'DELETING' | 'SYNCING' | null;
   createdBy?: string;
   updatedBy?: string;
   createdAtTimestamp: number;

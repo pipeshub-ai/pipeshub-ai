@@ -620,6 +620,7 @@ class ConnectorRegistry:
                 'isAgentActive': instance_data.get('isAgentActive', False),
                 'isConfigured': instance_data.get('isConfigured', False),
                 'isAuthenticated': instance_data.get('isAuthenticated', False),
+                'status': instance_data.get('status'),
                 'createdAtTimestamp': instance_data.get('createdAtTimestamp'),
                 'updatedAtTimestamp': instance_data.get('updatedAtTimestamp'),
                 '_key': instance_data.get('_key') or instance_data.get('id'),

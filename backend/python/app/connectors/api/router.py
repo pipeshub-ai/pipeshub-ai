@@ -22,7 +22,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
@@ -33,7 +33,6 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
-    EventTypes,
     MimeTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -473,15 +472,6 @@ async def stream_record_internal(
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="The connector for this document no longer exists or was deleted. The document cannot be streamed.",
-            )
-        connector_display_name = (
-            connector_instance.get("name") or connector_instance.get("type") or record.connector_name.value or "Connector"
-        )
-        connector = container.connectors_map.get(connector_id)
-        if not connector:
-            raise HTTPException(
-                status_code=HttpStatusCode.UNHEALTHY.value,
-                detail=f"The connector '{connector_display_name}' is currently inactive or disconnected. Please reconnect it from Settings > Connectors and try again.",
             )
         return await connector.stream_record(record)
 
@@ -5301,40 +5291,23 @@ async def delete_connector_instance(
     connector_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-) -> Dict[str, Any]:
+) -> JSONResponse:
     """
-    Delete a connector instance and all its related data.
+    Initiate async deletion of a connector instance.
 
-    This is a destructive operation that:
-    1. Stops any active sync services for this connector
-    2. Deletes all records, record groups, roles, groups, drives for this connector
-    3. Deletes all edges (permissions, relations, classifications)
-    4. Publishes event to delete embeddings from Qdrant
-    5. Deletes the connector app itself
-    6. Cleans up connector credentials from configuration store
+    Marks the connector as DELETING, sends an appDisabled event to stop
+    active sync, then publishes a connectorType.delete event to the
+    sync-events Kafka topic and returns 202 immediately.  The actual
+    graph-DB deletion and Qdrant cleanup run in the sync consumer.
 
-    Classification nodes (departments, categories, topics, languages) are NOT deleted
-    as they are shared resources across connectors.
-    Users are NOT deleted - only userAppRelation edges are removed.
-
-    Args:
-        connector_id: Unique connector instance key
-        request: FastAPI request object
-        graph_provider: Injected graph DB provider
-
-    Returns:
-        Dictionary with deletion statistics
-
-    Raises:
-        HTTPException: 401 if not authenticated, 403 if not authorized,
-                      404 if connector not found, 500 for internal errors
+    Returns 409 if a deletion is already in progress for this connector.
     """
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
 
     try:
-        # 1. Get and validate user context
+        # 1. Validate user context
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
@@ -5346,7 +5319,7 @@ async def delete_connector_instance(
                 detail="User not authenticated"
             )
 
-        # 2. Get and validate connector instance
+        # 2. Fetch and validate connector instance
         instance = await connector_registry.get_connector_instance(
             connector_id=connector_id,
             user_id=user_id,
@@ -5366,114 +5339,85 @@ async def delete_connector_instance(
         # Check beta connector access
         await check_beta_connector_access(connector_type, request)
 
-        # 3. Check permissions - only creator or admin can delete
+        # 3. Permission check — only creator or admin can delete
         _validate_connector_deletion_permissions(instance, user_id, is_admin, logger)
 
-        logger.info(f"🗑️ Starting deletion of connector instance {connector_id} by user {user_id}")
+        # 4. Guard against duplicate deletion requests
+        if instance.get("status") == "DELETING":
+            raise HTTPException(
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail="Connector deletion is already in progress"
+            )
 
-        # 4. Stop any active sync services for this connector (send appDisabled event)
+        logger.info(f"🗑️ Initiating async deletion of connector {connector_id} by user {user_id}")
+
+        producer = container.messaging_producer
+
+        # 5. Stop any running sync for this connector
         try:
-            producer = container.messaging_producer
-            disable_payload = {
-                "orgId": org_id,
-                "appGroup": instance.get("appGroup"),
-                "appGroupId": instance.get("appGroupId"),
-                "connectorId": connector_id,
-                "apps": [connector_type.replace(" ", "").lower()],  # Normalize for appDisabled event
-                "scope": instance.get("scope")
-            }
             disable_message = {
                 "eventType": "appDisabled",
-                "payload": disable_payload,
-                "timestamp": get_epoch_timestamp_in_ms()
+                "payload": {
+                    "orgId": org_id,
+                    "appGroup": instance.get("appGroup"),
+                    "appGroupId": instance.get("appGroupId"),
+                    "connectorId": connector_id,
+                    "apps": [connector_type.replace(" ", "").lower()],
+                    "scope": instance.get("scope"),
+                },
+                "timestamp": get_epoch_timestamp_in_ms(),
             }
             await producer.send_message(topic="entity-events", message=disable_message)
             logger.info(f"✅ Sent appDisabled event for connector {connector_id}")
         except Exception as e:
             logger.error(
                 f"❌ Failed to send appDisabled event for connector {connector_id}: {e}. "
-                f"This is critical - sync services may continue running. Manual intervention may be required. "
-                f"Continuing with data deletion..."
-            )
-            # Continue with deletion - data cleanup is more important than event publishing
-            # Manual cleanup of sync services may be needed if this event fails
-
-        # 5. Delete from graph database (returns records for Qdrant cleanup)
-        deletion_result = await graph_provider.delete_connector_instance(
-            connector_id=connector_id,
-            org_id=org_id
-        )
-
-        if not deletion_result.get("success"):
-            error_msg = deletion_result.get("error", "Unknown error occurred during deletion")
-            logger.error(f"Failed to delete connector data: {error_msg}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to delete connector data: {error_msg}"
+                f"Sync services may continue running. Proceeding with deletion event."
             )
 
-        # 6. Publish BULK_DELETE_RECORDS event to Kafka for Qdrant cleanup
-        virtual_record_ids = deletion_result.get("virtual_record_ids", [])
-        if virtual_record_ids:
-            try:
-                bulk_delete_payload = {
-                    "orgId": org_id,
-                    "connectorId": connector_id,
-                    "virtualRecordIds": virtual_record_ids,
-                    "totalRecords": len(virtual_record_ids)
-                }
-                bulk_delete_message = {
-                    "eventType": EventTypes.BULK_DELETE_RECORDS.value,
-                    "payload": bulk_delete_payload,
-                    "timestamp": get_epoch_timestamp_in_ms()
-                }
-
-                # Publish bulk delete event using messaging producer for consistency
-                await producer.send_message(topic="record-events", message=bulk_delete_message)
-                logger.info(f"✅ Published bulk delete event for {len(virtual_record_ids)} records")
-            except Exception as e:
-                logger.error(
-                    f"❌ Failed to publish bulk delete event for connector {connector_id}: {e}. "
-                    f"This is critical - embeddings may persist in Qdrant. Manual cleanup may be required. "
-                    f"Continuing with deletion completion..."
-                )
-                # Continue with deletion - ArangoDB cleanup is complete
-                # Qdrant cleanup can be triggered manually if needed
-
-        # 7. Clean up connector credentials from etcd/config store
-        try:
-            config_service = container.config_service()
-            config_path = _get_config_path_for_instance(connector_id)
-            await config_service.delete_config(config_path)
-            logger.info(f"✅ Deleted config for connector {connector_id}")
-        except Exception as e:
-            logger.error(
-                f"❌ Failed to delete config for connector {connector_id}: {e}. "
-                f"Orphaned configuration may remain in etcd."
-            )
-            # Don't re-raise - config cleanup failure is less critical than data deletion
-
-        logger.info(
-            f"✅ Successfully deleted connector instance {connector_id}. "
-            f"Records: {deletion_result.get('deleted_records_count', 0)}, "
-            f"Embeddings queued for deletion: {len(virtual_record_ids)}"
-        )
-
-        return {
-            "success": True,
-            "message": f"Connector instance {connector_id} deleted successfully",
-            "deletedRecords": deletion_result.get("deleted_records_count", 0),
-            "deletedRecordGroups": deletion_result.get("deleted_record_groups_count", 0),
-            "deletedRoles": deletion_result.get("deleted_roles_count", 0),
-            "deletedGroups": deletion_result.get("deleted_groups_count", 0),
-            "deletedDrives": deletion_result.get("deleted_drives_count", 0),
-            "embeddingsQueuedForDeletion": len(virtual_record_ids)
+        # 6. Publish the async deletion event — consumed by the sync consumer (before status update so a failed publish cannot leave the connector stuck in DELETING)
+        event_type = f"{connector_type.replace(' ', '').lower()}.delete"
+        delete_message = {
+            "eventType": event_type,
+            "payload": {
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "connectorType": connector_type,
+                "appGroup": instance.get("appGroup"),
+                "appGroupId": instance.get("appGroupId"),
+                "scope": instance.get("scope"),
+                "previousIsActive": instance.get("isActive", False),
+                "initiatedBy": user_id,
+            },
+            "timestamp": get_epoch_timestamp_in_ms(),
         }
+        await producer.send_message(topic="sync-events", message=delete_message)
+        logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")
+
+        # 7. Mark connector as DELETING in the graph DB so the UI can reflect it
+        await graph_provider.batch_upsert_nodes(
+            [{
+                "id": connector_id,
+                "status": "DELETING",
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }],
+            CollectionNames.APPS.value
+        )
+
+        return JSONResponse(
+            status_code=202,
+            content={
+                "success": True,
+                "message": "Connector deletion initiated",
+                "connectorId": connector_id,
+                "status": "DELETING",
+            },
+        )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Failed to delete connector instance {connector_id}: {e}", exc_info=True)
+        logger.error(f"❌ Failed to initiate deletion for connector {connector_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to initiate connector deletion. Please try again."
