@@ -1001,8 +1001,8 @@ class WebConnector(BaseConnector):
                             + "%s", final_url, self.url_should_contain
                         )
                         final_url_normalized = self._normalize_url(final_url)
-                        url_normalized = self._normalize_url(self.url)
-                        if final_url_normalized != url_normalized:
+                        current_url_normalized = self._normalize_url(url)
+                        if final_url_normalized != current_url_normalized:
                             self.visited_urls.add(final_url_normalized)
                         return None
 
