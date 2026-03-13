@@ -1,6 +1,9 @@
 import json
 import logging
+from io import BytesIO
 from typing import Any, Dict, Optional
+
+from app.agents.actions.util.parse_file import FileContentParser
 
 from msgraph.generated.drives.item.items.item.checkin.checkin_post_request_body import (  # type: ignore
     CheckinPostRequestBody,
@@ -142,7 +145,48 @@ def _response_json(response: object) -> str:
         out["message"] = message
     return json.dumps(out)
 
+def _generate_office_bytes(ft: str, content: Optional[str]) -> bytes:
 
+    text = content or ""
+
+    if ft == "word":
+        from docx import Document
+        doc = Document()
+        if text:
+            for para in text.split("\n"):
+                doc.add_paragraph(para)
+        buf = BytesIO()
+        doc.save(buf)
+        return buf.getvalue()
+
+    elif ft == "excel":
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        if text:
+            for i, line in enumerate(text.split("\n"), start=1):
+                ws.cell(row=i, column=1, value=line)
+        buf = BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    elif ft == "powerpoint":
+        from pptx import Presentation
+        from pptx.util import Inches
+        prs = Presentation()
+        if text:
+            for line in text.split("\n\n"):  # each paragraph = new slide
+                slide = prs.slides.add_slide(prs.slide_layouts[1])
+                slide.shapes.title.text = line[:100]
+                tf = slide.placeholders[1].text_frame
+                tf.text = line
+        else:
+            prs.slides.add_slide(prs.slide_layouts[5])  # blank slide
+        buf = BytesIO()
+        prs.save(buf)
+        return buf.getvalue()
+
+    return b""
 # ---------------------------------------------------------------------------
 # Pydantic schemas
 # ---------------------------------------------------------------------------
@@ -244,9 +288,9 @@ class GetRecentFilesInput(BaseModel):
 
 class GetSharedWithMeInput(BaseModel):
     """Schema for getting files shared with the current user"""
-    drive_id: str = Field(description="The ID of the drive")
     top: Optional[int] = Field(default=None, description="Maximum number of items to return")
     select: Optional[str] = Field(default=None, description="Comma-separated list of fields to return")
+
 
 
 class GetSpecificVersionInput(BaseModel):
@@ -272,6 +316,57 @@ class RestoreVersionInput(BaseModel):
 #     check_in_as: Optional[str] = Field(default=None, description="Version type: 'published' or 'unspecified'")
 
 
+class CopyItemInput(BaseModel):
+    """Schema for copying a file or folder"""
+    drive_id: str = Field(description="The ID of the source drive")
+    item_id: str = Field(description="The ID of the file or folder to copy")
+    destination_drive_id: Optional[str] = Field(default=None, description="The ID of the destination drive (defaults to same drive)")
+    destination_folder_id: str = Field(description="The ID of the destination folder to copy into")
+    new_name: Optional[str] = Field(default=None, description="Optional new name for the copied item")
+
+
+class GetPermissionsInput(BaseModel):
+    """Schema for getting file/folder permissions"""
+    drive_id: str = Field(description="The ID of the drive")
+    item_id: str = Field(description="The ID of the file or folder")
+
+
+class GetDownloadUrlInput(BaseModel):
+    """Schema for getting a download URL"""
+    drive_id: str = Field(description="The ID of the drive")
+    item_id: str = Field(description="The ID of the file")
+
+
+class GetThumbnailsInput(BaseModel):
+    """Schema for getting thumbnails or preview URLs"""
+    drive_id: str = Field(description="The ID of the drive")
+    item_id: str = Field(description="The ID of the file")
+    size: Optional[str] = Field(default=None, description="Thumbnail size: 'small', 'medium', or 'large' (defaults to all sizes)")
+
+
+class GetFileContentInput(BaseModel):
+    """Schema for reading text-based file content"""
+    drive_id: str = Field(description="The ID of the drive")
+    item_id: str = Field(description="The ID of the text-based file (e.g. .txt, .md, .csv, .json, .html)")
+    max_bytes: Optional[int] = Field(default=500_000, description="Maximum number of bytes to read (default 500 000 ≈ 500 KB)")
+
+
+class GetFileContentBase64Input(BaseModel):
+    """Schema for reading binary file content as base64"""
+    drive_id: str = Field(description="The ID of the drive")
+    item_id: str = Field(description="The ID of the file (image, PDF, or other binary)")
+    max_bytes: Optional[int] = Field(default=5_000_000, description="Maximum number of bytes to fetch (default 5 MB)")
+
+
+class CreateOfficeFileInput(BaseModel):
+    """Schema for creating a new blank Office file"""
+    drive_id: str = Field(description="The ID of the drive")
+    parent_folder_id: Optional[str] = Field(default=None, description="ID of the parent folder (defaults to root)")
+    file_name: str = Field(description="Name of the new file, including extension (.docx, .xlsx, or .pptx)")
+    file_type: str = Field(description="Office file type: 'word' (.docx), 'excel' (.xlsx), or 'powerpoint' (.pptx)")
+    content: Optional[str] = Field(default=None, description="Content of the file")
+
+
 # ---------------------------------------------------------------------------
 # ToolsetBuilder registration
 # ---------------------------------------------------------------------------
@@ -290,9 +385,13 @@ class RestoreVersionInput(BaseModel):
                 personal_sync=[],
                 team_sync=[],
                 agent=[
+                    "Files.Read",
+                    "Files.Read.All",
                     "Files.ReadWrite",
+                    "Files.ReadWrite.All",
                     "offline_access",
                     "User.Read",
+                    "Sites.Read.All"
                 ],
             ),
             additional_params={
@@ -758,9 +857,10 @@ class OneDrive:
                 select=select,
                 expand=expand,
             )
+            data  = _response_json(response)
             if response.success:
-                return True, self._serialize_response(response.data)
-            return False, self._serialize_response(response.data)
+                return True, _response_json(response)
+            return False, _response_json(response)
         except Exception as e:
             logger.error(f"Failed to get file {item_id}: {e}")
             return False, json.dumps({"error": str(e)})
@@ -868,10 +968,22 @@ class OneDrive:
         try:
             response = await self.client.drives_drive_recent(
                 drive_id=drive_id,
-                top=top,
-                select=select,
+                select=[select] if isinstance(select, str) else select,
             )
             if response.success:
+                raw = response.data
+                logger.warning(f"[get_recent_files] response.data type: {type(raw)}")
+                logger.warning(f"[get_recent_files] response.data value attr: {getattr(raw, 'value', 'NO VALUE ATTR')}")
+                serialized = _serialize_graph_obj(raw)
+                logger.warning(f"[get_recent_files] serialized type: {type(serialized)}, keys: {serialized.keys() if isinstance(serialized, dict) else 'N/A'}")
+                if isinstance(serialized, dict):
+                    items = serialized.get("value", [])
+                    logger.warning(f"[get_recent_files] items count: {len(items) if isinstance(items, list) else 'NOT A LIST'}")
+                if top:
+                    data = serialized
+                    if isinstance(data, dict) and "value" in data:
+                        data["value"] = data["value"][:top]
+                        return True, json.dumps({"success": True, "data": data})
                 return True, _response_json(response)
             return False, _response_json(response)
         except Exception as e:
@@ -881,7 +993,7 @@ class OneDrive:
     @tool(
         app_name="onedrive",
         tool_name="get_shared_with_me",
-        description="Get files and folders that others have shared with the current user",
+        description="Get all files and folders shared with the current user across OneDrive using the /me/drive/sharedWithMe endpoint. Does not require a drive_id.",
         args_schema=GetSharedWithMeInput,
         when_to_use=[
             "User asks 'what's been shared with me'",
@@ -890,7 +1002,7 @@ class OneDrive:
         ],
         when_not_to_use=[
             "User wants their own files (use get_files)",
-            "User wants to share a file (sharing links not supported)",
+            "User wants to share a file (sharing management not supported)",
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
@@ -902,32 +1014,49 @@ class OneDrive:
     )
     async def get_shared_with_me(
         self,
-        drive_id: str,
-        top: Optional[int] = None,
+        top: Optional[int] = 10,
         select: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """Get files shared with the current user
-
-        Args:
-            drive_id: The ID of the drive
-            top: Max number of results
-            select: Fields to return
-        Returns:
-            tuple[bool, str]: Success flag and JSON response
-        """
         try:
-            response = await self.client.drives_drive_shared_with_me(
-                drive_id=drive_id,
-                top=top,
-                select=select,
-            )
-            if response.success:
-                return True, _response_json(response)
-            return False, _response_json(response)
+            response = await self.client.me_insights_shared()
+            if not response.success:
+                return False, _response_json(response)
+
+            data  = _response_json(response)
+            raw = response.data  # SharedInsightCollectionResponse object
+            items = raw.value or []  # ✅ Kiota object — use .value not .get("value")
+
+            top = min(top,50)
+
+            if top:
+                items = items[:top]
+
+            # Only process SPO items (OneDrive/SharePoint files), skip email attachments
+            spo_items = [item for item in items if (item.id or "").startswith("SPO@")]
+
+            enriched = []
+            for item in spo_items:
+                insight_id = item.id
+                resource_response = await self.client.me_insights_shared_resource(insight_id)
+                data  = _response_json(resource_response)
+                enriched.append({
+                    "id": insight_id,
+                    "lastShared": {
+                        "sharedBy": {
+                            "displayName": item.last_shared.shared_by.display_name if item.last_shared and item.last_shared.shared_by else None,
+                            "address": item.last_shared.shared_by.address if item.last_shared and item.last_shared.shared_by else None,
+                        },
+                        "sharedDateTime": str(item.last_shared.shared_date_time) if item.last_shared else None,
+                        "sharingType": item.last_shared.sharing_type if item.last_shared else None,
+                    },
+                    "resource": _serialize_graph_obj(resource_response.data) if resource_response.success else None,
+                })
+
+            return True, json.dumps({"value": enriched}, default=str)
+
         except Exception as e:
             logger.error(f"Failed to get shared-with-me items: {e}")
             return False, json.dumps({"error": str(e)})
-
     # ------------------------------------------------------------------
     # Folder management
     # ------------------------------------------------------------------
@@ -983,15 +1112,9 @@ class OneDrive:
                 driveItem_id=parent_id,
                 request_body=body,
             )
-            print(f"Response: {response}")
-            print(f"Response data: {response.data}")
-            res_json = _response_json(response)
-            print("--------------------------------")
-            print(f"Response success: {res_json}")
-            print("--------------------------------")
             if response.success:
                 return True, _response_json(response)
-            return False, self._serialize_response(response.data)
+            return False, _response_json(response)
         except Exception as e:
             logger.error(f"Failed to create folder '{folder_name}': {e}")
             return False, json.dumps({"error": str(e)})
@@ -1167,57 +1290,6 @@ class OneDrive:
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
-    # Version history
-    # ------------------------------------------------------------------
-
-    @tool(
-        app_name="onedrive",
-        tool_name="get_file_versions",
-        description="Get the version history of a file in OneDrive",
-        args_schema=GetVersionsInput,
-        when_to_use=[
-            "User wants to see version history of a OneDrive file",
-            "User asks 'show previous versions' or 'what changes were made'",
-            "User wants to audit or restore an older version of a file",
-        ],
-        when_not_to_use=[
-            "User wants file metadata (use get_file)",
-            "User wants to search files (use search_files)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show version history for this OneDrive file",
-            "List previous versions of my document",
-            "What versions exist for this file?",
-        ],
-        category=ToolCategory.FILE_STORAGE,
-    )
-    async def get_file_versions(
-        self,
-        drive_id: str,
-        item_id: str,
-    ) -> tuple[bool, str]:
-        """Get the version history of a OneDrive file
-
-        Args:
-            drive_id: The ID of the drive
-            item_id: The ID of the file
-        Returns:
-            tuple[bool, str]: Success flag and JSON response
-        """
-        try:
-            response = await self.client.drives_items_list_versions(
-                drive_id=drive_id,
-                driveItem_id=item_id,
-            )
-            if response.success:
-                return True, _response_json(response)
-            return False, _response_json(response)
-        except Exception as e:
-            logger.error(f"Failed to get versions for item {item_id}: {e}")
-            return False, json.dumps({"error": str(e)})
-
-    # ------------------------------------------------------------------
     # Root folder
     # ------------------------------------------------------------------
 
@@ -1275,174 +1347,519 @@ class OneDrive:
     # Followed items
     # ------------------------------------------------------------------
 
-    @tool(
-        app_name="onedrive",
-        tool_name="get_followed_items",
-        description="Get files and folders the current user is following in OneDrive",
-        args_schema=GetRecentFilesInput,
-        when_to_use=[
-            "User asks 'what files am I following in OneDrive'",
-            "User wants to see bookmarked or followed items",
-            "User mentions 'followed' files or folders in OneDrive context",
-        ],
-        when_not_to_use=[
-            "User wants their own files (use get_files)",
-            "User wants files shared with them (use get_shared_with_me)",
-            "User wants recent files (use get_recent_files)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show files I'm following in OneDrive",
-            "List my followed OneDrive items",
-            "What OneDrive files have I bookmarked?",
-        ],
-        category=ToolCategory.FILE_STORAGE,
-    )
-    async def get_followed_items(
-        self,
-        drive_id: str,
-        top: Optional[int] = None,
-        select: Optional[str] = None,
-    ) -> tuple[bool, str]:
-        """Get files and folders the user is following in OneDrive
+    # @tool(
+    #     app_name="onedrive",
+    #     tool_name="get_followed_items",
+    #     description="Get files and folders the current user is following in OneDrive",
+    #     args_schema=GetRecentFilesInput,
+    #     when_to_use=[
+    #         "User asks 'what files am I following in OneDrive'",
+    #         "User wants to see bookmarked or followed items",
+    #         "User mentions 'followed' files or folders in OneDrive context",
+    #     ],
+    #     when_not_to_use=[
+    #         "User wants their own files (use get_files)",
+    #         "User wants files shared with them (use get_shared_with_me)",
+    #         "User wants recent files (use get_recent_files)",
+    #     ],
+    #     primary_intent=ToolIntent.SEARCH,
+    #     typical_queries=[
+    #         "Show files I'm following in OneDrive",
+    #         "List my followed OneDrive items",
+    #         "What OneDrive files have I bookmarked?",
+    #     ],
+    #     category=ToolCategory.FILE_STORAGE,
+    # )
+    # async def get_followed_items(
+    #     self,
+    #     drive_id: str,
+    #     top: Optional[int] = None,
+    #     select: Optional[str] = None,
+    # ) -> tuple[bool, str]:
+    #     """Get files and folders the user is following in OneDrive
 
-        Args:
-            drive_id: The ID of the drive
-            top: Maximum number of results to return
-            select: Comma-separated list of fields to return
-        Returns:
-            tuple[bool, str]: Success flag and JSON response
-        """
-        try:
-            response = await self.client.drives_list_following(
-                drive_id=drive_id,
-                top=top,
-                select=select,
-            )
-            if response.success:
-                return True, _response_json(response)
-            return False, _response_json(response)
-        except Exception as e:
-            logger.error(f"Failed to get followed items: {e}")
-            return False, json.dumps({"error": str(e)})
-
-    # ------------------------------------------------------------------
-    # Specific version retrieval
-    # ------------------------------------------------------------------
-
-    @tool(
-        app_name="onedrive",
-        tool_name="get_file_version",
-        description="Get details about a specific version of a OneDrive file",
-        args_schema=GetSpecificVersionInput,
-        when_to_use=[
-            "User wants to inspect a specific version of a file",
-            "User mentions a version ID and wants its metadata or content info",
-            "Auditing a particular historical snapshot of a OneDrive file",
-        ],
-        when_not_to_use=[
-            "User wants all versions (use get_file_versions)",
-            "User wants to restore a version (use restore_file_version)",
-            "File ID is unknown (use get_files or search_files first)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show details for version 2.0 of this file",
-            "Get info about a specific OneDrive file version",
-            "What's in version ID xyz of my document?",
-        ],
-        category=ToolCategory.FILE_STORAGE,
-    )
-    async def get_file_version(
-        self,
-        drive_id: str,
-        item_id: str,
-        version_id: str,
-        select: Optional[str] = None,
-    ) -> tuple[bool, str]:
-        """Get details about a specific version of a OneDrive file
-
-        Args:
-            drive_id: The ID of the drive
-            item_id: The ID of the file
-            version_id: The ID of the version to retrieve
-            select: Comma-separated list of fields to return
-        Returns:
-            tuple[bool, str]: Success flag and JSON response
-        """
-        try:
-            response = await self.client.drives_items_get_versions(
-                drive_id=drive_id,
-                driveItem_id=item_id,
-                driveItemVersion_id=version_id,
-                select=select,
-            )
-            if response.success:
-                return True, _response_json(response)
-            return False, _response_json(response)
-        except Exception as e:
-            logger.error(
-                f"Failed to get version {version_id} for item {item_id}: {e}"
-            )
-            return False, json.dumps({"error": str(e)})
+    #     Args:
+    #         drive_id: The ID of the drive
+    #         top: Maximum number of results to return
+    #         select: Comma-separated list of fields to return
+    #     Returns:
+    #         tuple[bool, str]: Success flag and JSON response
+    #     """
+    #     try:
+    #         response = await self.client.drives_list_following(
+    #             drive_id=drive_id,
+    #             top=top,
+    #             select=select,
+    #         )
+    #         if response.success:
+    #             return True, _response_json(response)
+    #         return False, _response_json(response)
+    #     except Exception as e:
+    #         logger.error(f"Failed to get followed items: {e}")
+    #         return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
-    # Restore version
+    # Copy item
     # ------------------------------------------------------------------
 
     @tool(
         app_name="onedrive",
-        tool_name="restore_file_version",
-        description="Restore a specific historical version of a OneDrive file, making it the current version",
-        args_schema=RestoreVersionInput,
+        tool_name="copy_item",
+        description="Copy a file or folder to another location in OneDrive, optionally renaming it. Requires drive_id and item_id — resolve via get_drives and search_files first if unknown.",
+        args_schema=CopyItemInput,
         when_to_use=[
-            "User wants to roll back a OneDrive file to an older version",
-            "User says 'restore version', 'undo changes', or 'go back to a previous version'",
-            "User needs to recover an earlier snapshot of a document",
+            "User wants to duplicate a file or folder in OneDrive",
+            "User says 'copy', 'duplicate', or 'clone' a OneDrive item",
+            "User wants a backup copy in a different folder",
+            "Cascade: get_drives → search_files (to find item_id and destination_folder_id) → copy_item",
         ],
         when_not_to_use=[
-            "User wants to view versions (use get_file_versions)",
-            "User wants to get version details (use get_file_version)",
-            "File ID or version ID is unknown (retrieve them first)",
+            "User wants to move (not copy) a file (use move_item)",
+            "drive_id or item_id is unknown — call get_drives and/or search_files first to resolve them",
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
-            "Restore the file to version 2.0",
-            "Roll back my OneDrive document to yesterday's version",
-            "Undo recent changes and restore an older version",
+            "Copy this file to the Archive folder",
+            "Duplicate my report into the Backup folder",
+            "Make a copy of the presentation in a different folder",
         ],
         category=ToolCategory.FILE_STORAGE,
     )
-    async def restore_file_version(
+    async def copy_item(
         self,
         drive_id: str,
         item_id: str,
-        version_id: str,
+        destination_folder_id: str,
+        destination_drive_id: Optional[str] = None,
+        new_name: Optional[str] = None,
     ) -> tuple[bool, str]:
-        """Restore a specific version of a OneDrive file
+        """Copy a file or folder to another location in OneDrive
 
         Args:
-            drive_id: The ID of the drive
-            item_id: The ID of the file
-            version_id: The ID of the version to restore
+            drive_id: The ID of the source drive
+            item_id: The ID of the file or folder to copy
+            destination_folder_id: The ID of the destination folder
+            destination_drive_id: The ID of the destination drive (defaults to same drive)
+            new_name: Optional new name for the copied item
         Returns:
             tuple[bool, str]: Success flag and JSON response
         """
         try:
-            response = await self.client.drives_drive_items_drive_item_restore(
+            dest_drive = destination_drive_id or drive_id
+
+            request_body: dict = {
+                "parentReference": {
+                    "driveId": dest_drive,
+                    "id": destination_folder_id,
+                }
+            }
+            if new_name:
+                request_body["name"] = new_name
+
+            response = await self.client.drives_drive_items_drive_item_copy(
                 drive_id=drive_id,
                 driveItem_id=item_id,
-                driveItemVersion_id=version_id,
+                request_body=request_body,
             )
             if response.success:
                 return True, json.dumps({
-                    "message": f"Version {version_id} of item {item_id} restored successfully"
+                    "message": f"Item {item_id} copy operation started successfully. "
+                               "The copy may be async — use search_files to locate it shortly."
                 })
             return False, _response_json(response)
         except Exception as e:
-            logger.error(
-                f"Failed to restore version {version_id} for item {item_id}: {e}"
+            logger.error(f"Failed to copy item {item_id}: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    # ------------------------------------------------------------------
+    # Permissions / sharing status
+    # ------------------------------------------------------------------
+
+    @tool(
+        app_name="onedrive",
+        tool_name="get_permissions",
+        description="Get all sharing permissions and access grants for a OneDrive file or folder, including who has access and at what level.",
+        args_schema=GetPermissionsInput,
+        when_to_use=[
+            "User wants to see who has access to a file or folder in OneDrive",
+            "User asks 'who can see this file', 'check sharing', or 'what are the permissions'",
+            "User wants to audit sharing status of a OneDrive item",
+            "User asks about sharing links or collaborators on a file",
+        ],
+        when_not_to_use=[
+            "User wants file metadata like size or dates (use get_file)",
+            "User wants to change permissions (sharing management not supported)",
+            "drive_id or item_id is unknown — call get_drives and/or search_files first",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Who has access to this OneDrive file?",
+            "Show sharing permissions for my document",
+            "Check if this folder is shared publicly",
+            "List all collaborators on this file",
+        ],
+        category=ToolCategory.FILE_STORAGE,
+    )
+    async def get_permissions(
+        self,
+        drive_id: str,
+        item_id: str,
+    ) -> tuple[bool, str]:
+        """Get sharing permissions for a OneDrive file or folder
+
+        Args:
+            drive_id: The ID of the drive
+            item_id: The ID of the file or folder
+        Returns:
+            tuple[bool, str]: Success flag and JSON response
+        """
+        try:
+            response = await self.client.drives_items_list_permissions(
+                drive_id=drive_id,
+                driveItem_id=item_id,
             )
+            if response.success:
+                return True, _response_json(response)
+            return False, _response_json(response)
+        except Exception as e:
+            logger.error(f"Failed to get permissions for item {item_id}: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    # ------------------------------------------------------------------
+    # Download URL
+    # ------------------------------------------------------------------
+
+    @tool(
+        app_name="onedrive",
+        tool_name="get_download_url",
+        description="Get a short-lived direct download URL for a OneDrive file. Use when the user needs a link to download the file.",
+        args_schema=GetDownloadUrlInput,
+        when_to_use=[
+            "User wants a direct download link for a OneDrive file",
+            "User asks 'give me a download URL' or 'how do I download this file'",
+            "User needs a temporary link to fetch the file contents externally",
+        ],
+        when_not_to_use=[
+            "User wants to read the file content directly (use get_file_content or get_file_content_base64)",
+            "User wants a sharing link for others (use get_permissions to see existing links)",
+            "drive_id or item_id is unknown — call get_drives and/or search_files first",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get a download link for this OneDrive file",
+            "Give me a URL to download my document",
+            "How can I download this file from OneDrive?",
+        ],
+        category=ToolCategory.FILE_STORAGE,
+    )
+    async def get_download_url(
+        self,
+        drive_id: str,
+        item_id: str,
+    ) -> tuple[bool, str]:
+        """Get a download URL for a OneDrive file
+
+        Args:
+            drive_id: The ID of the drive
+            item_id: The ID of the file
+        Returns:
+            tuple[bool, str]: Success flag and JSON response with download URL
+        """
+        try:
+            response = await self.client.drives_get_items(
+                drive_id=drive_id,
+                driveItem_id=item_id,
+                select="id,name,@microsoft.graph.downloadUrl,file,size",
+            )
+            if response.success:
+                data = _serialize_graph_obj(response.data)
+                if isinstance(data, dict):
+                    download_url = (
+                        data.get("@microsoft.graph.downloadUrl")
+                        or data.get("additionalData", {}).get("@microsoft.graph.downloadUrl")
+                    )
+                    return True, json.dumps({
+                        "id": data.get("id"),
+                        "name": data.get("name"),
+                        "size": data.get("size"),
+                        "download_url": download_url,
+                    })
+                return True, _response_json(response)
+            return False, _response_json(response)
+        except Exception as e:
+            logger.error(f"Failed to get download URL for item {item_id}: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    # ------------------------------------------------------------------
+    # Read text file content
+    # ------------------------------------------------------------------
+
+    @tool(
+        app_name="onedrive",
+        tool_name="get_file_content",
+        description="Download and return the text content of a OneDrive file. Use for plain-text files (.txt, .md, .csv, .json, .xml, .html, .py, .js, etc.) to read, summarise, or answer questions about them.",
+        args_schema=GetFileContentInput,
+        when_to_use=[
+            "User wants to read, summarise, or ask questions about a text-based OneDrive file",
+            "User says 'read this file', 'what's in this document', or 'summarise this CSV'",
+            "File is a text-based format: .txt, .md, .csv, .json, .xml, .html, .py, .js, .log, etc.",
+        ],
+        when_not_to_use=[
+            "File is binary (image, PDF, Office doc) — use get_file_content_base64 instead",
+            "User only wants metadata (size, dates) — use get_file",
+            "User wants a download link — use get_download_url",
+            "drive_id or item_id is unknown — call get_drives and/or search_files first",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Read the contents of this text file in OneDrive",
+            "Summarise the CSV file in my OneDrive",
+            "What does this JSON config file contain?",
+            "Show me what's in notes.txt",
+        ],
+        category=ToolCategory.FILE_STORAGE,
+    )
+    async def get_file_content(
+        self,
+        drive_id: str,
+        item_id: str,
+        max_bytes: Optional[int] = 500_000,
+    ) -> tuple[bool, str]:
+        try:
+            file_info = await self.client.drives_get_items(
+                drive_id=drive_id,
+                driveItem_id=item_id,
+                select="id,name,size,file",
+            )
+            if not file_info.success:
+                return False, _response_json(file_info)
+
+            # response.data is a typed DriveItem object, not a dict
+            data  = _response_json(file_info)
+            data_dict = json.loads(data)
+            file_obj = data_dict.get("data", {}).get("file", {})
+            mime_type = file_obj.get("mimeType")
+            file_extension = file_obj.get("fileExtension")
+
+            print(f"\033[95m[get_file_content] mime_type: {mime_type} | extension: {file_extension}\033[0m")
+            if mime_type:
+                print(f"\033[95m[get_file_content] mime_type: {mime_type}\033[0m")
+            else:
+                print("\033[95m[get_file_content] mime_type not found\033[0m")
+
+            response = await self.client.drives_items_get_content(
+                drive_id=drive_id,
+                driveItem_id=item_id,
+            )
+            if response.success:
+                raw = response.data
+                if not isinstance(raw, (bytes, bytearray)):
+                    return True, json.dumps({"content": str(raw), "truncated": False})
+                return FileContentParser().parse(raw,file_extension, max_bytes)
+
+            return False, _response_json(response)
+        except Exception as e:
+            logger.error(f"Failed to get content for item {item_id}: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    # ------------------------------------------------------------------
+    # Read binary file content as base64
+    # ------------------------------------------------------------------
+
+    # @tool(
+    #     app_name="onedrive",
+    #     tool_name="get_file_content_base64",
+    #     description="Download a binary OneDrive file (image, PDF, Office document) and return its content as a base64-encoded string for further processing or display.",
+    #     args_schema=GetFileContentBase64Input,
+    #     when_to_use=[
+    #         "User wants to read or process an image, PDF, or Office file from OneDrive",
+    #         "File is binary: .pdf, .docx, .xlsx, .pptx, .png, .jpg, .gif, etc.",
+    #         "User wants to pass the file content to another tool or display it",
+    #     ],
+    #     when_not_to_use=[
+    #         "File is plain text — use get_file_content instead (more efficient)",
+    #         "User only wants a download link — use get_download_url",
+    #         "drive_id or item_id is unknown — call get_drives and/or search_files first",
+    #     ],
+    #     primary_intent=ToolIntent.SEARCH,
+    #     typical_queries=[
+    #         "Get the base64 content of this PDF in OneDrive",
+    #         "Download this image from OneDrive as base64",
+    #         "Read the binary content of my OneDrive Word document",
+    #     ],
+    #     category=ToolCategory.FILE_STORAGE,
+    # )
+    # async def get_file_content_base64(
+    #     self,
+    #     drive_id: str,
+    #     item_id: str,
+    #     max_bytes: Optional[int] = 5_000_000,
+    # ) -> tuple[bool, str]:
+    #     """Download a binary OneDrive file and return it as a base64 string
+
+    #     Args:
+    #         drive_id: The ID of the drive
+    #         item_id: The ID of the file
+    #         max_bytes: Maximum bytes to fetch (default 5 MB)
+    #     Returns:
+    #         tuple[bool, str]: Success flag and JSON response with base64 content and mime type
+    #     """
+    #     import base64
+
+    #     try:
+    #         # First fetch metadata for mime type and size
+    #         meta_resp = await self.client.drives_get_items(
+    #             drive_id=drive_id,
+    #             driveItem_id=item_id,
+    #             select="id,name,size,file",
+    #         )
+    #         mime_type = "application/octet-stream"
+    #         file_name = item_id
+    #         file_size = None
+    #         if meta_resp.success and meta_resp.data:
+    #             meta = _serialize_graph_obj(meta_resp.data)
+    #             if isinstance(meta, dict):
+    #                 file_name = meta.get("name", item_id)
+    #                 file_size = meta.get("size")
+    #                 file_info = meta.get("file") or {}
+    #                 mime_type = file_info.get("mimeType", mime_type)
+
+    #         response = await self.client.drives_items_get_content(
+    #             drive_id=drive_id,
+    #             driveItem_id=item_id,
+    #         )
+    #         if response.success:
+    #             raw = response.data
+    #             if isinstance(raw, (bytes, bytearray)):
+    #                 truncated = False
+    #                 if max_bytes and len(raw) > max_bytes:
+    #                     raw = raw[:max_bytes]
+    #                     truncated = True
+    #                 encoded = base64.b64encode(raw).decode("utf-8")
+    #                 return True, json.dumps({
+    #                     "name": file_name,
+    #                     "mime_type": mime_type,
+    #                     "size": file_size,
+    #                     "truncated": truncated,
+    #                     "bytes_read": len(raw),
+    #                     "content_base64": encoded,
+    #                 })
+    #             return False, json.dumps({"error": "Response data was not bytes"})
+    #         return False, _response_json(response)
+    #     except Exception as e:
+    #         logger.error(f"Failed to get base64 content for item {item_id}: {e}")
+    #         return False, json.dumps({"error": str(e)})
+
+    # ------------------------------------------------------------------
+    # Create Office file
+    # ------------------------------------------------------------------
+
+
+
+    @tool(
+        app_name="onedrive",
+        tool_name="create_office_file",
+        description="Create a new blank Microsoft Office file (Word .docx, Excel .xlsx, or PowerPoint .pptx) in OneDrive from scratch via the API.",
+        args_schema=CreateOfficeFileInput,
+        when_to_use=[
+            "User wants to create a new blank Word, Excel, or PowerPoint file in OneDrive",
+            "User says 'create a Word doc', 'make a new Excel spreadsheet', or 'start a PowerPoint'",
+            "User needs an empty Office file to start working in",
+        ],
+        when_not_to_use=[
+            "User wants to create a folder (use create_folder)",
+            "User wants to upload an existing file (upload not supported)",
+            "drive_id is unknown — call get_drives first to resolve it",
+            "User wants to edit an existing Office file's content (not supported via API)",
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Create a new Word document in OneDrive",
+            "Make a blank Excel spreadsheet in my OneDrive",
+            "Start a new PowerPoint presentation in OneDrive",
+            "Create a .docx file in my Documents folder",
+        ],
+        category=ToolCategory.FILE_STORAGE,
+    )
+    async def create_office_file(
+        self,
+        drive_id: str,
+        file_name: str,
+        file_type: str,
+        parent_folder_id: Optional[str] = None,
+        content: Optional[str] = None,
+    ) -> tuple[bool, str]:
+        """Create a new blank Office file in OneDrive
+
+        Args:
+            drive_id: The ID of the drive
+            file_name: Name of the file (should include extension)
+            file_type: 'word', 'excel', or 'powerpoint'
+            parent_folder_id: Parent folder ID (defaults to root)
+        Returns:
+            tuple[bool, str]: Success flag and JSON response with the created file metadata
+        """
+        # Minimal valid Office Open XML file bytes for each type
+        # These are the smallest valid empty containers recognized by OneDrive/Office
+        _OFFICE_MIME = {
+            "word": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "powerpoint": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "onenote": None,  # Uses Graph API, not file upload
+        }
+        _OFFICE_EXT = {
+            "word": ".docx",
+            "excel": ".xlsx",
+            "powerpoint": ".pptx",
+            "onenote": "",  # No extension — OneNote notebooks are containers, not files
+        }
+
+        try:
+            ft = file_type.lower().strip()
+            if ft not in _OFFICE_MIME:
+                return False, json.dumps({
+                    "error": f"Unsupported file_type '{file_type}'. Must be 'word', 'excel', or 'powerpoint'."
+                })
+
+            # Ensure the file name has the correct extension
+            ext = _OFFICE_EXT[ft]
+            if not file_name.lower().endswith(ext):
+                file_name = file_name.rstrip(".") + ext
+
+            parent_id = parent_folder_id or "root"
+
+            file_bytes = _generate_office_bytes(ft, content)
+
+            # Use PUT /drives/{id}/items/{parent-id}:/{filename}:/content
+            # with empty bytes — OneDrive creates a valid blank Office file
+            # from the extension alone when content-length is 0.
+            response = await self.client.drives_items_upload_content(
+                drive_id=drive_id,
+                driveItem_id=f"{parent_id}:/{file_name}:",
+                content=file_bytes,
+                content_type=_OFFICE_MIME[ft],
+            )
+            if response.success:
+                data = _serialize_graph_obj(response.data)
+                result: dict = {}
+                if isinstance(data, dict):
+                    result = {
+                        "id": data.get("id"),
+                        "name": data.get("name"),
+                        "webUrl": data.get("webUrl"),
+                        "createdDateTime": data.get("createdDateTime"),
+                        "file_type": ft,
+                        "message": (
+                            f"Blank {ft.capitalize()} file '{file_name}' created successfully. "
+                            "Open the webUrl to start editing in Office Online."
+                        ),
+                    }
+                else:
+                    result = {"message": f"File '{file_name}' created.", "data": data}
+                return True, json.dumps(result)
+            return False, _response_json(response)
+        except Exception as e:
+            logger.error(f"Failed to create Office file '{file_name}': {e}")
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------

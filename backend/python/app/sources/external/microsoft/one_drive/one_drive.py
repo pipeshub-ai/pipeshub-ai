@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import asdict
 from typing import Any, Dict, List, Mapping, Optional
-
+import urllib.parse
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
 )
@@ -16,8 +16,14 @@ from msgraph.generated.drives.drives_request_builder import (  # type: ignore
 from msgraph.generated.users.item.drive.drive_request_builder import (  # type: ignore
     DriveRequestBuilder,
 )
-
+from msgraph.generated.models.item_reference import ItemReference
 from app.sources.client.microsoft.microsoft import MSGraphClient
+from msgraph.generated.drives.item.recent.recent_request_builder import RecentRequestBuilder
+from msgraph.generated.drives.item.items.item.copy.copy_post_request_body import CopyPostRequestBody
+from msgraph.generated.drives.item.items.item.drive_item_item_request_builder import DriveItemItemRequestBuilder
+from msgraph.generated.models.drive_item import DriveItem as DriveItemModel
+from msgraph.generated.models.notebook import Notebook
+
 
 
 # OneDrive-specific response wrapper
@@ -369,13 +375,12 @@ class OneDriveDataSource:
             config.query_parameters = query_params
 
             if headers:
-                config.headers = headers
+                for k, v in headers.items():
+                    config.headers.add(k, v)
 
             # Add consistency level for search operations in OneDrive
             if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers.add('ConsistencyLevel', 'eventual')
 
             response = await self.client.drives.by_drive_id(drive_id).get(request_configuration=config)
             return self._handle_onedrive_response(response)
@@ -828,8 +833,10 @@ class OneDriveDataSource:
             if skip is not None:
                 query_params.skip = skip
 
+            query_params = DriveItemItemRequestBuilder.DriveItemItemRequestBuilderGetQueryParameters()
+            config = DriveItemItemRequestBuilder.DriveItemItemRequestBuilderGetRequestConfiguration()
             # Create proper typed request configuration
-            config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
+            # config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -855,69 +862,49 @@ class OneDriveDataSource:
         driveItem_id: str,
         select: Optional[List[str]] = None,
         expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OneDriveResponse:
-        """Update the navigation property items in drives.
-        OneDrive operation: PATCH /drives/{drive-id}/items/{driveItem-id}
-        Operation type: file
-        Args:
-            drive_id (str, required): OneDrive drive id identifier
-            driveItem_id (str, required): OneDrive driveItem id identifier
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., children, permissions)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for files and folders by name/content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            request_body (optional): Request body data for file operations
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OneDriveResponse: OneDrive response wrapper with success/data/error
-        """
-        # Build query parameters including OData for OneDrive
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
 
-            # Set query parameters using typed object properties
+            # Convert dict → Kiota DriveItem
+            if isinstance(request_body, dict):
+                item = DriveItemModel()
+                if "name" in request_body:
+                    item.name = request_body["name"]
+                if "parentReference" in request_body:
+                    ref = ItemReference()
+                    pr = request_body["parentReference"]
+                    ref.id = pr.get("id")
+                    ref.drive_id = pr.get("driveId")
+                    ref.path = pr.get("path")
+                    item.parent_reference = ref
+                item.additional_data = {
+                    k: v for k, v in request_body.items()
+                    if k.startswith("@")
+                }
+                body = item
+            else:
+                body = request_body
+
+            query_params = DriveItemItemRequestBuilder.DriveItemItemRequestBuilderGetQueryParameters()
             if select:
                 query_params.select = select if isinstance(select, list) else [select]
             if expand:
                 query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
 
-            # Create proper typed request configuration
-            config = RequestConfiguration()
+            config = DriveItemItemRequestBuilder.DriveItemItemRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
-
+            config.headers.add("Content-Type", "application/json")
             if headers:
-                config.headers = headers
+                for k, v in headers.items():
+                    config.headers.add(k, v)
 
-            # Add consistency level for search operations in OneDrive
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+            response = await self.client.drives.by_drive_id(drive_id)\
+                .items.by_drive_item_id(driveItem_id)\
+                .patch(body=body, request_configuration=config)
 
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).patch(body=request_body, request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
@@ -1316,79 +1303,39 @@ class OneDriveDataSource:
         self,
         drive_id: str,
         driveItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OneDriveResponse:
-        """Invoke action copy.
-        OneDrive operation: POST /drives/{drive-id}/items/{driveItem-id}/copy
-        Operation type: file
-        Args:
-            drive_id (str, required): OneDrive drive id identifier
-            driveItem_id (str, required): OneDrive driveItem id identifier
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., children, permissions)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for files and folders by name/content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            request_body (optional): Request body data for file operations
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OneDriveResponse: OneDrive response wrapper with success/data/error
-        """
-        # Build query parameters including OData for OneDrive
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
+            # Always reconstruct a proper Kiota object — never pass dict to .post()
+            body = CopyPostRequestBody()
 
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
+            if request_body is not None:
+                # Handle both dict and already-built CopyPostRequestBody
+                if isinstance(request_body, CopyPostRequestBody):
+                    body = request_body
+                else:
+                    # Convert from dict
+                    parent_data = request_body.get("parentReference") or {}
+                    if parent_data:
+                        ref = ItemReference()
+                        ref.drive_id = parent_data.get("driveId")
+                        ref.id = parent_data.get("id")
+                        body.parent_reference = ref
+                    if request_body.get("name"):
+                        body.name = request_body["name"]
 
-            # Create proper typed request configuration
-            config = RequestConfiguration()
-            config.query_parameters = query_params
+            response = await self.client.drives.by_drive_id(drive_id)\
+                .items.by_drive_item_id(driveItem_id)\
+                .copy.post(body=body)
 
-            if headers:
-                config.headers = headers
-
-            # Add consistency level for search operations in OneDrive
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
-
-            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).copy.post(body=request_body, request_configuration=config)
             if response is None:
                 return OneDriveResponse(success=True, message="Item copied successfully")
             return self._handle_onedrive_response(response)
         except Exception as e:
-            return OneDriveResponse(
-                success=False,
-                error=f"OneDrive API call failed: {str(e)}",
-            )
+            print(f"Error: {e}")
+            return OneDriveResponse(success=False, error=f"OneDrive API call failed: {str(e)}")
 
     async def drives_drive_items_drive_item_extract_sensitivity_labels(
         self,
@@ -11448,13 +11395,12 @@ class OneDriveDataSource:
             config.query_parameters = query_params
 
             if headers:
-                config.headers = headers
+                for k, v in headers.items():
+                    config.headers.add(k, v)
 
             # Add consistency level for search operations in OneDrive
             if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers.add('ConsistencyLevel', 'eventual')
 
             response = await self.client.me.drives.get(request_configuration=config)
             return self._handle_onedrive_response(response)
@@ -18808,83 +18754,67 @@ class OneDriveDataSource:
                 error=f"OneDrive API call failed: {str(e)}",
             )
 
-    async def drives_drive_shared_with_me(
+    async def me_insights_shared(
         self,
-        drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
         select: Optional[List[str]] = None,
         expand: Optional[List[str]] = None,
         filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
-        **kwargs
     ) -> OneDriveResponse:
-        """Invoke function sharedWithMe.
-        OneDrive operation: GET /drives/{drive-id}/sharedWithMe()
-        Operation type: sharing
-        Args:
-            drive_id (str, required): OneDrive drive id identifier
-            dollar_select (List[str], optional): Select properties to be returned
-            dollar_orderby (List[str], optional): Order items by property values
-            dollar_expand (List[str], optional): Expand related entities
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., children, permissions)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for files and folders by name/content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OneDriveResponse: OneDrive response wrapper with success/data/error
         """
-        # Build query parameters including OData for OneDrive
+        Fetch files shared with the current user via Office Graph Insights.
+        Operation: GET /me/insights/shared
+        """
         try:
-            # Use typed query parameters
-            query_params = DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters()
+            from msgraph.generated.users.item.insights.shared.shared_request_builder import SharedRequestBuilder
+            from kiota_abstractions.base_request_configuration import RequestConfiguration
 
-            # Set query parameters using typed object properties
+            query_params = SharedRequestBuilder.SharedRequestBuilderGetQueryParameters()
+
             if select:
                 query_params.select = select if isinstance(select, list) else [select]
             if expand:
                 query_params.expand = expand if isinstance(expand, list) else [expand]
             if filter:
                 query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
-            if search:
-                query_params.search = search
             if top is not None:
                 query_params.top = top
             if skip is not None:
                 query_params.skip = skip
 
-            # Create proper typed request configuration
-            config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
-            config.query_parameters = query_params
+            config = RequestConfiguration(query_parameters=query_params)
 
             if headers:
                 config.headers = headers
 
-            # Add consistency level for search operations in OneDrive
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
-
-            response = await self.client.drives.by_drive_id(drive_id).shared_with_me().get(request_configuration=config)
+            response = await self.client.me.insights.shared.get(request_configuration=config)
             return self._handle_onedrive_response(response)
+
         except Exception as e:
             return OneDriveResponse(
                 success=False,
-                error=f"OneDrive API call failed: {str(e)}",
+                error=f"OneDrive Insights API call failed: {str(e)}",
             )
+    
+    async def me_insights_shared_resource(self, insight_id: str) -> OneDriveResponse:
+        try:
+            # Use the ID directly to get the resource
+            response = await self.client.me.insights.shared \
+                .by_shared_insight_id(insight_id) \
+                .resource.get()
+            return self._handle_onedrive_response(response)
+        except Exception as e:
+            # Check if it's a 403 to differentiate between "API error" and "No Permission"
+            error_str = str(e)
+            if "accessDenied" in error_str or "403" in error_str:
+                return OneDriveResponse(
+                    success=False,
+                    error="ACCESS_DENIED",
+                    message="You do not have permission to access the underlying file for this insight."
+                )
+            return OneDriveResponse(success=False, error=f"Resource fetch failed: {error_str}")
 
     async def groups_group_sites_site_lists_list_items_list_item_create_link(
         self,
@@ -25635,80 +25565,29 @@ class OneDriveDataSource:
     async def drives_drive_recent(
         self,
         drive_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
         select: Optional[List[str]] = None,
         expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OneDriveResponse:
-        """Invoke function recent.
-        OneDrive operation: GET /drives/{drive-id}/recent()
-        Operation type: discovery
-        Args:
-            drive_id (str, required): OneDrive drive id identifier
-            dollar_select (List[str], optional): Select properties to be returned
-            dollar_orderby (List[str], optional): Order items by property values
-            dollar_expand (List[str], optional): Expand related entities
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., children, permissions)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for files and folders by name/content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OneDriveResponse: OneDrive response wrapper with success/data/error
-        """
-        # Build query parameters including OData for OneDrive
         try:
-            # Use typed query parameters
-            query_params = DrivesRequestBuilder.DrivesRequestBuilderGetQueryParameters()
+            query_params = RecentRequestBuilder.RecentRequestBuilderGetQueryParameters()
 
-            # Set query parameters using typed object properties
             if select:
                 query_params.select = select if isinstance(select, list) else [select]
             if expand:
                 query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
 
-            # Create proper typed request configuration
-            config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
+            config = RecentRequestBuilder.RecentRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
                 config.headers = headers
 
-            # Add consistency level for search operations in OneDrive
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
-
-            response = await self.client.drives.by_drive_id(drive_id).recent().get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).recent.get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
-            return OneDriveResponse(
-                success=False,
-                error=f"OneDrive API call failed: {str(e)}",
-            )
+            return OneDriveResponse(success=False, error=f"OneDrive API call failed: {str(e)}")
 
     async def drives_drive_search(
         self,
@@ -25774,13 +25653,12 @@ class OneDriveDataSource:
             config.query_parameters = query_params
 
             if headers:
-                config.headers = headers
+                for k, v in headers.items():
+                    config.headers.add(k, v)
 
             # Add consistency level for search operations in OneDrive
             if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+                config.headers.add('ConsistencyLevel', 'eventual')
 
             response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id('root').search_with_q(q).get(request_configuration=config)
             return self._handle_onedrive_response(response)
@@ -26118,3 +25996,139 @@ class OneDriveDataSource:
                 error=f"OneDrive API call failed: {str(e)}",
             )
 
+    async def drives_items_upload_content(
+        self,
+        drive_id: str,
+        driveItem_id: str,
+        content: bytes = b"",
+        content_type: str = "application/octet-stream",
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OneDriveResponse:
+        try:
+            config = RequestConfiguration()
+            config.headers.add("Content-Type", content_type)
+            if headers:
+                for k, v in headers.items():
+                    config.headers.add(k, v)
+
+            response = await self.client.drives.by_drive_id(drive_id)\
+                .items.by_drive_item_id(driveItem_id)\
+                .content.put(body=content, request_configuration=config)
+
+            return self._handle_onedrive_response(response)
+        except Exception as e:
+            return OneDriveResponse(success=False, error=f"OneDrive API call failed: {str(e)}")
+
+    async def drives_items_get_content(
+        self,
+        drive_id: str,
+        driveItem_id: str,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OneDriveResponse:
+        """Download raw bytes content of a file.
+        OneDrive operation: GET /drives/{drive-id}/items/{driveItem-id}/content
+        """
+        try:
+            config = RequestConfiguration()
+            if headers:
+                for k, v in headers.items():
+                    config.headers.add(k, v)
+
+            raw: bytes = await self.client.drives.by_drive_id(drive_id)\
+                .items.by_drive_item_id(driveItem_id)\
+                .content.get(request_configuration=config)
+
+            return OneDriveResponse(success=True, data=raw)
+        except Exception as e:
+            return OneDriveResponse(
+                success=False,
+                error=f"OneDrive API call failed: {str(e)}",
+            )
+
+    async def me_followed_sites_shared_files(
+        self,
+        select: Optional[List[str]] = None,
+        expand: Optional[List[str]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OneDriveResponse:
+        """
+        Fetch files from SharePoint / Teams sites the user follows.
+        Covers Step 3–5 of Shared-with-me aggregation.
+
+        APIs used:
+        GET /me/followedSites
+        GET /sites/{site-id}/drive
+        GET /drives/{drive-id}/root/children
+        """
+
+        try:
+
+            results = []
+
+            # Step 3 — get followed SharePoint sites
+            sites_response = await self.client.me.followed_sites.get()
+
+            if not sites_response or not sites_response.value:
+                return OneDriveResponse(success=True, data={"items": []})
+
+            for site in sites_response.value:
+
+                # Step 4 — get site drive
+                drive = await self.client.sites.by_site_id(site.id).drive.get()
+
+                if not drive or not drive.id:
+                    continue
+
+                # Step 5 — get root files of the site drive
+                children = await self.client.drives.by_drive_id(drive.id)\
+                    .root.children.get()
+
+                if children and children.value:
+                    for item in children.value:
+                        results.append(item)
+
+            return OneDriveResponse(
+                success=True,
+                data={"items": results}
+            )
+
+        except Exception as e:
+            return OneDriveResponse(
+                success=False,
+                error=f"OneDrive API call failed: {str(e)}"
+            )
+
+    async def me_onenote_create_notebooks(
+        self,
+        request_body: Optional[Mapping[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OneDriveResponse:
+        """
+        Create a new OneNote notebook.
+        Operation: POST /me/onenote/notebooks
+        """
+        try:
+            body = Notebook()
+            if isinstance(request_body, dict):
+                body.display_name = request_body.get("displayName")
+
+            config = RequestConfiguration()
+            config.headers.add("Content-Type", "application/json")
+            if headers:
+                for k, v in headers.items():
+                    config.headers.add(k, v)
+
+            response = await self.client.me.onenote.notebooks.post(
+                body=body,
+                request_configuration=config
+            )
+            return self._handle_onedrive_response(response)
+        except Exception as e:
+            return OneDriveResponse(
+                success=False,
+                error=f"OneNote API call failed: {str(e)}",
+            )
