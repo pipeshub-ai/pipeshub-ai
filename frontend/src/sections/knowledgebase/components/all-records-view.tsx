@@ -832,6 +832,11 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       });
     } catch (err: any) {
       console.error('Failed to download document', err);
+      setSnackbar({
+        open: true,
+        message: err?.message || 'Failed to download document. Please try again.',
+        severity: err?.statusCode === 503 ? 'warning' : 'error',
+      });
     }
   };
 

@@ -179,12 +179,20 @@ axiosInstance.interceptors.request.use(
 // Enhanced error handling in interceptor
 axiosInstance.interceptors.response.use(
   (response) => response,
-  (error) => {
-    // Default error structure
+  async (error) => {
+    let rawData: any = error?.response?.data;
+    if (rawData instanceof Blob) {
+      try {
+        const text = await rawData.text();
+        rawData = JSON.parse(text);
+      } catch {
+        // leave rawData as-is if reading or parsing fails
+      }
+    }
+
     const processedError: ProcessedError = {
       type: ErrorType.UNKNOWN_ERROR,
-      message:
-        error?.response?.data?.error?.message || 'Something went wrong. Please try again later.',
+      message: '',
       retry: false,
     };
 
@@ -209,12 +217,15 @@ axiosInstance.interceptors.response.use(
       else if (error.response) {
         processedError.statusCode = error.response.status;
 
-        // Set message and details from response if available
-        const data: any = error.response.data;
+        const data: any = rawData;
         if (data) {
           if (typeof data === 'string') {
             processedError.message = data;
           } else {
+            // Plain string error first (e.g. { "error": "message" } from Node/backend proxy)
+            if (typeof data.error === 'string' && data.error.trim()) {
+              processedError.message = data.error;
+            }
             // Prefer explicit message if present
             if (typeof data.message === 'string' && data.message.trim()) {
               processedError.message = data.message;
@@ -243,7 +254,7 @@ axiosInstance.interceptors.response.use(
             if (data.error?.metadata?.detail) {
               processedError.message = data.error.metadata.detail;
             }
-            // error.message fallback
+            // error.message fallback (when data.error is an object)
             if (!processedError.message && data.error?.message) {
               processedError.message = data.error.message;
             }
@@ -302,16 +313,10 @@ axiosInstance.interceptors.response.use(
     else if (error instanceof Error) {
       processedError.message = error.message;
     }
-    
 
-    // Try to show error in snackbar if ErrorContext is available
-    try {
-      const errorContext = window.__errorContext;
-      if (errorContext && errorContext.showError) {
-        errorContext.showError(processedError.message);
-      }
-    } catch (e) {
-      console.error('Failed to show error in snackbar:', e);
+    // Ensure we never show an empty message
+    if (!processedError.message || !processedError.message.trim()) {
+      processedError.message = 'Something went wrong. Please try again later.';
     }
 
     return Promise.reject(processedError);
