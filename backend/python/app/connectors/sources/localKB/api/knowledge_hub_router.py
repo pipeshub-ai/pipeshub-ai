@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Set, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.api.middlewares.auth import require_scopes
+from app.config.constants.arangodb import ProgressStatus
 from app.config.constants.service import OAuthScopes
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     IncludeOption,
@@ -20,7 +21,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.containers.connector import ConnectorAppContainer
-from app.models.entities import IndexingStatus, RecordType
+from app.models.entities import RecordType
 
 knowledge_hub_router = APIRouter(
     prefix="/api/v1/knowledge-hub",
@@ -370,7 +371,7 @@ async def _handle_get_nodes(
         )
         # connector_ids and kb_ids are dynamic, no enum validation needed
         parsed_indexing_status = _validate_enum_values(
-            parsed_indexing_status, _get_enum_values(IndexingStatus), "indexing_status"
+            parsed_indexing_status, _get_enum_values(ProgressStatus), "indexing_status"
         )
         parsed_include = _validate_enum_values(
             parsed_include, _get_enum_values(IncludeOption), "include"

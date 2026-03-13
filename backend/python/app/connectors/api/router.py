@@ -467,11 +467,11 @@ async def stream_record_internal(
             return Response(content=buffer or b'', media_type=mime_type)
 
         connector_id = record.connector_id
-        connector = container.connectors_map[connector_id]
-        if not connector:
+        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not connector_instance:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector '{connector_name}' not found"
+                detail="The connector for this document no longer exists or was deleted. The document cannot be streamed.",
             )
         return await connector.stream_record(record)
 
@@ -528,20 +528,27 @@ async def download_file(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         connector_id = record.connector_id
-        # Get connector instance to check scope
+        # Get connector instance to check scope and existence
         connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-        connector_type = connector_instance.get("type", None)
-        if connector_type is None:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Connector not found")
+        connector_type = connector_instance.get("type", None) if connector_instance else None
+        if not connector_instance or connector_type is None:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
+            )
+
+        connector_display_name = (
+            connector_instance.get("name") or connector_instance.get("type") or record.connector_name.value or "Connector"
+        )
 
         # Handle KB separately - fetch from storage service
         container: ConnectorAppContainer = request.app.container
         try:
-            connector_obj: BaseConnector = container.connectors_map[connector_id]
+            connector_obj: BaseConnector = container.connectors_map.get(connector_id)
             if not connector_obj:
                 raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail=f"Connector '{connector_id}' not found"
+                    status_code=HttpStatusCode.UNHEALTHY.value,
+                    detail=f"The connector '{connector_display_name}' is currently Disabled. Enable it from Connector Settings and try again.",
                 )
 
             if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
@@ -551,6 +558,8 @@ async def download_file(
 
             return buffer
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
             raise HTTPException(
@@ -638,18 +647,29 @@ async def stream_record(
         connector_name = record.connector_name.value.lower().replace(" ", "")
         connector_id = record.connector_id
         logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
-        # Different auth handling based on account type and connector scope
+
+        # Check if the connector still exists in the graph (not deleted)
+        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not connector_instance:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
+            )
+
+        connector_display_name = (
+            connector_instance.get("name") or connector_instance.get("type") or record.connector_name.value or "Connector"
+        )
 
         container: ConnectorAppContainer = request.app.container
 
         try:
             logger.info("Stream Record called at router")
             logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
-            connector_obj: BaseConnector = container.connectors_map[connector_id]
+            connector_obj: BaseConnector = container.connectors_map.get(connector_id)
             if not connector_obj:
                 raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail=f"Connector '{connector_id}' not found"
+                    status_code=HttpStatusCode.UNHEALTHY.value,
+                    detail=f"The connector '{connector_display_name}' is currently Disabled. Enable it from Connector Settings and try again.",
                 )
 
             # Get the buffer from connector (without passing convertTo)
@@ -690,6 +710,10 @@ async def stream_record(
                         ) from e
 
             return buffer
+        except HTTPException:
+            # Re-raise HTTPExceptions from connectors unchanged so the original
+            # status code (403, 404, etc.) is preserved and reaches the client.
+            raise
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}", exc_info=True)
             raise HTTPException(

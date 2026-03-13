@@ -38,7 +38,6 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
-    IndexingStatus,
     LinkRecord,
     MailRecord,
     Person,
@@ -14456,7 +14455,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns:
             Dict: Statistics data with success status
         """
-        statuses = [s.value for s in IndexingStatus]
+        statuses = [s.value for s in ProgressStatus]
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 

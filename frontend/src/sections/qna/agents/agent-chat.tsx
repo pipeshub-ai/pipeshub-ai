@@ -617,7 +617,9 @@ const AgentChat = () => {
   const [selectedModel, setSelectedModel] = useState<Model | null>(availableModels[0]);
   // Chat mode state
   const [chatMode, setChatMode] = useState<ChatMode>('auto');
-  
+  // Counter to signal AgentChatInput to clear its text (incremented on new chat, conversation switch, etc.)
+  const [clearInputTrigger, setClearInputTrigger] = useState<number>(0);
+
   // Ref to store persistent chatMode that survives new chat clicks
   const persistentChatModeRef = useRef<ChatMode>('auto');
 
@@ -865,13 +867,20 @@ const AgentChat = () => {
       setExpandedCitations({});
       setIsNavigationBlocked(false);
       setIsLoadingConversation(false);
-      
+
+      // Reset model selection so it picks up new agent's models
+      setSelectedModel(null);
+
+      // Reset chat mode to auto for new agent
+      setChatMode('auto');
+      persistentChatModeRef.current = 'auto';
+
       // Navigate to the new agent's base URL (without conversation ID) to ensure clean state
       navigate(`/agents/${agentKey}`, { replace: true });
-      
+
       // Reset the 'new' conversation state for the new agent
       streamingManager.resetNewConversation();
-      
+
       // Force update to ensure UI reflects the cleared state
       forceUpdate();
     }
@@ -1400,6 +1409,7 @@ const AgentChat = () => {
     setCurrentConversationId(null);
     navigate(`/agents/${agentKey}`, { replace: true });
     setInputValue('');
+    setClearInputTrigger((prev) => prev + 1);
     setShouldRefreshSidebar(true);
     setSelectedChat(null);
     setIsNavigationBlocked(false);
@@ -1800,8 +1810,14 @@ const AgentChat = () => {
 
       const buffer = await arrayBufferPromise;
       setFileBuffer(buffer);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch document:', err);
+      const message = err?.message || 'Failed to load document. Please try again.';
+      setSnackbar({
+        open: true,
+        message,
+        severity: err?.statusCode === 503 ? 'warning' : 'error',
+      });
       setTimeout(() => {
         onClosePdf();
       }, 500);
@@ -2133,7 +2149,7 @@ const AgentChat = () => {
               isStatusVisible={currentConversationStatus.showStatus}
             />
             <AgentChatInput
-              key={`chat-input-${currentConversationId || 'new'}`}
+              key={`chat-input-${agentKey}`}
               onSubmit={handleSendMessage}
               isLoading={isCurrentConversationLoading}
               disabled={isCurrentConversationLoading}
@@ -2146,6 +2162,8 @@ const AgentChat = () => {
               activeConnectors={activeConnectors}
               chatMode={chatMode}
               onChatModeChange={setChatMode}
+              conversationId={currentConversationId}
+              clearInputTrigger={clearInputTrigger}
             />
           </Box>
 

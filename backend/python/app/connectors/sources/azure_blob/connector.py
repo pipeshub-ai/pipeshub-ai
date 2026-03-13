@@ -23,6 +23,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -68,7 +69,6 @@ from app.connectors.sources.azure_blob.common.apps import AzureBlobApp
 from app.models.entities import (
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -1207,7 +1207,7 @@ class AzureBlobConnector(BaseConnector):
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 
@@ -1623,7 +1623,7 @@ class AzureBlobConnector(BaseConnector):
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    updated_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 

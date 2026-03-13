@@ -2764,10 +2764,22 @@ export const getRecordBuffer =
       console.error('Error fetching record buffer:', error);
       if (!res.headersSent) {
         if (error.response) {
-          // Forward status code and error from FastAPI
-          res.status(error.response.status).json({
-            error: error.response.data || 'Error from AI backend',
-          });
+          let errorMessage = 'Error from AI backend';
+          try {
+            const chunks: Buffer[] = [];
+            await new Promise<void>((resolve, reject) => {
+              error.response.data.on('data', (chunk: Buffer) => chunks.push(chunk));
+              error.response.data.on('end', resolve);
+              error.response.data.on('error', reject);
+            });
+            const body = Buffer.concat(chunks).toString('utf8');
+            const parsed = JSON.parse(body);
+            errorMessage = parsed.detail || parsed.error || body;
+          } catch (parseError) {
+            logger.error('Failed to parse error response from AI backend', { error: parseError });
+          }
+          res.status(error.response.status).json({ error: errorMessage });
+          return;
         } else {
           // Don't throw here to avoid uncaughtException shutdown during streams
           res.status(500).json({ error: 'Failed to retrieve record data' });

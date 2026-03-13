@@ -37,7 +37,6 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
-    IndexingStatus,
     LinkRecord,
     MailRecord,
     ProjectRecord,
@@ -9086,14 +9085,14 @@ class BaseArangoService:
             current_status = record.get("indexingStatus")
 
             # Only reset if not already QUEUED or EMPTY
-            if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+            if current_status in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
 
             # Update indexing status to QUEUED
             doc = {
                 "_key": record_id,
-                "indexingStatus": IndexingStatus.QUEUED.value,
+                "indexingStatus": ProgressStatus.QUEUED.value,
             }
 
             await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)

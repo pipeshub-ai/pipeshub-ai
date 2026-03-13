@@ -25,21 +25,6 @@ class Permissions(str, Enum):
     COMMENTER = "COMMENTER"
 
 
-
-class IndexingStatus(str, Enum):
-    """Status of indexing operations."""
-    NOT_STARTED = "NOT_STARTED"
-    IN_PROGRESS = "IN_PROGRESS"
-    PAUSED = "PAUSED"
-    COMPLETED = "COMPLETED"
-    FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
-    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
-    FAILED = "FAILED"
-    ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
-    QUEUED = "QUEUED"
-    CONNECTOR_DISABLED = "CONNECTOR_DISABLED"
-
-
 def Connector(
     name: str,
     app_group: str,

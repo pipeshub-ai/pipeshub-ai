@@ -16,7 +16,67 @@ import { Alert, Snackbar } from '@mui/material';
 import { CONFIG } from 'src/config-global';
 import { STORAGE_KEY, STORAGE_KEY_REFRESH } from 'src/auth/context/jwt/constant';
 
-// ----------------------------------------------------------------------
+function decodeToken(token: string | null) {
+  try {
+    if (!token) return null;
+
+    const parts = token.split('.');
+    if (parts.length < 2) {
+      return null;
+    }
+
+    const base64Url = parts[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const decoded = JSON.parse(atob(base64));
+
+    return decoded;
+  } catch (error) {
+    return null;
+  }
+}
+
+let isRefreshing = false;
+let refreshPromise: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+  if (isRefreshing && refreshPromise) {
+    return refreshPromise;
+  }
+
+  const refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH);
+  if (!refreshToken) {
+    return null;
+  }
+
+  isRefreshing = true;
+  refreshPromise = axios
+    .post(
+      `${CONFIG.authUrl}/api/v1/userAccount/refresh/token`,
+      {},
+      {
+        headers: {
+          Authorization: `Bearer ${refreshToken}`,
+        },
+      }
+    )
+    .then((res) => {
+      const newAccessToken = res.data.accessToken;
+      if (newAccessToken) {
+        localStorage.setItem(STORAGE_KEY, newAccessToken);
+      }
+      return newAccessToken as string;
+    })
+    .catch((error) => {
+      console.error('Failed to refresh access token:', error);
+      return null;
+    })
+    .finally(() => {
+      isRefreshing = false;
+      refreshPromise = null;
+    });
+
+  return refreshPromise;
+}
 
 // Error types for better classification
 export enum ErrorType {
@@ -60,15 +120,79 @@ interface ErrorProviderProps {
 // Create axios instance with config
 const axiosInstance = axios.create({ baseURL: CONFIG.backendUrl });
 
+// Request interceptor to check token validity and refresh if needed
+axiosInstance.interceptors.request.use(
+  async (config) => {
+    // Skip token check for refresh token endpoint to avoid infinite loop
+    if (config.url?.includes('/refresh/token')) {
+      return config;
+    }
+
+    // Extract token from Authorization header if present
+    const authHeader = config.headers?.Authorization as string | undefined;
+    const accessToken = authHeader?.startsWith('Bearer ') 
+      ? authHeader.substring(7) 
+      : localStorage.getItem(STORAGE_KEY);
+    
+    if (accessToken) {
+      try {
+        // Decode token to check expiration
+        const decoded = decodeToken(accessToken);
+        
+        if (decoded && 'exp' in decoded) {
+          const currentTime = Date.now() / 1000;
+          
+          // Only refresh if token is expired
+          if (decoded.exp < currentTime) {
+            // Token is expired, try to refresh
+            const newAccessToken = await refreshAccessToken();
+            
+            if (newAccessToken) {
+              // Token was successfully refreshed
+              config.headers.Authorization = `Bearer ${newAccessToken}`;
+            } else {
+              // Token refresh failed, clear storage and redirect to login
+              localStorage.removeItem(STORAGE_KEY);
+              localStorage.removeItem(STORAGE_KEY_REFRESH);
+              window.location.href = '/auth/sign-in';
+              throw new Error('Session expired, please login again');
+            }
+          } else if (!authHeader) {
+            // Token is still valid, add it to the header
+            config.headers.Authorization = `Bearer ${accessToken}`;
+          }
+        }
+      } catch (error) {
+        // If token decode fails, clear storage and redirect
+        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(STORAGE_KEY_REFRESH);
+        window.location.href = '/auth/sign-in';
+        throw new Error('Invalid token');
+      }
+    }
+    
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
 // Enhanced error handling in interceptor
 axiosInstance.interceptors.response.use(
   (response) => response,
-  (error) => {
-    // Default error structure
+  async (error) => {
+    let rawData: any = error?.response?.data;
+    if (rawData instanceof Blob) {
+      try {
+        const text = await rawData.text();
+        rawData = JSON.parse(text);
+      } catch {
+        // leave rawData as-is if reading or parsing fails
+      }
+    }
+
     const processedError: ProcessedError = {
       type: ErrorType.UNKNOWN_ERROR,
-      message:
-        error?.response?.data?.error?.message || 'Something went wrong. Please try again later.',
+      message: '',
       retry: false,
     };
 
@@ -93,12 +217,15 @@ axiosInstance.interceptors.response.use(
       else if (error.response) {
         processedError.statusCode = error.response.status;
 
-        // Set message and details from response if available
-        const data: any = error.response.data;
+        const data: any = rawData;
         if (data) {
           if (typeof data === 'string') {
             processedError.message = data;
           } else {
+            // Plain string error first (e.g. { "error": "message" } from Node/backend proxy)
+            if (typeof data.error === 'string' && data.error.trim()) {
+              processedError.message = data.error;
+            }
             // Prefer explicit message if present
             if (typeof data.message === 'string' && data.message.trim()) {
               processedError.message = data.message;
@@ -127,7 +254,7 @@ axiosInstance.interceptors.response.use(
             if (data.error?.metadata?.detail) {
               processedError.message = data.error.metadata.detail;
             }
-            // error.message fallback
+            // error.message fallback (when data.error is an object)
             if (!processedError.message && data.error?.message) {
               processedError.message = data.error.message;
             }
@@ -186,16 +313,10 @@ axiosInstance.interceptors.response.use(
     else if (error instanceof Error) {
       processedError.message = error.message;
     }
-    
 
-    // Try to show error in snackbar if ErrorContext is available
-    try {
-      const errorContext = window.__errorContext;
-      if (errorContext && errorContext.showError) {
-        errorContext.showError(processedError.message);
-      }
-    } catch (e) {
-      console.error('Failed to show error in snackbar:', e);
+    // Ensure we never show an empty message
+    if (!processedError.message || !processedError.message.trim()) {
+      processedError.message = 'Something went wrong. Please try again later.';
     }
 
     return Promise.reject(processedError);
