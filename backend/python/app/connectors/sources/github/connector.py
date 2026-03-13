@@ -578,7 +578,6 @@ class GithubConnector(BaseConnector):
                 issue_type = "sub_issue"
             label_names: List[str] = [label.name for label in issue.labels]
             assignee_list = []
-            assignee_list = []
             if issue.assignees:
                 assignee_list.extend(assignee.login for assignee in issue.assignees)
 
