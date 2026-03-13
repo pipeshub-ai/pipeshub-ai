@@ -50,16 +50,6 @@ class KnowledgeHubService:
         self.logger = logger
         self.graph_provider = graph_provider
 
-    def _has_search_filters(self, q: Optional[str], node_types: Optional[List[str]],
-                             record_types: Optional[List[str]], origins: Optional[List[str]],
-                             connector_ids: Optional[List[str]], kb_ids: Optional[List[str]],
-                             indexing_status: Optional[List[str]],
-                             created_at: Optional[Dict], updated_at: Optional[Dict],
-                             size: Optional[Dict]) -> bool:
-        """Check if any search/filter parameters are provided."""
-        return any([q, node_types, record_types, origins, connector_ids, kb_ids,
-                    indexing_status, created_at, updated_at, size])
-
     def _has_flattening_filters(self, q: Optional[str], node_types: Optional[List[str]],
                                  record_types: Optional[List[str]], origins: Optional[List[str]],
                                  connector_ids: Optional[List[str]], kb_ids: Optional[List[str]],
@@ -104,12 +94,6 @@ class KnowledgeHubService:
         Get nodes for the Knowledge Hub unified browse API
         """
         try:
-            # Determine if this is a search request
-            is_search = self._has_search_filters(
-                q, node_types, record_types, origins, connector_ids, kb_ids,
-                indexing_status, created_at, updated_at, size
-            )
-
             # Validate pagination
             page = max(1, page)
             limit = min(max(1, limit), 200)  # Max 200
@@ -129,75 +113,47 @@ class KnowledgeHubService:
                     ),
                     filters=FiltersInfo(applied=AppliedFilters()),
                 )
+            # Use unified search for all cases: same permission-first traversal, scope by parent when set.
+            # flattened=False (and no filters): return only direct children (browse mode).
+            # flattened=True or filters applied: return all descendants under parent (flattened).
+
+            # When filters are applied we want flattened results; otherwise use request's flattened flag
             user_key = user.get('_key')
 
-            # Get nodes based on request type
-            # If parent_id is provided with flattening filters or flattened=true, do recursive search
-            # If parent_id is provided without filters, browse direct children only
-            # If no parent_id with search filters, do global search
-
-            # Check if flattening filters are applied (these should return flattened results)
             has_flattening_filters = self._has_flattening_filters(
                 q, node_types, record_types, origins, connector_ids, kb_ids,
                 indexing_status, created_at, updated_at, size
             )
+            flattened_result = has_flattening_filters or flattened
 
-            # Initialize available_filters
             available_filters = None
-
-            if (parent_id and (has_flattening_filters or flattened)) or (is_search and parent_id is None):
-                # Search mode: Global search (no parent) or scoped search (within parent and descendants)
-                items, total_count, available_filters = await self._search_nodes(
-                    user_key=user_key,
-                    org_id=org_id,
-                    skip=skip,
-                    limit=limit,
-                    sort_by=sort_by,
-                    sort_order=sort_order,
-                    q=q,
-                    node_types=node_types,
-                    record_types=record_types,
-                    origins=origins,
-                    connector_ids=connector_ids,
-                    kb_ids=kb_ids,
-                    indexing_status=indexing_status,
-                    created_at=created_at,
-                    updated_at=updated_at,
-                    size=size,
-                    only_containers=only_containers,
-                    parent_id=parent_id,  # None for global search, set for scoped search
-                    parent_type=parent_type,
-                    include_filters=(parent_id is None) or (include and 'availableFilters' in include),
-                )
-            else:
-                # Browse mode - get direct children of parent only
-                items, total_count, _ = await self._get_children_nodes(
-                    user_key=user_key,
-                    org_id=org_id,
-                    parent_id=parent_id,
-                    parent_type=parent_type,
-                    skip=skip,
-                    limit=limit,
-                    sort_by=sort_by,
-                    sort_order=sort_order,
-                    q=None,  # No search query for browse mode
-                    node_types=node_types,
-                    record_types=record_types,
-                    origins=origins,
-                    connector_ids=connector_ids,
-                    kb_ids=kb_ids,
-                    indexing_status=indexing_status,
-                    created_at=created_at,
-                    updated_at=updated_at,
-                    size=size,
-                    only_containers=only_containers,
-                )
-                # In browse mode, fetch available filters only if requested
-                if include and 'availableFilters' in include:
-                    available_filters = await self._get_available_filters(user_key, org_id)
-
-            # Permissions are now included directly from queries (userRole field)
-            # No need for separate batch permission fetch
+            # Single path: unified search handles both root (parent_id=None) and scoped (parent_id set).
+            # Root returns only KBs and Apps; scoped returns children/descendants with same filters.
+            items, total_count, available_filters = await self._search_nodes(
+                user_key=user_key,
+                org_id=org_id,
+                skip=skip,
+                limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                q=q,
+                node_types=node_types,
+                record_types=record_types,
+                origins=origins,
+                connector_ids=connector_ids,
+                kb_ids=kb_ids,
+                indexing_status=indexing_status,
+                created_at=created_at,
+                updated_at=updated_at,
+                size=size,
+                only_containers=only_containers,
+                parent_id=parent_id,
+                parent_type=parent_type,
+                flattened=flattened_result,
+                include_filters=include and 'availableFilters' in include,
+            )
+            if include and 'availableFilters' in include and available_filters is None:
+                available_filters = await self._get_available_filters(user_key, org_id)
 
             # Calculate pagination
             total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
@@ -292,7 +248,7 @@ class KnowledgeHubService:
 
                     response.counts = CountsInfo(
                         items=count_items,
-                        total=total_count,  # Use actual total count, not paginated length
+                        total=total_count,
                     )
 
                 if 'permissions' in include:
@@ -328,169 +284,6 @@ class KnowledgeHubService:
                 ),
                 filters=FiltersInfo(applied=AppliedFilters()),
             )
-
-    async def _get_children_nodes(
-        self,
-        user_key: str,
-        org_id: str,
-        parent_id: Optional[str],
-        parent_type: Optional[str],  # Now passed directly from router
-        skip: int,
-        limit: int,
-        sort_by: str,
-        sort_order: str,
-        q: Optional[str],  # Search query to filter within children
-        node_types: Optional[List[str]],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connector_ids: Optional[List[str]],
-        kb_ids: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        created_at: Optional[Dict[str, Optional[int]]],
-        updated_at: Optional[Dict[str, Optional[int]]],
-        size: Optional[Dict[str, Optional[int]]],
-        only_containers: bool,
-    ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
-        """Get children nodes for a given parent using unified provider method."""
-        if parent_id is None:
-            # Root level: return KBs and Apps
-            return await self._get_root_level_nodes(
-                user_key, org_id, skip, limit, sort_by, sort_order,
-                node_types, origins, connector_ids, kb_ids, only_containers
-            )
-
-        # Validate that the node exists and type matches
-        await self._validate_node_existence_and_type(parent_id, parent_type, user_key, org_id)
-
-        # Type is now known from the URL path - no DB lookup needed!
-
-        # Build sort clause
-        sort_field_map = {
-            "name": "name",
-            "createdAt": "createdAt",
-            "updatedAt": "updatedAt",
-            "size": "sizeInBytes",
-            "type": "nodeType",
-        }
-        sort_field = sort_field_map.get(sort_by, "name")
-        sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
-
-        # Use provider method for simple tree navigation (no filters)
-        # For filtered results, the API should use the search endpoint instead
-        result = await self.graph_provider.get_knowledge_hub_children(
-            parent_id=parent_id,
-            parent_type=parent_type,
-            org_id=org_id,
-            user_key=user_key,
-            skip=skip,
-            limit=limit,
-            sort_field=sort_field,
-            sort_dir=sort_dir,
-            only_containers=only_containers,
-        )
-
-        nodes_data = result.get('nodes', [])
-        total_count = result.get('total', 0)
-
-        # Convert to NodeItem objects
-        items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
-
-        # Available filters are always None for browse mode (children)
-        # They're only returned in search mode or can be fetched separately
-        return items, total_count, None
-
-    async def _get_root_level_nodes(
-        self,
-        user_key: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        sort_by: str,
-        sort_order: str,
-        node_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connector_ids: Optional[List[str]],
-        kb_ids: Optional[List[str]],
-        only_containers: bool,
-    ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
-        """Get root level nodes (KBs and Apps)"""
-        try:
-            # Determine if we should include KBs and Apps
-            include_kbs = True
-            include_apps = True
-
-            # Handle connector_ids and kb_ids filters:
-            # - If only connector_ids provided: exclude KBs (show filtered apps only)
-            # - If only kb_ids provided: exclude apps (show filtered KBs only)
-            # - If both provided: include both, filter each appropriately
-            if connector_ids and not kb_ids:
-                include_kbs = False  # Only show apps matching connector_ids
-            elif kb_ids and not connector_ids:
-                include_apps = False  # Only show KBs matching kb_ids
-
-            if node_types:
-                if 'kb' not in node_types and 'recordGroup' not in node_types:
-                    # Note: recordGroup can be in KB too.
-                    # But root nodes are just KB and APP.
-                    include_kbs = False
-                if 'app' not in node_types:
-                    include_apps = False
-
-            if origins:
-                if 'KB' not in origins:
-                    include_kbs = False
-                if 'CONNECTOR' not in origins:
-                    include_apps = False
-
-            # Get user's accessible apps
-            user_apps_ids = await self.graph_provider.get_user_app_ids(user_key)
-
-            # Filter apps by connector_ids if provided
-            if connector_ids:
-                user_apps_ids = [app_id for app_id in user_apps_ids if app_id in connector_ids]
-
-            # Build sort clause
-            sort_field_map = {
-                "name": "name",
-                "createdAt": "createdAt",
-                "updatedAt": "updatedAt",
-            }
-            sort_field = sort_field_map.get(sort_by, "name")
-            sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
-
-            # Use the provider method
-            result = await self.graph_provider.get_knowledge_hub_root_nodes(
-                user_key=user_key,
-                org_id=org_id,
-                user_app_ids=user_apps_ids,
-                skip=skip,
-                limit=limit,
-                sort_field=sort_field,
-                sort_dir=sort_dir,
-                include_kbs=include_kbs,
-                include_apps=include_apps,
-                only_containers=only_containers,
-            )
-
-            nodes_data = result.get('nodes', [])
-            total_count = result.get('total', 0)
-
-            # Filter KBs by kb_ids if provided (keeps apps as-is, filters KBs to match kb_ids)
-            if kb_ids:
-                nodes_data = [
-                    n for n in nodes_data
-                    if n.get('nodeType') != 'kb' or n.get('id') in kb_ids
-                ]
-                total_count = len(nodes_data)
-
-            # Convert to NodeItem objects
-            items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
-
-            return items, total_count, None
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get root level nodes: {str(e)}")
-            raise
 
     async def _get_available_filters(self, user_key: str, org_id: str) -> AvailableFilters:
         """Get filter options (dynamic KBs/Apps + static others)"""
@@ -597,6 +390,7 @@ class KnowledgeHubService:
         only_containers: bool,
         parent_id: Optional[str] = None,
         parent_type: Optional[str] = None,
+        flattened: bool = False,
         include_filters: bool = False,
     ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
         """
@@ -605,6 +399,7 @@ class KnowledgeHubService:
         This unified method handles both:
         - Global search: When parent_id is None, searches across all nodes
         - Scoped search: When parent_id is provided, searches within parent and descendants
+        - When parent_id set: flattened=False returns only direct children; flattened=True returns all descendants
 
         Args:
             user_key: User's key for permission filtering
@@ -626,6 +421,7 @@ class KnowledgeHubService:
             only_containers: If True, only return nodes that can have children
             parent_id: Optional parent to scope search within (None for global)
             parent_type: Type of parent (required if parent_id provided)
+            flattened: If True and parent_id set, return all descendants; if False, only direct children
             include_filters: Whether to fetch available filters
 
         Returns:
@@ -664,6 +460,7 @@ class KnowledgeHubService:
                 only_containers=only_containers,
                 parent_id=parent_id,  # Can be None for global search
                 parent_type=parent_type,
+                flattened=flattened,
             )
 
             nodes_data = result.get('nodes', [])
@@ -828,10 +625,10 @@ class KnowledgeHubService:
             if user_role:
                 permission = self._role_to_permission(user_role)
 
-        # Build NodeItem
+        # Build NodeItem (fallback empty string if name is null from graph)
         item = NodeItem(
             id=doc_id,
-            name=doc.get('name', ''),
+            name=(doc.get('name') or ''),
             nodeType=node_type,
             parentId=doc.get('parentId'),
             origin=origin,
