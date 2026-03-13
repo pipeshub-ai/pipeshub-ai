@@ -131,10 +131,7 @@ def get_folder_path_segments_from_blob_name(blob_name: str) -> List[str]:
         return []
     parts = normalized.split("/")
     # Last part is the file (or folder blob); segments are the folder path prefix
-    segments = []
-    for i in range(1, len(parts)):
-        segments.append("/".join(parts[:i]))
-    return segments
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
 
 
 def get_mimetype_for_azure_blob(blob_name: str, is_folder: bool = False) -> str:
@@ -931,9 +928,15 @@ class AzureBlobConnector(BaseConnector):
     ) -> None:
         """Remove old PARENT_CHILD relationships for a record."""
         try:
-            deleted_count = await tx_store.delete_parent_child_edge_to_record(record_id)
+            deleted_raw = await tx_store.delete_parent_child_edge_to_record(record_id)
+            try:
+                deleted_count = int(deleted_raw)
+            except (TypeError, ValueError):
+                deleted_count = 1 if deleted_raw else 0
             if deleted_count > 0:
-                self.logger.info(f"Removed {deleted_count} old parent relationship(s) for record {record_id}")
+                self.logger.info(
+                    f"Removed {deleted_count} old parent relationship(s) for record {record_id}"
+                )
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
@@ -1101,14 +1104,22 @@ class AzureBlobConnector(BaseConnector):
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
-                if current_revision_id and stored_revision and current_revision_id == stored_revision:
+                if (
+                    current_revision_id
+                    and stored_revision
+                    and current_revision_id == stored_revision
+                ):
                     self.logger.debug(
                         f"Skipping {normalized_name}: externalRecordId and externalRevisionId unchanged"
                     )
                     return None, []
 
                 # Content changed or missing revision - sync properly from Azure Blob
-                if current_revision_id and stored_revision and current_revision_id != stored_revision:
+                if (
+                    current_revision_id
+                    and stored_revision
+                    and current_revision_id != stored_revision
+                ):
                     self.logger.info(
                         f"Content change detected: {normalized_name} - externalRevisionId changed from {stored_revision} to {current_revision_id}"
                     )
@@ -1122,18 +1133,29 @@ class AzureBlobConnector(BaseConnector):
                             f"Stored revision missing for {normalized_name}, processing record"
                         )
             elif current_revision_id:
-                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection)
+                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection).
+                # IMPORTANT: Only treat this as a move when the previous record lived in the SAME
+                # container. This avoids misclassifying independent blobs with identical content
+                # (same MD5/etag) in different containers as moves, which would incorrectly
+                # "teleport" records between containers.
                 async with self.data_store_provider.transaction() as tx_store:
-                    existing_record = await tx_store.get_record_by_external_revision_id(
-                        connector_id=self.connector_id, external_revision_id=current_revision_id
+                    candidate = await tx_store.get_record_by_external_revision_id(
+                        connector_id=self.connector_id,
+                        external_revision_id=current_revision_id,
                     )
 
-                if existing_record:
+                if candidate and getattr(
+                    candidate, "external_record_group_id", None
+                ) == container_name:
+                    existing_record = candidate
                     is_move = True
                     self.logger.info(
                         f"Move/rename detected: {normalized_name} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
                 else:
+                    # Either no matching revision, or it belongs to a different container.
+                    # In both cases, treat this as an independent new item.
+                    existing_record = None
                     self.logger.debug(f"New document: {normalized_name}")
             else:
                 self.logger.debug(f"New document: {normalized_name} (no revision available)")
@@ -1149,18 +1171,16 @@ class AzureBlobConnector(BaseConnector):
 
             web_url = self._generate_web_url(container_name, normalized_name)
 
-            record_id = existing_record.id if existing_record else str(uuid.uuid4())
+            # For move/rename: create new record at new path and delete old node (align with Azure Files)
+            if is_move and existing_record:
+                record_id = str(uuid.uuid4())
+                old_record_id = existing_record.id
+            else:
+                record_id = existing_record.id if existing_record else str(uuid.uuid4())
+                old_record_id = None
             record_name = normalized_name.rstrip("/").split("/")[-1] or normalized_name.rstrip("/")
 
-            # For moves/renames, remove old parent relationship
-            if is_move and existing_record:
-                async with self.data_store_provider.transaction() as tx_store:
-                    await self._remove_old_parent_relationship(record_id, tx_store)
-
-            if not existing_record:
-                version = 0
-            else:
-                version = existing_record.version + 1
+            version = 0 if not existing_record else existing_record.version + 1
 
             # Get content MD5 hash for md5_hash field
             content_md5 = blob.get("content_md5")
@@ -1205,9 +1225,21 @@ class AzureBlobConnector(BaseConnector):
                 etag=raw_etag,
             )
 
-            if hasattr(self, 'indexing_filters') and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            if (
+                hasattr(self, 'indexing_filters')
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+            ):
+                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            # For moves/renames, delete old record node so graph has no duplicate/orphan
+            if is_move and old_record_id:
+                try:
+                    await self.data_entities_processor.on_record_deleted(old_record_id)
+                except Exception as e:
+                    self.logger.warning(
+                        f"Error deleting old record {old_record_id} during move/rename: {e}"
+                    )
 
             permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 
@@ -1621,9 +1653,12 @@ class AzureBlobConnector(BaseConnector):
                 etag=current_etag,
             )
 
-            if hasattr(self, 'indexing_filters') and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            if (
+                hasattr(self, 'indexing_filters')
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+            ):
+                updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 
@@ -1720,12 +1755,10 @@ class AzureBlobConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        connector = cls(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,
             config_service,
             connector_id,
         )
-
-        return connector
