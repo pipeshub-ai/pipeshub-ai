@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import io
 import json
 import mimetypes
@@ -241,8 +242,7 @@ async def get_graph_provider(request: Request) -> IGraphDBProvider:
 
 async def get_kafka_service(request: Request) -> KafkaService:
     container: ConnectorAppContainer = request.app.container
-    kafka_service = container.kafka_service()
-    return kafka_service
+    return container.kafka_service()
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
@@ -483,8 +483,7 @@ async def stream_record_internal(
                 status_code=HttpStatusCode.UNHEALTHY.value,
                 detail=f"The connector '{connector_display_name}' is currently inactive or disconnected. Please reconnect it from Settings > Connectors and try again.",
             )
-        buffer = await connector.stream_record(record)
-        return buffer
+        return await connector.stream_record(record)
 
     except JWTError as e:
         logger.error("JWT validation error: %s", str(e))
@@ -1498,10 +1497,9 @@ def _encode_state_with_instance(state: str, connector_id: str) -> str:
         "state": state,
         "connector_id": connector_id
     }
-    encoded = base64.urlsafe_b64encode(
+    return base64.urlsafe_b64encode(
         json.dumps(state_data).encode()
     ).decode()
-    return encoded
 
 
 def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
@@ -1518,8 +1516,7 @@ def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
     """
     try:
         decoded = base64.urlsafe_b64decode(encoded_state.encode()).decode()
-        state_data = json.loads(decoded)
-        return state_data
+        return json.loads(decoded)
     except Exception as e:
         raise ValueError(f"Invalid state format: {e}") from e
 
@@ -4987,10 +4984,8 @@ async def _ensure_connector_initialized(
             error_msg = "Failed to initialize connector. Please check your credentials and configuration."
             logger.error(f"❌ {error_msg}")
             # Cleanup on failure
-            try:
+            with contextlib.suppress(Exception):
                 await connector.cleanup()
-            except Exception:
-                pass
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=error_msg
@@ -5004,10 +4999,8 @@ async def _ensure_connector_initialized(
                 error_msg = "Connection test failed. Please verify your credentials have proper access."
                 logger.error(f"❌ {error_msg}")
                 # Cleanup on failure
-                try:
+                with contextlib.suppress(Exception):
                     await connector.cleanup()
-                except Exception:
-                    pass
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail=error_msg
@@ -5018,10 +5011,8 @@ async def _ensure_connector_initialized(
             error_msg = f"Connection test failed: {str(test_error)}"
             logger.error(f"❌ {error_msg}", exc_info=True)
             # Cleanup on failure
-            try:
+            with contextlib.suppress(Exception):
                 await connector.cleanup()
-            except Exception:
-                pass
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=error_msg
@@ -5958,8 +5949,7 @@ def _get_oauth_field_names_from_registry(connector_type: str) -> List[str]:
             return ["clientId", "clientSecret"]
 
         # Extract field names from auth_fields
-        field_names = [field.name for field in oauth_config.auth_fields]
-        return field_names
+        return [field.name for field in oauth_config.auth_fields]
     except Exception:
         # Fallback to common OAuth fields if registry lookup fails
         return ["clientId", "clientSecret"]
