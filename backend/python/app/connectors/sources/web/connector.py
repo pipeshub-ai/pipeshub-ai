@@ -98,7 +98,7 @@ FILE_MIME_TYPES = {
     '.xlsx': MimeTypes.XLSX,
     '.ppt': MimeTypes.PPT,
     '.pptx': MimeTypes.PPTX,
-    '.txt': MimeTypes.TEXT,
+    '.txt': MimeTypes.PLAIN_TEXT,
     '.csv': MimeTypes.CSV,
     '.tsv': MimeTypes.TSV,
     '.json': MimeTypes.JSON,
@@ -129,7 +129,7 @@ DOCUMENT_MIME_TYPES = {
     MimeTypes.PPTX.value,
     MimeTypes.MARKDOWN.value,
     MimeTypes.MDX.value,
-    MimeTypes.TEXT.value,
+    MimeTypes.PLAIN_TEXT.value,
     MimeTypes.TSV.value,
     MimeTypes.JSON.value,
     MimeTypes.XML.value,
@@ -1306,7 +1306,7 @@ class WebConnector(BaseConnector):
             elif 'xml' in content_type_lower:
                 return MimeTypes.XML, 'xml'
             elif 'plain' in content_type_lower:
-                return MimeTypes.TEXT, 'txt'
+                return MimeTypes.PLAIN_TEXT, 'txt'
             elif 'csv' in content_type_lower:
                 return MimeTypes.CSV, 'csv'
             elif 'tab-separated' in content_type_lower or 'tsv' in content_type_lower:

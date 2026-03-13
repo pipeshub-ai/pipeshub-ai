@@ -214,7 +214,7 @@ record_schema = {
                     "EMPTY",
                     "ENABLE_MULTIMODAL_MODELS",
                     "QUEUED",
-                    "CONNECTOR_DISABLED"
+                    "CONNECTOR_DISABLED"   # deprecated, use AUTO_INDEX_OFF instead
                 ],
             },
             "extractionStatus": {
