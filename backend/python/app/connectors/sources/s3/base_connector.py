@@ -22,6 +22,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -50,7 +51,6 @@ from app.connectors.core.registry.filters import (
 from app.models.entities import (
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -1006,7 +1006,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_s3_permissions(bucket_name, key)
 
@@ -1433,7 +1433,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    updated_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_s3_permissions(bucket_name, normalized_key)
 

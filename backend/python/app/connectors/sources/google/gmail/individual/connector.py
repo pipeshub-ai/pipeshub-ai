@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
     RecordRelations,
     RecordTypes,
 )
@@ -67,7 +68,6 @@ from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
     FileRecord,
-    IndexingStatus,
     MailRecord,
     Record,
     RecordGroup,
@@ -618,7 +618,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                 if message_update:
                     if message_update.record and not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
-                        message_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        message_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     yield message_update
 
@@ -885,7 +885,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Check indexing filter for attachments
             if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
-                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             # Inherit parent mail permissions
             attachment_permissions = parent_mail_permissions
@@ -941,7 +941,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                 if attach_update:
                     if attach_update.record and not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
-                        attach_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        attach_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     yield attach_update
 
@@ -2149,7 +2149,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         permissions = mail_update.new_permissions or []
 
                         if not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
-                            mail_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                            mail_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                         # Create SIBLING relation if there was a previous message
                         if previous_message_record_id:

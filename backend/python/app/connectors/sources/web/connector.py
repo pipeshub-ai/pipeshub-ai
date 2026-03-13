@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from PIL import Image
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -47,7 +47,6 @@ from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
 from app.models.entities import (
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -694,7 +693,7 @@ class WebConnector(BaseConnector):
             if file_record:
                 is_disabled = self._check_index_filter(file_record)
                 if is_disabled:
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 if record_update.is_updated:
                     await self._handle_record_updates(record_update)
@@ -796,7 +795,7 @@ class WebConnector(BaseConnector):
                     preview_renderable=False,
                     parent_external_record_id=parent_url,
                     parent_record_type=RecordType.FILE if parent_url else None,
-                    indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                    indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                 )
 
                 permissions = [
@@ -912,7 +911,7 @@ class WebConnector(BaseConnector):
                     is_disabled = self._check_index_filter(file_record)
 
                     if is_disabled:
-                        file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     # Extract links if we haven't reached max depth
                     if current_depth < self.max_depth and file_record.mime_type == MimeTypes.HTML.value:
@@ -1225,7 +1224,7 @@ class WebConnector(BaseConnector):
         mime_type = record.mime_type
         is_disabled = False
 
-        if record.indexing_status == IndexingStatus.COMPLETED.value:
+        if record.indexing_status == ProgressStatus.COMPLETED.value:
             return False
 
         if mime_type == MimeTypes.HTML.value:
@@ -1582,7 +1581,7 @@ class WebConnector(BaseConnector):
                     preview_renderable=False,
                     parent_external_record_id=segment_parent_url,
                     parent_record_type=RecordType.FILE if segment_parent_url else None,
-                    indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                    indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                 )
 
                 permissions = [

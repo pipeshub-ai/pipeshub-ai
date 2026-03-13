@@ -24,7 +24,8 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     SortField,
     SortOrder,
 )
-from app.models.entities import IndexingStatus, RecordType
+from app.config.constants.arangodb import ProgressStatus
+from app.models.entities import RecordType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 FOLDER_MIME_TYPES = [
@@ -555,7 +556,7 @@ class KnowledgeHubService:
                         id=status.value,
                         label=self._format_enum_label(status.value, {"AUTO_INDEX_OFF": "Manual Indexing"})
                     )
-                    for status in IndexingStatus
+                    for status in ProgressStatus
                 ],
                 sortBy=[
                     FilterOption(

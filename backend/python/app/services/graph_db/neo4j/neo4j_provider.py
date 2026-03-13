@@ -43,7 +43,6 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
-    IndexingStatus,
     LinkRecord,
     MailRecord,
     ProjectRecord,
@@ -6443,7 +6442,7 @@ class Neo4jProvider(IGraphDBProvider):
         Returns:
             Dict: Statistics data with success status
         """
-        statuses = [s.value for s in IndexingStatus]
+        statuses = [s.value for s in ProgressStatus]
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
@@ -9315,14 +9314,14 @@ class Neo4jProvider(IGraphDBProvider):
             current_status = record.get("indexingStatus")
 
             # Only reset if not already QUEUED or EMPTY
-            if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+            if current_status in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
 
             # Update indexing status to QUEUED
             doc = {
                 "id": record_id,
-                "indexingStatus": IndexingStatus.QUEUED.value,
+                "indexingStatus": ProgressStatus.QUEUED.value,
             }
 
             await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)

@@ -75,18 +75,6 @@ class LinkPublicStatus(str, Enum):
     FALSE = "false"
     UNKNOWN = "unknown"
 
-class IndexingStatus(str, Enum):
-    """Status of record indexing for search and AI features"""
-    NOT_STARTED = "NOT_STARTED"
-    IN_PROGRESS = "IN_PROGRESS"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"  # Record saved but not indexed (filtered out)
-    FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
-    EMPTY = "EMPTY"
-    ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
-    QUEUED = "QUEUED"
-
 
 class Priority(str, Enum):
     """Standard priority values for all connectors"""
@@ -183,8 +171,8 @@ class Record(BaseModel):
     size_in_bytes: Optional[int] = Field(default=None, description="Size of the record content in bytes")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
-    indexing_status: str = Field(default=IndexingStatus.QUEUED.value, description="Indexing status for the record")
-    extraction_status: str = Field(default=IndexingStatus.NOT_STARTED.value, description="Extraction status for the record")
+    indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
+    extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
     # Epoch Timestamps
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
@@ -327,8 +315,8 @@ class Record(BaseModel):
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp"),
             virtual_record_id=arango_base_record.get("virtualRecordId"),
-            indexing_status=arango_base_record.get("indexingStatus", IndexingStatus.QUEUED.value),
-            extraction_status=arango_base_record.get("extractionStatus", IndexingStatus.NOT_STARTED.value),
+            indexing_status=arango_base_record.get("indexingStatus", ProgressStatus.QUEUED.value),
+            extraction_status=arango_base_record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
