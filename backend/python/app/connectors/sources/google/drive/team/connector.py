@@ -20,6 +20,7 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -60,7 +61,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -1588,7 +1588,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     shared_disabled = record_update.record.is_shared and not record_update.record.is_shared_with_me and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
                     shared_with_me_disabled = record_update.record.is_shared_with_me and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED_WITH_ME, default=True)
                     if files_disabled or shared_disabled or shared_with_me_disabled:
-                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)

@@ -16,6 +16,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -53,7 +54,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     MailRecord,
     Record,
     RecordGroup,
@@ -1128,7 +1128,7 @@ class OutlookConnector(BaseConnector):
 
             # Apply indexing filter
             if not self.indexing_filters.is_enabled(IndexingFilterKey.GROUP_CONVERSATIONS, default=True):
-                mail_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                mail_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             # Create group-level permission
             permission = Permission(
@@ -1219,7 +1219,7 @@ class OutlookConnector(BaseConnector):
                     )
 
                     if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
-                        attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     attachment_records.append((attachment_record, post_permissions))
 
@@ -2028,7 +2028,7 @@ class OutlookConnector(BaseConnector):
 
             # Apply indexing filter for mail records
             if not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
-                email_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                email_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._extract_email_permissions(message, email_record.id, user_email)
 
@@ -2182,7 +2182,7 @@ class OutlookConnector(BaseConnector):
 
         # Apply indexing filter for attachment records
         if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
-            attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
         return attachment_record
 
@@ -2969,7 +2969,7 @@ class OutlookConnector(BaseConnector):
 
             # Apply indexing filter
             if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
-                attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             return (attachment_record, [permission])
 

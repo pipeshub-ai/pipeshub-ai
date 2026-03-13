@@ -25,21 +25,6 @@ class Permissions(str, Enum):
     COMMENTER = "COMMENTER"
 
 
-
-class IndexingStatus(str, Enum):
-    """Status of indexing operations."""
-    NOT_STARTED = "NOT_STARTED"
-    IN_PROGRESS = "IN_PROGRESS"
-    PAUSED = "PAUSED"
-    COMPLETED = "COMPLETED"
-    FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
-    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
-    FAILED = "FAILED"
-    ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
-    QUEUED = "QUEUED"
-    CONNECTOR_DISABLED = "CONNECTOR_DISABLED"
-
-
 def Connector(
     name: str,
     app_group: str,
@@ -343,11 +328,10 @@ class ConnectorRegistry:
         """
         try:
             graph_provider = await self._get_graph_provider()
-            document = await graph_provider.get_document(
+            return await graph_provider.get_document(
                 connector_id,
                 self._collection_name
             )
-            return document
 
         except Exception as e:
             self.logger.debug(
@@ -719,10 +703,8 @@ class ConnectorRegistry:
             haystacks.append(str(info.get('appGroup', '')).lower())
             haystacks.append(str(info.get('appDescription', '')).lower())
             # Search in supported auth types
-            for auth_type in info.get('supportedAuthTypes', []) or []:
-                haystacks.append(str(auth_type).lower())
-            for cat in info.get('appCategories', []) or []:
-                haystacks.append(str(cat).lower())
+            haystacks.extend(str(auth_type).lower() for auth_type in (info.get('supportedAuthTypes', []) or []))
+            haystacks.extend(str(cat).lower() for cat in (info.get('appCategories', []) or []))
             combined = ' '.join(haystacks)
             return all(tok in combined for tok in tokens)
 
@@ -1199,17 +1181,17 @@ class ConnectorRegistry:
         Returns:
             Dictionary containing lists of available filter values
         """
-        app_groups = list(set(
+        app_groups = list({
             metadata['appGroup']
             for metadata in self._connectors.values()
-        ))
+        })
 
         # Collect all supported auth types from all connectors
         all_auth_types = set()
         for metadata in self._connectors.values():
             supported_types = metadata.get('supportedAuthTypes', [])
             all_auth_types.update(supported_types)
-        auth_types = sorted(list(all_auth_types))
+        auth_types = sorted(all_auth_types)
 
         connector_names = list(self._connectors.keys())
 
