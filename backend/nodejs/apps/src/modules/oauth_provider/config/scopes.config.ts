@@ -206,26 +206,6 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     requiresUserConsent: true,
   },
 
-  // Storage/Documents
-  'document:read': {
-    name: 'document:read',
-    description: 'Read documents',
-    category: 'Storage',
-    requiresUserConsent: true,
-  },
-  'document:write': {
-    name: 'document:write',
-    description: 'Upload and update documents',
-    category: 'Storage',
-    requiresUserConsent: true,
-  },
-  'document:delete': {
-    name: 'document:delete',
-    description: 'Delete documents',
-    category: 'Storage',
-    requiresUserConsent: true,
-  },
-
   // Crawling Manager
   'crawl:read': {
     name: 'crawl:read',
@@ -294,7 +274,6 @@ export const ScopeCategories = [
   'Agents',
   'Connectors',
   'Configuration',
-  'Storage',
   'Crawling',
 ]
 
