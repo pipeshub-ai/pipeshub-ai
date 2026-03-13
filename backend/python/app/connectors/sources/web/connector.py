@@ -674,7 +674,7 @@ class WebConnector(BaseConnector):
                 await self._crawl_single_page(self.url)
 
             self.logger.info(
-                f"✅ Web crawl completed: {len(self.visited_urls)} pages processed"
+                f"✅ Web crawl completed: {len(self.visited_urls)} pages crawled"
             )
 
         except Exception as e:
@@ -901,13 +901,14 @@ class WebConnector(BaseConnector):
                     current_url, current_depth, referer=referer
                 )
 
+                self.visited_urls.add(normalized_url)
+
                 if record_update is None:
                     continue
 
                 file_record = record_update.record
 
                 if file_record:
-                    self.visited_urls.add(normalized_url)
 
                     is_disabled = self._check_index_filter(file_record)
 
@@ -999,6 +1000,10 @@ class WebConnector(BaseConnector):
                             "⚠️ Skipping %s: URL does not match any of the required substrings "
                             + "%s", final_url, self.url_should_contain
                         )
+                        final_url_normalized = self._normalize_url(final_url)
+                        url_normalized = self._normalize_url(self.url)
+                        if final_url_normalized != url_normalized:
+                            self.visited_urls.add(final_url_normalized)
                         return None
 
 
