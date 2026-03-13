@@ -19,19 +19,6 @@ class FetchFullRecordArgs(BaseModel):
         description="Why the full records are needed (explain the gap in the provided blocks)."
     )
 
-class FetchBlockGroupArgs(BaseModel):
-    """
-    Required tool args for fetching a block group.
-    """
-    block_group_number: str = Field(
-        ...,
-        description="Number of the block group to fetch."
-    )
-    reason: str = Field(
-        default="Fetching block group for additional context",
-        description="Why the block group is needed (explain the gap in the provided blocks)."
-    )
-
 async def _fetch_multiple_records_impl(
     record_ids: List[str],
     virtual_record_id_to_result: Dict[str, Any]
@@ -60,6 +47,7 @@ async def _fetch_multiple_records_impl(
     if found_records:
         result = {
             "ok": True,
+            "result_type": "records",
             "records": found_records,
             "record_count": len(found_records)
         }
@@ -100,10 +88,4 @@ def create_fetch_full_record_tool(virtual_record_id_to_result: Dict[str, Any]) -
     return fetch_full_record_tool
 
 
-def create_record_for_fetch_block_group(record: Dict[str, Any],block_group: Dict[str, Any],blocks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    block_container = {
-        "blocks": blocks,
-        "block_groups": [block_group]
-    }
-    record["block_containers"] = block_container
-    return record
+

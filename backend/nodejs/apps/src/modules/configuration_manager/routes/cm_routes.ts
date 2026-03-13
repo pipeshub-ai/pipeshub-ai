@@ -51,6 +51,12 @@ import {
   getAvailablePlatformFeatureFlags,
   getCustomSystemPrompt,
   setCustomSystemPrompt,
+  getWebSearchProviders,
+  updateWebSearchSettings,
+  addWebSearchProvider,
+  updateWebSearchProvider,
+  deleteWebSearchProvider,
+  updateDefaultWebSearchProvider,
   getSlackBotConfigs,
   createSlackBotConfig,
   updateSlackBotConfig,
@@ -80,6 +86,11 @@ import {
   atlassianCredentialsSchema,
   onedriveCredentialsSchema,
   sharepointCredentialsSchema,
+  addWebSearchProviderSchema,
+  updateWebSearchSettingsSchema,
+  updateWebSearchProviderSchema,
+  deleteWebSearchProviderSchema,
+  updateDefaultWebSearchProviderSchema,
   createSlackBotConfigSchema,
   updateSlackBotConfigSchema,
   deleteSlackBotConfigSchema,
@@ -898,6 +909,93 @@ export function createConfigurationManagerRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateDefaultModelSchema),
     updateDefaultAIModel(keyValueStoreService, entityEventService, appConfig),
+  );
+
+  // Web Search provider routes
+  /**
+   * @route GET /api/v1/configurationManager/web-search
+   * @desc Get all web search providers
+   * @access Private
+   */
+  router.get(
+    '/web-search',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    getWebSearchProviders(keyValueStoreService),
+  );
+
+  /**
+   * @route PUT /api/v1/configurationManager/web-search/settings
+   * @desc Update web search settings
+   * @access Private
+   */
+  router.put(
+    '/web-search/settings',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateWebSearchSettingsSchema),
+    updateWebSearchSettings(keyValueStoreService),
+  );
+
+  /**
+   * @route POST /api/v1/configurationManager/web-search/providers
+   * @desc Add a new web search provider
+   * @access Private
+   */
+  router.post(
+    '/web-search/providers',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(addWebSearchProviderSchema),
+    addWebSearchProvider(keyValueStoreService, appConfig),
+  );
+
+  /**
+   * @route PUT /api/v1/configurationManager/web-search/providers/:providerKey
+   * @desc Update a web search provider
+   * @access Private
+   * @param {string} providerKey - Unique key for the provider configuration
+   */
+  router.put(
+    '/web-search/providers/:providerKey',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateWebSearchProviderSchema),
+    updateWebSearchProvider(keyValueStoreService, appConfig),
+  );
+
+  /**
+   * @route DELETE /api/v1/configurationManager/web-search/providers/:providerKey
+   * @desc Delete a web search provider
+   * @access Private
+   * @param {string} providerKey - Unique key for the provider configuration
+   */
+  router.delete(
+    '/web-search/providers/:providerKey',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(deleteWebSearchProviderSchema),
+    deleteWebSearchProvider(keyValueStoreService),
+  );
+
+  /**
+   * @route PUT /api/v1/configurationManager/web-search/default/:providerKey
+   * @desc Update the default web search provider
+   * @access Private
+   * @param {string} providerKey - Unique key for the provider configuration
+   */
+  router.put(
+    '/web-search/default/:providerKey',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateDefaultWebSearchProviderSchema),
+    updateDefaultWebSearchProvider(keyValueStoreService, appConfig),
   );
 
   router.get(

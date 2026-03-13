@@ -35,7 +35,7 @@ from app.utils.chat_helpers import (
     get_flattened_results,
     get_record,
 )
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from app.utils.image_utils import get_extension_from_mimetype
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: Dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
@@ -352,7 +352,7 @@ class RetrievalService:
                 virtual_id = result["metadata"].get("virtualRecordId")
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id].get("_key")
-                    record = record_id_to_record_map.get(record_id, None)
+                    record = record_id_to_record_map.get(record_id)
 
                     result["metadata"]["recordId"] = record_id
                     if record:

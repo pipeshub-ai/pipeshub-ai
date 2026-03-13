@@ -877,7 +877,7 @@ class Confluence:
             # This is the most reliable way to get the correct base URL
             response_links = data.get("_links", {})
             base_url = response_links.get("base", "")
-            
+
             # Fallback to site_url if base_url is not available
             if not base_url:
                 base_url = await self._get_site_url()
@@ -903,7 +903,7 @@ class Confluence:
                 webui = ""
                 content_links = content.get("_links") or {}
                 webui_path = content_links.get("webui", "")
-                
+
                 if webui_path and base_url:
                     # Combine base URL with the relative webui path
                     # webui_path already starts with "/spaces/", so just combine

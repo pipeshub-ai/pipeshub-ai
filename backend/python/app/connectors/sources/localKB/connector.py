@@ -239,17 +239,14 @@ class KnowledgeBaseConnector(BaseConnector):
     async def run_sync(self) -> None:
         """No-op for KB connector - KBs are local storage"""
         self.logger.debug("KB connector sync skipped (local storage)")
-        return
 
     async def run_incremental_sync(self) -> None:
         """No-op for KB connector - KBs are local storage"""
         self.logger.debug("KB connector incremental sync skipped (local storage)")
-        return
 
     def handle_webhook_notification(self, notification: Dict) -> None:
         """KB connector doesn't support webhooks"""
         self.logger.debug("KB connector webhook notification ignored (not supported)")
-        return
 
     async def cleanup(self) -> None:
         """Cleanup resources"""

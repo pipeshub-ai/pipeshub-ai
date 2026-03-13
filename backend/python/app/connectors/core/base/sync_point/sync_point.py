@@ -54,7 +54,7 @@ class SyncPoint(ISyncPoint):
         encrypted_data = data.copy()
 
         for field in fields_to_encrypt:
-            if field in encrypted_data and encrypted_data[field]:
+            if encrypted_data.get(field):
                 try:
                     encrypted_value = self.encryption_service.encrypt(encrypted_data[field])
                     encrypted_data[field] = encrypted_value

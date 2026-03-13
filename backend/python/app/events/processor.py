@@ -37,8 +37,8 @@ from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import is_multimodal_llm
+from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.llm import get_embedding_model_config, get_llm
-from app.utils.mimetype_to_extension import get_extension_from_mimetype
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -58,7 +58,7 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
     except ValueError:
         origin = OriginTypes.UPLOAD
 
-    mime_type = record_dict.get("mimeType", None)
+    mime_type = record_dict.get("mimeType")
 
     record = Record(
         id=record_dict.get("_key") or record_dict.get("id"),
@@ -920,7 +920,7 @@ class Processor:
                 caption = block.image_metadata.captions
                 if caption:
                     caption = caption[0] if isinstance(caption, list) else caption
-                    if caption in caption_map and caption_map[caption]:
+                    if caption_map.get(caption):
                         if block.data is None:
                             block.data = {}
                         if isinstance(block.data, dict):
@@ -1534,7 +1534,6 @@ class Processor:
             raise DocumentProcessingError(
                 "Failed to update indexing status", doc_id=record_id
             )
-        return
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id
@@ -1695,7 +1694,7 @@ class Processor:
                     caption = block.image_metadata.captions
                     if caption:
                         caption = caption[0]
-                        if caption in caption_map and caption_map[caption]:
+                        if caption_map.get(caption):
                             if block.data is None:
                                 block.data = {}
                             if isinstance(block.data, dict):
