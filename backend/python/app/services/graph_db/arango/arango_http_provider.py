@@ -2513,6 +2513,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         path: List[str],
+        record_group_name:str,
         transaction: Optional[str] = None
     ) -> Optional[Dict]:
         """
@@ -2564,50 +2565,67 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # based on external id 
             # assumed full path from record group next level is as list in param
             query = """
-            LET path = @path
-            LET connectorId = @connectorId
-            LET nodes = (
-                FOR i IN 0..LENGTH(path)-1
-                    LET parent =
-                        i == 0
-                            ? null
-                            : FIRST(
-                                FOR r IN records
-                                    FILTER r.recordName == path[i-1]
-                                    FILTER r.mimeType == "text/directory"
-                                    FILTER r.connectorId == connectorId
-                                    LIMIT 1
-                                    RETURN r.externalRecordId
-                            )
-                    FILTER i == 0 OR parent != null
-                    
+            LET appId = @appId
+            LET rawParts = @rawParts
+            LET recordGroupName = @recordGroupName
+
+            LET parts = (
+                LENGTH(rawParts) == 1 AND rawParts[0] == ""
+                    ? []
+                    : rawParts
+            )
+
+            LET rg = FIRST(
+                FOR e IN belongsTo
+                    FILTER e._to == appId
+                    FOR g IN recordGroups
+                        FILTER g._id == e._from
+                        FILTER g.groupName == recordGroupName
+                        RETURN g
+            )
+
+            LET rec0 = FIRST(
+                FOR e IN belongsTo
+                    FILTER e._to == rg._id
                     FOR r IN records
-                        FILTER r.recordName == path[i]
-                        FILTER r.externalParentId == parent
-                        FILTER r.mimeType == "text/directory"
-                        FILTER r.connectorId == connectorId
-                        LIMIT 1
+                        FILTER r._id == e._from
+                        FILTER LENGTH(parts) > 0
+                        FILTER r.recordName == parts[0]
+                        FILTER r.externalParentId == null
                         RETURN r
             )
 
-            LET isValidPath = LENGTH(nodes) == LENGTH(path)
+            LET depth = LENGTH(parts) <= 1 ? 0 :length(parts) - 1
 
-            RETURN {
-            isValidPath: isValidPath,
-            lastRecord: isValidPath ? LAST(nodes) : null
-            }
+            LET result_1  = depth == 0 ? rec0 : 
+                (FOR v, e, p IN 1..100 OUTBOUND rec0
+                    recordRelations
+                    //OPTIONS { uniqueVertices: "path" }
+
+                    FILTER e.relationshipType == "PARENT_CHILD"
+
+                    FILTER v.recordName == parts[LENGTH(p.vertices)-1]
+
+                    RETURN v
+                    )
+
+            LET result = depth == 0 ? rec0 : LAST(result_1)
+                        
+            return result
             """
+            self.logger.info(f"connector_id : { connector_id}")
             result = await self.http_client.execute_aql(
                 query,
                 bind_vars={
-                    "path":path,
-                    "connectorId":connector_id
+                    "rawParts":path,
+                    "appId":connector_id,
+                    "recordGroupName":record_group_name,
                 },
                 txn_id=transaction
             )
             if result:
                 self.logger.info(f"result  :{result}")
-                return result[0]["lastRecord"]
+                return result[0]
         except Exception as e:
             self.logger.error(
                 f"❌ Failed to retrieve record for path {path}: {str(e)}"

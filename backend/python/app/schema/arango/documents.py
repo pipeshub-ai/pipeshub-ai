@@ -500,6 +500,7 @@ pull_request_record_schema = {
                 "items": {"type": "string", "minLength": 0},
                 "default": [],
             },
+            "lastCommitSha": {"type": ["string", "null"]},
         },
     },
 }

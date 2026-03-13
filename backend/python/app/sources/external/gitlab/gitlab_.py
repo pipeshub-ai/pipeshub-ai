@@ -240,24 +240,63 @@ class GitLabDataSource:
         get_all: bool = True,
     ) -> GitLabResponse:
         """List merge requests with filters.  [mrs]"""
-        p = self._project(project_id)
-        params = self._params(
-            state=state,
-            labels=labels,
-            search=search,
-            author_id=author_id,
-            assignee_id=assignee_id,
-        )
-        mrs = p.mergerequests.list(get_all=get_all, **params)
-        return GitLabResponse(success=True, data=mrs)
+        try:
+            # p = self._project(project_id)
+            p = self._sdk.projects.get(project_id)
+            params = self._params(
+                state=state,
+                labels=labels,
+                search=search,
+                author_id=author_id,
+                assignee_id=assignee_id,
+            )
+            mrs = p.mergerequests.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=mrs)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def get_merge_request(
         self, project_id: Union[int, str], mr_iid: int
     ) -> GitLabResponse:
         """Get a single merge request by IID.  [mrs]"""
-        p = self._project(project_id)
-        mr = p.mergerequests.get(mr_iid)
-        return GitLabResponse(success=True, data=mr)
+        try:
+            p = self._project(project_id)
+            mr = p.mergerequests.get(id=mr_iid)
+            return GitLabResponse(success=True, data=mr)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+
+    def list_merge_request_notes(
+        self, project_id: Union[int, str], mr_iid: int, get_all: bool = True
+    ) -> GitLabResponse:
+        """List merge request notes.  [mrs]"""
+        try:
+            p = self._sdk.projects.get(project_id,lazy=True)
+            mr = p.mergerequests.get(id=mr_iid,lazy=True)
+            notes = mr.notes.list(get_all=get_all)
+            return GitLabResponse(success=True, data=notes)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+    
+    def list_merge_request_diffs(self,project_id:Union[int,str],mr_iid:int)->GitLabResponse:
+        """List merge request diffs. """
+        try:
+            p = self._sdk.projects.get(project_id,lazy=True)
+            mr = p.mergerequests.get(id=mr_iid,lazy=True)
+            diffs = mr.diffs.list(get_all=True)
+            return GitLabResponse(success=True, data=diffs)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+    
+    def list_merge_requests_commits(self,project_id:Union[int,str],mr_iid:int)->GitLabResponse:
+        """List commits of a merge request. """
+        try:
+            p = self._sdk.projects.get(project_id,lazy=True)
+            mr = p.mergerequests.get(id=mr_iid,lazy=True)
+            commits = mr.commits(get_all=True)
+            return GitLabResponse(success=True, data=commits)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def create_merge_request(
         self,
@@ -848,7 +887,8 @@ class GitLabDataSource:
     def get_file_content(self,project_id:Union[int,str],file_path:str,ref:str = "HEAD") -> GitLabResponse:
         """Get file content."""
         try:
-            p = self._project(project_id)
+            # p = self._project(project_id)
+            p = self._sdk.projects.get(project_id)
             payload = self._params(
                 ref=ref,
                 file_path=file_path,
@@ -859,7 +899,7 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e))
         
     #-----------------------GraphQL API--------------------------------#
-    async def get_repo_tree_g(self,token:str,project_id:Union[int,str],ref:Optional[str] = None,after_cursor:str = "")->GitLabResponse:
+    async def get_repo_tree_g(self,token:str,project_id:Union[int,str],ref:Optional[str] = "HEAD",after_cursor:str = "")->GitLabResponse:
         """Get repository tree using GraphQL API."""
             # take cursors as input and return the tree with pagination
         try:
@@ -913,7 +953,7 @@ class GitLabDataSource:
                 "variables" : variables,
             }
             try:
-                async with httpx.AsyncClient(follow_redirects=True) as client:
+                async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
                     resp = await client.post(url, headers=headers,json=payload)
                     resp.raise_for_status()
                     tree_data = resp.content
@@ -949,7 +989,7 @@ class GitLabDataSource:
                 rootRef
                 paginatedTree(recursive: true, ref: $branch) {
                     nodes {
-                    blobs(first: 5, after:$afterCursor) {
+                    blobs(first: 10, after:$afterCursor) {
                         nodes {
                         name
                         path
@@ -979,7 +1019,7 @@ class GitLabDataSource:
                 "variables" : variables,
             }
             try:
-                async with httpx.AsyncClient(follow_redirects=True) as client:
+                async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
                     resp = await client.post(url, headers=headers,json=payload)
                     resp.raise_for_status()
                     tree_data = resp.content

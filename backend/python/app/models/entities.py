@@ -1635,6 +1635,7 @@ class PullRequestRecord(Record):
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            "lastCommitSha": self.last_commit_sha,
         }
     def to_arango_record(self) -> dict:
         return {
@@ -1650,6 +1651,7 @@ class PullRequestRecord(Record):
             "mergeable": self.mergeable,
             "mergedBy": self.merged_by,
             "labels":self.labels ,
+            "lastCommitSha": self.last_commit_sha,
         }
 
 class RecordGroup(BaseModel):
