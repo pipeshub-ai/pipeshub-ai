@@ -2775,8 +2775,8 @@ export const getRecordBuffer =
             const body = Buffer.concat(chunks).toString('utf8');
             const parsed = JSON.parse(body);
             errorMessage = parsed.detail || parsed.error || body;
-          } catch {
-            // keep the default message if draining or parsing fails
+          } catch (parseError) {
+            logger.error('Failed to parse error response from AI backend', { error: parseError });
           }
           res.status(error.response.status).json({ error: errorMessage });
           return;
