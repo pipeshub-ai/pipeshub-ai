@@ -700,7 +700,8 @@ class WebConnector(BaseConnector):
                 await self._crawl_recursive(self.url, depth=0)
             else:
                 await self._crawl_single_page(self.url)
-            
+
+            #fetch urls with retryable errors
             await self.process_retry_urls()
 
             self.logger.info(
@@ -1056,6 +1057,11 @@ class WebConnector(BaseConnector):
                             last_attempted=get_epoch_timestamp_in_ms(),
                         ))
                 return None
+            else:
+                normalized_url = self._normalize_url(final_url)
+                if normalized_url in self.retry_urls:
+                    self.retry_urls.discard(normalized_url)
+                    self.logger.info(f"✅ Retry URL {normalized_url} processed successfully")
 
             is_new = False
             is_updated = False
@@ -1384,6 +1390,8 @@ class WebConnector(BaseConnector):
 
         snapshot = list(self.retry_urls)
 
+        self.logger.info("Processing %d retryable URLs", len(snapshot))
+
         for retry_url in snapshot:
             record_update: Optional[RecordUpdate] = None
             last_exception: Optional[Exception] = None
@@ -1427,6 +1435,11 @@ class WebConnector(BaseConnector):
                 # At least one attempt succeeded.
                 self.retry_urls.discard(retry_url)
                 self.logger.info("✅ Retry succeeded for %s", retry_url.url)
+
+                is_disabled = self._check_index_filter(record_update.record)
+                if is_disabled:
+                    record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                 yield record_update
             else:
                 # All attempts exhausted — surface a FAILED placeholder.
