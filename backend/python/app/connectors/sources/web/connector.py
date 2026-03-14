@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import hashlib
+import random
 import re
 import uuid
 from dataclasses import dataclass
@@ -79,7 +80,30 @@ class RecordUpdate:
     external_record_id: Optional[str] = None
     html_bytes: Optional[bytes] = None
 
-RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+@dataclass
+class RetryUrl:
+    url: str
+    status: str
+    status_code: int
+    retries: int
+    last_attempted: int
+
+    def __hash__(self) -> int:
+        return hash(self.url)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, RetryUrl):
+            return self.url == other.url
+        if isinstance(other, str):          # allows: "https://..." in self.retry_urls
+            return self.url == other
+        return NotImplemented
+
+RETRYABLE_STATUS_CODES = {
+    403, 408, 429,
+    500, 502, 503, 504,
+    999,
+    520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530,
+}
 
 RETRYABLE_EXCEPTIONS = (
     aiohttp.ClientConnectorError,
@@ -316,6 +340,8 @@ class WebConnector(BaseConnector):
 
         # Crawling state
         self.visited_urls: Set[str] = set()
+        self.retry_urls: Set[RetryUrl] = set()
+        self.processed_urls: int = 0
         self.base_domain: Optional[str] = None
         self.session: Optional[aiohttp.ClientSession] = None
 
@@ -664,6 +690,8 @@ class WebConnector(BaseConnector):
 
             # Reset state for new sync
             self.visited_urls.clear()
+            self.retry_urls.clear()
+            self.processed_urls = 0
 
             # Start crawling
             assert self.url is not None, "URL not set — init() must be called first"
@@ -672,8 +700,11 @@ class WebConnector(BaseConnector):
             else:
                 await self._crawl_single_page(self.url)
 
+            #fetch urls with retryable errors
+            await self.process_retry_urls()
+
             self.logger.info(
-                f"✅ Web crawl completed: {len(self.visited_urls)} pages processed"
+                f"✅ Web crawl completed: {len(self.visited_urls)} pages crawled, {self.processed_urls} pages processed, {len(self.retry_urls)} pages failed"
             )
 
         except Exception as e:
@@ -853,12 +884,14 @@ class WebConnector(BaseConnector):
                     if len(batch_records) >= self.batch_size:
                         await self.data_entities_processor.on_new_records(batch_records)
                         self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
+                        self.processed_urls += len(batch_records)
                         batch_records.clear()
 
             # Process remaining batch
             if batch_records:
                 await self.data_entities_processor.on_new_records(batch_records)
                 self.logger.info(f"✅ Final batch processed: {len(batch_records)} records")
+                self.processed_urls += len(batch_records)
 
         except Exception as e:
             self.logger.error(f"❌ Error in recursive crawl: {e}", exc_info=True)
@@ -900,13 +933,19 @@ class WebConnector(BaseConnector):
                     current_url, current_depth, referer=referer
                 )
 
+                # Only mark as visited if NOT queued for retry
+                if normalized_url not in self.retry_urls:
+                    self.visited_urls.add(normalized_url)
+
                 if record_update is None:
                     continue
 
                 file_record = record_update.record
 
                 if file_record:
-                    self.visited_urls.add(normalized_url)
+
+                    if normalized_url in self.retry_urls:
+                        self.retry_urls.discard(normalized_url)
 
                     is_disabled = self._check_index_filter(file_record)
 
@@ -924,6 +963,7 @@ class WebConnector(BaseConnector):
                             normalized_link = self._normalize_url(link)
                             if (
                                 normalized_link not in self.visited_urls
+                                # and normalized_link not in self.retry_urls
                                 and len(self.visited_urls) < self.max_pages
                             ):
                                 queue.append((link, current_depth + 1, current_url))
@@ -959,19 +999,7 @@ class WebConnector(BaseConnector):
             if result is None:
                 return None
 
-            if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
-                # Already logged inside fetch_url_with_fallback
-                return None
-
-            is_new = False
-            is_updated = False
-            is_deleted = False
-            metadata_changed = False
-            content_changed = False
-
-            content_type = result.headers.get("Content-Type", "").lower()
             final_url = result.final_url
-            content_bytes = result.content_bytes
 
             # Guard against HTTP redirects that silently cross a domain boundary.
             if self.base_domain and not self.follow_external:
@@ -998,8 +1026,50 @@ class WebConnector(BaseConnector):
                             "⚠️ Skipping %s: URL does not match any of the required substrings "
                             + "%s", final_url, self.url_should_contain
                         )
+                        final_url_normalized = self._normalize_url(final_url)
+                        current_url_normalized = self._normalize_url(url)
+                        if final_url_normalized != current_url_normalized:
+                            self.visited_urls.add(final_url_normalized)
                         return None
 
+            if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                if result.status_code in RETRYABLE_STATUS_CODES:
+                    normalized = self._normalize_url(url)
+                    existing = normalized in self.retry_urls
+                    if existing:
+                        # URL already queued — update status code and bump retry count
+                        existing_entry = next(r for r in self.retry_urls if r.url == normalized)
+                        self.retry_urls.discard(normalized)
+                        self.retry_urls.add(RetryUrl(
+                            url=normalized,
+                            status="pending_retry",
+                            status_code=result.status_code,
+                            retries=existing_entry.retries + 1,
+                            last_attempted=get_epoch_timestamp_in_ms(),
+                        ))
+                    else:
+                        self.retry_urls.add(RetryUrl(
+                            url=normalized,
+                            status="pending_retry",
+                            status_code=result.status_code,
+                            retries=0,
+                            last_attempted=get_epoch_timestamp_in_ms(),
+                        ))
+                return None
+            else:
+                normalized_url = self._normalize_url(final_url)
+                if normalized_url in self.retry_urls:
+                    self.retry_urls.discard(normalized_url)
+                    self.logger.info(f"✅ Retry URL {normalized_url} processed successfully")
+
+            is_new = False
+            is_updated = False
+            is_deleted = False
+            metadata_changed = False
+            content_changed = False
+
+            content_type = result.headers.get("Content-Type", "").lower()
+            content_bytes = result.content_bytes
 
             if len(content_bytes) > self.max_size_mb * 1024 * 1024:
                 size_mb = len(content_bytes) / (1024 * 1024)
@@ -1218,6 +1288,219 @@ class WebConnector(BaseConnector):
             self.logger.warning(f"⚠️ Failed to extract links from {base_url}: {e}")
 
         return links
+
+    async def _create_failed_placeholder_record(
+        self, url: str, status_code: int
+    ) -> Tuple[FileRecord, List[Permission]]:
+        """Build a FAILED-status placeholder FileRecord for a URL that could not be fetched.
+
+        Looks up any existing record by external_id so the same database document is
+        reused (prevents duplicates on repeated sync runs).
+
+        Args:
+            url:         The URL that permanently failed to fetch.
+            status_code: The HTTP status code of the last failed attempt.
+
+        Returns:
+            A (FileRecord, permissions) tuple ready to pass to on_new_records.
+        """
+        normalized_url = self._normalize_url(url)
+        external_id = self._ensure_trailing_slash(normalized_url)
+        timestamp = get_epoch_timestamp_in_ms()
+        title = self._extract_title_from_url(url)
+        parent_url = self._get_parent_url(url)
+
+        existing_record = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id, external_record_id=external_id
+        )
+
+        if existing_record:
+            return None, None
+
+        record_id = existing_record.id if existing_record else str(uuid.uuid4())
+
+        self.logger.warning(
+            "⚠️ Creating FAILED placeholder for %s — "
+            "failed due to error, status code: %d",
+            url,
+            status_code,
+        )
+
+        placeholder_record = FileRecord(
+            id=record_id,
+            org_id=self.data_entities_processor.org_id,
+            record_name=title,
+            record_type=RecordType.FILE,
+            record_group_type=RecordGroupType.WEB,
+            external_record_id=external_id,
+            external_record_group_id=self.url,
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            created_at=timestamp,
+            updated_at=timestamp,
+            source_created_at=timestamp,
+            source_updated_at=timestamp,
+            weburl=url,
+            size_in_bytes=None,
+            is_file=True,
+            extension=None,
+            path=urlparse(url).path,
+            mime_type=MimeTypes.HTML.value,
+            preview_renderable=False,
+            parent_external_record_id=parent_url,
+            parent_record_type=RecordType.FILE if parent_url else None,
+            indexing_status=IndexingStatus.FAILED.value,
+            extraction_status=IndexingStatus.FAILED.value,
+        )
+
+        permissions = [
+            Permission(
+                external_id=self.data_entities_processor.org_id,
+                type=PermissionType.READ,
+                entity_type=EntityType.ORG,
+            )
+        ]
+
+        return placeholder_record, permissions
+
+    async def _retry_urls_generator(
+        self,
+        max_retries: int = 2,
+    ) -> AsyncGenerator[RecordUpdate, None]:
+        """Generator that processes each queued retry URL and yields a RecordUpdate.
+
+        Iterates over a snapshot of ``self.retry_urls`` so that mutations to the
+        set during iteration are safe.
+
+        Each URL is attempted up to ``max_retries`` times.  Between attempts an
+        exponential back-off with full jitter is applied (base 15 s, cap 120 s)
+        to avoid triggering bot-detection on the remote server.
+
+        Yields:
+            RecordUpdate — either the real fetch result (success) or a
+            synthetic RecordUpdate wrapping a FAILED placeholder record
+            (exhausted retries).
+        """
+        # Base and cap (seconds) for the exponential back-off between attempts.
+        _BACKOFF_BASE = 15.0
+        _BACKOFF_CAP = 120.0
+
+        snapshot = list(self.retry_urls)
+
+        self.logger.info("Processing %d retryable URLs", len(snapshot))
+
+        for retry_url in snapshot:
+            record_update: Optional[RecordUpdate] = None
+            last_exception: Optional[Exception] = None
+
+            for attempt in range(1, max_retries + 1):
+                try:
+                    record_update = await self._fetch_and_process_url(retry_url.url, depth=0)
+
+                    if record_update is not None and record_update.record is not None:
+                        # Successful fetch — stop retrying this URL.
+                        break
+
+                    # Fetch returned None — treat as a soft failure and retry.
+                    self.logger.warning(
+                        "⚠️ Retry %d/%d — no content returned for %s",
+                        attempt, max_retries, retry_url.url,
+                    )
+
+                except Exception as exc:
+                    last_exception = exc
+                    self.logger.warning(
+                        "⚠️ Retry %d/%d — exception for %s: %s",
+                        attempt, max_retries, retry_url.url, exc,
+                    )
+                    record_update = None
+
+                # Back-off before the next attempt (skip after the last one).
+                if attempt < max_retries:
+                    # Exponential back-off with full jitter:
+                    #   delay = random(0, min(cap, base * 2 ** (attempt - 1)))
+                    ceiling = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** (attempt - 1)))
+                    delay = random.uniform(0, ceiling)
+                    self.logger.debug(
+                        "⏳ Back-off %.1f s before retry %d for %s",
+                        delay, attempt + 1, retry_url.url,
+                    )
+                    await asyncio.sleep(delay)
+
+            # --- post-retry routing ---
+            if record_update is not None and record_update.record is not None:
+                # At least one attempt succeeded.
+                self.retry_urls.discard(retry_url)
+                self.logger.info("✅ Retry succeeded for %s", retry_url.url)
+
+                is_disabled = self._check_index_filter(record_update.record)
+                if is_disabled:
+                    record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                yield record_update
+            else:
+                # All attempts exhausted — surface a FAILED placeholder.
+                if last_exception is not None:
+                    self.logger.error(
+                        "❌ All %d retries failed for %s: %s",
+                        max_retries, retry_url.url, last_exception,
+                        exc_info=True,
+                    )
+                else:
+                    self.logger.error(
+                        "❌ All %d retries failed for %s (no content returned)",
+                        max_retries, retry_url.url,
+                    )
+
+                placeholder, perms = await self._create_failed_placeholder_record(
+                    retry_url.url, retry_url.status_code
+                )
+
+                if placeholder is None:
+                    continue
+
+                yield RecordUpdate(
+                    record=placeholder,
+                    is_new=True,
+                    is_updated=False,
+                    is_deleted=False,
+                    metadata_changed=False,
+                    content_changed=False,
+                    permissions_changed=False,
+                    new_permissions=perms,
+                )
+
+    async def process_retry_urls(self, max_retries: int = 2) -> None:
+        """Process retry URLs in batches.
+
+        Delegates per-URL fetching to ``_retry_urls_generator``.  Yielded
+        records are routed as follows:
+
+        - **Updated** records are forwarded immediately to
+          ``_handle_record_updates``.
+        - **New** records (including FAILED placeholders) are collected into a
+          batch and flushed to ``on_new_records`` once the batch reaches
+          ``self.batch_size``, with a final flush after all URLs are processed.
+        """
+        batch_records: List[Tuple[Record, List[Permission]]] = []
+
+        async for record_update in self._retry_urls_generator(max_retries=max_retries):
+            if record_update.is_updated:
+                await self._handle_record_updates(record_update)
+            elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
+                batch_records.append((record_update.record, record_update.new_permissions))
+
+                if len(batch_records) >= self.batch_size:
+                    await self.data_entities_processor.on_new_records(batch_records)
+                    self.logger.info("✅ Retry batch processed: %d records", len(batch_records))
+                    batch_records.clear()
+
+        # Flush any remaining records
+        if batch_records:
+            await self.data_entities_processor.on_new_records(batch_records)
+            self.logger.info("✅ Retry final batch processed: %d records", len(batch_records))
 
     def _check_index_filter(self, record: Record) -> bool:
         """Check if the record should be indexed."""
