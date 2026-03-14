@@ -294,7 +294,7 @@ class GithubConnector(BaseConnector):
                 self.logger.error(f"Error fetching file from {record_url}: {str(e)}")
 
             async def stream_markdown(
-                markdown_content, chunk_size=16000
+                markdown_content, chunk_size=160000
             ) -> AsyncGenerator[bytes, None]:
                 """Stream markdown content in optimal chunks"""
                 for i in range(0, len(markdown_content), chunk_size):
@@ -355,7 +355,7 @@ class GithubConnector(BaseConnector):
                 "No valid app users found, cannot proceed with syncing issues."
             )
             return []
-        user_email = user.get("email")
+        user_email = getattr(user,"email")
         app_user = AppUser(
             app_name=self.connector_name,
             connector_id=self.connector_id,
@@ -409,7 +409,7 @@ class GithubConnector(BaseConnector):
                 "No valid app users found, cannot proceed with syncing issues."
             )
             return
-        user_email = user.get("email")
+        user_email = getattr(user,"email")
         if not user_email:
             self.logger.error(
                 "No valid user found, cannot proceed with syncing issues."
@@ -691,7 +691,7 @@ class GithubConnector(BaseConnector):
             format=DataFormat.MARKDOWN.value,
             sub_type=GroupSubType.CONTENT.value,
             source_group_id=record.weburl,
-            data=markdown_content_with_images_base64,
+            data=f"{issue.title}\n\n{markdown_content_with_images_base64}",
             source_modified_date=str(self.datetime_to_epoch_ms(issue.updated_at)),
             requires_processing=True,
             table_row_metadata=table_row_metadata,
@@ -970,7 +970,7 @@ class GithubConnector(BaseConnector):
             index=block_group_number,
             name=pull_request.title,
             type=GroupType.TEXT_SECTION,
-            data=markdown_with_base64,
+            data=f"{pull_request.title}\n\n{markdown_with_base64}",
             format=DataFormat.MARKDOWN,
             weburl=pull_request.html_url,
             sub_type=GroupSubType.CONTENT.value,

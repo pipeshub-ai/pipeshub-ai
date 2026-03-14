@@ -302,7 +302,7 @@ class GraphTransactionStore(TransactionStore):
         """Get full hierarchical path for a record by traversing parent-child edges."""
         return await self.graph_provider.get_record_path(record_id, transaction=self.txn)
 
-    async def get_app_creator_user(self, connector_id:str) ->Optional[Dict]:
+    async def get_app_creator_user(self, connector_id:str) ->Optional[User]:
         """Get the creator user for a connector/app by connectorId."""
         return await self.graph_provider.get_app_creator_user(connector_id,transaction=self.txn)
 

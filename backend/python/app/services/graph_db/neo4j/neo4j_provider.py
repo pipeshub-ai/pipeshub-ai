@@ -16862,7 +16862,7 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to update agent template: %s", str(e))
             return False
 
-    async def get_app_creator_user(self, connector_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
+    async def get_app_creator_user(self, connector_id: str, transaction: Optional[str] = None) -> Optional[User]:
         """
         Get the creator user for an app by connectorId.
         """
@@ -16876,6 +16876,11 @@ class Neo4jProvider(IGraphDBProvider):
             user  =  await self.get_user_by_user_id(user_id)
             if user is None:
                 return None
+            # NOTE: This class of type can be removed once get_user_by_user_id returns User object
+            if isinstance(user, dict):
+                user = User.from_arango_user(user)
+            else:
+                user = user
             return user
         except Exception as e:
             self.logger.error("❌ Failed to get app creator user: %s", str(e))
