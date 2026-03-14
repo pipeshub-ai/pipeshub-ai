@@ -115,7 +115,7 @@ interface HubNode {
   name: string;
   nodeType: 'app' | 'kb' | 'folder' | 'record' | 'recordGroup';
   parentId: string | null;
-  origin: 'KB' | 'CONNECTOR';
+  origin: 'COLLECTION' | 'CONNECTOR';
   connector: string;
   recordType?: string;
   recordGroupType?: string;
@@ -1159,8 +1159,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       renderCell: (params) => {
         const node = params.row;
         
-        if (params.value === 'CONNECTOR') {
-          // Show connector icon + connector name with premium styling
+        if (params.value === 'CONNECTOR' && node.connector !== 'KB') {
+          // Show connector icon + connector name with premium styling (skip KB → use Collection block below)
           return (
             <Box sx={{ 
               display: 'flex', 
@@ -1187,7 +1187,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           );
         }
         
-        // Show KB icon + "Knowledge Base" text with premium styling
+        // Show Collection icon + "Collection" for COLLECTION origin or for app with connector 'KB' (Collection app)
         return (
           <Box sx={{ 
             display: 'flex', 

@@ -513,11 +513,15 @@ export const ListView: React.FC<ListViewProps> = ({
       width: 110,
       align: 'center',
       headerAlign: 'center',
-      renderCell: (params) => (
-        <Typography variant="caption" sx={{ fontWeight: 500 }}>
-          {params.row.origin || 'LOCAL'}
-        </Typography>
-      ),
+      renderCell: (params) => {
+        const raw = params.row.origin || 'LOCAL';
+        const display = raw === 'COLLECTION' || raw === 'KB' ? 'Collection' : raw === 'CONNECTOR' ? 'Connector' : raw;
+        return (
+          <Typography variant="caption" sx={{ fontWeight: 500 }}>
+            {display}
+          </Typography>
+        );
+      },
     },
     {
       field: 'size',
