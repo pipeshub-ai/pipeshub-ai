@@ -88,16 +88,6 @@ class RetryUrl:
     retries: int
     last_attempted: int
 
-    def __hash__(self) -> int:
-        return hash(self.url)
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, RetryUrl):
-            return self.url == other.url
-        if isinstance(other, str):          # allows: "https://..." in self.retry_urls
-            return self.url == other
-        return NotImplemented
-
 RETRYABLE_STATUS_CODES = {
     403, 408, 429,
     500, 502, 503, 504,
@@ -105,12 +95,10 @@ RETRYABLE_STATUS_CODES = {
     520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530,
 }
 
-RETRYABLE_EXCEPTIONS = (
-    aiohttp.ClientConnectorError,
-    aiohttp.ServerDisconnectedError,
-    aiohttp.ServerTimeoutError,
-    asyncio.TimeoutError,
-)
+# Base and cap (seconds) for the exponential back-off between attempts.
+_BACKOFF_BASE = 15.0
+_BACKOFF_CAP = 120.0
+MAX_RETRIES = 2
 
 # MIME type mapping for common file extensions
 FILE_MIME_TYPES = {
@@ -340,7 +328,7 @@ class WebConnector(BaseConnector):
 
         # Crawling state
         self.visited_urls: Set[str] = set()
-        self.retry_urls: Set[RetryUrl] = set()
+        self.retry_urls: Dict[str, RetryUrl] = {}
         self.processed_urls: int = 0
         self.base_domain: Optional[str] = None
         self.session: Optional[aiohttp.ClientSession] = None
@@ -917,6 +905,10 @@ class WebConnector(BaseConnector):
             normalized_url = self._normalize_url(current_url)
             if normalized_url in self.visited_urls:
                 continue
+            if normalized_url in self.retry_urls:
+                retry_url = self.retry_urls[normalized_url]
+                if retry_url.retries >= MAX_RETRIES:
+                    continue
 
             # Skip if depth exceeded
             if current_depth > self.max_depth:
@@ -945,7 +937,7 @@ class WebConnector(BaseConnector):
                 if file_record:
 
                     if normalized_url in self.retry_urls:
-                        self.retry_urls.discard(normalized_url)
+                        self.retry_urls.pop(normalized_url, None)
 
                     is_disabled = self._check_index_filter(file_record)
 
@@ -963,7 +955,7 @@ class WebConnector(BaseConnector):
                             normalized_link = self._normalize_url(link)
                             if (
                                 normalized_link not in self.visited_urls
-                                # and normalized_link not in self.retry_urls
+                                and normalized_link not in self.retry_urls
                                 and len(self.visited_urls) < self.max_pages
                             ):
                                 queue.append((link, current_depth + 1, current_url))
@@ -1035,31 +1027,19 @@ class WebConnector(BaseConnector):
             if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
                 if result.status_code in RETRYABLE_STATUS_CODES:
                     normalized = self._normalize_url(url)
-                    existing = normalized in self.retry_urls
-                    if existing:
-                        # URL already queued — update status code and bump retry count
-                        existing_entry = next(r for r in self.retry_urls if r.url == normalized)
-                        self.retry_urls.discard(normalized)
-                        self.retry_urls.add(RetryUrl(
-                            url=normalized,
-                            status="pending_retry",
-                            status_code=result.status_code,
-                            retries=existing_entry.retries + 1,
-                            last_attempted=get_epoch_timestamp_in_ms(),
-                        ))
-                    else:
-                        self.retry_urls.add(RetryUrl(
-                            url=normalized,
-                            status="pending_retry",
-                            status_code=result.status_code,
-                            retries=0,
-                            last_attempted=get_epoch_timestamp_in_ms(),
-                        ))
+                    existing_entry = self.retry_urls.get(normalized)  # O(1)
+                    self.retry_urls[normalized] = RetryUrl(
+                        url=normalized,
+                        status="pending_retry",
+                        status_code=result.status_code,
+                        retries=(existing_entry.retries + 1) if existing_entry else 0,
+                        last_attempted=get_epoch_timestamp_in_ms(),
+                    )
                 return None
             else:
                 normalized_url = self._normalize_url(final_url)
                 if normalized_url in self.retry_urls:
-                    self.retry_urls.discard(normalized_url)
+                    self.retry_urls.pop(normalized_url, None)
                     self.logger.info(f"✅ Retry URL {normalized_url} processed successfully")
 
             is_new = False
@@ -1291,7 +1271,7 @@ class WebConnector(BaseConnector):
 
     async def _create_failed_placeholder_record(
         self, url: str, status_code: int
-    ) -> Tuple[FileRecord, List[Permission]]:
+    ) -> Tuple[Optional[FileRecord], Optional[List[Permission]]]:
         """Build a FAILED-status placeholder FileRecord for a URL that could not be fetched.
 
         Looks up any existing record by external_id so the same database document is
@@ -1317,7 +1297,7 @@ class WebConnector(BaseConnector):
         if existing_record:
             return None, None
 
-        record_id = existing_record.id if existing_record else str(uuid.uuid4())
+        record_id = str(uuid.uuid4())
 
         self.logger.warning(
             "⚠️ Creating FAILED placeholder for %s — "
@@ -1383,11 +1363,8 @@ class WebConnector(BaseConnector):
             synthetic RecordUpdate wrapping a FAILED placeholder record
             (exhausted retries).
         """
-        # Base and cap (seconds) for the exponential back-off between attempts.
-        _BACKOFF_BASE = 15.0
-        _BACKOFF_CAP = 120.0
 
-        snapshot = list(self.retry_urls)
+        snapshot = list(self.retry_urls.values())
 
         self.logger.info("Processing %d retryable URLs", len(snapshot))
 
@@ -1432,7 +1409,7 @@ class WebConnector(BaseConnector):
             # --- post-retry routing ---
             if record_update is not None and record_update.record is not None:
                 # At least one attempt succeeded.
-                self.retry_urls.discard(retry_url)
+                self.retry_urls.pop(retry_url.url, None)
                 self.logger.info("✅ Retry succeeded for %s", retry_url.url)
 
                 is_disabled = self._check_index_filter(record_update.record)
