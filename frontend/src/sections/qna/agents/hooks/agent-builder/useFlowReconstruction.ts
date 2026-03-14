@@ -243,6 +243,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
             
             const displayName = appDisplayName || (connectorId.split('/').pop() || connectorId) || 'Knowledge Source';
             const normalizedAppName = displayName.toLowerCase().replace(" ", "").replace(/\s+/g, '-');
+            const appKnowledgeType = knowledgeItem.type?.toLowerCase().replace(" ", "").replace(/\s+/g, '-') || normalizedAppName;
             
             nodeCounter += 1;
             const nodeId = `app-${nodeCounter}`;
@@ -264,7 +265,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
                   filters: filtersParsed,
                   selectedRecordGroups: filtersParsed.recordGroups || [],
                   selectedRecords: filtersParsed.records || [],
-                  iconPath: `/assets/icons/connectors/${normalizedAppName}.svg`,
+                  iconPath: `/assets/icons/connectors/${appKnowledgeType}.svg`,
                   similarity: 0.8,
                 },
                 inputs: ['query'],
