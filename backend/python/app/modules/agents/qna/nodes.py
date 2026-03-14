@@ -26,6 +26,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
+from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.modules.qna.response_prompt import create_response_messages
@@ -3336,8 +3337,7 @@ async def planner_node(
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
-    from app.modules.agents.capability_summary import build_capability_summary
-    capability_summary = build_capability_summary(state, log)
+    capability_summary = build_capability_summary(state)
     system_prompt += f"\n\n{capability_summary}"
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
@@ -6299,8 +6299,7 @@ async def _generate_direct_response(
             system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
 
     # Add capability summary so direct responses can answer "what can you do?"
-    from app.modules.agents.capability_summary import build_capability_summary
-    capability_summary = build_capability_summary(state, log)
+    capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
 
     messages.append(SystemMessage(content=system_content))
@@ -7627,8 +7626,7 @@ Use this decision tree to choose the right approach:
         base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
 
     # ── Capability summary ────────────────────────────────────────────────────
-    from app.modules.agents.capability_summary import build_capability_summary
-    capability_summary = build_capability_summary(state, log)
+    capability_summary = build_capability_summary(state)
     base_prompt += "\n\n" + capability_summary
 
     # ── User context ─────────────────────────────────────────────────────────

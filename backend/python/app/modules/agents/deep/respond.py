@@ -28,6 +28,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
 
+from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.deep.context_manager import (
     build_respond_conversation_context,
 )
@@ -1022,8 +1023,7 @@ async def _handle_direct_answer(
         system_content += "\n\nWhen the user asks about themselves, use the provided info DIRECTLY."
 
     # Add capability summary
-    from app.modules.agents.capability_summary import build_capability_summary
-    capability_summary = build_capability_summary(state, log)
+    capability_summary = build_capability_summary(state)
     system_content += f"\n\n{capability_summary}"
 
     messages = [SystemMessage(content=system_content)]

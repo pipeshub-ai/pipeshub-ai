@@ -7,14 +7,10 @@ automatically — only tools from the agent's configured toolsets are shown.
 Adding new internal tools requires no changes here.
 """
 
-import logging
 from typing import Any, Dict, List
 
 
-def build_capability_summary(
-    state: Dict[str, Any],
-    log: logging.Logger,
-) -> str:
+def build_capability_summary(state: Dict[str, Any]) -> str:
     """
     Build a capability summary for the LLM to answer "what can you do?" questions.
 
