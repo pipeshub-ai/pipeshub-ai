@@ -393,6 +393,12 @@ async def fetch_url_with_fallback(
     else:
         strategies = all_strategies
 
+    # Tracks the last FetchResponse received across all strategies/attempts.
+    # When all strategies are exhausted due to bot-detection or 429s (not a
+    # hard connection failure), this lets callers inspect the status code and
+    # decide whether to queue the URL for a post-crawl retry.
+    last_failed_result: Optional[FetchResponse] = None
+
     for strategy_name, strategy_fn in strategies:
         logger.debug(f"🔄 [{strategy_name}] Attempting {url}")
 
@@ -430,6 +436,7 @@ async def fetch_url_with_fallback(
                         f"⚠️ [{strategy_name}] Bot blocked (HTTP {status}) for {url} "
                         + f"(attempt {attempt + 1}/{max_retries_per_strategy})"
                     )
+                    last_failed_result = result
                     break  # break 429 loop, go to next attempt
 
                 # ---- 429: Rate limited -> retry with backoff on SAME attempt ----
@@ -439,6 +446,7 @@ async def fetch_url_with_fallback(
                             f"⚠️ [{strategy_name}] 429 persists after {max_429_retries} "
                             + f"retries for {url}, trying next strategy"
                         )
+                        last_failed_result = result
                         break
 
                     # Check Retry-After header first
@@ -480,6 +488,16 @@ async def fetch_url_with_fallback(
 
         logger.debug(f"🔄 [{strategy_name}] Exhausted all {max_retries_per_strategy} attempts for {url}")
 
-    # All strategies exhausted
-    logger.error(f"❌ All fetch strategies failed for {url}")
+    # All strategies exhausted.
+    # Return the last FetchResponse if we got one (bot-block / 429 exhaustion) so
+    # callers can inspect the status code and decide whether to retry the URL later.
+    # Returns None only when every strategy failed with a hard connection error.
+    if last_failed_result is not None:
+        logger.error(
+            f"❌ All fetch strategies failed for {url} "
+            + f"(last status: {last_failed_result.status_code})"
+        )
+        return last_failed_result
+
+    logger.error(f"❌ All fetch strategies failed for {url} (connection error)")
     return None
