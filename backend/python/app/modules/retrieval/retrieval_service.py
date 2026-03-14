@@ -1,5 +1,6 @@
 import asyncio
 import time
+import traceback
 from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.documents import Document
@@ -265,7 +266,6 @@ class RetrievalService:
                     metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
                     filters[metadata_key] = values
 
-            # OPTIMIZATION: Phase 1 - Get only virtualRecordIds (not full records)
             init_tasks = [
                 self._get_accessible_virtual_ids_task(user_id, org_id, filters, self.graph_provider),
                 self._get_user_cached(user_id)  # Get user info in parallel with caching
@@ -296,7 +296,6 @@ class RetrievalService:
 
             self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
 
-            # OPTIMIZATION: Phase 2 - Extract virtualRecordIds that Qdrant actually returned
             self.logger.debug("Extracting virtualRecordIds from Qdrant results")
             returned_virtual_record_ids = list({
                 result["metadata"]["virtualRecordId"]
@@ -309,7 +308,6 @@ class RetrievalService:
 
             self.logger.debug(f"Qdrant returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
 
-            # OPTIMIZATION: Phase 3 - Batch fetch ONLY the records that Qdrant returned
             if not returned_virtual_record_ids:
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
@@ -322,7 +320,6 @@ class RetrievalService:
                 self.logger.error("Failed to fetch records by virtualRecordIds")
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
-            # Build record maps from fetched records
             record_id_to_record_map = {}
             for r in fetched_records:
                 if r:
@@ -335,9 +332,7 @@ class RetrievalService:
                     fetched_records, returned_virtual_record_ids
                 )
             except Exception as e:
-                self.logger.error(f"Error in _create_virtual_to_record_mapping: {e}")
-                import traceback
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
+                self.logger.error(f"Error in _create_virtual_to_record_mapping: {e}\n{traceback.format_exc()}")
                 raise
 
             unique_record_ids = set(r.get("_key") for r in virtual_to_record_map.values() if r)
@@ -346,7 +341,6 @@ class RetrievalService:
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
-            # OPTIMIZATION: First pass - enrich metadata and collect IDs that need additional fetching
             file_record_ids_to_fetch = []
             mail_record_ids_to_fetch = []
             result_to_record_map = {}  # Map result index to record_id for later URL assignment
@@ -394,7 +388,6 @@ class RetrievalService:
                             if ext:
                                 result["metadata"]["extension"] = ext
 
-                        # Collect IDs that need additional fetching (instead of fetching immediately)
                         if not weburl:
                             if record.get("recordType", "") == RecordTypes.FILE.value:
                                 file_record_ids_to_fetch.append(record_id)
@@ -418,7 +411,6 @@ class RetrievalService:
 
                 final_search_results.append(result)
 
-            # OPTIMIZATION: Batch fetch all files and mails in parallel
             files_map = {}
             mails_map = {}
 
@@ -426,7 +418,6 @@ class RetrievalService:
                 if not file_record_ids_to_fetch:
                     return {}
                 try:
-                    # Fetch files in parallel
                     file_results = await asyncio.gather(*[
                         self.graph_provider.get_document(record_id, CollectionNames.FILES.value)
                         for record_id in file_record_ids_to_fetch
@@ -444,7 +435,6 @@ class RetrievalService:
                 if not mail_record_ids_to_fetch:
                     return {}
                 try:
-                    # Fetch mails in parallel
                     mail_results = await asyncio.gather(*[
                         self.graph_provider.get_document(record_id, CollectionNames.MAILS.value)
                         for record_id in mail_record_ids_to_fetch
@@ -461,7 +451,6 @@ class RetrievalService:
             if file_record_ids_to_fetch or mail_record_ids_to_fetch:
                 files_map, mails_map = await asyncio.gather(fetch_files(), fetch_mails())
 
-            # Second pass - apply fetched URLs to results
             for idx, (record_id, record_type) in result_to_record_map.items():
                 result = search_results[idx]
                 record = record_id_to_record_map.get(record_id)
@@ -563,10 +552,7 @@ class RetrievalService:
             self.logger.error(f"ValueError: {e}")
             return self._create_empty_response(f"Bad request: {str(e)}", Status.ERROR)
         except Exception as e:
-            import traceback
-            tb_str = traceback.format_exc()
-            self.logger.error(f"Filtered search failed: {str(e)}")
-            self.logger.error(f"Full traceback:\n{tb_str}")
+            self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             if virtual_record_ids_from_tool:
                 return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
@@ -749,7 +735,6 @@ class RetrievalService:
             if record and isinstance(record, dict):
                 virtual_id = record.get("virtualRecordId", None)
                 record_id = record.get("_key", None)
-                # self.logger.info(f"Virtual ID: {virtual_id}, Record ID: {record_id}")
                 if virtual_id and record_id:
                     if virtual_id not in virtual_to_records:
                         virtual_to_records[virtual_id] = []
