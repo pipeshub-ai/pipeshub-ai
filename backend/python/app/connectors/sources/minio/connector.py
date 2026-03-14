@@ -126,7 +126,6 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             category=FilterCategory.SYNC,
             description="Select specific MinIO buckets to sync",
             option_source_type=OptionSourceType.DYNAMIC,
-            default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(FilterField(
@@ -136,7 +135,6 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             category=FilterCategory.SYNC,
             description="Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
             option_source_type=OptionSourceType.MANUAL,
-            default_value=[],
             default_operator=ListOperator.IN.value
         ))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))

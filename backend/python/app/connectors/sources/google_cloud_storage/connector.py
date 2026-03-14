@@ -281,7 +281,6 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             category=FilterCategory.SYNC,
             description="Select specific GCS buckets to sync",
             option_source_type=OptionSourceType.DYNAMIC,
-            default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(CommonFields.file_extension_filter())
