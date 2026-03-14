@@ -359,10 +359,12 @@ class RegistryToolWrapper(BaseTool):
             state: Chat state
             **kwargs: Additional arguments
         """
-        base_description = getattr(
-            registry_tool,
-            'description',
-            f"Tool: {app_name}.{tool_name}"
+        # Prefer llm_description (includes when_to_use/when_not_to_use guidance)
+        # over description (short user-facing text)
+        base_description = (
+            getattr(registry_tool, 'llm_description', None)
+            or getattr(registry_tool, 'description', None)
+            or f"Tool: {app_name}.{tool_name}"
         )
         full_description = self._build_description(base_description, registry_tool)
 

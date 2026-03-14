@@ -5974,7 +5974,6 @@ async def respond_node(
         r for r in tool_results
         if r.get("status") == "success"
         and "retrieval" not in r.get("tool_name", "").lower()
-        and "knowledge" not in r.get("tool_name", "").lower()
     ]
     failed_results = [r for r in tool_results if r.get("status") == "error"]
 
@@ -7381,6 +7380,8 @@ You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
 ### Before giving your final response:
 1. **COMPLETENESS CHECK**: Did I accomplish EVERYTHING the user asked for? Don't stop partway.
 2. **DATA ACCURACY**: Am I presenting accurate data from actual tool results? Never fabricate data.
+   - **NEVER generate fake data from conversation history.** If user asks for "more results", "next page", or "page 2", you MUST call the tool again with updated pagination parameters (e.g., page=2, limit=50). Do NOT invent rows from memory.
+   - Previous tool results in conversation history are READ-ONLY context — use them to understand what was already shown, but ALWAYS call tools to fetch new data.
 3. **FORMATTING**: Use clear, professional markdown formatting.
 
 ## Write-Action Field Quick Reference
@@ -7450,7 +7451,9 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 
 4. **Task Completion**: Continue calling tools until the user's request is FULLY satisfied. Do not stop partway through a multi-step task.
 
-5. **Response Format**:
+5. **Pagination**: When the user asks for "more", "next page", or additional results from a previous tool call, you MUST call the same tool again with the correct pagination parameters (page, limit, offset). NEVER fabricate additional results from memory or conversation history.
+
+6. **Response Format**:
    - For API tool results: Transform data into professional markdown (tables, lists, summaries).
    - For retrieval/internal knowledge: Include inline citations like [R1-1] after each fact.
    - Store technical IDs in referenceData for follow-up queries.
