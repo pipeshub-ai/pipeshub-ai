@@ -253,41 +253,31 @@ class RetrievalService:
                 raise ValueError("GraphProvider is required for permission checking")
 
             filter_groups = filter_groups or {}
-
+            
+            # Extract KB IDs for response metadata
             kb_ids = filter_groups.get('kb', None) if filter_groups else None
-            # Convert filter_groups to format expected by get_accessible_records
+
+            # Convert filter_groups to format expected by get_accessible_virtual_record_ids
             filters = {}
             if filter_groups:  # Only process if filter_groups is not empty
                 for key, values in filter_groups.items():
                     # Convert key to match collection naming
-                    metadata_key = (
-                        key.lower()
-                    )  # e.g., 'departments', 'categories', etc.
+                    metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
                     filters[metadata_key] = values
 
+            # OPTIMIZATION: Phase 1 - Get only virtualRecordIds (not full records)
             init_tasks = [
-                self._get_accessible_records_task(user_id, org_id, filter_groups, self.graph_provider),
+                self._get_accessible_virtual_ids_task(user_id, org_id, filters, self.graph_provider),
                 self._get_user_cached(user_id)  # Get user info in parallel with caching
             ]
 
-            accessible_records, user = await asyncio.gather(*init_tasks)
+            accessible_virtual_record_ids, user = await asyncio.gather(*init_tasks)
 
-            if not accessible_records:
+            if not accessible_virtual_record_ids:
                 self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
-            # FIX: Filter out None records before processing
-            record_id_to_record_map = {}
-            for r in accessible_records:
-                if r:
-                    record_id_to_record_map[r["_key"]] = r
-
-            accessible_virtual_record_ids = [
-                record["virtualRecordId"] for record in record_id_to_record_map.values()
-                if record.get("virtualRecordId") is not None
-            ]
-
-            self.logger.debug(f"Accessible virtual record ids: {accessible_virtual_record_ids}")
+            self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_record_ids)}")
 
             if virtual_record_ids_from_tool:
                 filter  = await self.vector_db_service.filter_collection(
@@ -306,9 +296,9 @@ class RetrievalService:
 
             self.logger.info(f"Search results count: {len(search_results) if search_results else 0}")
 
-            # OPTIMIZATION: Extract virtual_record_ids using set comprehension (faster than loop)
-            self.logger.debug("Starting to extract virtual_record_ids")
-            virtual_record_ids = list({
+            # OPTIMIZATION: Phase 2 - Extract virtualRecordIds that Qdrant actually returned
+            self.logger.debug("Extracting virtualRecordIds from Qdrant results")
+            returned_virtual_record_ids = list({
                 result["metadata"]["virtualRecordId"]
                 for result in search_results
                 if result
@@ -317,13 +307,33 @@ class RetrievalService:
                 and result["metadata"].get("virtualRecordId") is not None
             })
 
-            virtual_record_ids = list(set(virtual_record_ids))
-            self.logger.debug(f"Extracted virtual_record_ids: {virtual_record_ids}")
+            self.logger.debug(f"Qdrant returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
+
+            # OPTIMIZATION: Phase 3 - Batch fetch ONLY the records that Qdrant returned
+            if not returned_virtual_record_ids:
+                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+
+            self.logger.debug(f"Fetching {len(returned_virtual_record_ids)} records by virtualRecordIds")
+            fetched_records = await self.graph_provider.get_records_by_virtual_record_ids(
+                returned_virtual_record_ids, org_id
+            )
+
+            if not fetched_records:
+                self.logger.error("Failed to fetch records by virtualRecordIds")
+                return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+
+            # Build record maps from fetched records
+            record_id_to_record_map = {}
+            for r in fetched_records:
+                if r:
+                    record_id_to_record_map[r["_key"]] = r
 
             virtual_to_record_map = {}
             try:
-                self.logger.debug("About to call _create_virtual_to_record_mapping")
-                virtual_to_record_map = self._create_virtual_to_record_mapping(record_id_to_record_map.values(), virtual_record_ids)
+                self.logger.debug("Creating virtual_to_record_mapping from fetched records")
+                virtual_to_record_map = self._create_virtual_to_record_mapping(
+                    fetched_records, returned_virtual_record_ids
+                )
             except Exception as e:
                 self.logger.error(f"Error in _create_virtual_to_record_mapping: {e}")
                 import traceback
@@ -562,7 +572,7 @@ class RetrievalService:
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
     async def _get_accessible_records_task(self, user_id, org_id, filter_groups, graph_provider: IGraphDBProvider) -> List[Dict[str, Any]]:
-        """Separate task for getting accessible records"""
+        """Separate task for getting accessible records (legacy method - returns full records)"""
         filter_groups = filter_groups or {}
         filters = {}
 
@@ -572,6 +582,18 @@ class RetrievalService:
                 filters[metadata_key] = values
 
         return await graph_provider.get_accessible_records(
+            user_id=user_id, org_id=org_id, filters=filters
+        )
+
+    async def _get_accessible_virtual_ids_task(
+        self, user_id: str, org_id: str, filters: dict, graph_provider: IGraphDBProvider
+    ) -> List[str]:
+        """
+        Separate task for getting accessible virtualRecordIds (optimized version).
+        
+        This is the optimized version that returns only virtualRecordIds instead of full records.
+        """
+        return await graph_provider.get_accessible_virtual_record_ids(
             user_id=user_id, org_id=org_id, filters=filters
         )
 
