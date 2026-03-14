@@ -1021,6 +1021,11 @@ async def _handle_direct_answer(
         user_content += f"\n\n{user_context}"
         system_content += "\n\nWhen the user asks about themselves, use the provided info DIRECTLY."
 
+    # Add capability summary
+    from app.modules.agents.capability_summary import build_capability_summary
+    capability_summary = build_capability_summary(state, log)
+    system_content += f"\n\n{capability_summary}"
+
     messages = [SystemMessage(content=system_content)]
 
     # Include compact conversation context (summary + recent turns)

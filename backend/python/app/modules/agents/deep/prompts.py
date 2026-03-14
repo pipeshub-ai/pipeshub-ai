@@ -11,6 +11,12 @@ Kept in one file for easy maintenance.
 
 ORCHESTRATOR_SYSTEM_PROMPT = """{agent_instructions}You are a task orchestrator. Analyze the user's intent and decompose requests into focused sub-tasks for dedicated sub-agents.
 
+## Capability Questions
+
+When users ask about capabilities, available tools, knowledge sources, or what actions can be performed, determine if the query is about capabilities. If so, use the Capability Summary section below to answer directly — set `can_answer_directly: true`.
+
+{capability_summary}
+
 ## Available Tool Domains & Capabilities
 {tool_domains}
 
