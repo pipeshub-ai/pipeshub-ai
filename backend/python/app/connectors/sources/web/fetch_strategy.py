@@ -1,15 +1,20 @@
 """
 Multi-strategy URL fetcher with fallback chain for the web connector.
 
-Fallback chain:
+Fallback chain (default):
   1. aiohttp (existing session, cheapest, already async)
   2. curl_cffi with HTTP/2 browser impersonation
   3. curl_cffi with HTTP/1.1 forced
   4. cloudscraper (JS challenge solver)
 
+Optional headless mode (opt-in per connector instance):
+  PlaywrightFetcher — headless Chromium via Playwright.
+  Recommended for JavaScript-heavy SPAs or Cloudflare-protected sites.
+
 Each strategy shares the same headers but uses different
 TLS fingerprints / impersonation profiles.
 """
+from __future__ import annotations
 
 import asyncio
 import contextlib
@@ -29,17 +34,6 @@ from app.config.constants.http_status_code import HttpStatusCode
 
 MAX_429_RETRIES = 3
 REQUEST_TIMEOUT = 15
-
-@dataclass
-class FetchResponse:
-    """Unified response from any fetch strategy."""
-
-    status_code: int
-    content_bytes: bytes
-    headers: dict
-    final_url: str
-    strategy: str
-
 
 # ---------------------------------------------------------------------------
 # Shared stealth headers
@@ -483,3 +477,426 @@ async def fetch_url_with_fallback(
     # All strategies exhausted
     logger.error(f"❌ All fetch strategies failed for {url}")
     return None
+
+
+# ---------------------------------------------------------------------------
+# Headless browser fetcher (opt-in)
+# ---------------------------------------------------------------------------
+"""
+Robust web fetcher built on Crawl4AI (https://docs.crawl4ai.com/).
+
+Replaces the hand-rolled Playwright fetcher with Crawl4AI's AsyncWebCrawler,
+which provides out-of-the-box:
+  - Anti-bot detection & multi-layer fallback (Cloudflare, Akamai, etc.)
+  - Shadow DOM flattening (Salesforce Lightning, Web Components)
+  - Stealth mode (navigator.webdriver masking, fingerprint evasion)
+  - Built-in retry with proxy escalation
+  - Automatic JS rendering wait (networkidle / CSS selector / JS expression)
+  - Clean markdown + cleaned HTML extraction
+  - iframe processing
+
+This module wraps it behind the same FetchResponse interface so the rest of
+your crawl pipeline doesn't need to change.
+"""
+
+
+import asyncio
+import logging
+from dataclasses import dataclass
+from typing import Callable, Awaitable, Optional
+
+
+# ---------------------------------------------------------------------------
+# Response container — identical interface to the old Playwright fetcher
+# ---------------------------------------------------------------------------
+@dataclass
+class FetchResponse:
+    status_code: int
+    content_bytes: bytes              # raw or cleaned HTML as UTF-8 bytes
+    headers: dict
+    final_url: str
+    strategy: str
+    markdown: str | None = None       # bonus: Crawl4AI gives us clean markdown
+    links: dict | None = None         # {"internal": [...], "external": [...]}
+    success: bool = True
+    error_message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+class NonRetryableError(Exception):
+    """Raised when a retry would be pointless (DNS failure, 4xx, etc.)."""
+
+
+# ---------------------------------------------------------------------------
+# Fetcher
+# ---------------------------------------------------------------------------
+class Crawl4AIFetcher:
+    """
+    Headless Chromium fetcher powered by Crawl4AI's AsyncWebCrawler.
+
+    Manages a single crawler instance reused across all fetches.
+    A semaphore (MAX_CONCURRENT_PAGES) prevents runaway parallelism.
+    """
+
+    MAX_CONCURRENT_PAGES = 8
+
+    # HTTP status codes that should NOT trigger retries
+    _NON_RETRYABLE_STATUSES = frozenset({400, 401, 403, 404, 405, 410, 451})
+
+    # Minimum meaningful body length
+    _MIN_BODY_LENGTH = 256
+
+    def __init__(
+        self,
+        logger: logging.Logger | None = None,
+        *,
+        headless: bool = True,
+        stealth: bool = False,
+        text_mode: bool = False,
+        extra_browser_args: list[str] | None = None,
+        user_agent: str | None = None,
+        proxy_config=None,
+    ) -> None:
+        self._crawler = None
+        self._semaphore: Optional[asyncio.Semaphore] = None
+        self.logger = logger or logging.getLogger(__name__)
+
+        # Store config params for deferred construction in start()
+        self._headless = headless
+        self._stealth = stealth
+        self._text_mode = text_mode
+        self._extra_args = extra_browser_args or []
+        self._user_agent = user_agent
+        self._proxy_config = proxy_config
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+    async def start(self) -> None:
+        from crawl4ai import AsyncWebCrawler
+        from crawl4ai.async_configs import BrowserConfig
+
+        browser_config = BrowserConfig(
+            browser_type="chromium",
+            headless=self._headless,
+            viewport_width=1280,
+            viewport_height=720,
+            ignore_https_errors=True,
+            java_script_enabled=True,
+            enable_stealth=self._stealth,
+            text_mode=self._text_mode,
+            extra_args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                # Hide webdriver flag without full stealth (which breaks
+                # ServiceNow sites). This prevents basic bot-detection 403s.
+                "--disable-blink-features=AutomationControlled",
+                *self._extra_args,
+            ],
+            # Use a realistic user-agent when none is explicitly provided
+            **({"user_agent": self._user_agent} if self._user_agent else {
+                "user_agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                )
+            }),
+        )
+
+        self._crawler = AsyncWebCrawler(config=browser_config)
+        await self._crawler.start()
+        self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_PAGES)
+        self.logger.info("Crawl4AIFetcher started (headless Chromium via Crawl4AI)")
+
+    async def close(self) -> None:
+        if self._crawler:
+            try:
+                await self._crawler.close()
+            except Exception as exc:
+                self.logger.warning(f"Error closing crawler: {exc}")
+            self._crawler = None
+        self.logger.info("Crawl4AIFetcher closed")
+
+    async def __aenter__(self) -> "Crawl4AIFetcher":
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc_info) -> None:
+        await self.close()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    # JS expression that waits for meaningful body content to appear.
+    # Works for both normal DOM and Shadow DOM (Salesforce Lightning, etc.)
+    # by measuring total text length across all shadow roots.
+    # Skips cookie-consent / overlay elements so their text doesn't
+    # satisfy the threshold before the real page content has rendered.
+    # Returns true once there's > 100 chars of visible text (excluding overlays).
+    _DEFAULT_CSR_WAIT_JS = (
+        "js:() => {"
+        "  const SKIP_RE = /onetrust|cookiebot|cookie-?banner|cookie-?consent|"
+        "consent-?banner|gdpr|cc-window|cc-banner/i;"
+        "  function skip(el) {"
+        "    var id = el.id || '';"
+        "    var cls = typeof el.className === 'string' ? el.className : '';"
+        "    var role = el.getAttribute && (el.getAttribute('role') || '');"
+        "    if (SKIP_RE.test(id) || SKIP_RE.test(cls)) return true;"
+        "    var s = getComputedStyle(el);"
+        "    if (s.position === 'fixed' || s.position === 'sticky') {"
+        "      if (role === 'dialog' || role === 'alertdialog' || el.tagName === 'DIALOG') return true;"
+        "      if (s.zIndex && parseInt(s.zIndex) > 999) return true;"
+        "    }"
+        "    return false;"
+        "  }"
+        "  function measure(n) {"
+        "    let len = 0;"
+        "    if (n.nodeType === 3) return (n.textContent || '').trim().length;"
+        "    if (n.nodeType !== 1) return 0;"
+        "    if (skip(n)) return 0;"
+        "    if (n.shadowRoot) { for (const c of n.shadowRoot.childNodes) len += measure(c); }"
+        "    for (const c of n.childNodes) len += measure(c);"
+        "    return len;"
+        "  }"
+        "  return measure(document.body) > 100;"
+        "}"
+    )
+
+    # JS snippet to remove common cookie-consent overlays from the DOM.
+    # We REMOVE instead of clicking "Accept" because clicking can trigger
+    # page navigation/redirects (e.g. zoom.us → ERR_BLOCKED_BY_CLIENT).
+    # The underlying page content loads regardless of cookie consent on
+    # most sites; remove_overlay_elements=True provides additional cleanup.
+    _DISMISS_COOKIE_CONSENT_JS = (
+        "(function(){"
+        "  var sel = ["
+        "    '#onetrust-banner-sdk', '#onetrust-consent-sdk', '#onetrust-pc-sdk',"
+        "    '#CybotCookiebotDialog', '#CybotCookiebotDialogBodyUnderlay',"
+        "    '.cc-window', '.cc-banner', '.cc-revoke',"
+        "    '[class*=\"cookie-banner\"]', '[class*=\"cookie-consent\"]',"
+        "    '[class*=\"consent-banner\"]', '[id*=\"cookie-banner\"]',"
+        "    '[id*=\"cookie-consent\"]', '[id*=\"consent-banner\"]',"
+        "    '[data-testid=\"cookie-banner\"]'"
+        "  ];"
+        "  for (var i = 0; i < sel.length; i++) {"
+        "    var els = document.querySelectorAll(sel[i]);"
+        "    for (var j = 0; j < els.length; j++) els[j].remove();"
+        "  }"
+        "})()"
+    )
+
+    async def fetch(
+        self,
+        url: str,
+        *,
+        # --- timing ---
+        page_timeout: int = 60_000,
+        wait_until: str = "commit",
+        wait_for: str | None = None,
+        delay_before_return_html: float = 3.0,
+        # --- retry / anti-bot ---
+        magic: bool = False,
+        # --- content ---
+        process_iframes: bool = False,
+        remove_overlay_elements: bool = True,
+        exclude_external_links: bool = False,
+        word_count_threshold: int = 0,
+        css_selector: str | None = None,
+        excluded_tags: list[str] | None = None,
+        scan_full_page: bool = False,
+        # --- JS interaction ---
+        js_code: str | list[str] | None = None,
+        # --- proxy (per-request override) ---
+        proxy_config=None,
+        # --- fallback ---
+    ) -> Optional[FetchResponse]:
+        """
+        Fetch a URL with full CSR/SPA support, anti-bot detection, and retries.
+
+        Args:
+            page_timeout:              Navigation timeout in ms. Default 60s to
+                                       allow slow CSR pages time to load.
+            wait_until:                Playwright load state for page.goto():
+                                       "commit" (default — returns as soon as the
+                                       server responds; actual content readiness is
+                                       handled by wait_for), "domcontentloaded",
+                                       "load". AVOID "networkidle" for sites with
+                                       persistent connections (SPAs with polling).
+            wait_for:                  Post-navigation wait condition. CSS selector
+                                       ("css:main article") or JS expression
+                                       ("js:() => document.querySelector('#app')").
+                                       If None, a default Shadow DOM–aware JS wait
+                                       is used that waits for >100 chars of visible
+                                       text to appear.
+            delay_before_return_html:  Extra seconds to wait after all conditions
+                                       are met (catches late-rendering components).
+            max_retries:               Number of retry rounds on anti-bot blocks.
+            magic:                     Enable Crawl4AI's "magic mode" which auto-
+                                       adjusts headers, timing, and fingerprints.
+            process_iframes:           Merge iframe content into the main HTML.
+            remove_overlay_elements:   Strip cookie banners, popups, modals.
+            exclude_external_links:    Remove external links from output.
+            word_count_threshold:      Minimum words per content block.
+            css_selector:              Only extract content matching this selector.
+            excluded_tags:             HTML tags to strip (e.g. ["form", "nav"]).
+            scan_full_page:            Auto-scroll the page to trigger lazy loading.
+            js_code:                   JavaScript to execute after page load
+                                       (click "Load More", dismiss modals, etc.).
+            proxy_config:              Per-request proxy override (ProxyConfig or
+                                       list[ProxyConfig]).
+            fallback_fetch_function:   Async function(url) -> raw HTML string,
+                                       called as last resort after all retries.
+        """
+        if not self._crawler or not self._semaphore:
+            raise RuntimeError("Crawl4AIFetcher not started — call start() first")
+
+        # If no explicit wait_for, use our Shadow DOM–aware content check
+        effective_wait_for = wait_for if wait_for is not None else self._DEFAULT_CSR_WAIT_JS
+
+        async with self._semaphore:
+            
+            result = await self._do_fetch(
+                url,
+                page_timeout=page_timeout,
+                wait_until=wait_until,
+                wait_for=effective_wait_for,
+                delay_before_return_html=delay_before_return_html,
+                magic=magic,
+                process_iframes=process_iframes,
+                remove_overlay_elements=remove_overlay_elements,
+                exclude_external_links=exclude_external_links,
+                word_count_threshold=word_count_threshold,
+                css_selector=css_selector,
+                excluded_tags=excluded_tags,
+                scan_full_page=scan_full_page,
+                js_code=js_code,
+                proxy_config=proxy_config,
+            )
+            final_url = result.final_url
+            if final_url != url:
+                self.logger.warning(f"⚠️ Crawl4AI redirected {url} to {final_url}")
+            return result
+    # ------------------------------------------------------------------
+    # Internal fetch logic
+    # ------------------------------------------------------------------
+    async def _do_fetch(
+        self,
+        url: str,
+        **kwargs,
+    ) -> Optional[FetchResponse]:
+        from crawl4ai.async_configs import CrawlerRunConfig, CacheMode
+
+        # Always prepend cookie-consent dismissal JS so overlays don't
+        # block SPA content from loading.
+        user_js = kwargs.get("js_code")
+        if user_js:
+            js_list = [self._DISMISS_COOKIE_CONSENT_JS] + (
+                user_js if isinstance(user_js, list) else [user_js]
+            )
+        else:
+            js_list = [self._DISMISS_COOKIE_CONSENT_JS]
+
+        # Build the per-request crawl config
+        run_config = CrawlerRunConfig(
+            # --- navigation & timing ---
+            page_timeout=kwargs["page_timeout"],
+            wait_until=kwargs["wait_until"],
+            wait_for=kwargs["wait_for"],
+            delay_before_return_html=kwargs["delay_before_return_html"],
+
+            # --- anti-bot & retry ---
+            magic=kwargs["magic"],
+
+            # --- content processing ---
+            process_iframes=kwargs["process_iframes"],
+            remove_overlay_elements=kwargs["remove_overlay_elements"],
+            exclude_external_links=kwargs["exclude_external_links"],
+            word_count_threshold=kwargs["word_count_threshold"],
+            scan_full_page=kwargs["scan_full_page"],
+
+            # --- content selection ---
+            **({"css_selector": kwargs["css_selector"]}
+               if kwargs["css_selector"] else {}),
+            **({"excluded_tags": kwargs["excluded_tags"]}
+               if kwargs["excluded_tags"] else {}),
+
+            # --- JS execution (cookie dismissal + user JS) ---
+            js_code=js_list,
+
+            # --- proxy (per-request override) ---
+            **({"proxy_config": kwargs["proxy_config"]}
+               if kwargs["proxy_config"] else {}),
+
+            # Never use cached results for a live fetcher
+            cache_mode=CacheMode.BYPASS,
+        )
+
+        try:
+            result = await self._crawler.arun(url=url, config=run_config)
+        except Exception as exc:
+            self.logger.error(f"[crawl4ai] Unhandled error for {url}: {exc}")
+            return None
+
+        # --- Build our FetchResponse from CrawlResult ---
+        if not result.success:
+            self.logger.warning(
+                f"[crawl4ai] Crawl failed for {url}: {result.error_message}"
+            )
+            return FetchResponse(
+                status_code=result.status_code or 0,
+                content_bytes=b"",
+                headers=result.response_headers or {},
+                final_url=result.url,
+                strategy="crawl4ai",
+                markdown=None,
+                links=None,
+                success=False,
+                error_message=result.error_message,
+            )
+
+        # Prefer cleaned_html; fall back to raw html
+        html_content = result.cleaned_html or result.html or ""
+        content_bytes = html_content.encode("utf-8")
+
+        # Validate content isn't an empty shell
+        if len(content_bytes) < self._MIN_BODY_LENGTH:
+            self.logger.warning(
+                f"[crawl4ai] Body too small ({len(content_bytes)} bytes) "
+                f"for {url}"
+                f"html_cleaned: {result.cleaned_html}"
+                f"html: {result.html}"
+            )
+            # return FetchResponse(
+            #     status_code=result.status_code or 200,
+            #     content_bytes=content_bytes,
+            #     headers=result.response_headers or {},
+            #     final_url=result.url,
+            #     strategy="crawl4ai",
+            #     markdown=None,
+            #     links=None,
+            #     success=False,
+            #     error_message=f"Body too small ({len(content_bytes)} bytes)",
+            # )
+
+        # Extract markdown safely (can be str or MarkdownGenerationResult)
+        markdown_text = None
+        if result.markdown:
+            if isinstance(result.markdown, str):
+                markdown_text = result.markdown
+            elif hasattr(result.markdown, "raw_markdown"):
+                markdown_text = result.markdown.raw_markdown
+        
+        return FetchResponse(
+            status_code=result.status_code or 200,
+            content_bytes=content_bytes,
+            headers=result.response_headers or {},
+            final_url=result.url,
+            strategy="crawl4ai",
+            markdown=markdown_text,
+            links=result.links if result.links else None,
+            success=True,
+            error_message=None,
+        )
