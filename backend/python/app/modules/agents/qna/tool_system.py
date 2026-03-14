@@ -341,17 +341,18 @@ def _extract_tool_names_from_toolsets(agent_toolsets: List[Dict]) -> Optional[Se
 
 def _is_retrieval_tool(full_name: str, registry_tool: 'Tool') -> bool:
     """
-    Check if a tool is a retrieval/RAG tool.
+    Check if a tool is a knowledge-dependent internal tool.
 
-    Retrieval tools should only be included when knowledge is configured.
+    These tools should only be included when knowledge is configured.
+    Includes both retrieval (semantic search) and knowledge_hub (file browsing).
     """
     if hasattr(registry_tool, 'app_name'):
         app_name = str(registry_tool.app_name).lower()
-        if app_name == 'retrieval':
+        if app_name in ('retrieval', 'knowledge_hub'):
             return True
 
-    retrieval_patterns = ["retrieval."]
-    return any(p in full_name.lower() for p in retrieval_patterns)
+    knowledge_patterns = ["retrieval.", "knowledge_hub."]
+    return any(p in full_name.lower() for p in knowledge_patterns)
 
 
 def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:

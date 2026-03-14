@@ -282,7 +282,6 @@ async def _deep_respond_impl(
         r for r in all_tool_results
         if r.get("status") == "success"
         and "retrieval" not in r.get("tool_name", "").lower()
-        and "knowledge" not in r.get("tool_name", "").lower()
     ]
     failed_results = [r for r in all_tool_results if r.get("status") == "error"]
 

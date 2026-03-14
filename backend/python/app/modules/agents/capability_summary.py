@@ -85,10 +85,13 @@ def _build_actions_section(
     """
     service_domains = _get_service_tool_domains(state)
 
-    # Add retrieval as a visible action when knowledge is configured
+    # Add knowledge tools as visible actions when knowledge is configured
     if has_knowledge:
         service_domains.setdefault("retrieval", []).append(
-            "retrieval.search_internal_knowledge"
+            "retrieval.search_internal_knowledge",
+        )
+        service_domains.setdefault("knowledge_hub", []).append(
+            "knowledge_hub.list_files",
         )
 
     parts.append("### Available Actions")
