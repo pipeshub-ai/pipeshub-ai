@@ -2618,6 +2618,10 @@ WRONG (don't do this):
 - Use provided user info directly
 - Set `can_answer_directly: true`
 
+**User asking about capabilities:**
+- When users ask about capabilities, available tools, knowledge sources, or what actions you can perform
+- Set `can_answer_directly: true` and answer using the Capability Summary section below
+
 ## Output (JSON only)
 {{
   "intent": "Brief description",
@@ -3330,6 +3334,11 @@ async def planner_node(
         teams_guidance=teams_guidance,
         github_guidance=github_guidance
     )
+
+    # Add capability summary so LLM can answer "what can you do?" questions
+    from app.modules.agents.capability_summary import build_capability_summary
+    capability_summary = build_capability_summary(state, log)
+    system_prompt += f"\n\n{capability_summary}"
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
     agent_tools = state.get("tools", []) or []
@@ -6289,6 +6298,11 @@ async def _generate_direct_response(
         if user_context:
             system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
 
+    # Add capability summary so direct responses can answer "what can you do?"
+    from app.modules.agents.capability_summary import build_capability_summary
+    capability_summary = build_capability_summary(state, log)
+    system_content += f"\n\n{capability_summary}"
+
     messages.append(SystemMessage(content=system_content))
 
     # Add conversation history as LangChain messages (with sliding window)
@@ -7083,10 +7097,12 @@ async def react_agent_node(
         }
 
         execution_plan = state.get("execution_plan") or {}
-        # Temporary guard: do not let respond_node take direct-answer shortcut
-        # after ReAct handoff; this avoids fallback-style responses when ReAct
-        # decides not to call tools in the first pass.
-        execution_plan["can_answer_directly"] = False
+        # When react agent answered directly without calling any tools (e.g.
+        # capability questions, greetings), let respond_node use the
+        # _generate_direct_response path which has the capability summary and
+        # user context.  When tools WERE called, keep can_answer_directly=False
+        # so the full synthesis pipeline runs with citations and tool results.
+        execution_plan["can_answer_directly"] = (total_tools == 0)
         state["execution_plan"] = execution_plan
 
         duration_ms = (time.perf_counter() - start_time) * 1000
@@ -7609,6 +7625,11 @@ Use this decision tree to choose the right approach:
         if timezone:
             time_parts.append(f"User timezone: {timezone}")
         base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
+
+    # ── Capability summary ────────────────────────────────────────────────────
+    from app.modules.agents.capability_summary import build_capability_summary
+    capability_summary = build_capability_summary(state, log)
+    base_prompt += "\n\n" + capability_summary
 
     # ── User context ─────────────────────────────────────────────────────────
     user_context = _format_user_context(state)

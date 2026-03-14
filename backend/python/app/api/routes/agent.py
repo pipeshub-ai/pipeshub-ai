@@ -2649,14 +2649,40 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             logger.info(f"Filters: {filters}")
 
         # Narrow agent_knowledge to only the connectors present in filters["apps"]
+        # or KB connectors whose record groups are in filters["kb"],
         # so the query_info knowledge list stays consistent with the resolved filters.
         enabled_apps_set = set(filters.get("apps", []))
-        if enabled_apps_set:
-            agent_knowledge = [
-                k for k in agent_knowledge
-                if isinstance(k, dict) and k.get("connectorId") in enabled_apps_set
-            ]
-
+        enabled_kb_set = set(filters.get("kb", []))
+        if enabled_apps_set or enabled_kb_set:
+            filtered_knowledge = []
+            for k in agent_knowledge:
+                if not isinstance(k, dict):
+                    continue
+                connector_id = k.get("connectorId", "")
+                # Keep app connectors that are in enabled apps
+                if connector_id in enabled_apps_set:
+                    filtered_knowledge.append(k)
+                    continue
+                # Keep KB connectors whose record groups overlap with enabled KBs
+                if connector_id.startswith("knowledgeBase_") and enabled_kb_set:
+                    filters_data = k.get("filters", k.get("filtersParsed", {}))
+                    if isinstance(filters_data, str):
+                        try:
+                            filters_data = json.loads(filters_data)
+                        except (json.JSONDecodeError, ValueError):
+                            filters_data = {}
+                    record_groups = filters_data.get("recordGroups", []) if isinstance(filters_data, dict) else []
+                    if any(rg in enabled_kb_set for rg in record_groups):
+                        filtered_knowledge.append(k)
+                        continue
+                    # KB with no record groups but connector starts with knowledgeBase_ — keep it
+                    if not record_groups:
+                        filtered_knowledge.append(k)
+            agent_knowledge = filtered_knowledge
+        
+        if filters.get("kb") is None or len(filters.get("kb")) == 0:
+            filters["kb"] = ['NO_KB_SELECTED']
+        
         logger.info(f"Filters: {filters}")
 
         # Build query info

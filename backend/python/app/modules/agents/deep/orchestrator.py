@@ -89,11 +89,15 @@ async def orchestrator_node(
         tool_guidance = _build_tool_guidance(state)
         agent_instructions = _build_agent_instructions(state)
 
+        from app.modules.agents.capability_summary import build_capability_summary
+        capability_summary = build_capability_summary(state, log)
+
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(
             tool_domains=domain_desc,
             knowledge_context=knowledge_context,
             tool_guidance=tool_guidance,
             agent_instructions=agent_instructions,
+            capability_summary=capability_summary,
         )
 
         # Build messages
