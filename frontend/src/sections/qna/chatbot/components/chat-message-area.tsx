@@ -529,7 +529,8 @@ const MessageWithControls = React.memo(
     prevProps.message.updatedAt?.getTime() === nextProps.message.updatedAt?.getTime() &&
     prevProps.showRegenerate === nextProps.showRegenerate &&
     prevProps.conversationId === nextProps.conversationId &&
-    prevProps.index === nextProps.index
+    prevProps.index === nextProps.index &&
+    (prevProps.message as any).conversationTasks === (nextProps.message as any).conversationTasks
 );
 
 export default ChatMessagesArea;

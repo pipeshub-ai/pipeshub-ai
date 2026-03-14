@@ -1000,6 +1000,27 @@ const ChatInterface = () => {
 
       const hasCreatedMessage = { current: false };
       const conversationIdRef = { current: null as string | null };
+      const pendingConversationTasks: any[] = [];
+      const finalConversationKeyRef = { current: conversationKey };
+      const finalMessageIdRef = { current: streamingBotMessageId };
+      const hasCompletedRef = { current: false };
+
+      const applyConversationTasksToFinalMessage = () => {
+        if (!pendingConversationTasks.length || !hasCompletedRef.current) {
+          return;
+        }
+
+        const targetConversationKey = finalConversationKeyRef.current;
+        const targetMessageId = finalMessageIdRef.current;
+
+        streamingManager.updateConversationMessages(targetConversationKey, (prev) =>
+          prev.map((msg) =>
+            msg.id === targetMessageId
+              ? { ...msg, conversationTasks: [...pendingConversationTasks] }
+              : msg
+          )
+        );
+      };
 
       // Define the event handler
       const handleStreamingEvent = async (
@@ -1054,6 +1075,15 @@ const ChatInterface = () => {
             // This event indicates metadata is being saved, so we keep the status visible
             break;
 
+          case 'conversation_task':
+            if (data) {
+              pendingConversationTasks.push(data);
+              console.info('Received conversation_task event', data);
+              // Backend emits conversation_task after complete; apply immediately when possible.
+              applyConversationTasksToFinalMessage();
+            }
+            break;
+
           case 'complete': {
             streamingManager.clearStatus(context.conversationKey);
             const completedConversation = data.conversation;
@@ -1065,7 +1095,18 @@ const ChatInterface = () => {
                 // Store the conversation ID in the ref for the calling function
                 context.conversationIdRef.current = completedConversation._id;
               }
+
+              const finalBotMsg = completedConversation.messages
+                ?.filter((m: any) => m.messageType === 'bot_response')
+                .pop();
+              const resolvedId = finalBotMsg?._id || context.streamingBotMessageId;
+
+              finalConversationKeyRef.current = finalKey;
+              finalMessageIdRef.current = resolvedId;
+              hasCompletedRef.current = true;
+
               streamingManager.finalizeStreaming(finalKey, context.streamingBotMessageId, data);
+              applyConversationTasksToFinalMessage();
 
               // Update selectedChat with fresh conversation data to reflect updated modelInfo
               // This ensures the model selection is updated when switching back to this conversation

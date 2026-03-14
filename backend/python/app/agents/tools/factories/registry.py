@@ -23,6 +23,7 @@ from app.agents.tools.factories.github import GitHubClientFactory
 from app.agents.tools.factories.google import GoogleClientFactory
 from app.agents.tools.factories.jira import JiraClientFactory
 from app.agents.tools.factories.linear import LinearClientFactory
+from app.agents.tools.factories.mariadb import MariaDBClientFactory
 from app.agents.tools.factories.microsoft import MSGraphClientFactory
 from app.agents.tools.factories.notion import NotionClientFactory
 from app.agents.tools.factories.slack import SlackClientFactory
@@ -147,6 +148,9 @@ class ClientFactoryRegistry:
 
             elif app_name == "linear":
                 cls.register(app_name, LinearClientFactory())
+
+            elif app_name == "mariadb":
+                cls.register(app_name, MariaDBClientFactory())
 
             # elif app_name == "linkedin":
             #     cls.register(app_name, LinkedInClientFactory())

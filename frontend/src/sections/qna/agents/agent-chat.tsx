@@ -1026,7 +1026,7 @@ const AgentChat = () => {
 
       const hasCreatedMessage = { current: false };
       const conversationIdRef = { current: null as string | null };
-
+      const pendingConversationTasks: any[] = [];
       // Define the event handler
       const handleStreamingEvent = async (
         event: string,
@@ -1080,7 +1080,11 @@ const AgentChat = () => {
             // Status message is already handled by getEngagingStatusMessage above
             // This event indicates metadata is being saved, so we keep the status visible
             break;
-
+          case 'conversation_task':
+            if(data){
+              pendingConversationTasks.push(data);
+            }  
+            break;
           case 'complete': {
             streamingManager.clearStatus(context.conversationKey);
             const completedConversation = data.conversation;
@@ -1093,7 +1097,21 @@ const AgentChat = () => {
                 context.conversationIdRef.current = completedConversation._id;
               }
               streamingManager.finalizeStreaming(finalKey, context.streamingBotMessageId, data);
-
+              if (pendingConversationTasks.length > 0) {
+                const finalBotMsg = completedConversation.messages
+                  ?.filter((m: any) => m.messageType === 'bot_response')
+                  .pop();
+                const resolvedId = finalBotMsg?._id || context.streamingBotMessageId;
+                setTimeout(() => {
+                  streamingManager.updateConversationMessages(finalKey, (prev) =>
+                    prev.map((msg) =>
+                      msg.id === resolvedId
+                        ? { ...msg, conversationTasks: [...pendingConversationTasks] }
+                        : msg
+                    )
+                  );
+                }, 0);
+              }
               // Update selectedChat with fresh conversation data to reflect updated modelInfo
               // This ensures the model selection is updated when switching back to this conversation
               const finalConvId = finalKey === 'new' ? context.conversationIdRef.current : finalKey;

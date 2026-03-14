@@ -1334,6 +1334,8 @@ async def create_toolset_instance(
     }
     if oauth_config_id:
         new_instance["oauthConfigId"] = oauth_config_id
+    elif auth_type != "NONE":
+        new_instance["authConfig"] = auth_config
 
     instances.append(new_instance)
 
@@ -1943,11 +1945,31 @@ async def authenticate_toolset_instance(
         token = (credentials.get("bearerToken") or auth.get("bearerToken") or "").strip()
         if not token:
             raise InvalidAuthConfigError("bearerToken is required for BEARER_TOKEN auth type")
+    elif auth_type == "BASIC_AUTH":
+        username = (
+            credentials.get("user")
+            or credentials.get("username")
+            or auth.get("user")
+            or auth.get("username")
+            or ""
+        ).strip()
+        password = (credentials.get("password") or auth.get("password") or "").strip()
+        if not username or not password:
+            raise InvalidAuthConfigError("user (or username) and password are required for BASIC_AUTH auth type")
     elif auth_type == "USERNAME_PASSWORD":
         username = (credentials.get("username") or auth.get("username") or "").strip()
         password = (credentials.get("password") or auth.get("password") or "").strip()
         if not username or not password:
             raise InvalidAuthConfigError("username and password are required for USERNAME_PASSWORD auth type")
+
+    instance_auth = instance.get("authConfig", {}) if isinstance(instance.get("authConfig"), dict) else {}
+    user_auth_values = auth if isinstance(auth, dict) else {}
+    user_credential_values = credentials if isinstance(credentials, dict) else {}
+    merged_auth = {
+        **instance_auth,
+        **user_auth_values,
+        **user_credential_values,
+    }
 
     now = get_epoch_timestamp_in_ms()
     user_auth = {
@@ -1955,8 +1977,8 @@ async def authenticate_toolset_instance(
         "authType": auth_type,
         "instanceId": instance_id,
         "toolsetType": instance.get("toolsetType"),
-        "auth": auth if auth else {},
-        "credentials": credentials if credentials else {},
+        "auth": merged_auth,
+        "credentials": user_credential_values,
         "updatedAt": now,
         "updatedBy": user_id,
     }

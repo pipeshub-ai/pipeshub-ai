@@ -648,6 +648,7 @@ async def askAIStream(
                     "blob_store": blob_store,
                     "graph_provider": graph_provider,
                     "org_id": org_id,
+                    "conversation_id": query_info.conversationId,
                 }
 
                 all_queries = all_queries
@@ -687,6 +688,7 @@ async def askAIStream(
                     tool_runtime_kwargs=tool_runtime_kwargs,
                     target_words_per_chunk=1,
                     mode=query_info.mode,
+                    conversation_id=query_info.conversationId,
                 ):
                     event_type = stream_event["event"]
                     event_data = stream_event["data"]
