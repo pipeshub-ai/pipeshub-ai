@@ -2249,7 +2249,7 @@ const FiltersSection = forwardRef<HTMLDivElement, FiltersSectionProps>(
                   borderRadius: 0.75,
                 }}
               >
-                Add Filter
+                Add Filters
               </Button>
             )}
           </Box>
@@ -2345,7 +2345,7 @@ const FiltersSection = forwardRef<HTMLDivElement, FiltersSectionProps>(
                         },
                       }}
                     >
-                      Add Filter
+                      Add Filters
                     </Button>
                   )}
                 </Box>

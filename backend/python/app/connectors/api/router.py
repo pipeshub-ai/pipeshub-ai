@@ -473,7 +473,22 @@ async def stream_record_internal(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="The connector for this document no longer exists or was deleted. The document cannot be streamed.",
             )
-        return await connector.stream_record(record)
+
+        connector_display_name = (
+            connector_instance.get("name") or connector_instance.get("type") or record.connector_name.value or "Connector"
+        )
+
+        connector_obj: BaseConnector = container.connectors_map.get(connector_id)
+        if not connector_obj:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNHEALTHY.value,
+                detail=f"The connector '{connector_display_name}' is currently Disabled. Enable it from Connector Settings and try again.",
+            )
+
+        if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
+            return await connector_obj.stream_record(record, payload.get("userId"))
+        else:
+            return await connector_obj.stream_record(record)
 
     except JWTError as e:
         logger.error("JWT validation error: %s", str(e))
