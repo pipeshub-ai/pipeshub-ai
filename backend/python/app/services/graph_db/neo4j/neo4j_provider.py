@@ -442,6 +442,14 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.md5Checksum)"
         )
 
+        # COMPOSITE: virtualRecordId + orgId (batch fetch after Qdrant search)
+        # Pattern: MATCH (r:Record) WHERE r.virtualRecordId IN $ids AND r.orgId = $orgId
+        # Used in: get_records_by_virtual_record_ids
+        indexes.append(
+            "CREATE INDEX record_virtual_id_org IF NOT EXISTS "
+            "FOR (n:Record) ON (n.virtualRecordId, n.orgId)"
+        )
+
         # ==================== USER INDEXES (High Priority) ====================
 
         # SINGLE: email (authentication, lookups)
@@ -3812,6 +3820,7 @@ class Neo4jProvider(IGraphDBProvider):
         Returns:
             List of virtualRecordIds accessible for this connector
         """
+        start_time = time.time()
         try:
             # Build metadata filter conditions
             metadata_conditions = []
@@ -4010,7 +4019,10 @@ class Neo4jProvider(IGraphDBProvider):
             # Extract virtualRecordIds
             virtual_ids = [r["virtualId"] for r in results if r.get("virtualId")]
             
-            self.logger.debug(f"Connector {connector_id}: Found {len(virtual_ids)} virtualRecordIds")
+            elapsed_time = time.time() - start_time
+            self.logger.info(
+                f"✅ Connector {connector_id}: Found {len(virtual_ids)} virtualRecordIds in {elapsed_time:.3f}s"
+            )
             return virtual_ids
             
         except Exception as e:
@@ -4038,6 +4050,7 @@ class Neo4jProvider(IGraphDBProvider):
         Returns:
             List of virtualRecordIds from KBs
         """
+        start_time = time.time()
         try:
             # Build metadata filter conditions
             metadata_conditions = []
@@ -4119,6 +4132,7 @@ class Neo4jProvider(IGraphDBProvider):
                 {kb_filter_clause}
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE r.indexingStatus = $completedStatus
+                  AND r.origin = "UPLOAD"
                   {metadata_filter_clause}
                 RETURN collect(DISTINCT r.virtualRecordId) AS directKbRecords
             }}
@@ -4132,6 +4146,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE tke.type = "TEAM" {' AND kb.id IN $kb_ids' if kb_ids else ''}
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE r.indexingStatus = $completedStatus
+                  AND r.origin = "UPLOAD"
                   {metadata_filter_clause}
                 RETURN collect(DISTINCT r.virtualRecordId) AS teamKbRecords
             }}
@@ -4177,7 +4192,11 @@ class Neo4jProvider(IGraphDBProvider):
             # Extract virtualRecordIds
             virtual_ids = [r["virtualId"] for r in results if r.get("virtualId")]
             
-            self.logger.debug(f"KB query: Found {len(virtual_ids)} virtualRecordIds")
+            elapsed_time = time.time() - start_time
+            kb_filter_info = f" (filtered: {len(kb_ids)} KBs)" if kb_ids else " (all KBs)"
+            self.logger.info(
+                f"✅ KB query{kb_filter_info}: Found {len(virtual_ids)} virtualRecordIds in {elapsed_time:.3f}s"
+            )
             return virtual_ids
             
         except Exception as e:
@@ -4256,49 +4275,81 @@ class Neo4jProvider(IGraphDBProvider):
                 f"Metadata filters: {list(metadata_filters.keys())}"
             )
             
-            # Step 3: Determine which connectors to query in parallel
-            if has_app_filter:
-                # Intersect user's accessible apps with filter
+            # Step 3: Determine tasks based on 4 scenarios
+            tasks = []
+            
+            # Scenario 1: C=true, KB=true (both filters present)
+            if has_app_filter and has_kb_filter:
+                self.logger.info("🔍 Scenario 1: Both connector and KB filters applied")
+                
+                # Query only filtered connectors
                 connectors_to_query = [
                     cid for cid in user_apps_ids 
                     if cid in connector_ids_filter
                 ]
                 self.logger.info(f"Querying {len(connectors_to_query)} filtered connectors")
-            else:
-                # Query all accessible apps
+                
+                for connector_id in connectors_to_query:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(self._get_virtual_ids_for_connector(
+                        user_id, org_id, connector_id, metadata_filters
+                    ))
+                
+                # Query only filtered KBs
+                self.logger.info(f"Querying {len(kb_ids)} filtered KBs")
+                tasks.append(self._get_kb_virtual_ids(
+                    user_id, org_id, kb_ids, metadata_filters
+                ))
+            
+            # Scenario 2: C=false, KB=true (only KB filter)
+            elif not has_app_filter and has_kb_filter:
+                self.logger.info("🔍 Scenario 2: Only KB filter applied")
+                
+                # Query only filtered KBs (skip connector queries)
+                self.logger.info(f"Querying {len(kb_ids)} filtered KBs only")
+                tasks.append(self._get_kb_virtual_ids(
+                    user_id, org_id, kb_ids, metadata_filters
+                ))
+            
+            # Scenario 3: C=false, KB=false (no filters)
+            elif not has_app_filter and not has_kb_filter:
+                self.logger.info("🔍 Scenario 3: No filters - querying all connectors and KBs")
+                
+                # Query all accessible connectors
                 connectors_to_query = user_apps_ids
                 self.logger.info(f"Querying all {len(connectors_to_query)} accessible connectors")
-            
-            # Step 4: Launch parallel tasks
-            tasks = []
-            
-            # Per-connector tasks
-            for connector_id in connectors_to_query:
-                if connector_id.startswith("knowledgeBase_"):    #skipping knowledgeBase connector
-                    continue
-                task = self._get_virtual_ids_for_connector(
-                    user_id, org_id, connector_id, metadata_filters
-                )
-                tasks.append(task)
-            
-            # KB task (if needed)
-            # Case 1: KB filter provided -> query only those KBs
-            # Case 2: No KB filter AND no app filter -> query all KBs
-            # Case 3: No KB filter BUT app filter -> skip KB query (already handled by connector queries)
-            if has_kb_filter:
-                self.logger.info("Adding KB query task with filter")
-                kb_task = self._get_kb_virtual_ids(
-                    user_id, org_id, kb_ids, metadata_filters
-                )
-                tasks.append(kb_task)
-            elif not has_app_filter:
-                self.logger.info("Adding KB query task (no filters)")
-                kb_task = self._get_kb_virtual_ids(
+                
+                for connector_id in connectors_to_query:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(self._get_virtual_ids_for_connector(
+                        user_id, org_id, connector_id, metadata_filters
+                    ))
+                
+                # Query all KBs
+                self.logger.info("Querying all KBs")
+                tasks.append(self._get_kb_virtual_ids(
                     user_id, org_id, None, metadata_filters
-                )
-                tasks.append(kb_task)
-            else:
-                self.logger.info("Skipping KB query (app filter applied)")
+                ))
+            
+            # Scenario 4: C=true, KB=false (only connector filter)
+            else:  # has_app_filter and not has_kb_filter
+                self.logger.info("🔍 Scenario 4: Only connector filter applied - skipping KB")
+                
+                # Query only filtered connectors (skip KB entirely)
+                connectors_to_query = [
+                    cid for cid in user_apps_ids 
+                    if cid in connector_ids_filter
+                ]
+                self.logger.info(f"Querying {len(connectors_to_query)} filtered connectors only")
+                
+                for connector_id in connectors_to_query:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(self._get_virtual_ids_for_connector(
+                        user_id, org_id, connector_id, metadata_filters
+                    ))
             
             # Step 5: Execute all tasks in parallel
             if not tasks:
