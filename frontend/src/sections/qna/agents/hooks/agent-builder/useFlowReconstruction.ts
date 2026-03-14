@@ -242,8 +242,8 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
             const appDisplayName = knowledgeItem.displayName || knowledgeItem.name || appName;
             
             const displayName = appDisplayName || (connectorId.split('/').pop() || connectorId) || 'Knowledge Source';
-            const normalizedAppName = displayName.toLowerCase().replace(" ", "").replace(/\s+/g, '-');
-            const appKnowledgeType = knowledgeItem.type?.toLowerCase().replace(" ", "").replace(/\s+/g, '-') || normalizedAppName;
+            const normalizedAppSlug = displayName.toLowerCase().replace(/\s+/g, '');
+            const appKnowledgeType = knowledgeItem.type?.toLowerCase().replace(/\s+/g, '') || normalizedAppSlug;
             
             nodeCounter += 1;
             const nodeId = `app-${nodeCounter}`;
@@ -253,7 +253,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
               position: calculateOptimalPosition('knowledge', index, counts.knowledge),
               data: {
                 id: nodeId,
-                type: `app-${normalizedAppName}`,
+                type: `app-${normalizedAppSlug}`,
                 label: normalizeDisplayName(displayName),
                 description: `Access ${displayName} knowledge and context`,
                 icon: getAppKnowledgeIcon(displayName),
