@@ -2721,17 +2721,20 @@ export const getRecordBuffer =
         logger.info('Converting file to ', { convertTo });
         queryParams.append('convertTo', convertTo);
       }
+      const headers: Record<string, string> = {
+        Authorization: req.headers.authorization as string,
+        'Content-Type': 'application/json',
+      };
+      if (req.headers['x-oauth-user-id']) {
+        headers['x-oauth-user-id'] = req.headers['x-oauth-user-id'] as string;
+      }
 
       // Make request to FastAPI backend
       const response = await axios.get(
         `${connectorUrl}/api/v1/stream/record/${recordId}?${queryParams.toString()}`,
         {
           responseType: 'stream',
-          headers: {
-            // Include any necessary headers, such as authentication
-            Authorization: req.headers.authorization,
-            'Content-Type': 'application/json',
-          },
+          headers,
         },
       );
 
