@@ -14669,7 +14669,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # Combine results: use internal_records if available, otherwise use child_rgs + direct_records
         all_children = internal_records or child_rgs + direct_records
-
         filtered_children = [
             node for node in all_children
             if not only_containers or node.get("hasChildren") or node.get("nodeType") in ["app", "recordGroup", "folder"]
