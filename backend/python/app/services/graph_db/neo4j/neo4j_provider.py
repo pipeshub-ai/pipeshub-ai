@@ -5,6 +5,7 @@ Minimal implementation of IGraphDBProvider using Neo4j for testing OneDrive conn
 Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, properties, relationships).
 """
 
+import asyncio
 import hashlib
 import json
 import os
@@ -3788,6 +3789,603 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get accessible records failed: {str(e)}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
+
+    async def _get_virtual_ids_for_connector(
+        self,
+        user_id: str,
+        org_id: str,
+        connector_id: str,
+        metadata_filters: dict = None
+    ) -> List[str]:
+        """
+        Get virtualRecordIds for a specific connector with all permission paths.
+        
+        Args:
+            user_id: The userId field value
+            org_id: Organization ID
+            connector_id: Specific connector/app ID to query
+            metadata_filters: Optional metadata filters (departments, categories, etc.)
+            
+        Returns:
+            List of virtualRecordIds accessible for this connector
+        """
+        try:
+            # Build metadata filter conditions
+            metadata_conditions = []
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
+                        WHERE dept.departmentName IN $departmentNames
+                    }
+                    """)
+                
+                if metadata_filters.get("categories"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(cat:Category)
+                        WHERE cat.name IN $categoryNames
+                    }
+                    """)
+                
+                if metadata_filters.get("subcategories1"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        WHERE subcat.name IN $subcat1Names
+                    }
+                    """)
+                
+                if metadata_filters.get("subcategories2"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        WHERE subcat.name IN $subcat2Names
+                    }
+                    """)
+                
+                if metadata_filters.get("subcategories3"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        WHERE subcat.name IN $subcat3Names
+                    }
+                    """)
+                
+                if metadata_filters.get("languages"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
+                        WHERE lang.name IN $languageNames
+                    }
+                    """)
+                
+                if metadata_filters.get("topics"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_TOPIC]->(topic:Topic)
+                        WHERE topic.name IN $topicNames
+                    }
+                    """)
+            
+            # Build the metadata filter clause
+            metadata_filter_clause = ""
+            if metadata_conditions:
+                metadata_filter_clause = " AND " + " AND ".join(metadata_conditions)
+            
+            # Build the comprehensive Cypher query for this connector
+            query = f"""
+            MATCH (userDoc:User {{userId: $userId}})
+            
+            // Collect all accessible records from different permission paths
+            CALL {{
+                WITH userDoc
+                // Path 1: User -> Direct Records
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(r:Record)
+                WHERE r.connectorId = $connectorId 
+                  AND r.indexingStatus = $completedStatus
+                  {metadata_filter_clause}
+                RETURN collect(DISTINCT r.virtualRecordId) AS records1
+            }}
+            
+            CALL {{
+                WITH userDoc
+                // Path 2: User -> Group (BELONGS_TO) -> Records
+                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(g:Group)-[:PERMISSION]->(r:Record)
+                WHERE r.connectorId = $connectorId 
+                  AND r.indexingStatus = $completedStatus
+                  {metadata_filter_clause}
+                RETURN collect(DISTINCT r.virtualRecordId) AS records2
+            }}
+            
+            CALL {{
+                WITH userDoc
+                // Path 3: User -> Group (PERMISSION) -> Records
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(g:Group)-[:PERMISSION]->(r:Record)
+                WHERE r.connectorId = $connectorId 
+                  AND r.indexingStatus = $completedStatus
+                  {metadata_filter_clause}
+                RETURN collect(DISTINCT r.virtualRecordId) AS records3
+            }}
+            
+            CALL {{
+                WITH userDoc
+                // Path 4: User -> Organization -> Records
+                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(r:Record)
+                WHERE r.connectorId = $connectorId 
+                  AND r.indexingStatus = $completedStatus
+                  {metadata_filter_clause}
+                RETURN collect(DISTINCT r.virtualRecordId) AS records4
+            }}
+            
+            CALL {{
+                WITH userDoc
+                // Path 5: User -> Organization -> RecordGroup -> Records (via INHERIT_PERMISSIONS)
+                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.connectorId = $connectorId
+                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..2]->(rg)
+                WHERE r.connectorId = $connectorId 
+                  AND r.indexingStatus = $completedStatus
+                  {metadata_filter_clause}
+                RETURN collect(DISTINCT r.virtualRecordId) AS records5
+            }}
+            
+            CALL {{
+                WITH userDoc
+                // Path 6: User -> Group/Role -> RecordGroup -> Records (via INHERIT_PERMISSIONS)
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(gr)
+                WHERE gr:Group OR gr:Role
+                OPTIONAL MATCH (gr)-[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.connectorId = $connectorId
+                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
+                WHERE r.connectorId = $connectorId 
+                  AND r.indexingStatus = $completedStatus
+                  {metadata_filter_clause}
+                RETURN collect(DISTINCT r.virtualRecordId) AS records6
+            }}
+            
+            CALL {{
+                WITH userDoc
+                // Path 7: User -> RecordGroup -> Records (via INHERIT_PERMISSIONS)
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.connectorId = $connectorId
+                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
+                WHERE r.connectorId = $connectorId 
+                  AND r.indexingStatus = $completedStatus
+                  {metadata_filter_clause}
+                RETURN collect(DISTINCT r.virtualRecordId) AS records7
+            }}
+            
+            CALL {{
+                // Path 8: Anyone records (merged into per-connector query)
+                OPTIONAL MATCH (anyone:Anyone {{organization: $orgId}})
+                OPTIONAL MATCH (r:Record)
+                WHERE r.id = anyone.file_key
+                  AND r.connectorId = $connectorId
+                  AND r.indexingStatus = $completedStatus
+                  {metadata_filter_clause}
+                RETURN collect(DISTINCT r.virtualRecordId) AS records8
+            }}
+            
+            // Union all virtualRecordIds and filter out nulls
+            WITH records1 + records2 + records3 + records4 + records5 + records6 + records7 + records8 AS allVirtualIds
+            UNWIND allVirtualIds AS virtualId
+            WITH virtualId
+            WHERE virtualId IS NOT NULL
+            RETURN DISTINCT virtualId
+            """
+            
+            # Prepare parameters
+            parameters = {
+                "userId": user_id,
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "completedStatus": ProgressStatus.COMPLETED.value
+            }
+            
+            # Add metadata filter parameters
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    parameters["departmentNames"] = metadata_filters["departments"]
+                if metadata_filters.get("categories"):
+                    parameters["categoryNames"] = metadata_filters["categories"]
+                if metadata_filters.get("subcategories1"):
+                    parameters["subcat1Names"] = metadata_filters["subcategories1"]
+                if metadata_filters.get("subcategories2"):
+                    parameters["subcat2Names"] = metadata_filters["subcategories2"]
+                if metadata_filters.get("subcategories3"):
+                    parameters["subcat3Names"] = metadata_filters["subcategories3"]
+                if metadata_filters.get("languages"):
+                    parameters["languageNames"] = metadata_filters["languages"]
+                if metadata_filters.get("topics"):
+                    parameters["topicNames"] = metadata_filters["topics"]
+            
+            # Execute query
+            results = await self.client.execute_query(query, parameters=parameters)
+            
+            # Extract virtualRecordIds
+            virtual_ids = [r["virtualId"] for r in results if r.get("virtualId")]
+            
+            self.logger.debug(f"Connector {connector_id}: Found {len(virtual_ids)} virtualRecordIds")
+            return virtual_ids
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get virtual IDs for connector {connector_id}: {str(e)}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
+
+    async def _get_kb_virtual_ids(
+        self,
+        user_id: str,
+        org_id: str,
+        kb_ids: Optional[List[str]] = None,
+        metadata_filters: dict = None
+    ) -> List[str]:
+        """
+        Get virtualRecordIds from Knowledge Bases (RecordGroups).
+        
+        Args:
+            user_id: The userId field value
+            org_id: Organization ID
+            kb_ids: Optional list of KB IDs to filter by
+            metadata_filters: Optional metadata filters
+            
+        Returns:
+            List of virtualRecordIds from KBs
+        """
+        try:
+            # Build metadata filter conditions
+            metadata_conditions = []
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
+                        WHERE dept.departmentName IN $departmentNames
+                    }
+                    """)
+                
+                if metadata_filters.get("categories"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(cat:Category)
+                        WHERE cat.name IN $categoryNames
+                    }
+                    """)
+                
+                if metadata_filters.get("subcategories1"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        WHERE subcat.name IN $subcat1Names
+                    }
+                    """)
+                
+                if metadata_filters.get("subcategories2"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        WHERE subcat.name IN $subcat2Names
+                    }
+                    """)
+                
+                if metadata_filters.get("subcategories3"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        WHERE subcat.name IN $subcat3Names
+                    }
+                    """)
+                
+                if metadata_filters.get("languages"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
+                        WHERE lang.name IN $languageNames
+                    }
+                    """)
+                
+                if metadata_filters.get("topics"):
+                    metadata_conditions.append("""
+                    EXISTS {
+                        MATCH (r)-[:BELONGS_TO_TOPIC]->(topic:Topic)
+                        WHERE topic.name IN $topicNames
+                    }
+                    """)
+            
+            # Build the metadata filter clause
+            metadata_filter_clause = ""
+            if metadata_conditions:
+                metadata_filter_clause = " AND " + " AND ".join(metadata_conditions)
+            
+            # Build KB filter clause
+            kb_filter_clause = ""
+            if kb_ids:
+                kb_filter_clause = " WHERE kb.id IN $kb_ids"
+            
+            # Build the KB query
+            query = f"""
+            MATCH (userDoc:User {{userId: $userId}})
+            
+            CALL {{
+                WITH userDoc
+                // Direct user-KB permissions
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:RecordGroup)
+                {kb_filter_clause}
+                OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
+                WHERE r.indexingStatus = $completedStatus
+                  {metadata_filter_clause}
+                RETURN collect(DISTINCT r.virtualRecordId) AS directKbRecords
+            }}
+            
+            CALL {{
+                WITH userDoc
+                // Team-based KB permissions
+                OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Teams)
+                WHERE ute.type = "USER"
+                OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:RecordGroup)
+                WHERE tke.type = "TEAM" {' AND kb.id IN $kb_ids' if kb_ids else ''}
+                OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
+                WHERE r.indexingStatus = $completedStatus
+                  {metadata_filter_clause}
+                RETURN collect(DISTINCT r.virtualRecordId) AS teamKbRecords
+            }}
+            
+            // Union all virtualRecordIds and filter out nulls
+            WITH directKbRecords + teamKbRecords AS allVirtualIds
+            UNWIND allVirtualIds AS virtualId
+            WITH virtualId
+            WHERE virtualId IS NOT NULL
+            RETURN DISTINCT virtualId
+            """
+            
+            # Prepare parameters
+            parameters = {
+                "userId": user_id,
+                "orgId": org_id,
+                "completedStatus": ProgressStatus.COMPLETED.value
+            }
+            
+            if kb_ids:
+                parameters["kb_ids"] = kb_ids
+            
+            # Add metadata filter parameters
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    parameters["departmentNames"] = metadata_filters["departments"]
+                if metadata_filters.get("categories"):
+                    parameters["categoryNames"] = metadata_filters["categories"]
+                if metadata_filters.get("subcategories1"):
+                    parameters["subcat1Names"] = metadata_filters["subcategories1"]
+                if metadata_filters.get("subcategories2"):
+                    parameters["subcat2Names"] = metadata_filters["subcategories2"]
+                if metadata_filters.get("subcategories3"):
+                    parameters["subcat3Names"] = metadata_filters["subcategories3"]
+                if metadata_filters.get("languages"):
+                    parameters["languageNames"] = metadata_filters["languages"]
+                if metadata_filters.get("topics"):
+                    parameters["topicNames"] = metadata_filters["topics"]
+            
+            # Execute query
+            results = await self.client.execute_query(query, parameters=parameters)
+            
+            # Extract virtualRecordIds
+            virtual_ids = [r["virtualId"] for r in results if r.get("virtualId")]
+            
+            self.logger.debug(f"KB query: Found {len(virtual_ids)} virtualRecordIds")
+            return virtual_ids
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get KB virtual IDs: {str(e)}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
+
+    async def get_accessible_virtual_record_ids(
+        self, user_id: str, org_id: str, filters: dict = None
+    ) -> List[str]:
+        """
+        Get all virtual record ids accessible to a user based on their permissions and apply filters.
+        
+        OPTIMIZED VERSION:
+        - Returns only virtualRecordIds (not full records)
+        - Filters by indexingStatus = COMPLETED
+        - Applies KB/app filters during traversal (not post-filter)
+        - Parallelizes per-connector queries
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (dict): Optional filters for departments, categories, languages, topics etc.
+                Format: {
+                    'departments': [dept_ids],
+                    'categories': [cat_ids],
+                    'subcategories1': [subcat1_ids],
+                    'subcategories2': [subcat2_ids],
+                    'subcategories3': [subcat3_ids],
+                    'languages': [language_ids],
+                    'topics': [topic_ids],
+                    'kb': [kb_ids],
+                    'apps': [connector_ids]
+                }
+                
+        Returns:
+            List[str]: List of virtualRecordIds
+        """
+        start_time = time.time()
+        self.logger.info(
+            f"Getting accessible virtual record IDs for user {user_id} in org {org_id} with filters {filters}"
+        )
+
+        try:
+            # Step 1: Get user and accessible apps
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return []
+
+            user_key = user.get('id') or user.get('_key')
+            user_apps_ids = await self._get_user_app_ids(user_key)
+            
+            if not user_apps_ids:
+                self.logger.warning(f"User {user_id} has no accessible apps")
+                # Still need to check KB access even without apps
+            
+            # Step 2: Extract filters and determine which connectors to query
+            filters = filters or {}
+            kb_ids = filters.get("kb")
+            connector_ids_filter = filters.get("apps")
+            
+            # Extract metadata filters (departments, categories, etc.)
+            metadata_filters = {
+                k: v for k, v in filters.items() 
+                if k not in ["kb", "apps"] and v
+            }
+            
+            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
+            has_app_filter = connector_ids_filter is not None and len(connector_ids_filter) > 0
+            
+            self.logger.info(
+                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
+                f"App filter: {has_app_filter} (Connector IDs: {connector_ids_filter}), "
+                f"Metadata filters: {list(metadata_filters.keys())}"
+            )
+            
+            # Step 3: Determine which connectors to query in parallel
+            if has_app_filter:
+                # Intersect user's accessible apps with filter
+                connectors_to_query = [
+                    cid for cid in user_apps_ids 
+                    if cid in connector_ids_filter
+                ]
+                self.logger.info(f"Querying {len(connectors_to_query)} filtered connectors")
+            else:
+                # Query all accessible apps
+                connectors_to_query = user_apps_ids
+                self.logger.info(f"Querying all {len(connectors_to_query)} accessible connectors")
+            
+            # Step 4: Launch parallel tasks
+            tasks = []
+            
+            # Per-connector tasks
+            for connector_id in connectors_to_query:
+                if connector_id.startswith("knowledgeBase_"):    #skipping knowledgeBase connector
+                    continue
+                task = self._get_virtual_ids_for_connector(
+                    user_id, org_id, connector_id, metadata_filters
+                )
+                tasks.append(task)
+            
+            # KB task (if needed)
+            # Case 1: KB filter provided -> query only those KBs
+            # Case 2: No KB filter AND no app filter -> query all KBs
+            # Case 3: No KB filter BUT app filter -> skip KB query (already handled by connector queries)
+            if has_kb_filter:
+                self.logger.info("Adding KB query task with filter")
+                kb_task = self._get_kb_virtual_ids(
+                    user_id, org_id, kb_ids, metadata_filters
+                )
+                tasks.append(kb_task)
+            elif not has_app_filter:
+                self.logger.info("Adding KB query task (no filters)")
+                kb_task = self._get_kb_virtual_ids(
+                    user_id, org_id, None, metadata_filters
+                )
+                tasks.append(kb_task)
+            else:
+                self.logger.info("Skipping KB query (app filter applied)")
+            
+            # Step 5: Execute all tasks in parallel
+            if not tasks:
+                self.logger.warning("No tasks to execute")
+                return []
+            
+            self.logger.info(f"Executing {len(tasks)} parallel queries...")
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Step 6: Union and deduplicate virtualRecordIds
+            all_virtual_ids = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    self.logger.error(f"Task {i} failed: {str(result)}")
+                    continue
+                if result:
+                    all_virtual_ids.extend(result)
+            
+            # Deduplicate
+            unique_virtual_ids = list(set(all_virtual_ids))
+            
+            total_time = time.time() - start_time
+            
+            self.logger.info(
+                f"✅ Found {len(unique_virtual_ids)} unique virtualRecordIds "
+                f"from {len(all_virtual_ids)} total results in {total_time:.3f}s"
+            )
+            
+            return unique_virtual_ids
+        
+        except Exception as e:
+            self.logger.error(f"❌ Get accessible virtual record IDs failed: {str(e)}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
+
+    async def get_records_by_virtual_record_ids(
+        self,
+        virtual_record_ids: List[str],
+        org_id: str
+    ) -> List[Dict]:
+        """
+        Batch fetch full record documents by their virtualRecordIds.
+        
+        This is used after Qdrant search to fetch only the records that were actually returned,
+        instead of fetching all accessible records upfront.
+        
+        Args:
+            virtual_record_ids: List of virtualRecordIds to fetch
+            org_id: Organization ID for additional filtering
+            
+        Returns:
+            List of full record dictionaries
+        """
+        try:
+            if not virtual_record_ids:
+                return []
+            
+            self.logger.debug(f"Fetching {len(virtual_record_ids)} records by virtualRecordIds")
+            
+            query = """
+            MATCH (r:Record)
+            WHERE r.virtualRecordId IN $virtual_record_ids 
+              AND r.orgId = $org_id
+            RETURN r
+            """
+            
+            parameters = {
+                "virtual_record_ids": virtual_record_ids,
+                "org_id": org_id
+            }
+            
+            results = await self.client.execute_query(query, parameters=parameters)
+            
+            # Convert to Arango format
+            records = []
+            if results:
+                for result in results:
+                    if result.get("r"):
+                        record_dict = dict(result["r"])
+                        records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
+            
+            self.logger.debug(f"✅ Fetched {len(records)} records")
+            return records
+            
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch records by virtualRecordIds: {str(e)}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return []
