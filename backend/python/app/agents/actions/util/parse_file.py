@@ -16,11 +16,12 @@ from typing import Optional
 import fitz
 from openpyxl import load_workbook
 
+from docx import Document
+from pptx import Presentation
+
 from app.modules.parsers.docx.docparser import DocParser
-from app.modules.parsers.docx.docx_parser import DocxParser
 from app.modules.parsers.excel.xls_parser import XLSParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
-from app.modules.parsers.pptx.pptx_parser import PPTXParser
 
 
 # ---------------------------------------------------------------------------
@@ -36,30 +37,13 @@ SUPPORTED_OLE2: frozenset[str] = frozenset({"doc", "xls", "ppt"})
 
 SUPPORTED_TEXT: frozenset[str] = frozenset({
     # Documents / markup
-    "txt", "md", "markdown", "rst", "tex",
-    "html", "htm", "xhtml",
-    "xml", "svg",
+    "txt", "md", "mdx", "markdown", "rst", "tex",
+    "html", "htm", "xhtml", "xml",
     # Data interchange
     "json", "jsonl", "ndjson",
     "csv", "tsv",
-    "yaml", "yml", "toml",
-    # Config / env
-    "ini", "cfg", "conf", "env", "properties",
-    # Notebooks
-    "ipynb",
     # Code
-    "py", "pyw",
-    "js", "mjs", "cjs", "ts", "jsx", "tsx",
-    "java", "kt", "kts",
-    "c", "h", "cpp", "cc", "cxx", "hpp",
-    "cs", "fs", "vb",
-    "go", "rs", "rb", "php", "swift",
-    "r", "rmd",
-    "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
-    "sql", "graphql", "proto",
-    "lua", "pl", "pm", "scala", "groovy", "dart", "ex", "exs",
-    # Logs / misc
-    "log", "diff", "patch",
+    "py"
 })
 
 # Master allow-list — union of all groups
@@ -149,7 +133,10 @@ class FileContentParser:
         if ext in SUPPORTED_OLE2:
             return self._parse_ole2(raw, original_size, max_bytes, ext)
         # SUPPORTED_TEXT — everything else
-        return self._parse_plain_text(raw, original_size, max_bytes, ext)
+        if ext in SUPPORTED_TEXT:
+            return self._parse_plain_text(raw, original_size, max_bytes, ext)
+        else:
+            return False, json.dumps({"error": f"Unsupported file type: .{ext}"})
 
     # ------------------------------------------------------------------
     # Magic-byte safety validation
@@ -242,7 +229,8 @@ class FileContentParser:
         # fmt is guaranteed to be one of SUPPORTED_OOXML {"docx", "xlsx", "pptx"}.
         try:
             if fmt == "docx":
-                text = DocxParser().parse(BytesIO(raw)).export_to_text()
+                doc = Document(BytesIO(raw))
+                text = "\n".join(para.text for para in doc.paragraphs)
 
             elif fmt == "xlsx":
                 wb = load_workbook(BytesIO(raw), read_only=True, data_only=True)
@@ -256,7 +244,16 @@ class FileContentParser:
                 text = "\n".join(rows)
 
             else:  # pptx
-                text = PPTXParser().parse_binary(raw).export_to_text()
+                prs = Presentation(BytesIO(raw))
+                slides: list[str] = []
+                for i, slide in enumerate(prs.slides, 1):
+                    slide_texts = [
+                        shape.text
+                        for shape in slide.shapes
+                        if shape.has_text_frame
+                    ]
+                    slides.append(f"=== Slide {i} ===\n" + "\n".join(slide_texts))
+                text = "\n\n".join(slides)
 
             return self._ok(text, fmt, original_size, max_bytes)
         except Exception as e:
@@ -291,7 +288,8 @@ class FileContentParser:
     def _extract_doc_via_parser(self, raw: bytes) -> str:
         """Extract text from .doc by converting to .docx (LibreOffice) then parsing."""
         docx_stream = DocParser().convert_doc_to_docx(raw)
-        return DocxParser().parse(docx_stream).export_to_text()
+        doc = Document(docx_stream)
+        return "\n".join(para.text for para in doc.paragraphs)
 
     def _extract_xls_via_parser(self, raw: bytes) -> str:
         """Extract text from .xls by converting to .xlsx (LibreOffice) then parsing."""
@@ -309,7 +307,16 @@ class FileContentParser:
     def _extract_ppt_via_parser(self, raw: bytes) -> str:
         """Extract text from .ppt by converting to .pptx (LibreOffice) then parsing."""
         pptx_bytes = PPTParser().convert_ppt_to_pptx(raw)
-        return PPTXParser().parse_binary(pptx_bytes).export_to_text()
+        prs = Presentation(BytesIO(pptx_bytes))
+        slides: list[str] = []
+        for i, slide in enumerate(prs.slides, 1):
+            slide_texts = [
+                shape.text
+                for shape in slide.shapes
+                if shape.has_text_frame
+            ]
+            slides.append(f"=== Slide {i} ===\n" + "\n".join(slide_texts))
+        return "\n\n".join(slides)
 
     # ------------------------------------------------------------------
     # Plain text — json, html, md, csv, code files, …

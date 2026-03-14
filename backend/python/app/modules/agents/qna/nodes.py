@@ -3260,80 +3260,156 @@ Examples:
 
 ONEDRIVE_GUIDANCE = r"""
 ## OneDrive-Specific Guidance
-
-### ⚠️ CRITICAL: drive_id Resolution — ALWAYS Call `get_drives` First
-
-Almost every OneDrive tool requires a `drive_id` parameter. **NEVER ask the user for a drive_id.** Resolve it automatically:
-
-1. Check conversation history / Reference Data for a previously retrieved `drive_id` → use it directly
-2. If unknown → call `onedrive.get_drives` first, then use the result in subsequent tools
-
-**The `drive_id` is an internal Graph API identifier (e.g., `b!xxxx...`). Users don't know it. Always resolve it via `get_drives`.**
-
-### ⚠️ CRITICAL: item_id Resolution — Use `search_files` or `get_files`
-
-File operations (rename, delete, move, copy, etc.) require an `item_id`. **NEVER ask the user for an item_id.** Resolve it automatically:
-
-1. Check conversation history / Reference Data for a previously retrieved `item_id` → use it directly
-2. If the user mentions a file name → call `onedrive.search_files` to find it
-3. If browsing → call `onedrive.get_files` or `onedrive.get_folder_children`
-
-### Cascading Patterns (CRITICAL)
-
-**Pattern: Rename a file by name**
-User says: "rename X to Y"
-```json
-{{
-  "tools": [
-    {{"name": "onedrive.get_drives", "args": {{}}}},
-    {{"name": "onedrive.search_files", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "query": "X"}}}},
-    {{"name": "onedrive.rename_item", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "item_id": "{{{{onedrive.search_files.data.value[0].id}}}}", "new_name": "Y"}}}}
-  ]
-}}
+### ⚠️ CRITICAL Rules
+- **NEVER ask the user for `drive_id` or `item_id`** — always resolve them via API calls.
+- **NEVER skip prerequisites** — each tool below lists exactly what must be called before it.
+- **File content queries**: if the user asks anything about the *content* of a file, always call `get_file_content` last and answer from its output.
+---
+### Tool Prerequisite Flows
+Each tool shows the **minimum required call chain**. Skip a step only if that value is already in conversation history.
+---
+#### `get_drives`
+> **No prerequisites** — always the starting point.
 ```
-
-**Pattern: Delete a file by name**
-```json
-{{
-  "tools": [
-    {{"name": "onedrive.get_drives", "args": {{}}}},
-    {{"name": "onedrive.search_files", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "query": "filename"}}}},
-    {{"name": "onedrive.delete_item", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "item_id": "{{{{onedrive.search_files.data.value[0].id}}}}"}}}}
-  ]
-}}
+get_drives
 ```
-
-**Pattern: Search files**
-```json
-{{
-  "tools": [
-    {{"name": "onedrive.get_drives", "args": {{}}}},
-    {{"name": "onedrive.search_files", "args": {{"drive_id": "{{{{onedrive.get_drives.data.value[0].id}}}}", "query": "keyword"}}}}
-  ]
-}}
+---
+#### `get_drive`
+> Needs `drive_id`.
 ```
-
-**Pattern: List files (drive_id already known from conversation history)**
-```json
-{{
-  "tools": [
-    {{"name": "onedrive.get_files", "args": {{"drive_id": "b!abc123..."}}}}
-  ]
-}}
+get_drives → get_drive
 ```
-
+---
+#### `get_root_folder`
+> Needs `drive_id`.
+```
+get_drives → get_root_folder
+```
+---
+#### `get_files`
+> Needs `drive_id`. Optionally `folder_id` to list a subfolder instead of root.
+```
+get_drives → get_files
+# If listing inside a specific folder:
+get_drives → search_files (to find folder_id) → get_files(folder_id=...)
+```
+---
+#### `get_folder_children`
+> Needs `drive_id` + `folder_id`.
+```
+get_drives → search_files (to find folder_id) → get_folder_children
+```
+---
+#### `get_file`
+> Needs `drive_id` + `item_id`.
+```
+get_drives → search_files (to find item_id) → get_file
+```
+---
+#### `search_files`
+> Needs `drive_id` only.
+```
+get_drives → search_files
+```
+---
+#### `get_recent_files`
+> Needs `drive_id`.
+```
+get_drives → get_recent_files
+```
+---
+#### `get_shared_with_me`
+> **No prerequisites** — does not require a `drive_id`.
+```
+get_shared_with_me
+```
+---
+#### `create_folder`
+> Needs `drive_id`. Optionally `parent_folder_id` to nest inside a specific folder.
+```
+get_drives → create_folder
+# If creating inside a specific folder:
+get_drives → search_files (to find parent_folder_id) → create_folder
+```
+---
+#### `rename_item`
+> Needs `drive_id` + `item_id`.
+```
+get_drives → search_files (to find item_id) → rename_item
+```
+---
+#### `move_item`
+> Needs `drive_id` + `item_id` (the file to move) + `new_parent_id` (the destination folder).
+```
+get_drives → search_files (find item_id) → search_files (find destination folder_id) → move_item
+```
+> If the destination folder is already known from conversation history, skip the second `search_files`.
+---
+#### `copy_item`
+> Needs `drive_id` + `item_id` + `destination_folder_id`. Optionally `destination_drive_id` if copying across drives.
+```
+get_drives → search_files (find item_id) → search_files (find destination_folder_id) → copy_item
+```
+> Note: `copy_item` is async — the copy may not be immediately visible. Use `search_files` afterwards to confirm.
+---
+#### `get_versions`
+> Needs `drive_id` + `item_id`.
+```
+get_drives → search_files (to find item_id) → get_versions
+```
+---
+#### `get_specific_version`
+> Needs `drive_id` + `item_id` + `version_id`.
+```
+get_drives → search_files (to find item_id) → get_versions (to find version_id) → get_specific_version
+```
+---
+#### `restore_version`
+> Needs `drive_id` + `item_id` + `version_id`.
+```
+get_drives → search_files (to find item_id) → get_versions (to find version_id) → restore_version
+```
+---
+#### `get_permissions`
+> Needs `drive_id` + `item_id`.
+```
+get_drives → search_files (to find item_id) → get_permissions
+```
+---
+#### `get_download_url`
+> Needs `drive_id` + `item_id`.
+```
+get_drives → search_files (to find item_id) → get_download_url
+```
+---
+#### `get_thumbnails`
+> Needs `drive_id` + `item_id`.
+```
+get_drives → search_files (to find item_id) → get_thumbnails
+```
+---
+#### `get_file_content`
+> Needs `drive_id` + `item_id`. **Must be called before answering any question about file contents.**
+> Supported formats: `.txt`, `.md`, `.csv`, `.json`, `.xml`, `.html`, `.py`, `.js`, `.log`, `.docx`, `.xlsx`, `.pptx`, `.pdf`
+```
+get_drives → search_files (to find item_id) → get_file_content → answer from content
+```
+---
+#### `create_office_file`
+> Needs `drive_id`. Optionally `parent_folder_id` to place the file in a specific folder.
+```
+get_drives → create_office_file
+# If placing inside a specific folder:
+get_drives → search_files (to find parent_folder_id) → create_office_file
+```
+> Supported types: `word` (.docx), `excel` (.xlsx), `powerpoint` (.pptx)
+---
 ### Multiple Drives
-
-If the user has multiple drives and specifies which one (e.g., "my OneDrive (Business)"), match by `name` or `driveType` from `get_drives` results. If ambiguous:
-- Use the first drive by default (`value[0]`)
-- If the user specifies a drive name, select the matching drive from `get_drives` results
-
-### Never Ask for These
-
-- ❌ "What is your drive_id?" → ✅ Call `onedrive.get_drives` to resolve it
-- ❌ "What is the item_id?" → ✅ Call `onedrive.search_files` or `onedrive.get_files` to resolve it
-- ❌ "Provide your drive_id" → ✅ Always auto-resolve via API calls
+If the user specifies a drive (e.g. "my Business OneDrive"), match by `name` or `driveType` from `get_drives` results. When ambiguous, default to `value[0]`.
+### Caching IDs
+Once `drive_id` or any `item_id` is resolved in a conversation turn, reuse it in subsequent calls without calling `get_drives` or `search_files` again.
 """
+
 OUTLOOK_GUIDANCE = r"""
 ## Outlook-Specific Guidance
 

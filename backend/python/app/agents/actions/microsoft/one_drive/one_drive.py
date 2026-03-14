@@ -4,7 +4,7 @@ from io import BytesIO
 from typing import Any, Dict, Optional
 
 from app.agents.actions.util.parse_file import FileContentParser
-
+from app.modules.agents.qna.chat_state import ChatState
 from msgraph.generated.drives.item.items.item.checkin.checkin_post_request_body import (  # type: ignore
     CheckinPostRequestBody,
 )
@@ -29,6 +29,7 @@ from app.connectors.core.registry.tool_builder import (
 )
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSource
+from app.api.routes.chatbot import get_model_config
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +349,6 @@ class GetFileContentInput(BaseModel):
     """Schema for reading text-based file content"""
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the text-based file (e.g. .txt, .md, .csv, .json, .html)")
-    max_bytes: Optional[int] = Field(default=500_000, description="Maximum number of bytes to read (default 500 000 ≈ 500 KB)")
 
 
 class GetFileContentBase64Input(BaseModel):
@@ -430,7 +430,7 @@ class CreateOfficeFileInput(BaseModel):
 class OneDrive:
     """OneDrive tool exposed to the agents using OneDriveDataSource"""
 
-    def __init__(self, client: MSGraphClient) -> None:
+    def __init__(self, client: MSGraphClient, state: Optional[ChatState] = None, **kwargs) -> None:
         """Initialize the OneDrive tool
 
         Args:
@@ -439,6 +439,7 @@ class OneDrive:
             None
         """
         self.client = OneDriveDataSource(client)
+        self.state: Optional[ChatState] = state or kwargs.get('state')
     
 
     def _serialize_response(response_obj: Any) -> Any:
@@ -624,6 +625,7 @@ class OneDrive:
                 top=top,
                 skip=skip,
             )
+            print(f"[get_drives] response: {_response_json(response)}")
             if response.success:
                 return True, _response_json(response)
             return False, _response_json(response)
@@ -1597,12 +1599,12 @@ class OneDrive:
     @tool(
         app_name="onedrive",
         tool_name="get_file_content",
-        description="Download and return the text content of a OneDrive file. Use for plain-text files (.txt, .md, .csv, .json, .xml, .html, .py, .js, etc.) to read, summarise, or answer questions about them.",
+        description="Download and return the text content of a OneDrive file. Use for PDF, DOCX, XLSX, PPTX, HTML, XML, CSV, TSV, MD, MDX, TXT, DOC, XLS, PPT, etc. to read, summarise, or answer questions about them.",
         args_schema=GetFileContentInput,
         when_to_use=[
-            "User wants to read, summarise, or ask questions about a text-based OneDrive file",
+            "User wants to read, summarise, or ask questions about a OneDrive file",
             "User says 'read this file', 'what's in this document', or 'summarise this CSV'",
-            "File is a text-based format: .txt, .md, .csv, .json, .xml, .html, .py, .js, .log, etc.",
+            "File is a format: PDF, DOCX, XLSX, PPTX, HTML, XML, CSV, TSV, MD, MDX, TXT, DOC, XLS, PPT, etc.",
         ],
         when_not_to_use=[
             "File is binary (image, PDF, Office doc) — use get_file_content_base64 instead",
@@ -1623,7 +1625,6 @@ class OneDrive:
         self,
         drive_id: str,
         item_id: str,
-        max_bytes: Optional[int] = 500_000,
     ) -> tuple[bool, str]:
         try:
             file_info = await self.client.drives_get_items(
@@ -1633,6 +1634,16 @@ class OneDrive:
             )
             if not file_info.success:
                 return False, _response_json(file_info)
+
+            model_name = self.state.get("model_name")
+            model_key = self.state.get("model_key")
+            configuration_service = self.state.get("config_service")
+
+            model_config, ai_models_config = await get_model_config(configuration_service, model_key, model_name)
+            context_length = (model_config or {}).get("contextLength") or 128_000
+
+            print(f"\033[92m[get_file_content] context_length: {context_length}\033[0m")
+            max_bytes = int(context_length*0.8)
 
             # response.data is a typed DriveItem object, not a dict
             data  = _response_json(file_info)
