@@ -422,8 +422,6 @@ export const GridView: React.FC<GridViewProps> = ({
         return 'Paused';
       case 'QUEUED':
         return 'Queued';
-      case 'CONNECTOR_DISABLED':
-        return 'Connector Disabled';
       default:
         return status
           .replace(/_/g, ' ')

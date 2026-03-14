@@ -94,7 +94,6 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             category=FilterCategory.SYNC,
             description="Select specific S3 buckets to sync",
             option_source_type=OptionSourceType.DYNAMIC,
-            default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(CommonFields.file_extension_filter())

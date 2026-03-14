@@ -872,6 +872,7 @@ export default function Collections() {
       setSuccess('Download started successfully');
     } catch (err: any) {
       console.error('Failed to download document', err);
+      setError(err?.message || 'Failed to download document. Please try again.');
     }
   };
 

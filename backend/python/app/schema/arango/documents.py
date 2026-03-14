@@ -148,6 +148,7 @@ app_schema = {
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "status": {"type": ["string", "null"]},
         },
         "required": [
             "name",
@@ -214,7 +215,7 @@ record_schema = {
                     "EMPTY",
                     "ENABLE_MULTIMODAL_MODELS",
                     "QUEUED",
-                    "CONNECTOR_DISABLED"
+                    "CONNECTOR_DISABLED"   # deprecated, use AUTO_INDEX_OFF instead
                 ],
             },
             "extractionStatus": {

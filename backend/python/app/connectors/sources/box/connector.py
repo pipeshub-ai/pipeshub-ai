@@ -16,6 +16,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -59,7 +60,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -461,7 +461,7 @@ class BoxConnector(BaseConnector):
                     and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED_WITH_ME, default=True)
                 )
                 if shared_disabled or shared_with_me_disabled:
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             # Link shared-with-me records to the user's "Shared with Me" record group (for future collaboration sync)
             if file_record.is_shared_with_me and user_email:

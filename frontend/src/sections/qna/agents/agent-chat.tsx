@@ -1810,8 +1810,14 @@ const AgentChat = () => {
 
       const buffer = await arrayBufferPromise;
       setFileBuffer(buffer);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch document:', err);
+      const message = err?.message || 'Failed to load document. Please try again.';
+      setSnackbar({
+        open: true,
+        message,
+        severity: err?.statusCode === 503 ? 'warning' : 'error',
+      });
       setTimeout(() => {
         onClosePdf();
       }, 500);

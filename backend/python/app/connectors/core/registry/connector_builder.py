@@ -697,7 +697,6 @@ class CommonFields:
             category=FilterCategory.SYNC,
             description=description
             or "Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
-            default_value=[],
             default_operator=MultiselectOperator.IN.value,
             option_source_type=OptionSourceType.STATIC,
             options=[

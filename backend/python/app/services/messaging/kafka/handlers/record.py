@@ -181,11 +181,12 @@ class RecordEventHandler(BaseEventService):
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} is inactive."
                         )
-                        # Update status to CONNECTOR_DISABLED
+                        # Update status to MANUAL_INDEXING and reson to connector is inactive
                         await self.__update_document_status(
                             record_id=record_id,
-                            indexing_status=ProgressStatus.CONNECTOR_DISABLED.value,
-                            extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value)
+                            indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
+                            extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+                            reason="Connector is inactive"
                         )
                         yield {"event": "parsing_complete", "data": {"record_id": record_id}}
                         yield {"event": "indexing_complete", "data": {"record_id": record_id}}
@@ -356,17 +357,17 @@ class RecordEventHandler(BaseEventService):
                 except Exception as e:
                     error_occurred = True
                     error_msg = str(e)
-                    raise Exception(error_msg)
+                    raise Exception(error_msg) from e
         except IndexingError as e:
             error_occurred = True
             error_msg = str(e)
             self.logger.error(error_msg, exc_info=True)
-            raise Exception(error_msg)
+            raise Exception(error_msg) from e
         except Exception as e:
             error_occurred = True
             error_msg = str(e)
             self.logger.error(error_msg, exc_info=True)
-            raise Exception(error_msg)
+            raise Exception(error_msg) from e
         finally:
             processing_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(
@@ -384,30 +385,22 @@ class RecordEventHandler(BaseEventService):
                 virtual_record_id = record.get("virtualRecordId") if record else None
                 self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
                 await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
-                return
-
-            if record is None:
-                return
-
-            # Update queued duplicates for ALL record types (not just FILE)
-            if event_type != EventTypes.DELETE_RECORD.value:
+            elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
+                # Update queued duplicates for ALL record types (not just FILE)
                 record = await self.event_processor.graph_provider.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
-                if record is None:
+                if record is not None:
+                    indexing_status = record.get("indexingStatus")
+                    virtual_record_id = record.get("virtualRecordId")
+                    if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
+                        await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
+                    elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
+                        # Find and trigger indexing for the next queued duplicate
+                        self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
+                        await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
+                else:
                     self.logger.warning(f"Record {record_id} not found in database")
-                    return
-
-
-
-                indexing_status = record.get("indexingStatus")
-                virtual_record_id = record.get("virtualRecordId")
-                if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
-                    await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
-                elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
-                    # Find and trigger indexing for the next queued duplicate
-                    self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
-                    await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
 
     async def __update_document_status(
         self,
@@ -509,7 +502,7 @@ class RecordEventHandler(BaseEventService):
                             except IOError as io_err:
                                 raise aiohttp.ClientError(
                                     f"IO error during chunk download: {str(io_err)}"
-                                )
+                                ) from io_err
 
                             file_content = file_buffer.getvalue()
                             self.logger.info(
@@ -518,9 +511,9 @@ class RecordEventHandler(BaseEventService):
                             return file_content
 
                     except aiohttp.ServerDisconnectedError as sde:
-                        raise aiohttp.ClientError(f"Server disconnected: {str(sde)}")
+                        raise aiohttp.ClientError(f"Server disconnected: {str(sde)}") from sde
                     except aiohttp.ClientConnectorError as cce:
-                        raise aiohttp.ClientError(f"Connection error: {str(cce)}")
+                        raise aiohttp.ClientError(f"Connection error: {str(cce)}") from cce
 
             except (aiohttp.ClientError, asyncio.TimeoutError, IOError) as e:
                 error_type = type(e).__name__
@@ -537,7 +530,7 @@ class RecordEventHandler(BaseEventService):
                     raise Exception(
                         f"Download failed after {max_retries} attempts. "
                         f"Error: {error_type} - {str(e)}. File id: {record_id}"
-                    )
+                    ) from e
                 await asyncio.sleep(delay)
             finally:
                 if not file_buffer.closed:

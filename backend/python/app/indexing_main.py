@@ -130,12 +130,13 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                                 f"⏭️ [{idx}/{total_records}] Skipping recovery for record {record_id}: "
                                 f"connector instance {connector_id} is inactive."
                             )
-                            # Update status to CONNECTOR_DISABLED
+                            # Update status to AUTO_INDEX_OFF and reason to connector is inactive
                             await graph_provider.update_node(
                                 record_id,
                                 CollectionNames.RECORDS.value,
                                 {
-                                    "indexingStatus": ProgressStatus.CONNECTOR_DISABLED.value,
+                                    "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+                                    "reason" : "Connector is inactive"
                                 },
                             )
                             results["skipped"] += 1
@@ -152,7 +153,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                         "mimeType": record.get("mimeType"),
                         "origin": record.get("origin"),
                         "recordType": record.get("recordType"),
-                        "virtualRecordId": record.get("virtualRecordId", None),
+                        "virtualRecordId": record.get("virtualRecordId"),
                     }
 
                     # Determine event type - default to NEW_RECORD for recovery
