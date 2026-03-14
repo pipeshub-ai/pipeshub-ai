@@ -596,40 +596,18 @@ async def stream_record(
     record_id: str,
     convertTo: str = Query(None, description="Convert file to this format"),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
     """
     Stream a record to the client.
     """
     try:
-        try:
-            logger.info(f"Stream Record Start: {time.time()}")
-            logger.info(f"Convert To: {convertTo}")
-            auth_header = request.headers.get("Authorization")
-            if not auth_header or not auth_header.startswith("Bearer "):
-                raise HTTPException(
-                    status_code=HttpStatusCode.UNAUTHORIZED.value,
-                    detail="Missing or invalid Authorization header",
-                )
-            # Extract the token
-            token = auth_header.split(" ")[1]
-            secret_keys = await config_service.get_config(
-                config_node_constants.SECRET_KEYS.value
-            )
-            jwt_secret = secret_keys.get("jwtSecret")
-            payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+        logger.info(f"Stream Record Start: {time.time()}")
+        logger.info(f"Convert To: {convertTo}")
 
-            org_id = payload.get("orgId")
-            user_id = payload.get("userId")
-        except JWTError as e:
-            logger.error("JWT validation error: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token") from e
-        except ValidationError as e:
-            logger.error("Payload validation error: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload") from e
-        except Exception as e:
-            logger.error("Unexpected error during token validation: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token") from e
+        # Use the already-authenticated user from the auth middleware
+        user = request.state.user
+        org_id = user.get("orgId")
+        user_id = user.get("userId")
 
         org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
         record_task = graph_provider.get_record_by_id(
@@ -651,6 +629,7 @@ async def stream_record(
 
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
+
         access_check = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
         if not access_check:
             logger.warning(f"User {user_id} does not have access to record {record_id}")
