@@ -18,7 +18,13 @@ from fastapi.responses import StreamingResponse
 from PIL import Image
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    AppGroups,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -87,6 +93,8 @@ class RetryUrl:
     status_code: int
     retries: int
     last_attempted: int
+    depth: int = 0                  # depth at which the URL was first encountered
+    referer: Optional[str] = None   # referer at the time of first attempt
 
 RETRYABLE_STATUS_CODES = {
     403, 408, 429,
@@ -614,7 +622,7 @@ class WebConnector(BaseConnector):
             self.logger.debug("running reload config")
             config_values = await self._fetch_and_parse_config(use_cache=False)
 
-            config_values["url"]
+            new_url =  config_values["url"]
             new_crawl_type = config_values["crawl_type"]
             new_max_depth = config_values["max_depth"]
             new_max_pages = config_values["max_pages"]
@@ -622,7 +630,11 @@ class WebConnector(BaseConnector):
             new_follow_external = config_values["follow_external"]
             new_base_domain = config_values["base_domain"]
             new_restrict_to_start_path = config_values["restrict_to_start_path"]
+            new_start_path_prefix = config_values["start_path_prefix"]
 
+            if new_url.lower() != self.url.lower():
+                self.logger.error(f"❌ Cannot change URL from {self.url} to {new_url}. Please create a new connector for {new_url}")
+                raise ValueError("Cannot change URL for web connector.")
             if new_base_domain != self.base_domain:
                 self.logger.error(f"❌ Cannot change base domain from {self.base_domain} to {new_base_domain}. Please create a new connector for {new_base_domain}")
                 raise ValueError("Cannot change base domain for web connector.")
@@ -645,6 +657,7 @@ class WebConnector(BaseConnector):
             if new_restrict_to_start_path != self.restrict_to_start_path:
                 self.logger.info(f"🔄 Restrict to start path changed from {self.restrict_to_start_path} to {new_restrict_to_start_path}")
                 self.restrict_to_start_path = new_restrict_to_start_path
+                self.start_path_prefix = new_start_path_prefix
 
             new_url_should_contain = config_values["url_should_contain"]
             if new_url_should_contain != self.url_should_contain:
@@ -798,7 +811,7 @@ class WebConnector(BaseConnector):
                     external_record_id=external_id,
                     external_record_group_id=self.url,
                     version=0,
-                    origin=OriginTypes.CONNECTOR.value,
+                    origin=OriginTypes.CONNECTOR,
                     connector_name=self.connector_name,
                     connector_id=self.connector_id,
                     created_at=timestamp,
@@ -898,7 +911,23 @@ class WebConnector(BaseConnector):
         # Queue for BFS crawling: (url, depth, referer)
         queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
 
-        while queue and len(self.visited_urls) < self.max_pages:
+        while (queue or self.retry_urls) and len(self.visited_urls) < self.max_pages:
+            if not queue:
+                # Re-enqueue retry candidates that haven't hit the max-retry limit.
+                # The existing loop logic will skip any that are at MAX_RETRIES.
+                # Exhausted entries are left for process_retry_urls() at the end.
+                retry_candidates = [
+                    r for r in self.retry_urls.values() if r.retries < MAX_RETRIES
+                ]
+                if not retry_candidates:
+                    break  # only exhausted entries remain; hand off to process_retry_urls()
+
+                for retry_entry in retry_candidates:
+                    normalized = self._normalize_url(retry_entry.url)
+                    if normalized not in self.visited_urls:
+                        queue.append((retry_entry.url, retry_entry.depth, retry_entry.referer))
+                continue  # restart the while-loop with the newly enqueued URLs
+
             current_url, current_depth, referer = queue.pop(0)
 
             # Skip if already visited
@@ -935,9 +964,6 @@ class WebConnector(BaseConnector):
                 file_record = record_update.record
 
                 if file_record:
-
-                    if normalized_url in self.retry_urls:
-                        self.retry_urls.pop(normalized_url, None)
 
                     is_disabled = self._check_index_filter(file_record)
 
@@ -1034,6 +1060,8 @@ class WebConnector(BaseConnector):
                         status_code=result.status_code,
                         retries=(existing_entry.retries + 1) if existing_entry else 0,
                         last_attempted=get_epoch_timestamp_in_ms(),
+                        depth=depth,
+                        referer=referer,
                     )
                 return None
             else:
@@ -1331,8 +1359,7 @@ class WebConnector(BaseConnector):
             preview_renderable=False,
             parent_external_record_id=parent_url,
             parent_record_type=RecordType.FILE if parent_url else None,
-            indexing_status=IndexingStatus.FAILED.value,
-            extraction_status=IndexingStatus.FAILED.value,
+            indexing_status=ProgressStatus.FAILED.value,
         )
 
         permissions = [
@@ -1374,7 +1401,7 @@ class WebConnector(BaseConnector):
 
             for attempt in range(1, max_retries + 1):
                 try:
-                    record_update = await self._fetch_and_process_url(retry_url.url, depth=0)
+                    record_update = await self._fetch_and_process_url(retry_url.url, depth=retry_url.depth, referer=None)
 
                     if record_update is not None and record_update.record is not None:
                         # Successful fetch — stop retrying this URL.
@@ -1414,7 +1441,7 @@ class WebConnector(BaseConnector):
 
                 is_disabled = self._check_index_filter(record_update.record)
                 if is_disabled:
-                    record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 yield record_update
             else:
@@ -1825,7 +1852,7 @@ class WebConnector(BaseConnector):
                     external_record_id=external_id,
                     external_record_group_id=self.url,
                     version=0,
-                    origin=OriginTypes.CONNECTOR.value,
+                    origin=OriginTypes.CONNECTOR,
                     connector_name=self.connector_name,
                     connector_id=self.connector_id,
                     created_at=timestamp,
@@ -2370,9 +2397,10 @@ class WebConnector(BaseConnector):
             return png_b64_str
 
         except Exception as pillow_err:
-            self.logger.debug(
-                f"ℹ️  Pillow could not open AVIF ({pillow_err}), trying ffmpeg fallback — '{url}'"
+            self.logger.warning(
+                f"⚠️  Pillow could not open AVIF ({pillow_err})"
             )
+            return None
 
     async def _process_all_images(
         self,
