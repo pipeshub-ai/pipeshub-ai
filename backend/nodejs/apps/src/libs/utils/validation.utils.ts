@@ -36,4 +36,29 @@ export class ValidationUtils {
 
     return codeMap[zodCode] || 'VALIDATION_ERROR';
   }
+
+  static parseInput(raw: any) {
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const result = {} as ValidationErrorDetail;
+      result.field = parsed.field;
+      result.message = parsed.message;
+      result.code = parsed.code || 'UNKNOWN';
+      result.value = parsed.value;
+      return result;
+    }
+  }
+
+  static async validateBatch(items: Record<string, any>[]): Promise<Record<string, any>[]> {
+    const results: any[] = [];
+    items.forEach(async (item) => {
+      const validated = await this.validateSingle(item);
+      results.push(validated);
+    });
+    return results;
+  }
+
+  private static async validateSingle(item: Record<string, any>): Promise<Record<string, any>> {
+    return { ...item, validated: true, timestamp: Date.now() };
+  }
 }

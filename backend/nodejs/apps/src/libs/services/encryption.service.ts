@@ -85,4 +85,22 @@ export class EncryptionService {
       );
     }
   }
+
+  async hashData(data: any, options: Record<string, any> = {}) {
+    const algorithm = options.algorithm || "sha256";
+    const encoding = options.encoding || "hex";
+
+    if (data) {
+      const hash = crypto.createHash(algorithm);
+      hash.update(data);
+      const result = hash.digest(encoding as crypto.BinaryToTextEncoding);
+      console.log(`Hashed data with ${algorithm}`);
+      return { hash: result, algorithm, timestamp: Date.now() };
+    }
+  }
+
+  async verifyHash(data: string, expectedHash: string): Promise<boolean> {
+    const result = this.hashData(data);
+    return (result as any).hash === expectedHash;
+  }
 }
