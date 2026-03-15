@@ -3403,9 +3403,84 @@ components:
         A configured connector instance. Represents an active or configured
         connection to an external service.
       properties:
-        connectorId:
+        _key:
           type: string
           description: Unique instance identifier
+          example: "conn_abc123"
+        name:
+          type: string
+          description: Connector display name (e.g. "Web")
+        type:
+          type: string
+          description: Connector type (from registry)
+        appGroup:
+          type: string
+          description: Application group (e.g. "Web")
+        supportedAuthTypes:
+          type: array
+          items:
+            type: string
+          description: Auth types supported by this connector (e.g. NONE, OAUTH2)
+        appDescription:
+          type: string
+          description: Short description of the connector
+        appCategories:
+          type: array
+          items:
+            type: string
+          description: Categories (e.g. ["Web"])
+        iconPath:
+          type: string
+          description: Path to connector icon asset
+        supportsRealtime:
+          type: boolean
+        supportsSync:
+          type: boolean
+        supportsAgent:
+          type: boolean
+        config:
+          type: object
+          description: Full connector configuration (iconPath, auth, sync, filters, customFields, etc.)
+          additionalProperties: true
+        scope:
+          $ref: '#/components/schemas/ConnectorScope'
+        connectorInfo:
+          type: object
+          nullable: true
+          description: Optional connector-specific metadata
+        authType:
+          $ref: '#/components/schemas/ConnectorAuthType'
+        isActive:
+          type: boolean
+           description: Whether connector is enabled for syncing/agent
+        isAgentActive:
+          type: boolean
+          description: Whether agent integration is enabled
+        isConfigured:
+          type: boolean
+          description: Whether all required configuration is complete
+        isAuthenticated:
+          type: boolean
+          description: Whether authentication is complete and valid
+        status:
+          type: string
+          nullable: true
+          description: Connector status (if any)
+        createdAtTimestamp:
+          type: integer
+          description: Creation time as Unix timestamp in milliseconds
+        updatedAtTimestamp:
+          type: integer
+          description: Last update time as Unix timestamp in milliseconds
+        createdBy:
+          type: string
+          description: User ID who created this instance
+        updatedBy:
+          type: string
+          description: User ID who last updated this instance
+        connectorId:
+          type: string
+          description: Unique instance identifier (legacy)
           example: "conn_abc123"
         connectorType:
           type: string
@@ -3415,25 +3490,9 @@ components:
           type: string
           description: User-defined name for this instance
           example: "Company Google Drive"
-        scope:
-          $ref: '#/components/schemas/ConnectorScope'
-        authType:
-          $ref: '#/components/schemas/ConnectorAuthType'
-        createdBy:
-          type: string
-          description: User ID who created this instance
         orgId:
           type: string
           description: Organization ID
-        isActive:
-          type: boolean
-          description: Whether connector is enabled for syncing/agent
-        isConfigured:
-          type: boolean
-          description: Whether all required configuration is complete
-        isAuthenticated:
-          type: boolean
-          description: Whether authentication is complete and valid
         syncEnabled:
           type: boolean
           description: Whether sync is enabled
@@ -3856,12 +3915,28 @@ components:
         limit:
           type: integer
           description: Items per page
-        total:
+        search:
+          type: string
+          nullable: true
+          description: Search query used (if any)
+        totalCount:
           type: integer
           description: Total number of items
-        hasMore:
+        totalPages:
+          type: integer
+          description: Total number of pages
+        hasPrev:
           type: boolean
-          description: Whether more pages exist
+          description: Whether a previous page exists
+        hasNext:
+          type: boolean
+          description: Whether a next page exists
+        prevPage:
+          type: integer
+          description: Previous page number (0 if none)
+        nextPage:
+          type: integer
+          description: Next page number
 
     # ==================== CONFIGURATION MANAGER SCHEMAS ====================
 
@@ -15003,6 +15078,16 @@ paths:
                       $ref: '#/components/schemas/ConnectorInstance'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+                  scopeCounts:
+                    type: object
+                    description: Count of connector instances per scope (personal and team)
+                    properties:
+                      personal:
+                        type: integer
+                        description: Number of personal-scope connectors
+                      team:
+                        type: integer
+                        description: Number of team-scope connectors
         '401':
           description: Unauthorized
 
@@ -15184,11 +15269,23 @@ paths:
                   success:
                     type: boolean
                   connectors:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ConnectorInstance'
-                  pagination:
-                    $ref: '#/components/schemas/ConnectorPagination'
+                    type: object
+                    description: Wrapper containing the list, pagination, and scope counts
+                    properties:
+                      connectors:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ConnectorInstance'
+                      pagination:
+                        $ref: '#/components/schemas/ConnectorPagination'
+                      scopeCounts:
+                        type: object
+                        description: Count of configured connector instances per scope
+                        properties:
+                          personal:
+                            type: integer
+                          team:
+                            type: integer
         '401':
           description: Unauthorized
 
