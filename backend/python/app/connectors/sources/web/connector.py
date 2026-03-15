@@ -1015,6 +1015,20 @@ class WebConnector(BaseConnector):
             )
 
             if result is None:
+                # Connection-level failure (all fetch strategies exhausted with no response).
+                # Queue for retry; unlike HTTP 4xx/5xx this is often transient.
+                normalized = self._normalize_url(url)
+                existing_entry = self.retry_urls.get(normalized)
+                self.retry_urls[normalized] = RetryUrl(
+                    url=normalized,
+                    status="pending_retry",
+                    # Synthetic timeout code for connection failures without an HTTP response.
+                    status_code=existing_entry.status_code if existing_entry else 408,
+                    retries=(existing_entry.retries + 1) if existing_entry else 0,
+                    last_attempted=get_epoch_timestamp_in_ms(),
+                    depth=depth,
+                    referer=referer,
+                )
                 return None
 
             final_url = result.final_url
@@ -1368,6 +1382,7 @@ class WebConnector(BaseConnector):
             parent_external_record_id=parent_url,
             parent_record_type=RecordType.FILE if parent_url else None,
             indexing_status=ProgressStatus.FAILED.value,
+            reason=f"Failed to process URL, status code: {status_code}",
         )
 
         permissions = [

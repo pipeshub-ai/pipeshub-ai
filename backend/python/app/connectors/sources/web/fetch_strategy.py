@@ -359,9 +359,17 @@ async def fetch_url_with_fallback(
                         logger.warning(
                             f"⚠️ Skipping {url}: Content-Length "
                             + f"{size / (1024 * 1024):.1f}MB exceeds limit of "
-                            + f"{max_size_bytes:.0f}MB"
+                            + f"{max_size_bytes / (1024 * 1024):.0f}MB"
                         )
-                        return None
+                        # Return a concrete response so callers can distinguish
+                        # an intentional size skip from a connection failure.
+                        return FetchResponse(
+                            status_code=413,
+                            content_bytes=b"",
+                            headers={"X-Fetch-Skip-Reason": "max_size_exceeded"},
+                            final_url=url,
+                            strategy="size_guard",
+                        )
         except Exception:
             # HEAD not supported (405), connection error, timeout — proceed with GET
             pass
