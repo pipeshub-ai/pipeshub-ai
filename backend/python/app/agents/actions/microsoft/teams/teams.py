@@ -2408,11 +2408,11 @@ class Teams:
             logger.info(f"Adding member to team {team_id} with user {user_id} and role {role} and channel {channel_id}")
             normalized_role = (role or "member").strip().lower()
             roles = ["owner"] if normalized_role == "owner" else []
-
+            safe_user_id = user_id.replace("'", "''")
             request_body = {
                 "@odata.type": "#microsoft.graph.aadUserConversationMember",
                 "roles": roles,
-                "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{user_id}')",
+                "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{safe_user_id}')",
             }
 
             # CASE 1 — Add to team
