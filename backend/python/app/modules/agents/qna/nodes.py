@@ -26,6 +26,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
+from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.modules.qna.response_prompt import create_response_messages
@@ -2618,6 +2619,10 @@ WRONG (don't do this):
 - Use provided user info directly
 - Set `can_answer_directly: true`
 
+**User asking about capabilities:**
+- When users ask about capabilities, available tools, knowledge sources, or what actions you can perform
+- Set `can_answer_directly: true` and answer using the Capability Summary section below
+
 ## Output (JSON only)
 {{
   "intent": "Brief description",
@@ -3330,6 +3335,10 @@ async def planner_node(
         teams_guidance=teams_guidance,
         github_guidance=github_guidance
     )
+
+    # Add capability summary so LLM can answer "what can you do?" questions
+    capability_summary = build_capability_summary(state)
+    system_prompt += f"\n\n{capability_summary}"
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
     agent_tools = state.get("tools", []) or []
@@ -5965,7 +5974,6 @@ async def respond_node(
         r for r in tool_results
         if r.get("status") == "success"
         and "retrieval" not in r.get("tool_name", "").lower()
-        and "knowledge" not in r.get("tool_name", "").lower()
     ]
     failed_results = [r for r in tool_results if r.get("status") == "error"]
 
@@ -6288,6 +6296,10 @@ async def _generate_direct_response(
         system_content = f"{instructions_prefix}{role_prefix}You are a helpful, friendly AI assistant. Respond naturally and concisely."
         if user_context:
             system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
+
+    # Add capability summary so direct responses can answer "what can you do?"
+    capability_summary = build_capability_summary(state)
+    system_content += f"\n\n{capability_summary}"
 
     messages.append(SystemMessage(content=system_content))
 
@@ -7083,10 +7095,12 @@ async def react_agent_node(
         }
 
         execution_plan = state.get("execution_plan") or {}
-        # Temporary guard: do not let respond_node take direct-answer shortcut
-        # after ReAct handoff; this avoids fallback-style responses when ReAct
-        # decides not to call tools in the first pass.
-        execution_plan["can_answer_directly"] = False
+        # When react agent answered directly without calling any tools (e.g.
+        # capability questions, greetings), let respond_node use the
+        # _generate_direct_response path which has the capability summary and
+        # user context.  When tools WERE called, keep can_answer_directly=False
+        # so the full synthesis pipeline runs with citations and tool results.
+        execution_plan["can_answer_directly"] = (total_tools == 0)
         state["execution_plan"] = execution_plan
 
         duration_ms = (time.perf_counter() - start_time) * 1000
@@ -7366,6 +7380,8 @@ You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
 ### Before giving your final response:
 1. **COMPLETENESS CHECK**: Did I accomplish EVERYTHING the user asked for? Don't stop partway.
 2. **DATA ACCURACY**: Am I presenting accurate data from actual tool results? Never fabricate data.
+   - **NEVER generate fake data from conversation history.** If user asks for "more results", "next page", or "page 2", you MUST call the tool again with updated pagination parameters (e.g., page=2, limit=50). Do NOT invent rows from memory.
+   - Previous tool results in conversation history are READ-ONLY context — use them to understand what was already shown, but ALWAYS call tools to fetch new data.
 3. **FORMATTING**: Use clear, professional markdown formatting.
 
 ## Write-Action Field Quick Reference
@@ -7435,7 +7451,9 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 
 4. **Task Completion**: Continue calling tools until the user's request is FULLY satisfied. Do not stop partway through a multi-step task.
 
-5. **Response Format**:
+5. **Pagination**: When the user asks for "more", "next page", or additional results from a previous tool call, you MUST call the same tool again with the correct pagination parameters (page, limit, offset). NEVER fabricate additional results from memory or conversation history.
+
+6. **Response Format**:
    - For API tool results: Transform data into professional markdown (tables, lists, summaries).
    - For retrieval/internal knowledge: Include inline citations like [R1-1] after each fact.
    - Store technical IDs in referenceData for follow-up queries.
@@ -7609,6 +7627,10 @@ Use this decision tree to choose the right approach:
         if timezone:
             time_parts.append(f"User timezone: {timezone}")
         base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
+
+    # ── Capability summary ────────────────────────────────────────────────────
+    capability_summary = build_capability_summary(state)
+    base_prompt += "\n\n" + capability_summary
 
     # ── User context ─────────────────────────────────────────────────────────
     user_context = _format_user_context(state)

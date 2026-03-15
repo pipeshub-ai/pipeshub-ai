@@ -377,6 +377,7 @@ class ToolsetRegistry:
             'app.agents.actions.retrieval.retrieval',
             'app.agents.actions.calculator.calculator',
             'app.agents.actions.calculator.date_calculator',
+            'app.agents.actions.knowledge_hub.knowledge_hub',
             # Google toolsets
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',

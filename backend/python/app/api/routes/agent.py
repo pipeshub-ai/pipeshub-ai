@@ -11,6 +11,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
 from app.api.middlewares.auth import require_scopes
@@ -18,13 +19,11 @@ from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, config_node_constants
+from app.modules.agents.deep.graph import deep_agent_graph
+from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import agent_graph, modern_agent_graph
-from app.modules.agents.deep.graph import deep_agent_graph
-from app.modules.agents.deep.state import build_deep_agent_state
-
-
 from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
     check_memory_health,
@@ -170,7 +169,7 @@ def _extract_tool_names_for_routing(query_info: Dict[str, Any]) -> List[str]:
     """Extract flattened tool names from query payload (tools or toolsets)."""
     names: List[str] = []
 
-    def _normalize_tool_name(tool_obj: Any) -> Optional[str]:
+    def _normalize_tool_name(tool_obj: Optional[str | dict]) -> Optional[str]:
         """Return canonical tool name in `app.tool` format when possible."""
         if isinstance(tool_obj, str):
             return tool_obj
@@ -232,7 +231,7 @@ async def _select_agent_graph_for_query(
     logger: Logger,
     llm: BaseChatModel,
     agent: Dict[str, Any] = None,
-):
+) -> CompiledStateGraph:
     """
     Graph selection based on chatMode from the chat input:
     - quick: legacy agent graph (fast, no tool loops)
@@ -264,7 +263,7 @@ async def _auto_select_graph(
     query_info: Dict[str, Any],
     logger: Logger,
     llm: BaseChatModel,
-):
+) -> CompiledStateGraph:
     """
     Auto-select graph using an LLM call to classify the query into one of
     three agent types: quick, verification, or deep.
@@ -516,6 +515,56 @@ def _parse_knowledge_sources(raw_knowledge: List[Any], logger: Logger) -> Dict[s
         }
 
     return knowledge_sources
+
+
+def _filter_knowledge_by_enabled_sources(
+    agent_knowledge: List[Dict[str, Any]],
+    filters: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Filter agent_knowledge to only include entries matching enabled filters.
+
+    Keeps:
+    - App connectors whose connectorId is in filters["apps"]
+    - KB connectors whose recordGroups overlap with filters["kb"],
+      or KB connectors with no recordGroups (unrestricted KB)
+    """
+    enabled_apps = set(filters.get("apps", []))
+    enabled_kbs = set(filters.get("kb", []))
+
+    if not enabled_apps and not enabled_kbs:
+        return agent_knowledge
+
+    filtered: List[Dict[str, Any]] = []
+    for k in agent_knowledge:
+        if not isinstance(k, dict):
+            continue
+
+        connector_id = k.get("connectorId", "")
+
+        # App connector — keep if in enabled apps
+        if connector_id in enabled_apps:
+            filtered.append(k)
+            continue
+
+        # KB connector — keep if its record groups overlap or it has none
+        if connector_id.startswith("knowledgeBase_") and enabled_kbs:
+            filters_data = k.get("filters", k.get("filtersParsed", {}))
+            if isinstance(filters_data, str):
+                try:
+                    filters_data = json.loads(filters_data)
+                except (json.JSONDecodeError, ValueError):
+                    filters_data = {}
+
+            record_groups = (
+                filters_data.get("recordGroups", [])
+                if isinstance(filters_data, dict) else []
+            )
+
+            if any(rg in enabled_kbs for rg in record_groups):
+                filtered.append(k)
+
+    return filtered
 
 
 async def _create_toolset_edges(
@@ -2648,15 +2697,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 filters["kb"] = kb_record_groups
             logger.info(f"Filters: {filters}")
 
-        # Narrow agent_knowledge to only the connectors present in filters["apps"]
-        # so the query_info knowledge list stays consistent with the resolved filters.
-        enabled_apps_set = set(filters.get("apps", []))
-        if enabled_apps_set:
-            agent_knowledge = [
-                k for k in agent_knowledge
-                if isinstance(k, dict) and k.get("connectorId") in enabled_apps_set
-            ]
-
+        agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
+        
+        if filters.get("kb") is None or len(filters.get("kb")) == 0:
+            filters["kb"] = ['NO_KB_SELECTED']
+        
         logger.info(f"Filters: {filters}")
 
         # Build query info

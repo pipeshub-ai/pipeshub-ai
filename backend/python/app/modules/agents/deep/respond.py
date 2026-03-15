@@ -28,6 +28,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
 
+from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.deep.context_manager import (
     build_respond_conversation_context,
 )
@@ -281,7 +282,6 @@ async def _deep_respond_impl(
         r for r in all_tool_results
         if r.get("status") == "success"
         and "retrieval" not in r.get("tool_name", "").lower()
-        and "knowledge" not in r.get("tool_name", "").lower()
     ]
     failed_results = [r for r in all_tool_results if r.get("status") == "error"]
 
@@ -1020,6 +1020,10 @@ async def _handle_direct_answer(
     if user_context:
         user_content += f"\n\n{user_context}"
         system_content += "\n\nWhen the user asks about themselves, use the provided info DIRECTLY."
+
+    # Add capability summary
+    capability_summary = build_capability_summary(state)
+    system_content += f"\n\n{capability_summary}"
 
     messages = [SystemMessage(content=system_content)]
 

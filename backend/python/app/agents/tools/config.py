@@ -98,6 +98,9 @@ class ToolDiscoveryConfig:
         "retrieval": AppConfiguration(
             app_name="retrieval",
         ),
+        "knowledge_hub": AppConfiguration(
+            app_name="knowledge_hub",
+        ),
         "google": AppConfiguration(
             app_name="google",
             subdirectories=["gmail", "calendar", "drive", "meet"],

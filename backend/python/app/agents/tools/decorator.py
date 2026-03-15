@@ -100,10 +100,10 @@ def tool(
         # Auto-generate parameters if not provided and no schema
         tool_parameters = parameters or (None if args_schema else _extract_parameters(func))
 
-        # Build structured llm_description if not provided and when_to_use/when_not_to_use are available
-        final_llm_description = llm_description
-        if not final_llm_description and (when_to_use or when_not_to_use):
-            parts = [tool_description]
+        # Build structured llm_description with when_to_use/when_not_to_use guidance
+        final_llm_description = llm_description or tool_description
+        if when_to_use or when_not_to_use:
+            parts = [final_llm_description]
             if when_to_use:
                 parts.append("\n**WHEN TO USE**:")
                 for item in when_to_use:

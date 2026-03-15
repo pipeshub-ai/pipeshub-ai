@@ -17,6 +17,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
 
+from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.deep.context_manager import (
     build_conversation_messages,
     compact_conversation_history_async,
@@ -89,11 +90,14 @@ async def orchestrator_node(
         tool_guidance = _build_tool_guidance(state)
         agent_instructions = _build_agent_instructions(state)
 
+        capability_summary = build_capability_summary(state)
+
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT.format(
             tool_domains=domain_desc,
             knowledge_context=knowledge_context,
             tool_guidance=tool_guidance,
             agent_instructions=agent_instructions,
+            capability_summary=capability_summary,
         )
 
         # Build messages
