@@ -37,6 +37,8 @@ COPY ./backend/python/pyproject.toml ./
 
 # Install Python dependencies
 RUN uv pip install --system -e . && \
+    crawl4ai-setup && \
+    playwright install && \
     # Download ML models
     python -m spacy download en_core_web_sm && \
     python -c "import nltk; nltk.download('punkt', quiet=True)" && \

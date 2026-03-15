@@ -17,6 +17,8 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+import signal
+import sys
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
@@ -25,16 +27,15 @@ from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-# def handle_sigterm(signum, frame) -> None:
-#     print(f"Received signal {signum}, {frame} shutting down gracefully")
-#     sys.exit(0)
+def handle_sigterm(signum, frame) -> None:
+    print(f"Received signal {signum}, {frame} shutting down gracefully")
+    sys.exit(0)
 
-# signal.signal(signal.SIGTERM, handle_sigterm)
-# signal.signal(signal.SIGINT, handle_sigterm)
+signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGINT, handle_sigterm)
 
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
-
 
 async def get_initialized_container() -> IndexingAppContainer:
     """Dependency provider for initialized container"""
