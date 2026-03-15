@@ -84,11 +84,55 @@ select = [
     "SIM910",   # use dict.get(key) instead of dict.get(key, None)
 
     # --- Type annotation enforcement (for new code in PRs) ---
+    "ANN001",   # missing type annotation for function argument
+    "ANN002",   # missing type annotation for *args
+    "ANN003",   # missing type annotation for **kwargs
     "ANN201",   # missing return type for public function
     "ANN202",   # missing return type for private function
     "ANN204",   # missing return type for __init__
     "ANN205",   # missing return type for staticmethod
     "ANN206",   # missing return type for classmethod
+
+    # --- Disallow Any in annotations ---
+    "ANN401",   # typing.Any banned — use concrete types or generics
+
+    # --- Modern Python type syntax (3.10+, like compiled-language explicitness) ---
+    "UP006",    # Use list[int] not List[int]
+    "UP007",    # Use X | Y not Union[X, Y]
+    "UP035",    # No deprecated typing imports (Dict, List, Optional, etc.)
+
+    # --- Type-checking imports optimization ---
+    "TC001",    # Move 1st-party type-only imports behind TYPE_CHECKING
+    "TC002",    # Move 3rd-party type-only imports behind TYPE_CHECKING
+    "TC003",    # Move stdlib type-only imports behind TYPE_CHECKING
+
+    # --- Return statement consistency (like compiled-language return rules) ---
+    "RET501",   # Do not explicitly return None if only return
+    "RET502",   # Do not implicitly return None if other returns have values
+    "RET503",   # Missing explicit return at end of function with other returns
+
+    # --- Boolean trap (force keyword args for booleans, like named params) ---
+    "FBT001",   # Boolean positional arg in function definition
+    "FBT002",   # Boolean default value in function definition
+
+    # --- Builtin name shadowing (causes type confusion) ---
+    "A001",     # Variable shadows a Python builtin
+    "A002",     # Argument shadows a Python builtin
+
+    # --- No print() in production code (use logging module) ---
+    "T201",     # print() found
+    "T203",     # pprint() found
+
+    # --- Timezone-aware datetimes (catch runtime errors) ---
+    "DTZ001",   # datetime.now() without tz
+    "DTZ002",   # datetime.today() (use now(tz=))
+    "DTZ003",   # datetime.utcnow() (use now(tz=UTC))
+    "DTZ004",   # datetime.utcfromtimestamp()
+    "DTZ005",   # datetime.now() without tz in call
+    "DTZ006",   # datetime.fromtimestamp() without tz
+    "DTZ007",   # strptime without %z
+    "DTZ011",   # datetime.date.today() (use date.today() with tz)
+    "DTZ012",   # datetime.fromisoformat() without tz
 
     # --- Ruff-specific ---
     "RUF005",   # collection literal concatenation (use [*a, *b])
@@ -102,8 +146,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"app/sources/external/**/example*.py" = ["ANN201", "ANN202"]  # Example files don't need annotations
-"app/**/migrations/*.py" = ["ANN201", "ANN202"]               # Migration scripts
+"app/sources/external/**/example*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401", "T201", "T203"]
+"app/**/migrations/*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401"]
+"tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "FBT001", "FBT002", "T201", "T203"]
 
 
 [project]
@@ -237,57 +282,53 @@ dev = ["ruff", "pyright"]
 
 [tool.pyright]
 pythonVersion = "3.10"
-typeCheckingMode = "basic"
+typeCheckingMode = "strict"
 include = ["app"]
 exclude = ["venv", ".venv", "**/__pycache__", "**/node_modules"]
 
-# --- Type inference strictness ---
-strictListInference = true                        # [1, "a"] inferred as list[int | str] not list[Unknown]
-strictDictionaryInference = true                  # {"a": 1} inferred narrowly
-strictSetInference = true                         # {1, "a"} inferred narrowly
+# --- Overrides from strict defaults (everything else is "error") ---
 
-# --- Null safety (catch None-related crashes) ---
-reportOptionalMemberAccess = "error"              # x.attr where x could be None
-reportOptionalCall = "error"                      # x() where x could be None
-reportOptionalIterable = "error"                  # for i in x where x could be None
-reportOptionalSubscript = "error"                 # x[0] where x could be None
-reportOptionalContextManager = "error"            # with x where x could be None
-reportOptionalOperand = "error"                   # x + 1 where x could be None
+# Third-party libs without type stubs (langchain, etcd3, celery, python-arango, etc.)
+reportMissingTypeStubs = "warning"
 
-# --- Call-site validation (missing/wrong args) ---
-reportCallIssue = "error"                         # Wrong number of args, non-callable objects
-reportArgumentType = "error"                      # Wrong argument types passed to functions
-reportReturnType = "error"                        # Return type doesn't match annotation
-reportAssignmentType = "error"                    # Incompatible assignment types
-reportIndexIssue = "error"                        # Invalid subscript/index operations
-reportOperatorIssue = "error"                     # Invalid operator usage between types
-reportAttributeAccessIssue = "error"              # Accessing unknown attributes
+# Side-effect functions (logging, db writes) — unused return value is intentional
+reportUnusedCallResult = "none"
 
-# --- Dead code detection ---
-reportUnreachable = "warning"                     # Code after return/raise that never runs
-reportUnnecessaryIsInstance = "warning"            # isinstance check always true/false
-reportUnnecessaryComparison = "warning"            # Comparison always true/false
-reportUnnecessaryContains = "warning"              # `in` check always true/false
-reportUnnecessaryCast = "warning"                  # Unnecessary cast() call
-reportUnnecessaryTypeIgnoreComment = "warning"     # Stale # type: ignore comments
-reportUnusedImport = "warning"                     # Imported but never used
-reportUnusedVariable = "warning"                   # Assigned but never read
-reportUnusedCallResult = "warning"                 # Return value silently discarded
-reportDuplicateImport = "warning"                  # Same module imported twice
+# Ruff handles these with auto-fix (F401, F841)
+reportUnusedImport = "warning"
+reportUnusedVariable = "warning"
 
-# --- Async safety ---
-reportUnusedCoroutine = "error"                    # Missing `await` on async calls
+# --- Unknown type enforcement ---
+# Variables: ERROR — if pyright can't determine a variable's type, you must annotate it.
+# This catches: untyped factory returns, `Any` assignments, missing annotations on custom objects.
+reportUnknownVariableType = "error"
+# Member access: ERROR — calling .method() on an Unknown/Any object is now an error.
+# This is the rule that catches "methods not reachable on different objects".
+reportUnknownMemberType = "error"
+# Arguments: ERROR — passing Unknown values to typed functions is caught.
+reportUnknownArgumentType = "error"
+# Parameters: WARNING — 3rd-party callback signatures often propagate Unknown.
+reportUnknownParameterType = "warning"
+# Lambdas: WARNING — lambda type inference from 3rd-party libs is noisy.
+reportUnknownLambdaType = "warning"
 
-# --- Code correctness ---
-reportMatchNotExhaustive = "warning"               # match statement missing cases
-reportDeprecated = "warning"                       # Using deprecated APIs
-reportImportCycles = "warning"                     # Circular imports (cause ImportError)
-reportCallInDefaultInitializer = "warning"         # Mutable default: def f(x=list())
-reportPropertyTypeMismatch = "warning"             # Getter/setter type mismatch
-reportConstantRedefinition = "warning"             # Overwriting ALL_CAPS constants
-reportInconsistentConstructor = "warning"          # __init__ vs __new__ signature mismatch
-reportUntypedNamedTuple = "warning"                # collections.namedtuple instead of typing.NamedTuple
-reportPrivateUsage = "warning"                     # Accessing _private members from outside
-reportIncompatibleMethodOverride = "error"         # Method override breaks parent contract
-reportIncompatibleVariableOverride = "error"       # Variable override breaks parent type
-reportImplicitStringConcatenation = "warning"      # Accidental "foo" "bar" concatenation
+# --- Override safety (like TypeScript noImplicitOverride) ---
+# Forces @override decorator when overriding parent methods.
+# Prevents: silently overriding a parent method, then parent renames it → child method becomes dead code.
+reportImplicitOverride = "error"
+
+# --- Initialization safety ---
+# Catches __init__ that doesn't call super().__init__() in subclasses.
+# Prevents: BaseConnector sets up logger/data_store, subclass skips super() → AttributeError at runtime.
+reportMissingSuperCall = "warning"
+
+# --- Inheritance safety ---
+# Catches diamond inheritance / MRO issues.
+reportUnsafeMultipleInheritance = "warning"
+
+# match/case not heavily used yet — warn for gradual adoption
+reportMatchNotExhaustive = "warning"
+
+# Informational quality signals, not type-safety blockers
+reportImportCycles = "warning"
+reportDeprecated = "warning"

@@ -1,0 +1,32 @@
+name: Gemini Code Review on Push
+
+# Trigger on every push to a PR (synchronize event), not just PR open
+on:
+  pull_request:
+    types: [synchronize]
+    branches:
+      - main
+
+permissions:
+  pull-requests: write
+
+jobs:
+  trigger-gemini-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Gemini Code Assist review
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const commitSha = context.payload.after;
+            const shortSha = commitSha.substring(0, 7);
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `/review\n\n_Auto-triggered by push ${shortSha}_`
+            });
+
+            console.log(`Triggered Gemini review for PR #${prNumber} on commit ${shortSha}`);

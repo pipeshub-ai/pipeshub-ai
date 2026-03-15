@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -26,6 +28,20 @@ jobs:
         run: |
           cd backend/nodejs/apps
           npm install
+
+      - name: Lint backend (changed files)
+        run: |
+          git fetch origin main
+          CHANGED_FILES=$(git diff --name-only origin/main ${{ github.sha }} | grep '^backend/nodejs/apps/src/.*\.ts$' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Linting changed TypeScript files:"
+            echo "$CHANGED_FILES"
+            RELATIVE_FILES=$(echo "$CHANGED_FILES" | sed 's|^backend/nodejs/apps/||')
+            cd backend/nodejs/apps
+            echo "$RELATIVE_FILES" | xargs npx eslint
+          else
+            echo "No TypeScript files changed in backend, skipping ESLint."
+          fi
 
       - name: Build backend
         run: |
