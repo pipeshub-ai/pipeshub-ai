@@ -3409,7 +3409,7 @@ components:
           example: "conn_abc123"
         name:
           type: string
-          description: Connector display name (e.g. "Web")
+          description: User-defined name for this instance (e.g. "My Web Crawler", "Company Google Drive")
         type:
           type: string
           description: Connector type (from registry)
@@ -3452,7 +3452,7 @@ components:
           $ref: '#/components/schemas/ConnectorAuthType'
         isActive:
           type: boolean
-           description: Whether connector is enabled for syncing/agent
+          description: Whether connector is enabled for syncing
         isAgentActive:
           type: boolean
           description: Whether agent integration is enabled
@@ -15260,7 +15260,8 @@ paths:
             type: string
       responses:
         '200':
-          description: Configured connectors retrieved
+          description: |
+            Configured connectors retrieved. Flat structure consistent with <code>GET /connectors</code>: <code>success</code>, <code>connectors</code> array, <code>pagination</code>, and <code>scopeCounts</code> at top level.
           content:
             application/json:
               schema:
@@ -15269,23 +15270,21 @@ paths:
                   success:
                     type: boolean
                   connectors:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConnectorInstance'
+                  pagination:
+                    $ref: '#/components/schemas/ConnectorPagination'
+                  scopeCounts:
                     type: object
-                    description: Wrapper containing the list, pagination, and scope counts
+                    description: Count of configured connector instances per scope
                     properties:
-                      connectors:
-                        type: array
-                        items:
-                          $ref: '#/components/schemas/ConnectorInstance'
-                      pagination:
-                        $ref: '#/components/schemas/ConnectorPagination'
-                      scopeCounts:
-                        type: object
-                        description: Count of configured connector instances per scope
-                        properties:
-                          personal:
-                            type: integer
-                          team:
-                            type: integer
+                      personal:
+                        type: integer
+                        description: Number of personal-scope configured connectors
+                      team:
+                        type: integer
+                        description: Number of team-scope configured connectors
         '401':
           description: Unauthorized
 
