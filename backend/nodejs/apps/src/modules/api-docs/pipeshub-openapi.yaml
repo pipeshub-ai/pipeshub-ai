@@ -306,9 +306,6 @@ components:
             connector:delete: Delete connectors
             config:read: Read system configuration
             config:write: Update system configuration
-            document:read: Read documents
-            document:write: Upload and update documents
-            document:delete: Delete documents
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
             crawl:delete: Delete crawling jobs
@@ -349,9 +346,6 @@ components:
             connector:delete: Delete connectors
             config:read: Read system configuration
             config:write: Update system configuration
-            document:read: Read documents
-            document:write: Upload and update documents
-            document:delete: Delete documents
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
 
@@ -9833,7 +9827,7 @@ paths:
       operationId: downloadDocument
       security:
         - bearerAuth: []
-        - oauth2: [document:read]
+        - oauth2: [kb:read]
       parameters:
         - name: documentId
           in: path
@@ -9907,7 +9901,7 @@ paths:
   #     operationId: uploadDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     requestBody:
   #       required: true
   #       content:
@@ -9945,7 +9939,7 @@ paths:
   #     operationId: createPlaceholderDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     requestBody:
   #       required: true
   #       description: "Request payload"
@@ -9978,7 +9972,7 @@ paths:
   #     operationId: getDocumentById
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:read]
+  #       - oauth2: [kb:read]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10008,7 +10002,7 @@ paths:
   #     operationId: deleteDocumentById
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:delete]
+  #       - oauth2: [kb:delete]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10042,7 +10036,7 @@ paths:
   #     operationId: uploadNextVersionDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10086,7 +10080,7 @@ paths:
   #     operationId: rollBackToPreviousVersion
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10129,7 +10123,7 @@ paths:
   #     operationId: getDocumentBuffer
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:read]
+  #       - oauth2: [kb:read]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10160,7 +10154,7 @@ paths:
   #     operationId: createDocumentBuffer
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10208,7 +10202,7 @@ paths:
   #     operationId: uploadDirectDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10251,7 +10245,7 @@ paths:
   #     operationId: documentDiffChecker
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:read]
+  #       - oauth2: [kb:read]
   #     parameters:
   #       - name: documentId
   #         in: path
