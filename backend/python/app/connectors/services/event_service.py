@@ -40,6 +40,75 @@ class EventService:
 
         return None
 
+    def _store_connector(self, connector_id: str, connector: BaseConnector) -> None:
+        """Store a connector instance in the app_container."""
+        connector_key = f"{connector_id}_connector"
+        if hasattr(self.app_container, connector_key):
+            getattr(self.app_container, connector_key).override(providers.Object(connector))
+        else:
+            if not hasattr(self.app_container, 'connectors_map'):
+                self.app_container.connectors_map = {}
+            self.app_container.connectors_map[connector_id] = connector
+
+    async def _ensure_connector(self, connector_name: str, connector_id: str) -> Optional[BaseConnector]:
+        """
+        Get connector from memory, or auto-initialize it if missing.
+        Handles the case where the init event was missed or the service restarted.
+        Checks that the connector is active in the database before initializing.
+        """
+        connector = self._get_connector(connector_id)
+        if connector:
+            return connector
+
+        self.logger.warning(
+            f"{connector_name} connector {connector_id} not in memory — attempting auto-initialization"
+        )
+
+        try:
+            connector_doc = await self.graph_provider.get_document(
+                document_key=connector_id,
+                collection=CollectionNames.APPS.value,
+            )
+            if not connector_doc:
+                self.logger.error(
+                    f"Connector {connector_id} not found in database — skipping initialization"
+                )
+                return None
+            if not connector_doc.get("isActive", False):
+                self.logger.warning(
+                    f"Connector {connector_id} is not active in database — skipping initialization"
+                )
+                return None
+            config_service = self.app_container.config_service()
+            from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+            data_store_provider = GraphDataStore(self.logger, self.graph_provider)
+
+            connector = await ConnectorFactory.initialize_connector(
+                name=connector_name,
+                logger=self.logger,
+                data_store_provider=data_store_provider,
+                config_service=config_service,
+                connector_id=connector_id,
+            )
+
+            if not connector:
+                self.logger.error(
+                    f"Auto-initialization failed for {connector_name} connector {connector_id}"
+                )
+                return None
+
+            self._store_connector(connector_id, connector)
+            self.logger.info(
+                f"Auto-initialized {connector_name} connector {connector_id} successfully"
+            )
+            return connector
+        except Exception as e:
+            self.logger.error(
+                f"Auto-initialization error for {connector_name} connector {connector_id}: {e}",
+                exc_info=True,
+            )
+            return None
+
     async def process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
         """Handle connector-specific events - implementing abstract method"""
         try:
@@ -108,16 +177,7 @@ class EventService:
 
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
-            # Store connector in container using generic approach
-            connector_key = f"{connector_id}_connector"
-            if hasattr(self.app_container, connector_key):
-                getattr(self.app_container, connector_key).override(providers.Object(connector))
-            else:
-                # Store in connectors_map if specific connector attribute doesn't exist
-                if not hasattr(self.app_container, 'connectors_map'):
-                    self.app_container.connectors_map = {}
-                self.app_container.connectors_map[connector_id] = connector
-            # Initialize directly since we can't use BackgroundTasks in Kafka consumer
+            self._store_connector(connector_id, connector)
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
@@ -134,9 +194,9 @@ class EventService:
 
             self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {full_sync}")
 
-            connector = self._get_connector(connector_id)
+            connector = await self._ensure_connector(connector_name, connector_id)
             if not connector:
-                self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
+                self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
                 return False
 
             # If fullSync flag is set, delete all sync points for this connector
@@ -189,9 +249,9 @@ class EventService:
                 self.logger.error("connectorId is required in payload for reindex event")
                 return False
 
-            connector = self._get_connector(connector_id)
+            connector = await self._ensure_connector(connector_name, connector_id)
             if not connector:
-                self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
+                self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
                 return False
 
             connector_app_name = connector.app.get_app_name()
