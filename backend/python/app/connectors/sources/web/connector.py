@@ -470,7 +470,7 @@ class WebConnector(BaseConnector):
 
             # Validate max_pages and max_depth
             if max_pages > 10000:
-                self.logger.warning("⚠️ WebPage max_pages is greater than 1000, setting to 1000")
+                self.logger.warning("⚠️ WebPage max_pages is greater than 10000, setting to 10000")
                 max_pages = 10000
             elif max_pages < 1:
                 self.logger.warning("⚠️ WebPage max_pages is less than 1, setting to 1")
@@ -1065,7 +1065,7 @@ class WebConnector(BaseConnector):
                     )
                 return None
             else:
-                normalized_url = self._normalize_url(final_url)
+                normalized_url = self._normalize_url(url)
                 if normalized_url in self.retry_urls:
                     self.retry_urls.pop(normalized_url, None)
                     self.logger.info(f"✅ Retry URL {normalized_url} processed successfully")
@@ -1321,6 +1321,14 @@ class WebConnector(BaseConnector):
         existing_record = await self.data_entities_processor.get_record_by_external_id(
             connector_id=self.connector_id, external_record_id=external_id
         )
+
+        if not existing_record:
+            legacy_external_id = external_id.rstrip('/')
+            if legacy_external_id != external_id:
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=legacy_external_id
+                )
+
 
         if existing_record:
             return None, None
@@ -1597,10 +1605,10 @@ class WebConnector(BaseConnector):
                 return MimeTypes.CSV, 'csv'
             elif 'tab-separated' in content_type_lower or 'tsv' in content_type_lower:
                 return MimeTypes.TSV, 'tsv'
-            elif 'markdown' in content_type_lower or 'md' in content_type_lower:
-                return MimeTypes.MARKDOWN, 'md'
             elif 'mdx' in content_type_lower:
                 return MimeTypes.MDX, 'mdx'
+            elif 'markdown' in content_type_lower or 'md' in content_type_lower:
+                return MimeTypes.MARKDOWN, 'md'
             elif 'image/webp' in content_type_lower:
                 return MimeTypes.WEBP, 'webp'
             elif 'image/heic' in content_type_lower:

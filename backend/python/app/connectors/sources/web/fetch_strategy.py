@@ -431,7 +431,7 @@ async def fetch_url_with_fallback(
                     return result
 
                 # ---- Bot detection (403, 999, 520-530) -> retry this strategy,
-                if status in _BOT_DETECTION_CODES or status > HttpStatusCode.CLOUDFLARE_NETWORK_ERROR.value:
+                if status in _BOT_DETECTION_CODES:
                     logger.warning(
                         f"⚠️ [{strategy_name}] Bot blocked (HTTP {status}) for {url} "
                         + f"(attempt {attempt + 1}/{max_retries_per_strategy})"
