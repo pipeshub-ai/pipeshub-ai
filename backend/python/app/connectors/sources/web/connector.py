@@ -732,6 +732,7 @@ class WebConnector(BaseConnector):
                 elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
                     pair: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
                     await self.data_entities_processor.on_new_records([pair])
+                    self.processed_urls += 1
                 self.logger.info(f"✅ Indexed single page: {url}")
 
         except Exception as e:
@@ -1522,12 +1523,14 @@ class WebConnector(BaseConnector):
                 if len(batch_records) >= self.batch_size:
                     await self.data_entities_processor.on_new_records(batch_records)
                     self.logger.info("✅ Retry batch processed: %d records", len(batch_records))
+                    self.processed_urls += len(batch_records)
                     batch_records.clear()
 
         # Flush any remaining records
         if batch_records:
             await self.data_entities_processor.on_new_records(batch_records)
             self.logger.info("✅ Retry final batch processed: %d records", len(batch_records))
+            self.processed_urls += len(batch_records)
 
     def _check_index_filter(self, record: Record) -> bool:
         """Check if the record should be indexed."""
