@@ -2981,13 +2981,11 @@ class IGraphDBProvider(ABC):
         limit: int,
         sort_field: str,
         sort_dir: str,
-        include_kbs: bool,
-        include_apps: bool,
         only_containers: bool,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Get root level nodes (KBs and Apps) for Knowledge Hub.
+        Get root level nodes (Apps) for Knowledge Hub.
 
         Args:
             user_key: User's internal key
@@ -2997,8 +2995,6 @@ class IGraphDBProvider(ABC):
             limit: Maximum items to return
             sort_field: Field to sort by
             sort_dir: Sort direction (ASC/DESC)
-            include_kbs: Whether to include Knowledge Bases
-            include_apps: Whether to include Apps
             only_containers: Only return nodes with children
             transaction: Optional transaction context
 
@@ -3030,7 +3026,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             parent_id: The ID of the parent node
-            parent_type: The type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'
+            parent_type: The type of parent: 'app', 'recordGroup', 'folder', 'record'
             org_id: The organization ID
             user_key: The user's key for permission filtering
             skip: Number of items to skip for pagination
@@ -3059,7 +3055,6 @@ class IGraphDBProvider(ABC):
         record_types: Optional[List[str]] = None,
         origins: Optional[List[str]] = None,
         connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
         indexing_status: Optional[List[str]] = None,
         created_at: Optional[Dict[str, Optional[int]]] = None,
         updated_at: Optional[Dict[str, Optional[int]]] = None,
@@ -3096,14 +3091,13 @@ class IGraphDBProvider(ABC):
             record_types: Optional list of record types to filter by
             origins: Optional list of origins to filter by (KB/CONNECTOR)
             connector_ids: Optional list of connector IDs to filter by
-            kb_ids: Optional list of KB IDs to filter by
             indexing_status: Optional list of indexing statuses to filter by
             created_at: Optional date range filter for creation date
             updated_at: Optional date range filter for update date
             size: Optional size range filter
             only_containers: If True, only return nodes that can have children
             parent_id: Optional parent node ID for scoped search
-            parent_type: Optional type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'
+            parent_type: Optional type of parent: 'app', 'recordGroup', 'folder', 'record'
             transaction: Optional transaction ID
 
         Returns:
