@@ -776,31 +776,23 @@ components:
         Authentication error response with details for debugging and user feedback.<br><br>
         <b>Common Error Codes:</b><br>
         <ul>
-        <li><code>INVALID_CREDENTIALS</code> - Wrong password or OTP</li>
-        <li><code>ACCOUNT_BLOCKED</code> - Account locked after 5 failed attempts</li>
-        <li><code>SESSION_EXPIRED</code> - Session token has expired</li>
-        <li><code>OTP_EXPIRED</code> - OTP code has expired (10 min validity)</li>
-        <li><code>USER_NOT_FOUND</code> - Email not registered</li>
-        <li><code>INVALID_TOKEN</code> - JWT token is invalid or malformed</li>
-        <li><code>METHOD_NOT_ALLOWED</code> - Auth method not enabled for org</li>
+        <li><code>HTTP_UNAUTHORIZED</code> - Invalid session or token</li>
+        <li><code>HTTP_BAD_REQUEST</code> - Invalid request data</li>
+        <li><code>HTTP_NOT_FOUND</code> - Resource not found</li>
         </ul>
       properties:
         error:
-          type: string
-          description: Error type identifier
-          example: "INVALID_CREDENTIALS"
-        message:
-          type: string
-          description: Human-readable error message
-          example: "The password you entered is incorrect"
-        code:
-          type: string
-          description: Error code for programmatic handling
-          example: "AUTH_001"
-        statusCode:
-          type: integer
-          description: HTTP status code
-          example: 401
+          type: object
+          description: Error details
+          properties:
+            code:
+              type: string
+              description: Error code for programmatic handling
+              example: "HTTP_UNAUTHORIZED"
+            message:
+              type: string
+              description: Human-readable error message
+              example: "Invalid session"
 
 
 
@@ -1598,9 +1590,6 @@ components:
           type: string
           format: date-time
           description: Last update timestamp (ISO 8601)
-      required:
-        - email
-        - orgId
 
     Address:
       type: object
@@ -1764,17 +1753,13 @@ components:
           format: ObjectId
           description: ID of user who deleted this group
         createdAt:
-          type: integer
-          format: int64
+          type: string
+          format: date-time
           description: Creation timestamp
         updatedAt:
-          type: integer
-          format: int64
+          type: string
+          format: date-time
           description: Last update timestamp
-      required:
-        - type
-        - name
-        - orgId
 
     # ==================== STORAGE SCHEMAS ====================
 
@@ -2006,8 +1991,6 @@ components:
           items:
             $ref: '#/components/schemas/Folder'
           description: Folders in this knowledge base
-      required:
-        - name
 
     Folder:
       type: object
@@ -2039,11 +2022,6 @@ components:
           type: boolean
           description: Whether the folder is deleted
           default: false
-      required:
-        - name
-        - kbId
-        - orgId
-
     Record:
       type: object
       description: |
@@ -2608,8 +2586,10 @@ components:
         apps:
           type: array
           items:
-            $ref: '#/components/schemas/AppType'
-          description: Filter by application types
+            type: string
+            description: Connector instance UUID or knowledgeBase_<orgId> format
+          description: Filter by connector instance IDs or knowledge base collection IDs
+          example: ["550e8400-e29b-41d4-a716-446655440000"]
         kb:
           type: array
           items:
@@ -3305,7 +3285,8 @@ components:
         <b>Event Types:</b>
         <ul>
         <li><code>connected</code> - Initial connection established</li>
-        <li><code>chunk</code> - Partial response content</li>
+        <li><code>status</code> - Status update (e.g. planning, generating)</li>
+        <li><code>answer_chunk</code> - Partial response content</li>
         <li><code>citation</code> - Citation reference</li>
         <li><code>complete</code> - Final response with all data</li>
         <li><code>error</code> - Error occurred during streaming</li>
@@ -3313,10 +3294,77 @@ components:
       properties:
         event:
           type: string
-          enum: [connected, chunk, citation, complete, error]
+          enum: [connected, status, answer_chunk, citation, complete, error]
         data:
+          type: object
+          description: Event payload
+          properties:
+            message:
+              type: string
+              description: Status or connection message
+            status:
+              type: string
+              description: Current processing status
+            chunk:
+              type: string
+              description: Partial response text (for answer_chunk events)
+            accumulated:
+              type: string
+              description: Full accumulated response text so far (for answer_chunk events)
+            citations:
+              type: array
+              items:
+                type: object
+              description: Citation references (for answer_chunk events)
+
+    # ==================== AI MODEL SCHEMAS ====================
+    AIModelConfiguration:
+      type: object
+      description: Configuration for an AI model provider
+      properties:
+        provider:
           type: string
-          description: JSON-encoded event payload
+          description: Model provider (e.g., openai, azure_openai, google, aws_bedrock)
+          example: "openai"
+        configuration:
+          type: object
+          description: Provider-specific configuration
+          properties:
+            model:
+              type: string
+              description: Model name(s) - can be comma-separated for multiple models
+              example: "gpt-4o"
+            modelFriendlyName:
+              type: string
+              description: Friendly display name for the model
+            apiKey:
+              type: string
+              description: API key for the model
+            endpoint:
+              type: string
+              description: Endpoint URL for the model
+            deploymentName:
+              type: string
+              description: Azure deployment name
+            region:
+              type: string
+              description: AWS region
+        isMultimodal:
+          type: boolean
+          default: false
+          description: Whether the model supports multimodal input
+        isReasoning:
+          type: boolean
+          default: false
+          description: Whether the model supports reasoning
+        isDefault:
+          type: boolean
+          default: false
+          description: Whether this should be the default model
+        contextLength:
+          type: integer
+          nullable: true
+          description: Context length for the model
 
     # ==================== CONNECTOR SCHEMAS ====================
     ConnectorScope:
@@ -3871,10 +3919,6 @@ components:
     SMTPConfig:
       type: object
       description: SMTP email server configuration for sending system emails (invitations, notifications, password resets)
-      required:
-        - host
-        - port
-        - fromEmail
       properties:
         host:
           type: string
@@ -4194,8 +4238,6 @@ components:
     URLConfig:
       type: object
       description: URL configuration for frontend or connector
-      required:
-        - url
       properties:
         url:
           type: string
@@ -5657,7 +5699,7 @@ paths:
         Pass the access token as a Bearer token: `Authorization: Bearer {access_token}`
       operationId: oauthUserInfo
       security:
-        - bearerAuth: []
+        - oauth2: [openid]
       responses:
         '200':
           description: User information
@@ -5698,8 +5740,11 @@ paths:
       operationId: openidConfiguration
       security: []
       servers:
-        - url: /
+        - url: "{instance_url}"
           description: Root URL (not /api/v1)
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
       responses:
         '200':
           description: Authorization server metadata
@@ -5737,8 +5782,11 @@ paths:
       operationId: oauthAuthorizationServerMetadata
       security: []
       servers:
-        - url: /
+        - url: "{instance_url}"
           description: Root URL (not /api/v1)
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
       responses:
         '200':
           description: Authorization server metadata
@@ -5782,8 +5830,11 @@ paths:
       operationId: jwks
       security: []
       servers:
-        - url: /
+        - url: "{instance_url}"
           description: Root URL (not /api/v1)
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
       responses:
         '200':
           description: JSON Web Key Set
@@ -5820,8 +5871,11 @@ paths:
       operationId: oauthProtectedResource
       security: []
       servers:
-        - url: /
+        - url: "{instance_url}"
           description: Root URL (not /api/v1)
+          variables:
+            instance_url:
+              default: https://app.pipeshub.com
       responses:
         '200':
           description: Protected resource metadata
@@ -5924,7 +5978,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthAppWithSecret'
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "OAuth app created successfully"
+                  app:
+                    $ref: '#/components/schemas/OAuthAppWithSecret'
         '400':
           description: Invalid request (validation error)
         '401':
@@ -6257,9 +6317,12 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/OAuthTokenListItem'
+                type: object
+                properties:
+                  tokens:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/OAuthTokenListItem'
         '401':
           description: Unauthorized
         '403':
@@ -6379,14 +6442,6 @@ paths:
       responses:
         '200':
           description: Logged out successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: "Logged out successfully"
         '401':
           description: Unauthorized - invalid or expired access token
 
@@ -6537,7 +6592,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/AuthConfig'
+              type: object
+              required:
+                - authMethod
+              properties:
+                authMethod:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AuthStep'
+                  description: Authentication steps configuration
+                  minItems: 1
+                  example:
+                    - order: 1
+                      allowedMethods:
+                        - type: "password"
+                        - type: "google"
         required: true
       responses:
         '200':
@@ -6549,7 +6618,12 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: "Authentication methods updated"
+                    example: "Auth method updated"
+                  authMethod:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuthStep'
+                    description: The updated authentication steps
         '400':
           description: Invalid request or validation failed (duplicate methods, invalid order, etc.)
           content:
@@ -7750,14 +7824,9 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
-                      type: object
+                type: array
+                items:
+                  type: object
         '401':
           description: Unauthorized
 
@@ -7779,24 +7848,22 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - userIds
               properties:
-                ids:
+                userIds:
                   type: array
                   items:
                     type: string
+                  example: ["507f1f77bcf86cd799439011"]
       responses:
         '200':
           description: Users retrieved successfully
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
+                type: array
+                items:
                       type: object
         '401':
           description: Unauthorized
@@ -7825,9 +7892,12 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - fullName
               properties:
                 fullName:
                   type: string
+                  example: "John Doe"
       responses:
         '200':
           description: Full name updated successfully
@@ -7868,9 +7938,12 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - firstName
               properties:
                 firstName:
                   type: string
+                  example: "John"
       responses:
         '200':
           description: First name updated successfully
@@ -7910,9 +7983,12 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - lastName
               properties:
                 lastName:
                   type: string
+                  example: "Doe"
       responses:
         '200':
           description: Last name updated successfully
@@ -7952,9 +8028,12 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - designation
               properties:
                 designation:
                   type: string
+                  example: "Senior Engineer"
       responses:
         '200':
           description: Designation updated successfully
@@ -8532,11 +8611,15 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - userIds
               properties:
                 userIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
+                  example: ["507f1f77bcf86cd799439011"]
       responses:
         '200':
           description: Users added to team successfully
@@ -8575,9 +8658,15 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - userIds
               properties:
-                userId:
-                  type: string
+                userIds:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                  example: ["507f1f77bcf86cd799439011"]
       responses:
         '200':
           description: User removed from team successfully
@@ -8617,6 +8706,29 @@ paths:
           application/json:
             schema:
               type: object
+              properties:
+                userIds:
+                  type: array
+                  items:
+                    type: string
+                  description: User IDs (legacy format)
+                role:
+                  type: string
+                  description: Role to assign (legacy format)
+                userRoles:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      userId:
+                        type: string
+                      role:
+                        type: string
+                  description: User-role pairs (new format)
+              example:
+                userRoles:
+                  - userId: "507f1f77bcf86cd799439011"
+                    role: "member"
       responses:
         '200':
           description: Permissions updated successfully
@@ -9366,15 +9478,9 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/UserGroup'
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserGroup'
         '401':
           description: Unauthorized - Valid authentication required
         '403':
@@ -9451,6 +9557,8 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - name
               properties:
                 name:
                   type: string
@@ -9563,22 +9671,24 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - groupIds
+                - userIds
               properties:
-                groupId:
-                  type: string
-                  pattern: '^[a-fA-F0-9]{24}$'
-                  description: ID of the group to add users to
-                  example: "507f1f77bcf86cd799439011"
+                groupIds:
+                  type: array
+                  items:
+                    type: string
+                    pattern: '^[a-fA-F0-9]{24}$'
+                  description: Array of group IDs to add users to
+                  example: ["507f1f77bcf86cd799439011"]
                 userIds:
                   type: array
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
-                  description: Array of user IDs to add to the group
-                  example: ["507f1f77bcf86cd799439012", "507f1f77bcf86cd799439013"]
-              required:
-                - groupId
-                - userIds
+                  description: Array of user IDs to add to the groups
+                  example: ["507f1f77bcf86cd799439012"]
       responses:
         '200':
           description: Users added to group successfully
@@ -9641,22 +9751,24 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - groupIds
+                - userIds
               properties:
-                groupId:
-                  type: string
-                  pattern: '^[a-fA-F0-9]{24}$'
-                  description: ID of the group to remove users from
-                  example: "507f1f77bcf86cd799439011"
+                groupIds:
+                  type: array
+                  items:
+                    type: string
+                    pattern: '^[a-fA-F0-9]{24}$'
+                  description: Array of group IDs to remove users from
+                  example: ["507f1f77bcf86cd799439011"]
                 userIds:
                   type: array
                   items:
                     type: string
                     pattern: '^[a-fA-F0-9]{24}$'
-                  description: Array of user IDs to remove from the group
+                  description: Array of user IDs to remove from the groups
                   example: ["507f1f77bcf86cd799439012"]
-              required:
-                - groupId
-                - userIds
       responses:
         '200':
           description: Users removed from group successfully
@@ -9725,15 +9837,9 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/UserGroup'
+                type: array
+                items:
+                  $ref: '#/components/schemas/UserGroup'
         '400':
           description: Invalid user ID format
         '401':
@@ -9795,14 +9901,20 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  data:
-                    type: array
-                    items:
-                      type: object
+                type: array
+                items:
+                  type: object
+                  properties:
+                    _id:
+                      type: string
+                    name:
+                      type: string
+                    type:
+                      type: string
+                    totalMembers:
+                      type: integer
+                    avgUsers:
+                      type: integer
         '401':
           description: Unauthorized
 
@@ -10529,7 +10641,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/KnowledgeBase'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Knowledge base updated successfully"
         '400':
           description: Invalid request - Name validation failed
         '401':
@@ -11284,6 +11403,22 @@ paths:
               schema:
                 type: string
                 format: binary
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+            image/*:
+              schema:
+                type: string
+                format: binary
+            text/*:
+              schema:
+                type: string
+                format: binary
+            application/*:
+              schema:
+                type: string
+                format: binary
         '401':
           description: Unauthorized
         '404':
@@ -11461,7 +11596,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Folder'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Folder updated successfully"
         '400':
           description: Invalid folder name
         '401':
@@ -11677,8 +11819,10 @@ paths:
                   description: Files to upload (max 1000)
                 files_metadata:
                   type: string
-                  description: JSON array with file_path and last_modified for each file
-                  example: '[{"file_path":"/docs/report.pdf","last_modified":"2024-01-15T10:30:00Z"}]'
+                  description: |
+                    JSON array with file_path and last_modified (epoch ms) for each file.
+                    Must have one entry per uploaded file.
+                  example: '[{"file_path":"/docs/report.pdf","last_modified":1705312200000}]'
                 isVersioned:
                   type: boolean
                   default: true
@@ -11689,6 +11833,7 @@ paths:
                   description: Type of records to create
               required:
                 - files
+                - files_metadata
       responses:
         '200':
           description: Files uploaded successfully
@@ -11822,6 +11967,7 @@ paths:
           required: true
           schema:
             type: string
+          example: "rec-abc123"
       requestBody:
         description: "Request payload"
         content:
@@ -11833,11 +11979,38 @@ paths:
                   type: integer
                   minimum: -1
                   maximum: 100
-                  default: -1
-                  description: Processing depth (-1 for unlimited)
+                  default: 0
+                  description: Processing depth (-1 for unlimited, 0 for only this record)
+                force:
+                  type: boolean
+                  default: false
+                  description: Force reindexing even if already indexed
       responses:
         '200':
           description: Reindexing triggered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Reindex initiated for record rec-abc123"
+                  recordId:
+                    type: string
+                  recordName:
+                    type: string
+                  connector:
+                    type: string
+                  eventPublished:
+                    type: boolean
+                  userRole:
+                    type: string
+                  depth:
+                    type: integer
         '401':
           description: Unauthorized
         '404':
@@ -11863,6 +12036,7 @@ paths:
           description: Folder ID or KB ID
           schema:
             type: string
+          example: "grp-abc123"
       requestBody:
         description: "Request payload"
         content:
@@ -11874,10 +12048,34 @@ paths:
                   type: integer
                   minimum: -1
                   maximum: 100
-                  default: -1
+                  default: 0
+                  description: Processing depth (-1 for unlimited, 0 for direct records only)
+                force:
+                  type: boolean
+                  default: false
+                  description: Force reindexing even if already indexed
       responses:
         '200':
           description: Reindexing triggered for all records in group
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Reindex initiated for record group grp-abc123 with depth 0"
+                  recordGroupId:
+                    type: string
+                  depth:
+                    type: integer
+                  connector:
+                    type: string
+                  eventPublished:
+                    type: boolean
         '401':
           description: Unauthorized
         '404':
@@ -11904,6 +12102,9 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - connectorName
+                - connectorId
               properties:
                 connectorName:
                   type: string
@@ -11912,12 +12113,25 @@ paths:
                 connectorId:
                   type: string
                   description: Connector instance ID
-              required:
-                - connectorName
-                - connectorId
+                  example: "conn-abc123"
+                fullSync:
+                  type: boolean
+                  default: false
+                  description: Whether to perform a full sync
       responses:
         '200':
           description: Resync initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  resyncConnectorResponse:
+                    type: object
+                    description: Resync operation result
+                    example:
+                      success: true
+                      message: "Resync event published"
         '400':
           description: Invalid connector parameters
         '401':
@@ -11971,9 +12185,23 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - app
+                - connectorId
               properties:
+                app:
+                  type: string
+                  description: Connector type name
+                  example: "GOOGLE_DRIVE"
                 connectorId:
                   type: string
+                  description: Connector instance ID
+                  example: "507f1f77bcf86cd799439011"
+                statusFilters:
+                  type: array
+                  items:
+                    type: string
+                  description: Optional status filters
       responses:
         '200':
           description: Reindex triggered successfully
@@ -12020,6 +12248,14 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - newParentId
+              properties:
+                newParentId:
+                  type: string
+                  nullable: true
+                  description: ID of the new parent folder, or null for root
+                  example: "folder-abc123"
       responses:
         '200':
           description: Record moved successfully
@@ -12076,7 +12312,8 @@ paths:
                   type: array
                   items:
                     type: string
-                  description: User IDs to grant permission
+                  description: User IDs to grant permission (at least one of userIds or teamIds required)
+                  example: ["507f1f77bcf86cd799439011"]
                 teamIds:
                   type: array
                   items:
@@ -12086,10 +12323,12 @@ paths:
                   type: string
                   enum: [OWNER, ORGANIZER, FILEORGANIZER, WRITER, COMMENTER, READER]
                   description: Permission role to grant
+                  example: "READER"
               required:
                 - role
+                - userIds
       responses:
-        '200':
+        '201':
           description: Permissions granted successfully
           content:
             application/json:
@@ -12101,10 +12340,22 @@ paths:
                   permissionResult:
                     type: object
                     properties:
+                      success:
+                        type: boolean
                       grantedCount:
                         type: integer
-                      updatedCount:
-                        type: integer
+                      grantedUsers:
+                        type: array
+                        items:
+                          type: string
+                      grantedTeams:
+                        type: array
+                        items:
+                          type: string
+                      role:
+                        type: string
+                      details:
+                        type: object
         '400':
           description: Invalid request
         '401':
@@ -12390,12 +12641,14 @@ paths:
           schema:
             type: string
             enum: [app, recordGroup, folder, record]
+          example: "recordGroup"
         - name: parentId
           in: path
           required: true
           description: ID of parent node (UUID or knowledgeBase_<orgId> for Collection app)
           schema:
             type: string
+          example: "507f1f77bcf86cd799439011"
         - name: only_containers
           in: query
           description: Only return nodes with children (for sidebar)
@@ -13092,6 +13345,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Conversation'
+              example:
+                title: "Q4 Financial Report Discussion"
         '400':
           description: Invalid title - must be 1-200 characters
         '401':
@@ -13221,11 +13476,11 @@ paths:
                   type: string
       responses:
         '200':
-          description: Response regenerated successfully
+          description: SSE stream with regenerated response
           content:
-            application/json:
+            text/event-stream:
               schema:
-                $ref: '#/components/schemas/Conversation'
+                $ref: '#/components/schemas/SSEEvent'
         '400':
           description: Cannot regenerate - message type not supported
         '401':
@@ -13316,22 +13571,22 @@ paths:
             type: string
             format: objectId
       requestBody:
+        required: true
         description: "Request payload"
         content:
           application/json:
             schema:
               type: object
+              required:
+                - userIds
               properties:
                 userIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     format: objectId
-                teamIds:
-                  type: array
-                  items:
-                    type: string
-                    format: objectId
+                  example: ["507f1f77bcf86cd799439011"]
       responses:
         '200':
           description: Conversation unshared successfully
@@ -13523,7 +13778,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchResult'
+                type: array
+                items:
+                  $ref: '#/components/schemas/SearchResult'
         '401':
           description: Unauthorized
         '404':
@@ -13589,12 +13846,16 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - userIds
               properties:
                 userIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     format: objectId
+                  example: ["507f1f77bcf86cd799439011"]
       responses:
         '200':
           description: Search shared successfully
@@ -13637,12 +13898,16 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - userIds
               properties:
                 userIds:
                   type: array
+                  minItems: 1
                   items:
                     type: string
                     format: objectId
+                  example: ["507f1f77bcf86cd799439011"]
       responses:
         '200':
           description: Search unshared successfully
@@ -13755,9 +14020,18 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AgentTemplate'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agent templates retrieved successfully"
+                  templates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentTemplate'
         '401':
           description: Unauthorized
 
@@ -13788,6 +14062,8 @@ paths:
               type: object
               required:
                 - name
+                - description
+                - systemPrompt
               properties:
                 name:
                   type: string
@@ -13796,13 +14072,15 @@ paths:
                 description:
                   type: string
                   description: What agents from this template do
+                  example: "A template for customer support agents"
                 category:
                   type: string
                   description: Template category
                   example: "Support"
-                defaultSystemPrompt:
+                systemPrompt:
                   type: string
-                  description: Default system instructions
+                  description: System instructions for the template
+                  example: "You are a helpful customer support assistant."
                 recommendedTools:
                   type: array
                   items:
@@ -13821,7 +14099,16 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AgentTemplate'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agent template created successfully"
+                  template:
+                    $ref: '#/components/schemas/AgentTemplate'
         '400':
           description: Invalid template configuration
         '401':
@@ -13850,7 +14137,16 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AgentTemplate'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agent template retrieved successfully"
+                  template:
+                    $ref: '#/components/schemas/AgentTemplate'
         '401':
           description: Unauthorized
         '404':
@@ -13888,7 +14184,7 @@ paths:
                   type: string
                 category:
                   type: string
-                defaultSystemPrompt:
+                systemPrompt:
                   type: string
                 recommendedTools:
                   type: array
@@ -13904,7 +14200,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AgentTemplate'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agent template updated successfully"
         '401':
           description: Unauthorized
         '403':
@@ -13961,11 +14264,22 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Agent'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agents retrieved successfully"
+                  agents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
         '401':
           description: Unauthorized
+        '404':
+          description: No agents found
 
   /agents/create:
     post:
@@ -14004,6 +14318,7 @@ paths:
               type: object
               required:
                 - name
+                - models
               properties:
                 name:
                   type: string
@@ -14025,6 +14340,7 @@ paths:
                 models:
                   type: array
                   description: Agent model configuration entries
+                  minItems: 1
                   items:
                     oneOf:
                       - type: string
@@ -14038,6 +14354,11 @@ paths:
                             type: string
                           isReasoning:
                             type: boolean
+                  example:
+                    - modelKey: "gpt-4o"
+                      modelName: "GPT-4o"
+                      provider: "openai"
+                      isReasoning: false
                 toolsets:
                   type: array
                   description: Toolsets attached to the agent (instance-aware)
@@ -14157,7 +14478,16 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agent retrieved successfully"
+                  agent:
+                    $ref: '#/components/schemas/Agent'
         '401':
           description: Unauthorized
         '404':
@@ -14263,7 +14593,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agent updated successfully"
         '401':
           description: Unauthorized
         '403':
@@ -14456,10 +14793,14 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Conversation'
+                    example:
+                      - title: "Q4 Financial Report Discussion"
                   sharedWithMeConversations:
                     type: array
                     items:
                       $ref: '#/components/schemas/Conversation'
+                    example:
+                      - title: "Q4 Financial Report Discussion"
                   pagination:
                     type: object
                     properties:
@@ -14762,11 +15103,11 @@ paths:
                   type: string
       responses:
         '200':
-          description: Response regenerated
+          description: SSE stream with regenerated response
           content:
-            application/json:
+            text/event-stream:
               schema:
-                $ref: '#/components/schemas/AgentConversation'
+                $ref: '#/components/schemas/SSEEvent'
         '401':
           description: Unauthorized
         '404':
@@ -14933,6 +15274,7 @@ paths:
                 properties:
                   success:
                     type: boolean
+                    example: true
                   schema:
                     $ref: '#/components/schemas/ConnectorSchema'
         '401':
@@ -15184,11 +15526,21 @@ paths:
                   success:
                     type: boolean
                   connectors:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ConnectorInstance'
-                  pagination:
-                    $ref: '#/components/schemas/ConnectorPagination'
+                    type: object
+                    properties:
+                      connectors:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ConnectorInstance'
+                      pagination:
+                        $ref: '#/components/schemas/ConnectorPagination'
+                      scopeCounts:
+                        type: object
+                        properties:
+                          personal:
+                            type: integer
+                          team:
+                            type: integer
         '401':
           description: Unauthorized
 
@@ -17513,6 +17865,9 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SSOAuthConfig'
+              example:
+                entryPoint: "https://idp.example.com/sso/saml"
+                emailKey: "email"
         '401':
           description: Unauthorized
 
@@ -18511,6 +18866,26 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - name
+                - botToken
+                - signingSecret
+              properties:
+                name:
+                  type: string
+                  description: Slack Bot display name
+                  example: "PipesHub Bot"
+                botToken:
+                  type: string
+                  description: Slack Bot OAuth token
+                  example: "xoxb-example-token"
+                signingSecret:
+                  type: string
+                  description: Slack app signing secret
+                  example: "abc123signingsecret"
+                agentId:
+                  type: string
+                  description: Optional agent ID to link to this bot
       responses:
         '200':
           description: Slack bot config created
@@ -18549,6 +18924,26 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - name
+                - botToken
+                - signingSecret
+              properties:
+                name:
+                  type: string
+                  description: Slack Bot display name
+                  example: "PipesHub Bot"
+                botToken:
+                  type: string
+                  description: Slack Bot OAuth token
+                  example: "xoxb-example-token"
+                signingSecret:
+                  type: string
+                  description: Slack app signing secret
+                  example: "abc123signingsecret"
+                agentId:
+                  type: string
+                  description: Optional agent ID to link to this bot
       responses:
         '200':
           description: Slack bot config updated
@@ -18615,10 +19010,13 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - pushIntervalMs
               properties:
-                pushInterval:
-                  type: integer
-                  description: Push interval in seconds
+                pushIntervalMs:
+                  type: number
+                  description: Push interval in milliseconds
+                  example: 60000
       responses:
         '200':
           description: Push interval updated
@@ -18651,10 +19049,13 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - serverUrl
               properties:
                 serverUrl:
                   type: string
                   format: uri
+                  example: "https://metrics-collector.example.com/collect-metrics"
       responses:
         '200':
           description: Server URL updated
@@ -18703,11 +19104,47 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
-        description: "Request payload"
+        description: |
+          AI models configuration. At least one model type array must contain entries.
         content:
           application/json:
             schema:
               type: object
+              properties:
+                ocr:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AIModelConfiguration'
+                embedding:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AIModelConfiguration'
+                llm:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AIModelConfiguration'
+                slm:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AIModelConfiguration'
+                reasoning:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AIModelConfiguration'
+                multiModal:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/AIModelConfiguration'
+                custom_system_prompt:
+                  type: string
+                  nullable: true
+              example:
+                llm:
+                  - provider: "openai"
+                    configuration:
+                      model: "gpt-4o"
+                      apiKey: "sk-example"
+                    isDefault: true
       responses:
         '200':
           description: AI models config created
@@ -18892,7 +19329,7 @@ paths:
                   scheduleConfig:
                     scheduleType: "once"
                     isEnabled: true
-                    scheduledTime: "2024-12-25T10:00:00Z"
+                    scheduledTime: "2027-12-25T10:00:00Z"
                   priority: 1
       responses:
         '201':
