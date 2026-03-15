@@ -18,7 +18,7 @@ export interface ModuleInfo {
   version: string;
   basePath: string;
   tags: string[];
-  source: 'nodejs' | 'python';
+  source: 'nodejs';
   order: number;
 }
 
@@ -167,16 +167,6 @@ export class ApiDocsService {
         order: 3,
       },
       {
-        id: 'storage',
-        name: 'Storage',
-        description: 'Document upload, storage, and version control',
-        version: '1.0.0',
-        basePath: '/api/v1/document',
-        tags: ['Document Upload', 'Document Management', 'Document Buffer', 'Version Control', 'Storage Internal'],
-        source: 'nodejs',
-        order: 4,
-      },
-      {
         id: 'knowledge-base',
         name: 'Knowledge Base',
         description: 'Knowledge base and folder management',
@@ -189,20 +179,20 @@ export class ApiDocsService {
       {
         id: 'enterprise-search',
         name: 'Enterprise Search',
-        description: 'Conversational AI and semantic search',
+        description: 'Conversational AI, semantic search, and AI agents',
         version: '1.0.0',
         basePath: '/api/v1',
-        tags: ['Conversations', 'Semantic Search'],
+        tags: ['Conversations', 'Semantic Search', 'Agents', 'Agent Templates', 'Agent Conversations'],
         source: 'nodejs',
         order: 6,
       },
       {
         id: 'connector-manager',
         name: 'Connector Manager',
-        description: 'Third-party integrations, OAuth flows, and data synchronization',
+        description: 'Third-party integrations, OAuth flows, toolsets, and data synchronization',
         version: '1.0.0',
         basePath: '/api/v1/connectors',
-        tags: ['Core Connectors', 'Connector Configuration', 'Connector Control', 'Connector OAuth', 'Connector Filters', 'Connector Records', 'Connector Statistics', 'Connector Streaming', 'Connector Webhooks'],
+        tags: ['Connector Registry', 'Connector Instances', 'Connector Configuration', 'Connector Control', 'Connector OAuth', 'Connector Filters', 'OAuth Configuration', 'Toolset Registry', 'Toolset Instances', 'Toolset Configuration', 'Toolset OAuth'],
         source: 'nodejs',
         order: 7,
       },
@@ -212,7 +202,7 @@ export class ApiDocsService {
         description: 'System-wide configuration management',
         version: '1.0.0',
         basePath: '/api/v1/configurationManager',
-        tags: ['Storage Configuration', 'SMTP Configuration', 'Auth Configuration', 'Database Configuration', 'Platform Settings', 'AI Models Configuration', 'Branding Configuration', 'Metrics Collection'],
+        tags: ['Storage Configuration', 'SMTP Configuration', 'Authentication Configuration', 'Platform Settings', 'AI Models Providers', 'Public URLs', 'Metrics Collection', 'Configuration Manager'],
         source: 'nodejs',
         order: 8,
       },
@@ -222,61 +212,19 @@ export class ApiDocsService {
         description: 'Data crawling job scheduling and monitoring',
         version: '1.0.0',
         basePath: '/api/v1/crawlingManager',
-        tags: ['Crawling Jobs', 'Queue Management'],
+        tags: ['Crawling Jobs'],
         source: 'nodejs',
         order: 9,
       },
       {
-        id: 'mail',
-        name: 'Mail Service',
-        description: 'Email sending and SMTP configuration',
+        id: 'mcp',
+        name: 'MCP',
+        description: 'Model Context Protocol endpoints for exposing PipesHub capabilities to MCP-compatible clients',
         version: '1.0.0',
-        basePath: '/api/v1/mail',
-        tags: ['Email Operations', 'Email Configuration'],
+        basePath: '/api/v1',
+        tags: ['MCP'],
         source: 'nodejs',
         order: 10,
-      },
-      // ==================== INTERNAL PYTHON SERVICES ====================
-      // These are internal PipesHub microservices that require scoped service tokens
-      {
-        id: 'query-service',
-        name: 'Query Service',
-        description: 'AI search, RAG, and conversational AI (Port 8000). Requires scoped service token.',
-        version: '1.0.0',
-        basePath: 'http://localhost:8000',
-        tags: ['Query Service'],
-        source: 'python',
-        order: 11,
-      },
-      {
-        id: 'indexing-service',
-        name: 'Indexing Service',
-        description: 'Document processing and embeddings (Port 8091). Requires scoped service token.',
-        version: '1.0.0',
-        basePath: 'http://localhost:8091',
-        tags: ['Indexing Service'],
-        source: 'python',
-        order: 12,
-      },
-      {
-        id: 'connector-service-internal',
-        name: 'Connector Service',
-        description: 'Data source integrations and OAuth (Port 8088). Requires scoped service token.',
-        version: '1.0.0',
-        basePath: 'http://localhost:8088',
-        tags: ['Connector Service'],
-        source: 'python',
-        order: 13,
-      },
-      {
-        id: 'docling-service',
-        name: 'Docling Service',
-        description: 'Advanced PDF/document parsing (Port 8081). Internal only.',
-        version: '1.0.0',
-        basePath: 'http://localhost:8081',
-        tags: ['Docling Service'],
-        source: 'python',
-        order: 14,
       },
     ];
   }
@@ -310,9 +258,8 @@ export class ApiDocsService {
         if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
           const op = operation as any;
           const tags = op.tags || [];
-          // Use x-service-id extension if present, otherwise fall back to tag-based matching
           const xServiceId = op['x-service-id'] as string | undefined;
-          const moduleId = this.findModuleByTags(tags, pathKey, op.summary, xServiceId);
+          const moduleId = this.findModuleByTags(tags, xServiceId);
           endpoints.push({
             path: pathKey,
             method: method.toUpperCase(),
@@ -357,14 +304,14 @@ export class ApiDocsService {
       {
         id: 'data',
         name: 'Data Management',
-        description: 'Storage, knowledge bases, and records',
-        modules: this.modules.filter(m => ['storage', 'knowledge-base'].includes(m.id)),
+        description: 'Knowledge bases and records',
+        modules: this.modules.filter(m => ['knowledge-base'].includes(m.id)),
       },
       {
         id: 'search',
         name: 'Search & AI',
-        description: 'Enterprise search and conversational AI',
-        modules: this.modules.filter(m => ['enterprise-search'].includes(m.id)),
+        description: 'Enterprise search, conversational AI, and agents',
+        modules: this.modules.filter(m => ['enterprise-search', 'mcp'].includes(m.id)),
       },
       {
         id: 'integrations',
@@ -375,20 +322,14 @@ export class ApiDocsService {
       {
         id: 'system',
         name: 'System',
-        description: 'Configuration, crawling, and mail services',
-        modules: this.modules.filter(m => ['configuration-manager', 'crawling-manager', 'mail'].includes(m.id)),
+        description: 'Configuration and crawling services',
+        modules: this.modules.filter(m => ['configuration-manager', 'crawling-manager'].includes(m.id)),
       },
       {
         id: 'oauth',
         name: 'OAuth App Management',
         description: 'OAuth 2.0 authorization server and app management',
         modules: this.modules.filter(m => ['oauth-app-management'].includes(m.id)),
-      },
-      {
-        id: 'internal-services',
-        name: 'Internal Services',
-        description: 'Internal PipesHub microservices (requires scoped token)',
-        modules: this.modules.filter(m => ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service'].includes(m.id)),
       },
     ];
   }
@@ -403,7 +344,7 @@ export class ApiDocsService {
       description: this.mergedSpec?.info?.description || 'Unified API documentation for PipesHub services',
       contact: this.mergedSpec?.info?.contact || {
         name: 'API Support',
-        email: 'support@pipeshub.com',
+        email: 'contact@pipeshub.com',
       },
     };
   }
@@ -411,11 +352,9 @@ export class ApiDocsService {
   /**
    * Find module ID by endpoint tags
    * @param tags - The tags associated with the endpoint
-   * @param path - The endpoint path (optional, for legacy fallback)
-   * @param summary - The endpoint summary (optional, for legacy fallback)
    * @param xServiceId - The x-service-id extension value if present (preferred)
    */
-  private findModuleByTags(tags: string[], path?: string, summary?: string, xServiceId?: string): string {
+  private findModuleByTags(tags: string[], xServiceId?: string): string {
     // First priority: use x-service-id extension if present (most reliable)
     if (xServiceId) {
       const validServiceIds = this.modules.map(m => m.id);
@@ -433,55 +372,7 @@ export class ApiDocsService {
       }
     }
 
-    // Legacy fallback: for 'Internal Services' tag, use path/summary to determine the service
-    if (tags.includes('Internal Services') && path) {
-      return this.getInternalServiceModuleId(path, summary || '');
-    }
-
     return 'unknown';
-  }
-
-  /**
-   * Determine which internal service module an endpoint belongs to based on path and summary.
-   *
-   * @deprecated This method uses brittle string matching as a legacy fallback.
-   * Prefer adding `x-service-id` extension to OpenAPI operations for explicit service association.
-   * This method is only used for backwards compatibility with specs that don't have x-service-id.
-   */
-  private getInternalServiceModuleId(path: string, summary: string): string {
-    const pathLower = path.toLowerCase();
-    const summaryLower = summary.toLowerCase();
-
-    // Check path prefix first
-    if (pathLower.startsWith('/query/') || pathLower.includes('/search') || pathLower.includes('/chat')) {
-      return 'query-service';
-    }
-    if (pathLower.startsWith('/indexing/')) {
-      return 'indexing-service';
-    }
-    if (pathLower.startsWith('/connector/')) {
-      return 'connector-service-internal';
-    }
-    if (pathLower.startsWith('/docling/')) {
-      return 'docling-service';
-    }
-
-    // Check summary for service indicators
-    if (summaryLower.includes('[query service]')) {
-      return 'query-service';
-    }
-    if (summaryLower.includes('[indexing service]')) {
-      return 'indexing-service';
-    }
-    if (summaryLower.includes('[connector service]')) {
-      return 'connector-service-internal';
-    }
-    if (summaryLower.includes('[docling service]')) {
-      return 'docling-service';
-    }
-
-    // Default to query service for unmatched internal endpoints
-    return 'query-service';
   }
 
   /**
@@ -491,74 +382,6 @@ export class ApiDocsService {
     const module = this.modules.find(m => m.id === moduleId);
     if (!module) {
       return null;
-    }
-
-    // For internal service modules, filter from merged spec by tags or path/summary patterns
-    const internalServiceIds = ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service'];
-    const internalServiceTags: Record<string, string> = {
-      'query-service': 'Query Service',
-      'indexing-service': 'Indexing Service',
-      'connector-service-internal': 'Connector Service',
-      'docling-service': 'Docling Service',
-    };
-
-    if (internalServiceIds.includes(moduleId)) {
-      const serviceTag = internalServiceTags[moduleId];
-      // Filter paths from merged spec that belong to this internal service
-      const filteredPaths: Record<string, any> = {};
-      if (this.mergedSpec?.paths) {
-        for (const [pathKey, pathValue] of Object.entries(this.mergedSpec.paths)) {
-          const pathObj = pathValue as any;
-          const filteredMethods: Record<string, any> = {};
-
-          for (const [method, operation] of Object.entries(pathObj)) {
-            if (['get', 'post', 'put', 'patch', 'delete'].includes(method)) {
-              const op = operation as any;
-              const opTags = op.tags || [];
-              const xServiceId = op['x-service-id'] as string | undefined;
-
-              // First priority: use x-service-id extension if present
-              if (xServiceId) {
-                if (xServiceId === moduleId) {
-                  filteredMethods[method] = operation;
-                }
-                continue;
-              }
-
-              // Second priority: check if endpoint belongs to this service's tag
-              if (opTags.includes(serviceTag)) {
-                filteredMethods[method] = operation;
-                continue;
-              }
-
-              // Legacy fallback: for 'Internal Services' tag, use path/summary to determine service
-              if (opTags.includes('Internal Services')) {
-                const endpointModuleId = this.getInternalServiceModuleId(pathKey, op.summary || '');
-                if (endpointModuleId === moduleId) {
-                  filteredMethods[method] = operation;
-                }
-              }
-            }
-          }
-
-          if (Object.keys(filteredMethods).length > 0) {
-            filteredPaths[pathKey] = filteredMethods;
-          }
-        }
-      }
-
-      return {
-        openapi: '3.0.0',
-        info: {
-          title: module.name,
-          version: module.version,
-          description: module.description,
-        },
-        servers: [{ url: module.basePath, description: `${module.name} (Internal)` }],
-        tags: [{ name: serviceTag, description: module.description }],
-        paths: filteredPaths,
-        components: this.mergedSpec?.components || {},
-      };
     }
 
     // Filter paths by module tags
@@ -639,7 +462,7 @@ export class ApiDocsService {
         description: 'Unified API documentation for PipesHub services',
         contact: {
           name: 'API Support',
-          email: 'support@pipeshub.com',
+          email: 'contact@pipeshub.com',
         },
       },
       servers: [{ url: '/api/v1', description: 'Base API URL' }],
