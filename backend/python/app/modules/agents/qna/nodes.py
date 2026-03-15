@@ -2186,6 +2186,17 @@ GITHUB_GUIDANCE = r"""
 
 """
 
+MARIADB_GUIDANCE = r"""
+## MariaDB-Specific Guidance
+
+- Use **mariadb** tools for database queries when the user asks for data from a connected MariaDB source.
+- Pass valid SQL in the tool parameters; avoid destructive statements (DROP, TRUNCATE, etc.) unless the user clearly requests them.
+- Prefer SELECT for read intents; use schema/table info from tool results when planning follow-up queries.
+- You have tools to List all Tables, Fetch DB Schema, Fetch Tables Schema , Fetch Table Schema, and Run SQL Query.
+- If user query mentions table names, list tables first then fetch schema for those tables to understand columns before running SQL queries.
+- If you dont have enough info about which tables the user query is about, use fetch DB Schema to fetch all tables schema.
+"""
+
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
 
 ## Core Planning Logic - Understanding User Intent
@@ -2523,6 +2534,7 @@ Generate:
 {outlook_guidance}
 {teams_guidance}
 {github_guidance}
+{mariadb_guidance}
 
 ## Planning Best Practices
 
@@ -3319,6 +3331,7 @@ async def planner_node(
     outlook_guidance = OUTLOOK_GUIDANCE if _has_outlook_tools(state) else ""
     teams_guidance = TEAMS_GUIDANCE if _has_teams_tools(state) else ""
     github_guidance = GITHUB_GUIDANCE if _has_github_tools(state) else ""
+    mariadb_guidance = MARIADB_GUIDANCE if _has_mariadb_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
@@ -3328,7 +3341,8 @@ async def planner_node(
         onedrive_guidance=onedrive_guidance,
         outlook_guidance=outlook_guidance,
         teams_guidance=teams_guidance,
-        github_guidance=github_guidance
+        github_guidance=github_guidance,
+        mariadb_guidance=mariadb_guidance
     )
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
@@ -4422,6 +4436,11 @@ def _has_github_tools(state: ChatState) -> bool:
     """Check if GitHub tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "github" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+def _has_mariadb_tools(state: ChatState) -> bool:
+    """Check if MariaDB tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "mariadb" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
@@ -6093,6 +6112,7 @@ async def respond_node(
             "blob_store": blob_store,
             "graph_provider": graph_provider,
             "org_id": org_id,
+            "conversation_id": state.get("conversation_id"),
         }
 
         answer_text = ""
@@ -6118,6 +6138,7 @@ async def respond_node(
             target_words_per_chunk=1,
             mode="json",
             is_agent=True,  # Use agent schemas (with referenceData support)
+            conversation_id=state.get("conversation_id"),
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -6474,6 +6495,15 @@ async def _generate_fast_api_response(
 
     if not full_content.strip():
         return False
+
+    conversation_id = state.get("conversation_id")
+    if conversation_id:
+        try:
+            from app.utils.conversation_tasks import await_and_collect_results
+            for task_result in await await_and_collect_results(conversation_id):
+                safe_stream_write(writer, {"event": "conversation_task", "data": task_result}, config)
+        except Exception as e:
+            log.warning("Fast-path: conversation tasks failed: %s", e)
 
     # Extract reference data (links) from the raw tool results
     reference_data = []
@@ -7584,6 +7614,9 @@ Use this decision tree to choose the right approach:
 
     if _has_outlook_tools(state):
         base_prompt += "\n" + OUTLOOK_GUIDANCE
+
+    if _has_mariadb_tools(state):
+        base_prompt += "\n" + MARIADB_GUIDANCE
 
     # ── Multi-step workflow patterns ─────────────────────────────────────────
     workflow_patterns = _build_workflow_patterns(state)

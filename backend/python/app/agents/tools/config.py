@@ -142,6 +142,10 @@ class ToolDiscoveryConfig:
             app_name="linear",
             client_builder="LinearClient",
         ),
+        "mariadb": AppConfiguration(
+            app_name="mariadb",
+            client_builder="MariaDBClient",
+        ),
         # "linkedin": AppConfiguration(
         #     app_name="linkedin",
         #     client_builder="LinkedInClient",

@@ -103,6 +103,17 @@ interface ToolsetSchema {
   [key: string]: any;
 }
 
+const filterFieldsByUsage = (fields: any[], mode: 'CONFIGURE' | 'AUTHENTICATE'): any[] => {
+  if (!Array.isArray(fields)) return [];
+
+  return fields.filter((field: any) => {
+    const usage = String(field?.usage || 'BOTH').toUpperCase();
+    if (usage === 'BOTH') return true;
+    if (mode === 'CONFIGURE') return usage !== 'AUTHENTICATE';
+    return usage !== 'CONFIGURE';
+  });
+};
+
 // ============================================================================
 // Note: Auth fields are now dynamically loaded from schema (no hardcoded fields)
 // ============================================================================
@@ -457,7 +468,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
       schema = firstSchemaKey ? schemas[firstSchemaKey] : { fields: [] };
     }
     return {
-      fields: schema.fields || [],
+      fields: filterFieldsByUsage(schema.fields || [], 'CONFIGURE'),
       redirectUri: schema.redirectUri || authConfig.redirectUri || '',
       displayRedirectUri: schema.displayRedirectUri !== undefined
         ? schema.displayRedirectUri
@@ -510,7 +521,11 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
     const authConfig = toolsetData.config?.auth || toolsetData.auth || {};
     const authSchemas = authConfig.schemas || {};
     
-    return authSchemas[manageAuthType] || { fields: [] };
+    const rawSchema = authSchemas[manageAuthType] || { fields: [] };
+    return {
+      ...rawSchema,
+      fields: filterFieldsByUsage(rawSchema.fields || [], 'AUTHENTICATE'),
+    };
   }, [toolsetSchema, manageAuthType, isManageMode]);
 
   const [showRedirectUri, setShowRedirectUri] = useState(true);

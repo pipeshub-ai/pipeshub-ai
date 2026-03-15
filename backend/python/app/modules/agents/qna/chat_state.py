@@ -56,6 +56,7 @@ class ChatState(TypedDict):
     user_id: str
     user_email: str
     send_user_info: bool
+    conversation_id: Optional[str]
 
     # Enhanced features
     system_prompt: Optional[str]  # User-defined system prompt
@@ -410,6 +411,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "user_id": user_info.get("userId", ""),
         "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
+        "conversation_id": chat_query.get("conversationId"),
         "llm": llm,
         "logger": logger,
         "retrieval_service": retrieval_service,

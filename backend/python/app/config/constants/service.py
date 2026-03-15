@@ -93,7 +93,7 @@ class Routes(Enum):
     STORAGE_DIRECT_UPLOAD = "/api/v1/document/internal/{documentId}/directUpload"
     STORAGE_UPLOAD = "/api/v1/document/internal/upload"
     STORAGE_DOWNLOAD = "/api/v1/document/internal/{documentId}/download"
-
+    STORAGE_DOWNLOAD_EXTERNAL = "/api/v1/document/{documentId}/download"
 
 class WebhookConfig(Enum):
     """Constants for webhook configuration"""

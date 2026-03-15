@@ -22,6 +22,7 @@ class AuthField:
     min_length: int = 1
     max_length: int = 1000
     is_secret: bool = False
+    usage: str = "BOTH"  # CONFIGURE | AUTHENTICATE | BOTH
 
 
 @dataclass
