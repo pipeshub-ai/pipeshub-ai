@@ -284,7 +284,7 @@ class KafkaUtils:
                     return False
 
                 # Only process AI configuration events
-                if event_type not in ["llmConfigured", "embeddingModelConfigured"]:
+                if event_type not in ["llmConfigured", "embeddingModelConfigured", "imageGenerationModelConfigured"]:
                     logger.debug(f"Skipping non-AI config event: {event_type}")
                     return True  # Return True to acknowledge the message without processing
 

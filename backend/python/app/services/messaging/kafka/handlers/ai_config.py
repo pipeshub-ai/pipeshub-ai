@@ -21,6 +21,8 @@ class AiConfigEventService(BaseEventService):
                 return await self.__handle_llm_configured(payload)
             elif event_type == "embeddingModelConfigured":
                 return await self.__handle_embedding_configured(payload)
+            elif event_type == "imageGenerationModelConfigured":
+                return await self.__handle_image_generation_configured(payload)
             else:
                 self.logger.error(f"Unknown AI config event type: {event_type}")
                 return False
@@ -73,4 +75,24 @@ class AiConfigEventService(BaseEventService):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to update embedding model configuration: {str(e)}")
+            return False
+
+    async def __handle_image_generation_configured(self, payload: dict) -> bool:
+        """Handle image generation model configuration update
+
+        Args:
+            payload (dict): Event payload containing configuration details
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.logger.info("📥 Processing image generation model configured event")
+            self.logger.debug(f"Image generation config payload: {payload}")
+
+            self.logger.info("✅ Successfully processed image generation model configuration event")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to process image generation model configuration: {str(e)}")
             return False

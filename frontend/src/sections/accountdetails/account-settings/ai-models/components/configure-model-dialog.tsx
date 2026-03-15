@@ -284,12 +284,17 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
     },
   });
 
+  const formatModelTypeLabel = (type: string) => {
+    if (type === 'imageGeneration') return 'Image Generation';
+    return type.toUpperCase();
+  };
+
   const getDialogTitle = () => {
     if (isEditMode) {
       return `Edit ${currentProvider.name}`;
     }
     if (currentProvider.targetModelType) {
-      return `Add ${currentProvider.name} ${currentProvider.targetModelType.toUpperCase()} Model`;
+      return `Add ${currentProvider.name} ${formatModelTypeLabel(currentProvider.targetModelType)} Model`;
     }
     return `Configure ${currentProvider.name}`;
   };
@@ -299,9 +304,9 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
       return `Update ${currentProvider.editingModel!.name} configuration`;
     }
     if (currentProvider.targetModelType) {
-      return `Configure ${currentProvider.targetModelType.toUpperCase()} model settings`;
+      return `Configure ${formatModelTypeLabel(currentProvider.targetModelType)} model settings`;
     }
-    return `Set up models for ${currentProvider.supportedTypes.join(' & ').toUpperCase()}`;
+    return `Set up models for ${currentProvider.supportedTypes.map(formatModelTypeLabel).join(' & ')}`;
   };
 
   return (
@@ -395,7 +400,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
                   ref={(ref) => {
                     formRefs.current[currentProvider.editingModel!.modelType] = ref;
                   }}
-                  configType={currentProvider.editingModel!.modelType as 'llm' | 'embedding'}
+                  configType={currentProvider.editingModel!.modelType as 'llm' | 'embedding' | 'imageGeneration'}
                   onValidationChange={(isValid) =>
                     handleValidationChange(currentProvider.editingModel!.modelType, isValid)
                   }
@@ -413,21 +418,30 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
                     icon={
                       currentProvider.targetModelType === 'llm'
                         ? 'carbon:machine-learning-model'
-                        : 'mdi:magnify'
+                        : currentProvider.targetModelType === 'imageGeneration'
+                          ? 'mdi:image-auto-adjust'
+                          : 'mdi:magnify'
                     }
                     width={20}
                     height={20}
                     sx={{
-                      color: currentProvider.targetModelType === 'llm' ? '#4CAF50' : '#9C27B0',
+                      color: currentProvider.targetModelType === 'llm'
+                        ? '#4CAF50'
+                        : currentProvider.targetModelType === 'imageGeneration'
+                          ? '#FF5722'
+                          : '#9C27B0',
                     }}
                   />
-                  {currentProvider.targetModelType.toUpperCase()} Configuration
+                  {currentProvider.targetModelType === 'imageGeneration'
+                    ? 'Image Generation'
+                    : currentProvider.targetModelType.toUpperCase()}{' '}
+                  Configuration
                 </Typography>
                 <DynamicForm
                   ref={(ref) => {
                     formRefs.current[currentProvider.targetModelType!] = ref;
                   }}
-                  configType={currentProvider.targetModelType as 'llm' | 'embedding'}
+                  configType={currentProvider.targetModelType as 'llm' | 'embedding' | 'imageGeneration'}
                   onValidationChange={(isValid) =>
                     handleValidationChange(currentProvider.targetModelType!, isValid)
                   }
@@ -440,8 +454,8 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
             ) : (
               currentProvider.supportedTypes.map((type) => {
                 const isExpanded = expandedAccordion === type;
-                const typeColor = type === 'llm' ? '#4CAF50' : '#9C27B0';
-                const typeIcon = type === 'llm' ? 'carbon:machine-learning-model' : 'mdi:magnify';
+                const typeColor = type === 'llm' ? '#4CAF50' : type === 'imageGeneration' ? '#FF5722' : '#9C27B0';
+                const typeIcon = type === 'llm' ? 'carbon:machine-learning-model' : type === 'imageGeneration' ? 'mdi:image-auto-adjust' : 'mdi:magnify';
 
                 return (
                   <Accordion
@@ -510,7 +524,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
                         ref={(ref) => {
                           formRefs.current[type] = ref;
                         }}
-                        configType={type as 'llm' | 'embedding'}
+                        configType={type as 'llm' | 'embedding' | 'imageGeneration'}
                         onValidationChange={(isValid) => handleValidationChange(type, isValid)}
                         initialProvider={currentProvider.id}
                         stepperMode={Boolean(true)}

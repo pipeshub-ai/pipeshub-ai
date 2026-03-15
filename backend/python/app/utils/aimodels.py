@@ -26,6 +26,7 @@ class ModelType(str, Enum):
     SLM = "slm"
     REASONING = "reasoning"
     MULTIMODAL = "multiModal"
+    IMAGE_GENERATION = "imageGeneration"
 
 class EmbeddingProvider(Enum):
     ANTHROPIC = "anthropic"
@@ -63,6 +64,10 @@ class LLMProvider(Enum):
     TOGETHER = "together"
     VERTEX_AI = "vertexAI"
     XAI = "xai"
+
+class ImageGenerationProvider(Enum):
+    GEMINI = "gemini"
+    OPENAI = "openAI"
 
 MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
@@ -553,3 +558,84 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
             )
 
     raise ValueError(f"Unsupported provider type: {provider}")
+
+
+def get_image_generation_model(provider: str, config: Dict[str, Any], model_name: str | None = None) -> Any:
+    """Instantiate and return an image generation model client for the given provider.
+
+    Returns a (client, model_name) tuple. The caller is responsible for invoking
+    the appropriate generation method on the returned client.
+    """
+    configuration = config["configuration"]
+    is_default = config.get("isDefault")
+    if is_default and model_name is None:
+        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+        model_name = model_names[0]
+    elif not is_default and model_name is None:
+        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+        model_name = model_names[0]
+    elif not is_default and model_name is not None:
+        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
+        if model_name not in model_names:
+            raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+
+    logger.info(f"Getting image generation model: provider={provider}, model_name={model_name}")
+
+    if provider == ImageGenerationProvider.GEMINI.value:
+        from google import genai
+
+        client = genai.Client(api_key=configuration["apiKey"])
+        return client, model_name
+
+    elif provider == ImageGenerationProvider.OPENAI.value:
+        from openai import OpenAI
+
+        return OpenAI(
+            api_key=configuration["apiKey"],
+            organization=configuration.get("organizationId"),
+        ), model_name
+
+    raise ValueError(f"Unsupported image generation provider: {provider}")
+
+
+def generate_test_image(provider: str, config: Dict[str, Any], model_name: str) -> str:
+    """Generate a test image using the configured provider.
+
+    Returns the resolved model name on success. Raises on failure.
+    """
+    client, resolved_model = get_image_generation_model(provider, config, model_name)
+
+    if provider == ImageGenerationProvider.GEMINI.value:
+        if resolved_model.startswith("imagen"):
+            response = client.models.generate_images(
+                model=resolved_model,
+                prompt="A simple red circle on a white background",
+                config={"number_of_images": 1},
+            )
+            if not response or not response.generated_images:
+                raise Exception("Gemini Imagen model returned empty result")
+        else:
+            from google.genai import types as genai_types
+
+            response = client.models.generate_content(
+                model=resolved_model,
+                contents="Generate a tiny 64x64 image of a red circle on a white background",
+                config=genai_types.GenerateContentConfig(
+                    response_modalities=["TEXT", "IMAGE"],
+                ),
+            )
+            if not response or not response.candidates:
+                raise Exception("Gemini image generation returned empty result")
+    elif provider == ImageGenerationProvider.OPENAI.value:
+        response = client.images.generate(
+            model=resolved_model,
+            prompt="A simple red circle on a white background",
+            n=1,
+            size="1024x1024",
+        )
+        if not response or not response.data:
+            raise Exception("OpenAI image generation returned empty result")
+    else:
+        raise ValueError(f"Unsupported image generation provider: {provider}")
+
+    return resolved_model

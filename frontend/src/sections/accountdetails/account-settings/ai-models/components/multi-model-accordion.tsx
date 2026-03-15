@@ -131,11 +131,11 @@ const MultiModelAccordion: React.FC<MultiModelAccordionProps> = ({
   // Create provider count map
   const configuredProviders = models.reduce((acc, model) => {
     if (!acc[model.provider]) {
-      acc[model.provider] = { llm: 0, embedding: 0 };
+      acc[model.provider] = { llm: 0, embedding: 0, imageGeneration: 0 };
     }
     acc[model.provider][modelType]+=1;
     return acc;
-  }, {} as { [key: string]: { llm: number; embedding: number } });
+  }, {} as { [key: string]: { llm: number; embedding: number; imageGeneration: number } });
 
   const activeModel = models.find(m => m.isActive);
 

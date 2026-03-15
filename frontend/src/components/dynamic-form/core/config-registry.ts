@@ -1,14 +1,15 @@
 import { DynamicConfigFactory, GeneratedProvider } from "./config-factory";
-import { EMBEDDING_PROVIDERS, LLM_PROVIDERS, SMTP_PROVIDERS, STORAGE_PROVIDERS } from "./providers";
+import { EMBEDDING_PROVIDERS, IMAGE_GENERATION_PROVIDERS, LLM_PROVIDERS, SMTP_PROVIDERS, STORAGE_PROVIDERS } from "./providers";
 
 // AUTO-GENERATED CONFIGS
 export const LLM_CONFIG = DynamicConfigFactory.generateConfigType(LLM_PROVIDERS);
 export const EMBEDDING_CONFIG = DynamicConfigFactory.generateConfigType(EMBEDDING_PROVIDERS);
+export const IMAGE_GENERATION_CONFIG = DynamicConfigFactory.generateConfigType(IMAGE_GENERATION_PROVIDERS);
 export const STORAGE_CONFIG = DynamicConfigFactory.generateConfigType(STORAGE_PROVIDERS);
 export const SMTP_CONFIG = DynamicConfigFactory.generateConfigType(SMTP_PROVIDERS);
 
 // UNIFIED CONFIG TYPE
-export type ConfigType = 'llm' | 'embedding' | 'storage' | 'smtp';
+export type ConfigType = 'llm' | 'embedding' | 'imageGeneration' | 'storage' | 'smtp';
 
 // HELPER FUNCTIONS
 export const getProvidersForType = (configType: ConfigType): GeneratedProvider[] => {
@@ -17,6 +18,8 @@ export const getProvidersForType = (configType: ConfigType): GeneratedProvider[]
       return LLM_CONFIG;
     case 'embedding':
       return EMBEDDING_CONFIG;
+    case 'imageGeneration':
+      return IMAGE_GENERATION_CONFIG;
     case 'storage':
       return STORAGE_CONFIG;
     case 'smtp':

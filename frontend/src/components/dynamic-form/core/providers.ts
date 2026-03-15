@@ -432,6 +432,24 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
   },
 ] as const;
 
+// IMAGE GENERATION PROVIDERS
+export const IMAGE_GENERATION_PROVIDERS: readonly ProviderConfig[] = [
+  {
+    id: 'openAI',
+    label: 'OpenAI API',
+    description: 'Enter your OpenAI API credentials for image generation.',
+    modelPlaceholder: 'e.g., gpt-image-1, dall-e-3',
+    fields: ['apiKey', 'model', { name: 'modelFriendlyName', required: false, defaultValue: undefined }],
+  },
+  {
+    id: 'gemini',
+    label: 'Gemini API',
+    description: 'Enter your Gemini API credentials for image generation.',
+    modelPlaceholder: 'e.g., gemini-3-pro-image-preview',
+    fields: ['apiKey', 'model', { name: 'modelFriendlyName', required: false, defaultValue: undefined }],
+  },
+] as const;
+
 // STORAGE PROVIDERS
 export const STORAGE_PROVIDERS: readonly ProviderConfig[] = [
   {

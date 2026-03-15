@@ -1,4 +1,4 @@
-export type ModelType = 'llm' | 'embedding';
+export type ModelType = 'llm' | 'embedding' | 'imageGeneration';
 export type ProviderId = string;
 
 export interface ConfiguredModel {
@@ -45,7 +45,7 @@ export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [
     name: 'OpenAI',
     description: 'GPT models for text generation and embeddings',
     src: '/assets/icons/ai-models/openai.svg',
-    supportedTypes: ['llm', 'embedding'],
+    supportedTypes: ['llm', 'embedding', 'imageGeneration'],
     isPopular: true,
     color: '#10A37F',
   },
@@ -54,7 +54,7 @@ export const AVAILABLE_MODEL_PROVIDERS: ModelProvider[] = [
     name: 'Gemini',
     description: 'Gemini models with multimodal capabilities',
     src: '/assets/icons/ai-models/gemini-color.svg',
-    supportedTypes: ['llm', 'embedding'],
+    supportedTypes: ['llm', 'embedding', 'imageGeneration'],
     isPopular: true,
     color: '#4285F4',
   },
@@ -204,6 +204,12 @@ export const MODEL_TYPE_CONFIGS = {
     icon: 'mdi:magnify',
     color: '#9C27B0',
   },
+  imageGeneration: {
+    name: 'Image Generation Models',
+    description: 'Generate images from text prompts',
+    icon: 'mdi:image-auto-adjust',
+    color: '#FF5722',
+  },
 };
 
 // Rest of the interfaces remain the same...
@@ -235,5 +241,6 @@ export interface ModelStatistics {
   totalModels: number;
   llmModels: number;
   embeddingModels: number;
+  imageGenerationModels: number;
   defaultModels: number;
 }
