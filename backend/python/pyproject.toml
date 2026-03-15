@@ -292,7 +292,7 @@ exclude = ["venv", ".venv", "**/__pycache__", "**/node_modules"]
 reportMissingTypeStubs = "warning"
 
 # Side-effect functions (logging, db writes) — unused return value is intentional
-reportUnusedCallResult = "none"
+reportUnusedCallResult = "warning"
 
 # Ruff handles these with auto-fix (F401, F841)
 reportUnusedImport = "warning"

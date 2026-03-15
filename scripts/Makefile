@@ -644,7 +644,8 @@ lint-python: lint-python-ruff lint-python-pyright ## Lint changed Python files (
 
 lint-python-ruff: ## Run ruff on changed Python files
 	@echo "$(BLUE)Running ruff on changed Python files...$(NC)"
-	@CHANGED_FILES=$$(git diff --name-only origin/main -- 'backend/python/**/*.py' 2>/dev/null || git diff --name-only HEAD~1 -- 'backend/python/**/*.py' 2>/dev/null || true); \
+	@MERGE_BASE=$$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1); \
+	CHANGED_FILES=$$(git diff --name-only $$MERGE_BASE -- 'backend/python/**/*.py' 2>/dev/null || true); \
 	if [ -n "$$CHANGED_FILES" ]; then \
 		echo "$$CHANGED_FILES" | head -5; \
 		TOTAL=$$(echo "$$CHANGED_FILES" | wc -l | tr -d ' '); \
@@ -656,7 +657,8 @@ lint-python-ruff: ## Run ruff on changed Python files
 
 lint-python-pyright: ## Run pyright on changed Python files
 	@echo "$(BLUE)Running pyright on changed Python files...$(NC)"
-	@CHANGED_FILES=$$(git diff --name-only origin/main -- 'backend/python/**/*.py' 2>/dev/null || git diff --name-only HEAD~1 -- 'backend/python/**/*.py' 2>/dev/null || true); \
+	@MERGE_BASE=$$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1); \
+	CHANGED_FILES=$$(git diff --name-only $$MERGE_BASE -- 'backend/python/**/*.py' 2>/dev/null || true); \
 	CHANGED_FILES=$$(echo "$$CHANGED_FILES" | grep -v 'code-generator/' | grep -v 'example\.py$$' | sed 's|^backend/python/||' || true); \
 	if [ -n "$$CHANGED_FILES" ]; then \
 		echo "$$CHANGED_FILES" | head -5; \
@@ -669,7 +671,8 @@ lint-python-pyright: ## Run pyright on changed Python files
 
 lint-nodejs: ## Run ESLint on changed TypeScript files
 	@echo "$(BLUE)Running ESLint on changed TypeScript files...$(NC)"
-	@CHANGED_FILES=$$(git diff --name-only origin/main -- 'backend/nodejs/apps/src/**/*.ts' 2>/dev/null || git diff --name-only HEAD~1 -- 'backend/nodejs/apps/src/**/*.ts' 2>/dev/null || true); \
+	@MERGE_BASE=$$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1); \
+	CHANGED_FILES=$$(git diff --name-only $$MERGE_BASE -- 'backend/nodejs/apps/src/**/*.ts' 2>/dev/null || true); \
 	if [ -n "$$CHANGED_FILES" ]; then \
 		echo "$$CHANGED_FILES" | head -5; \
 		TOTAL=$$(echo "$$CHANGED_FILES" | wc -l | tr -d ' '); \

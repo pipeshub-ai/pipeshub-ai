@@ -32,7 +32,8 @@ jobs:
       - name: Lint backend (changed files)
         run: |
           git fetch origin main
-          CHANGED_FILES=$(git diff --name-only origin/main ${{ github.sha }} | grep '^backend/nodejs/apps/src/.*\.ts$' || true)
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          CHANGED_FILES=$(git diff --name-only $MERGE_BASE -- 'backend/nodejs/apps/src/**/*.ts' || true)
           if [ -n "$CHANGED_FILES" ]; then
             echo "Linting changed TypeScript files:"
             echo "$CHANGED_FILES"
@@ -96,7 +97,8 @@ jobs:
       - name: Run all ruff rules on changed Python files
         run: |
           git fetch origin main
-          CHANGED_FILES=$(git diff --name-only origin/main ${{ github.sha }} | grep '\.py$' || true)
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          CHANGED_FILES=$(git diff --name-only $MERGE_BASE -- '*.py' || true)
           if [ -n "$CHANGED_FILES" ]; then
             echo "Linting changed Python files with full ruleset:"
             echo "$CHANGED_FILES"
@@ -128,7 +130,8 @@ jobs:
       - name: Run pyright on changed Python files
         run: |
           git fetch origin main
-          CHANGED_FILES=$(git diff --name-only origin/main ${{ github.sha }} | grep '^backend/python/.*\.py$' | grep -v 'code-generator/' | grep -v 'example\.py$' | sed 's|^backend/python/||' || true)
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          CHANGED_FILES=$(git diff --name-only $MERGE_BASE -- 'backend/python/**/*.py' | grep -v 'code-generator/' | grep -v 'example\.py$' | sed 's|^backend/python/||' || true)
           if [ -n "$CHANGED_FILES" ]; then
             echo "Type-checking changed Python files:"
             echo "$CHANGED_FILES"
