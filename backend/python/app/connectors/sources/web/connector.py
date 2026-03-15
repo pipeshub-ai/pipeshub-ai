@@ -927,6 +927,8 @@ class WebConnector(BaseConnector):
                     normalized = self._normalize_url(retry_entry.url)
                     if normalized not in self.visited_urls:
                         queue.append((retry_entry.url, retry_entry.depth, retry_entry.referer))
+
+                self.logger.debug(f"Re-enqueued {len(retry_candidates)} retry URLs")
                 continue  # restart the while-loop with the newly enqueued URLs
 
             current_url, current_depth, referer = queue.pop(0)
@@ -1356,6 +1358,8 @@ class WebConnector(BaseConnector):
             url,
             status_code,
         )
+
+        await self._ensure_parent_records_exist(parent_url)
 
         placeholder_record = FileRecord(
             id=record_id,
