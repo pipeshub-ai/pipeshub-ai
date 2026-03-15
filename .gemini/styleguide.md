@@ -978,6 +978,125 @@ Classes decorated with `@injectable()` are exempt from the "no unnecessary class
 
 ---
 
+# No Magic Strings (HIGH)
+
+**String literals used for comparisons, status values, roles, event names, error codes, or configuration keys MUST be defined as constants, enums, or typed literals — not hardcoded inline.** This prevents typos, enables refactoring, and provides autocomplete.
+
+## What to flag
+
+Flag any string literal that:
+- Is used in a comparison (`===`, `==`, `!==`, `!=`, `switch/case`, `match/case`)
+- Represents a status, role, event name, error code, action type, or category
+- Appears more than once across the codebase
+- Is used as a dictionary/object key for accessing structured data
+
+## What NOT to flag
+
+Do NOT flag string literals that are:
+- Log messages (`logger.info("Processing request")`)
+- Error messages in exceptions (`throw new Error("Failed to connect")`, `raise ValueError("Invalid input")`)
+- Template strings for user-facing text
+- File paths, URLs, or format strings
+- Single-use descriptive strings that are not compared against
+- Test assertions and fixtures
+- Import paths
+
+## Python — Use Enum or Literal
+
+```python
+# BAD — magic strings in comparisons and returns
+if user.role == "admin":
+    grant_access()
+if status == "active":
+    process()
+return {"status": "success", "code": "USER_CREATED"}
+
+# GOOD — Enum for a known set of values
+from enum import Enum
+
+class UserRole(str, Enum):
+    ADMIN = "admin"
+    USER = "user"
+    GUEST = "guest"
+
+class Status(str, Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    PENDING = "pending"
+
+if user.role == UserRole.ADMIN:
+    grant_access()
+if status == Status.ACTIVE:
+    process()
+
+# GOOD — Literal type for function params
+from typing import Literal
+
+def set_mode(mode: Literal["read", "write", "append"]) -> None:
+    ...
+
+# GOOD — Constants for error/event codes
+class EventCode:
+    USER_CREATED = "USER_CREATED"
+    USER_DELETED = "USER_DELETED"
+
+return {"status": "success", "code": EventCode.USER_CREATED}
+```
+
+## TypeScript — Use const objects, enums, or string unions
+
+```typescript
+// BAD — magic strings scattered in code
+if (user.role === "admin") { ... }
+if (status === "active") { ... }
+res.json({ status: "success", code: "USER_CREATED" });
+switch (action) {
+  case "create": ...
+  case "delete": ...
+}
+
+// GOOD — const object with derived type
+const UserRole = {
+  ADMIN: "admin",
+  USER: "user",
+  GUEST: "guest",
+} as const;
+type UserRole = (typeof UserRole)[keyof typeof UserRole];
+
+const ResponseStatus = {
+  SUCCESS: "success",
+  ERROR: "error",
+} as const;
+
+const EventCode = {
+  USER_CREATED: "USER_CREATED",
+  USER_DELETED: "USER_DELETED",
+} as const;
+
+if (user.role === UserRole.ADMIN) { ... }
+res.json({ status: ResponseStatus.SUCCESS, code: EventCode.USER_CREATED });
+
+// GOOD — string union for function params (enforced at compile time)
+type Action = "create" | "update" | "delete";
+function handleAction(action: Action): void {
+  switch (action) {
+    case "create": ...  // exhaustiveness checked by TypeScript
+    case "update": ...
+    case "delete": ...
+  }
+}
+
+// GOOD — enum (when you need runtime values + iteration)
+enum HttpMethod {
+  GET = "GET",
+  POST = "POST",
+  PUT = "PUT",
+  DELETE = "DELETE",
+}
+```
+
+---
+
 # Request/Response Object Typing (BLOCKER)
 
 **Plain `dict` (Python) and inline objects / `Record<string, any>` (Node.js) are BANNED for API request and response types.** Use Pydantic models (Python) or TypeScript interfaces (Node.js). This is a BLOCKER — flag it on every PR.

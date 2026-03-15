@@ -1,14 +1,16 @@
 name: Gemini Code Review on Push
 
-# Trigger on every push to a PR (synchronize event), not just PR open
+# pull_request_target runs in base branch context with write access
+# unlike pull_request which has restricted GITHUB_TOKEN permissions
 on:
-  pull_request:
+  pull_request_target:
     types: [synchronize]
     branches:
       - main
 
 permissions:
   pull-requests: write
+  issues: write
 
 jobs:
   trigger-gemini-review:
@@ -19,7 +21,7 @@ jobs:
         with:
           script: |
             const prNumber = context.payload.pull_request.number;
-            const commitSha = context.payload.after;
+            const commitSha = context.payload.pull_request.head.sha;
             const shortSha = commitSha.substring(0, 7);
 
             await github.rest.issues.createComment({

@@ -10,23 +10,22 @@ memory_config:
 
 # Code review settings
 code_review:
-  disable: false
   # LOW = catch everything (type issues, style, performance, security, correctness)
   # Options: LOW, MEDIUM, HIGH, CRITICAL
   comment_severity_threshold: LOW
   # Unlimited review comments — we want thorough reviews
   max_review_comments: -1
 
-# What happens when a PR is opened
-pull_request_opened:
-  # Show help commands (/review, /ask, etc.)
-  help: true
-  # Generate a summary of changes
-  summary: true
-  # Auto-run code review on PR open
-  code_review: true
-  # Also review draft PRs — catch issues early before PR is marked ready
-  include_drafts: true
+  # What happens when a PR is opened (MUST be nested under code_review)
+  pull_request_opened:
+    # Show help commands (/review, /ask, etc.)
+    help: true
+    # Generate a summary of changes
+    summary: true
+    # Auto-run code review on PR open
+    code_review: true
+    # Also review draft PRs — catch issues early before PR is marked ready
+    include_drafts: true
 
 # Files to skip during review — generated/vendored/build artifacts
 ignore_patterns:
