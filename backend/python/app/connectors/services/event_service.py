@@ -12,6 +12,7 @@ from app.connectors.core.sync.task_manager import sync_task_manager
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 
 
 class EventService:
@@ -80,7 +81,6 @@ class EventService:
                 )
                 return None
             config_service = self.app_container.config_service()
-            from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
             data_store_provider = GraphDataStore(self.logger, self.graph_provider)
 
             connector = await ConnectorFactory.initialize_connector(
@@ -152,9 +152,6 @@ class EventService:
             self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id} and connector_id: {connector_id}")
             config_service = self.app_container.config_service()
             # Create data_store manually using already-resolved graph_provider (arango_service) to avoid coroutine reuse
-            from app.connectors.core.base.data_store.graph_data_store import (
-                GraphDataStore,
-            )
             data_store_provider = GraphDataStore(self.logger, self.graph_provider)
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
