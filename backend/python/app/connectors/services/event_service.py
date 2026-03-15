@@ -7,12 +7,12 @@ from dependency_injector import providers
 
 from app.config.constants.arangodb import CollectionNames, Connectors, EventTypes
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.task_manager import sync_task_manager
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 
 
 class EventService:
