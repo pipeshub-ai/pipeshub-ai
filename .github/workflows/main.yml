@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -26,6 +28,21 @@ jobs:
         run: |
           cd backend/nodejs/apps
           npm install
+
+      - name: Lint backend (changed files)
+        run: |
+          git fetch origin main
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          CHANGED_FILES=$(git diff --name-only $MERGE_BASE -- 'backend/nodejs/apps/src/**/*.ts' || true)
+          if [ -n "$CHANGED_FILES" ]; then
+            echo "Linting changed TypeScript files:"
+            echo "$CHANGED_FILES"
+            RELATIVE_FILES=$(echo "$CHANGED_FILES" | sed 's|^backend/nodejs/apps/||')
+            cd backend/nodejs/apps
+            echo "$RELATIVE_FILES" | xargs npx eslint
+          else
+            echo "No TypeScript files changed in backend, skipping ESLint."
+          fi
 
       - name: Build backend
         run: |
@@ -80,7 +97,8 @@ jobs:
       - name: Run all ruff rules on changed Python files
         run: |
           git fetch origin main
-          CHANGED_FILES=$(git diff --name-only origin/main ${{ github.sha }} | grep '\.py$' || true)
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          CHANGED_FILES=$(git diff --name-only $MERGE_BASE -- '*.py' || true)
           if [ -n "$CHANGED_FILES" ]; then
             echo "Linting changed Python files with full ruleset:"
             echo "$CHANGED_FILES"
@@ -112,7 +130,8 @@ jobs:
       - name: Run pyright on changed Python files
         run: |
           git fetch origin main
-          CHANGED_FILES=$(git diff --name-only origin/main ${{ github.sha }} | grep '^backend/python/.*\.py$' | grep -v 'code-generator/' | grep -v 'example\.py$' | sed 's|^backend/python/||' || true)
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          CHANGED_FILES=$(git diff --name-only $MERGE_BASE -- 'backend/python/**/*.py' | grep -v 'code-generator/' | grep -v 'example\.py$' | sed 's|^backend/python/||' || true)
           if [ -n "$CHANGED_FILES" ]; then
             echo "Type-checking changed Python files:"
             echo "$CHANGED_FILES"
