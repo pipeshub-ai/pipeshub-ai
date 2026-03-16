@@ -1,4 +1,3 @@
-# ruff: noqa: FBT001
 """
 Zoom REST API DataSource - Auto-generated API wrapper
 

@@ -329,7 +329,6 @@ class ZoomDataSourceGenerator:
         endpoints = self._load_all_endpoints()
 
         class_lines = [
-            "# ruff: noqa: FBT001",
             '"""',
             "Zoom REST API DataSource - Auto-generated API wrapper",
             "",

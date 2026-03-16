@@ -1,4 +1,3 @@
-# ruff: noqa: FBT001
 """
 ClickUp REST API DataSource - Auto-generated API wrapper
 

@@ -1283,7 +1283,6 @@ class ClickUpDataSourceGenerator:
         """Generate the complete ClickUp datasource class."""
 
         class_lines = [
-            "# ruff: noqa: FBT001",
             '"""',
             "ClickUp REST API DataSource - Auto-generated API wrapper",
             "",
