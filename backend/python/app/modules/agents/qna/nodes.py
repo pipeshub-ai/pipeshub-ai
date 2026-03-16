@@ -3166,6 +3166,8 @@ This applies equally to start dates, end dates, and recurrence end dates.A wrong
 SHAREPOINT_GUIDANCE = r"""
 ## SharePoint-Specific Guidance
 
+**Placeholders in tool args:** When referencing a previous tool's result use {{tool_name.path}} with **underscore** tool names only: sharepoint_search_files, sharepoint_find_notebook, sharepoint_list_notebook_pages, sharepoint_search_pages. Do NOT use dots (e.g. sharepoint.search_files) — those placeholders will not resolve.
+
 ### Tool Selection — Use the Right SharePoint Tool for Every Task
 
 | User intent | Correct SharePoint tool | Key parameters |
@@ -3182,6 +3184,27 @@ SHAREPOINT_GUIDANCE = r"""
 | Get full HTML content of a page | `sharepoint.get_page` | `site_id`, `page_id` (from search_pages or get_pages) |
 | Create a new page | `sharepoint.create_page` | `site_id`, `title`, `content_html`, `publish` (default False = draft) |
 | Update an existing page | `sharepoint.update_page` | `site_id`, `page_id`, `title` (opt), `content_html` (opt), `publish` (default False = draft) |
+| Find OneNote notebook by name (in a site) | `sharepoint.find_notebook` | **site_id** (required, from search_files), `notebook_query`. First plan for notebook-by-name: ONLY search_files + find_notebook — never add list_notebook_pages or get_notebook_page_content to that plan. |
+| List sections and pages of a notebook | `sharepoint.list_notebook_pages` | `site_id`, `notebook_id` (from find_notebook when resolved). Plan only after user has chosen when ambiguous. |
+| Get content of OneNote pages | `sharepoint.get_notebook_page_content` | `site_id`, `page_ids` (from list_notebook_pages). Plan only after user has chosen when ambiguous. |
+
+**OneNote notebooks — two-phase flow**
+For notebook-by-name requests, use two phases. The exact phase depends on whether find_notebook returned ambiguous.
+
+**Phase 1 (first request):** Plan ONLY **sharepoint.search_files(query=notebook_name)** and **sharepoint.find_notebook(site_id={{sharepoint_search_files.results[0].site_id}}, notebook_query=notebook_name)**. Do NOT include list_notebook_pages or get_notebook_page_content in this plan. In the placeholder use underscore: **sharepoint_search_files** (not sharepoint.search_files).
+- If find_notebook returns **resolved: true** → respond confirming the notebook was found; in the next turn or continue cycle, plan list_notebook_pages and get_notebook_page_content using `{{sharepoint_find_notebook.site_id}}` and `{{sharepoint_find_notebook.notebook_id}}`.
+- If find_notebook returns **ambiguous: true** with candidates → respond by listing the candidates (e.g. "1. mp_plan 2. mp_plan") and ask "Which one do you mean?" Do NOT call any further tools. Wait for the user to choose. Include the site_id and notebook_id for each candidate in your response so the next turn can use them (e.g. "1. mp_plan (site_id: X, notebook_id: Y) 2. mp_plan (site_id: Z, notebook_id: W)").
+
+**Phase 2 (user replies with their choice, e.g. "the first one", "number 2", "mp_plan this one"):**
+When you can identify the user is replying to a "Which one?" question about notebooks:
+- **Option A (preferred):** If the previous assistant response in conversation history included the site_id and notebook_id for each candidate, extract those literal values and use them directly in list_notebook_pages and get_notebook_page_content — do NOT re-run search_files or find_notebook.
+- **Option B (fallback):** If literal IDs are not available in conversation history, plan all 4 tools: **sharepoint.search_files(query=notebook_name, WITHOUT any site_id parameter)**, **sharepoint.find_notebook(site_id={{sharepoint_search_files.results[0].site_id}}, notebook_query=name)**, then list_notebook_pages and get_notebook_page_content using `{{sharepoint_find_notebook.candidates.N.site_id}}` and `{{sharepoint_find_notebook.candidates.N.notebook_id}}` where N corresponds to the user's choice (N=0 for "first"/"this one", N=1 for "second"). Use **underscore** in placeholders: sharepoint_search_files, sharepoint_find_notebook (not sharepoint.search_files or sharepoint.find_notebook).
+- Do NOT use `{{sharepoint_search_files.results[0].site_id}}` for list_notebook_pages directly.
+- Do NOT add a site_id filter to search_files in Phase 2 (use global search with query only).
+- `{{sharepoint_find_notebook.candidates.N.site_id}}` resolves correctly as long as find_notebook ran in this turn.
+- Use `{{sharepoint_list_notebook_pages.pages[0].page_id}}` for page_id (field is `page_id`, not `id`; no `.data`).
+
+Never use `sharepoint.get_file_content` for `.one` or `.onetoc2` files.
 
 **R-SP-1: NEVER use retrieval for SharePoint page content.**
 When the user asks for the content, body, summary, text, or details of a SharePoint page — always use `sharepoint.get_page`, not `retrieval.search_internal_knowledge`.
@@ -3197,15 +3220,15 @@ Do NOT first search for sites, then list all pages. Jump directly to `search_pag
 
 **R-SP-3: NEVER use retrieval to get site_id or page_id.**
 Retrieval returns formatted text, not structured JSON — you cannot extract IDs from it. Use service tools instead.
-- ✅ `sharepoint.get_sites` → extract `data.sites[0].id` → use as `site_id`
-- ✅ `sharepoint.search_pages` → extract `data.pages[0].page_id` AND `data.pages[0].site_id`
-- ✅ `sharepoint.get_pages` → extract `data.pages[0].page_id` → use as `page_id`
+- ✅ `sharepoint.get_sites` → extract `sites[0].id` → use as `site_id`
+- ✅ `sharepoint.search_pages` → extract `pages[0].page_id` AND `pages[0].site_id`
+- ✅ `sharepoint.get_pages` → extract `pages[0].page_id` → use as `page_id`
 
 **R-SP-4: Site ID resolution — check conversation history first.**
 1. Check if the site was mentioned in conversation history → use that `site_id` directly
 2. Check Reference Data for a `sharepoint_site` entry → use its `id` directly
 3. If the user provided a `site_id` → use it directly
-4. Only if none of the above → cascade: call `sharepoint.get_sites` first, then use the result (e.g. for `get_pages`: `site_id` = `{{{{sharepoint.get_sites.data.sites[0].id}}}}`)
+4. Only if none of the above → cascade: call `sharepoint.get_sites` first, then use the result (e.g. for `get_pages`: `site_id` = `{{{{sharepoint_get_sites.sites[0].id}}}}`)
 
 **R-SP-4A: Drive ID resolution — ALWAYS call `sharepoint.list_drives` first for SharePoint file actions.**
 Users do not know `drive_id`. For SharePoint file browsing and move tools, resolve it automatically:
@@ -3229,9 +3252,37 @@ Users do not know `item_id` or `destination_folder_id`. Resolve them automatical
 3. For moves, resolve BOTH the source `item_id` and the destination folder ID before calling `sharepoint.move_item`
 4. Never ask the user for internal item IDs
 
+**R-SP-4B1: move_item — item_id and destination_folder_id MUST be different (use different search results).**
+When planning `sharepoint.move_item`, `item_id` is the file/folder to move and `destination_folder_id` is the target folder. The API rejects the call if they are the same. When you have two `sharepoint.search_files` calls in the same plan (e.g. one for the item name, one for the destination folder name), the first result is stored as **sharepoint_search_files**, the second as **sharepoint_search_files_2**. You MUST use different placeholders so the two IDs differ.
+- ✅ CORRECT: `item_id={{{{sharepoint_search_files.results[0].id}}}}`, `destination_folder_id={{{{sharepoint_search_files_2.results[0].id}}}}` (or the reverse, depending on which search found the item vs the folder).
+- ❌ WRONG: using the same placeholder for both (e.g. both `{{{{sharepoint_search_files.results[0].id}}}}`) — this causes "item_id and destination_folder_id cannot be the same".
+
+**R-SP-4B2: Placeholder format — use UNDERSCORE tool names, never dots (required for resolution).**
+In tool JSON arguments, when referencing a previous tool's result with {{{{...}}}}, the tool name inside the placeholder MUST use underscores. The system resolves by stored key (e.g. sharepoint_search_files), not by display name (sharepoint.search_files).
+- ✅ CORRECT: `{{{{sharepoint_search_files.results[0].site_id}}}}`, `{{{{sharepoint_find_notebook.candidates.0.site_id}}}}`, `{{{{sharepoint_list_notebook_pages.pages[0].page_id}}}}`
+- ❌ WRONG (will not resolve): `{{{{sharepoint.search_files.results[0].site_id}}}}`, `{{{{sharepoint.find_notebook.candidates.0.site_id}}}}`, `{{{{sharepoint.list_notebook_pages.pages[0].page_id}}}}`
+- Use: sharepoint_search_files, sharepoint_find_notebook, sharepoint_list_notebook_pages, sharepoint_search_pages (underscores only).
+
+**R-SP-4C: For `search_files` follow-up calls, use direct `results[0]` fields only.**
+When `sharepoint.search_files` is used to locate a file for `get_file_content` or `get_file_metadata`, read IDs directly from the returned top-level `results` array.
+- ✅ CORRECT: `site_id={{{{sharepoint_search_files.results[0].site_id}}}}`, `drive_id={{{{sharepoint_search_files.results[0].drive_id}}}}`, `item_id={{{{sharepoint_search_files.results[0].id}}}}`
+- ✅ ALSO VALID: `results[0].parentReference.driveId` or `results[0].parentReference.siteId` if needed
+- ❌ WRONG: `sharepoint.search_files.results[0].id` (use sharepoint_search_files with underscore)
+- ❌ WRONG: `sharepoint.search_files.data.results[0].id`
+- Do not invent extra wrappers like `.data` or dotted tool prefixes for SharePoint file search results unless the tool output explicitly contains them.
+- If `count == 0` or `results` is empty, stop and respond that no matching file was found; do not call `sharepoint.get_file_content` or `sharepoint.get_file_metadata`.
+
+**R-SP-4D: When the user asks what is inside a file, always read the file content first.**
+For SharePoint file requests like "read this file", "summarize the file", "what is inside the document", "give details from the file", or "extract the content", use SharePoint file tools, not retrieval.
+- ✅ CORRECT flow: `sharepoint.search_files(query="...")` → `sharepoint.get_file_content(site_id={{{{sharepoint_search_files.results[0].site_id}}}}, drive_id={{{{sharepoint_search_files.results[0].drive_id}}}}, item_id={{{{sharepoint_search_files.results[0].id}}}})`
+- After `sharepoint.get_file_content`, YOU summarize or explain the file content in natural language. The summary/details are your output, not another tool call.
+- Use `sharepoint.get_file_metadata` only when the user asks for metadata such as size, type, dates, URL, or location.
+- ❌ WRONG: use retrieval to answer file-content questions when SharePoint tools can fetch the file directly
+- ❌ WRONG: answer from file name alone without calling `sharepoint.get_file_content`
+
 **R-SP-5: Page ID resolution.**
 1. If the page was mentioned or created in conversation history → use that `page_id` (and `site_id`) directly
-2. If user mentions a page by name and you need full content: `search_pages(query="...")` then `get_page(site_id={{{{sharepoint.search_pages.data.pages[0].site_id}}}}, page_id={{{{sharepoint.search_pages.data.pages[0].page_id}}}})` — do NOT call `get_pages` between them
+2. If user mentions a page by name and you need full content: `search_pages(query="...")` then `get_page(site_id={{{{sharepoint_search_pages.pages[0].site_id}}}}, page_id={{{{sharepoint_search_pages.pages[0].page_id}}}})` — do NOT call `get_pages` between them
 3. If user wants to list ALL pages in a site: `get_sites` then `get_pages(site_id=...)`
 
 **R-SP-6: Exact parameter names (never substitute).**
@@ -3241,12 +3292,15 @@ Users do not know `item_id` or `destination_folder_id`. Resolve them automatical
 - `sharepoint.list_files` → `site_id`, `drive_id`, `folder_id` (opt), `depth`, `top`
 - `sharepoint.search_files` → `query`, `site_id` (opt), `top`, `skip`
 - `sharepoint.get_file_content` → `site_id`, `drive_id`, `item_id`
-- `sharepoint.move_item` → `site_id`, `drive_id`, `item_id`, `destination_folder_id`, `new_name` (opt)
+- `sharepoint.move_item` → `site_id`, `drive_id`, `item_id`, `destination_folder_id`, `new_name` (opt). For move: item_id and destination_folder_id must be different; when two search_files calls exist use sharepoint_search_files.results[0].id for one and sharepoint_search_files_2.results[0].id for the other.
 - `sharepoint.search_pages` → `query` (required), `top`, `skip`
 - `sharepoint.get_pages` → `site_id`, `top`
 - `sharepoint.get_page` → `site_id`, `page_id`
 - `sharepoint.create_page` → `site_id`, `title`, `content_html`, `publish` (only True when user explicitly asks to publish; default draft)
 - `sharepoint.update_page` → `site_id`, `page_id`, `title` (opt), `content_html` (opt), `publish` (default draft)
+- `sharepoint.find_notebook` → **site_id** (required, from search_files e.g. `{{sharepoint_search_files.results[0].site_id}}`), **notebook_query**. No search across all sites inside this tool. When **resolved**: use `{{sharepoint_find_notebook.site_id}}`, `{{sharepoint_find_notebook.notebook_id}}` (no `.data`). When **ambiguous**: use `{{sharepoint_find_notebook.candidates.0.site_id}}` and `{{sharepoint_find_notebook.candidates.0.notebook_id}}` for first candidate; `candidates.1` for second, etc. (N=0 for "first one", N=1 for "second one"). Do NOT use `{{sharepoint_find_notebook.site_id}}` or `{{sharepoint_find_notebook.notebook_id}}` when find_notebook returned ambiguous — those top-level fields do not exist in the ambiguous response.
+- `sharepoint.list_notebook_pages` → `site_id`, `notebook_id`. Cascading: use `{{sharepoint_list_notebook_pages.pages[0].page_id}}` (field is `page_id`, not `id`; no `.data`).
+- `sharepoint.get_notebook_page_content` → `site_id`, `page_ids` (list of page IDs)
 
 **R-SP-7: SharePoint HTML format for create/update.**
 When generating page content for `create_page` or `update_page`, use HTML format:
@@ -3274,6 +3328,26 @@ When updating a page and need to preserve existing content: call `sharepoint.get
 - List pages in a site → `sharepoint.get_pages`
 - Read page content → `sharepoint.get_page`
 - Create/update → `sharepoint.create_page` / `sharepoint.update_page`
+- OneNote notebook by name → **sharepoint.search_files** first, then `sharepoint.find_notebook(site_id, notebook_query)` then (only when resolved) `sharepoint.list_notebook_pages` and `sharepoint.get_notebook_page_content` (never `sharepoint.get_file_content` for .one or .onetoc2)
+
+**R-SP-11: OneNote — two-phase flow with candidates.N placeholder support.**
+Phase 1: Plan ONLY sharepoint.search_files + sharepoint.find_notebook. Never add list_notebook_pages or get_notebook_page_content to this plan.
+
+When find_notebook returns **ambiguous: true** with candidates:
+- STOP. Do not call list_notebook_pages or get_notebook_page_content.
+- List the candidates to the user and ask which one they mean.
+- The candidates in the result have site_id and notebook_id — include them in your response (e.g. "1. mp_plan (site_id: X, notebook_id: Y) 2. mp_plan (site_id: Z, notebook_id: W)") so the next-turn planner can use them directly.
+
+When find_notebook returns **resolved: true**:
+- Use `{{sharepoint_find_notebook.site_id}}` and `{{sharepoint_find_notebook.notebook_id}}` for subsequent tools (no candidates needed).
+
+Phase 2 follow-up (user has chosen):
+- When the user clearly replies to a "Which one?" question: do NOT re-run search_files with a site_id filter. Do NOT use `{{sharepoint_find_notebook.site_id}}` or `{{sharepoint_find_notebook.notebook_id}}` when the previous find_notebook returned ambiguous — those top-level fields do not exist in the ambiguous response.
+- **Preferred:** use literal site_id and notebook_id from conversation history if visible (extracted from the previous response that listed the candidates).
+- **Fallback:** plan all 4 tools with search_files (global, no site_id) → find_notebook → list_notebook_pages(`site_id={{sharepoint_find_notebook.candidates.N.site_id}}`, `notebook_id={{sharepoint_find_notebook.candidates.N.notebook_id}}`) where N=0 for "first"/"this one", N=1 for "second", N=2 for "third", etc.
+- Use **sharepoint_find_notebook** (underscore) in placeholders, not sharepoint.find_notebook. Same for sharepoint_search_files and sharepoint_list_notebook_pages. `{{sharepoint_find_notebook.candidates.N.site_id}}` resolves correctly as long as find_notebook runs in this turn.
+- Never use `{{sharepoint_search_files.results[0].site_id}}` for list_notebook_pages.
+- page_id field is `page_id` (not `id`; no `.data`).
 """
 
 PLANNER_USER_TEMPLATE = """Query: {query}
