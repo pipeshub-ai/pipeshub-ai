@@ -1,69 +1,36 @@
-#!/usr/bin/env python3
+# ruff: noqa
 """
-FINAL ZOOM UNIFIED DATASOURCE GENERATOR
-----------------------------------------------------------
+Zoom REST API Code Generator
 
-✔ No CLI arguments required
-✔ Run generator using:  python zoom.py
-✔ Auto-detects:
-      - zoom_specs/ folder
-      - output/zoom/ folder
-✔ Never overwrites external runtime code
-✔ Writes ONLY into local staging folder:
-      backend/python/code-generator/output/zoom/
+Reads OpenAPI JSON specs from zoom_specs/ directory and generates a
+ZoomDataSource class with async wrapper methods for all Zoom API endpoints.
 
-✔ Generates:
-      - zoom.py
-      - example.py
-      - example_build_from_services.py
+Usage:
+    python code-generator/zoom.py
+    python code-generator/zoom.py --filename zoom.py
+
+Output:
+    app/sources/external/zoom/zoom.py
 """
 
 import json
+import keyword
 import re
+import sys
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional, Set
 
-# ------------------------------------------------------------
-# AUTO-DETECTED DIRECTORIES
-# ------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SPEC_DIR = SCRIPT_DIR / "zoom_specs"
-OUTPUT_DIR = SCRIPT_DIR / "output" / "zoom"
 
 
-# ------------------------------------------------------------
-# UTILITIES
-# ------------------------------------------------------------
-
-PYTHON_KEYWORDS = {
-    "from","in","class","global","nonlocal","for","while","if",
-    "else","elif","try","except","finally","def","return","import",
-    "as","with","raise","yield","lambda","pass","break","continue",
-    "assert","del","not","or","and","is","async","await","type",
-    "True","False","None"
-}
-
-def sanitize_param(name: str) -> str:
-    """Convert Zoom param → safe Python identifier"""
-    if not name:
-        return "param"
-
-    s = re.sub(r"[^0-9a-zA-Z_]", "_", name)
-
-    if s and s[0].isdigit():
-        s = "_" + s
-
-    s = re.sub(r"_+", "_", s).strip("_")
-
-    if s in PYTHON_KEYWORDS:
-        s += "_"
-
-    return s or "param"
-
-
-def snake(name: str) -> str:
-    """operationId → snake_case"""
+def _to_snake_case(name: str) -> str:
+    """Convert camelCase/PascalCase to snake_case."""
     if not name:
         return "method"
     s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
@@ -72,393 +39,444 @@ def snake(name: str) -> str:
     s = re.sub(r"[^0-9a-zA-Z_]", "_", s)
     s = re.sub(r"_+", "_", s).lower().strip("_")
     if s and s[0].isdigit():
-        s = "_" + s
+        s = f"_{s}"
     return s or "method"
 
 
-def load_json(p: Path) -> dict:
-    with p.open("r", encoding="utf-8") as f:
+_PYTHON_BUILTINS = frozenset({
+    "format", "license", "type", "input", "id", "hash", "range", "list",
+    "dict", "set", "map", "filter", "open", "print", "next", "object",
+    "property", "staticmethod", "classmethod", "super", "abs", "all",
+    "any", "bin", "bool", "bytes", "callable", "chr", "complex",
+    "delattr", "dir", "divmod", "enumerate", "eval", "exec", "float",
+    "frozenset", "getattr", "globals", "hasattr", "help", "hex", "int",
+    "isinstance", "issubclass", "iter", "len", "locals", "max", "memoryview",
+    "min", "oct", "ord", "pow", "repr", "reversed", "round", "setattr",
+    "slice", "sorted", "str", "sum", "tuple", "vars", "zip",
+})
+
+
+def _sanitize_name(name: str) -> str:
+    """Sanitize a string to be a valid Python identifier."""
+    if not name:
+        return "param"
+    s = re.sub(r"[^0-9a-zA-Z_]", "_", name)
+    if s and s[0].isdigit():
+        s = f"_{s}"
+    s = re.sub(r"_+", "_", s).strip("_")
+    if keyword.iskeyword(s) or s in ("self", "cls") or s in _PYTHON_BUILTINS:
+        s = f"{s}_"
+    return s or "param"
+
+
+def _get_type_hint(schema: dict) -> str:
+    """Map OpenAPI schema to Python type hint string."""
+    t = schema.get("type", "")
+    if t == "integer":
+        return "int"
+    if t == "boolean":
+        return "bool"
+    if t == "number":
+        return "float"
+    if t == "array":
+        return "list[object]"
+    if t == "object":
+        return "dict[str, object]"
+    return "str"
+
+
+def _load_json(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 
-# ------------------------------------------------------------
-# TEMPLATES
-# ------------------------------------------------------------
-
-HEADER = '''"""
-AUTO-GENERATED ZOOM DATASOURCE — DO NOT MODIFY MANUALLY
-"""
-from typing import Dict, Optional
-
-from backend.python.app.sources.client.iclient import IClient
-'''
-
-CLASS_HEADER = '''
-class ZoomDataSource:
-    def __init__(self, client: IClient, base_url: str = "https://api.zoom.us/v2") -> None:
-        self._rest = client
-        self._base_url = base_url.rstrip("/")
-'''
-
-METHOD_TEMPLATE = '''
-    async def {method}(self{args}) -> Dict[str, object]:
-        """
-        original_operation_id: {op}
-        method: {verb}
-        path: {raw_path}
-        summary: {summary}
-        """
-        endpoint = f"{{self._base_url}}{sanitized_path}"
-        params = {params_dict}
-        body = None
-{body_note}
-        return await self._rest.request(
-            "{verb}", endpoint, params=params, body=body, timeout=timeout
-        )
-'''
-
-
-# ------------------------------------------------------------
-# EXAMPLE.PY (OAuth Manual Flow)
-# ------------------------------------------------------------
-
-EXAMPLE_TEMPLATE = '''"""
-ZoomDataSource Example (OAuth Authorization Code Flow)
-
-HOW TO RUN THIS EXAMPLE:
-
-1) From the repository root, run:
-       python backend/python/code-generator/zoom.py
-
-   This generates files into:
-       backend/python/code-generator/output/zoom/
-
-2) Copy the generated files into the external runtime folder:
-       cp backend/python/code-generator/output/zoom/* \
-          backend/python/app/sources/external/zoom/
-
-3) Move into the external Zoom folder:
-       cd backend/python/app/sources/external/zoom
-
-4) Run the example:
-       python example.py
-
-   - A browser window will open
-   - Login and authorize the Zoom OAuth app
-   - Zoom will redirect to http://localhost:8080/callback
-     (the page may show an error — this is OK)
-   - Copy the `code=` value from the browser URL
-   - Paste it into the terminal when prompted
-
-This example demonstrates:
-- OAuth Authorization Code flow
-- Token exchange
-- Calling real Zoom APIs (users, groups, chat, account)
-- Graceful handling of feature-gated APIs
-"""
-# ruff: noqa: E402
-import os
-import sys
-import asyncio
-import webbrowser
-from urllib.parse import urlencode
-
-# -------------------------------------------------
-# Ensure repo root + backend/python are importable
-# -------------------------------------------------
-
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../.."))
-APP = os.path.join(ROOT, "backend", "python")
-
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
-if APP not in sys.path:
-    sys.path.insert(0, APP)
-
-from backend.python.app.sources.client.zoom.zoom import (
-    ZoomClient,
-    ZoomOAuthConfig,
-)
-from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
-
-AUTH_URL = "https://zoom.us/oauth/authorize"
-
-
-async def main() -> None:
-    CLIENT_ID = os.getenv("ZOOM_CLIENT_ID")
-    CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET")
-    REDIRECT_URI = os.getenv("ZOOM_REDIRECT_URI", "http://localhost:8080/callback")
-
-    if not CLIENT_ID or not CLIENT_SECRET:
-        raise RuntimeError("Set ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET")
-
-    wrapper = ZoomClient.build_with_config(
-        ZoomOAuthConfig(
-            client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET,
-            redirect_uri=REDIRECT_URI,
-        )
-    )
-
-    rest = wrapper.get_client()
-    ds = ZoomDataSource(rest)
-
-    params = {
-        "client_id": CLIENT_ID,
-        "response_type": "code",
-        "redirect_uri": REDIRECT_URI,
-    }
-
-    url = f"{AUTH_URL}?{urlencode(params)}"
-    print("Open this URL & authorize:\\n", url)
-
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
-
-    code = input("\\nPaste the ?code= value here: ").strip()
-    if not code:
-        raise RuntimeError("No authorization code provided")
-
-    await rest.exchange_code_for_token(code)
-
-    print("\\nCalling users() ...")
-    try:
-        r = await ds.users()
-        print(r.json())
-    except Exception as e:
-        print("users() failed:", e)
-
-    print("\\nCalling groups() ...")
-    try:
-        r = await ds.groups()
-        print(r.json())
-    except Exception as e:
-        print("groups() failed:", e)
-
-    print("\\nCalling get_chat_sessions() ...")
-    try:
-        r = await ds.get_chat_sessions()
-        print(r.json())
-    except Exception as e:
-        print("get_chat_sessions() failed:", e)
-
-    print("\\nCalling get_a_billing_account() ...")
-    try:
-        r = await ds.get_a_billing_account()
-        print(r.json())
-    except Exception as e:
-        print("get_a_billing_account() failed:", e)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-'''
-
-
-
-# ------------------------------------------------------------
-# BFS TEMPLATE (Slack/Notion Style)
-# ------------------------------------------------------------
-
-BFS_TEMPLATE = '''"""
-Build-from-services example for Zoom
-"""
-
-
-import asyncio
-import logging
-
-from backend.python.app.sources.client.zoom.zoom import ZoomClient
-from backend.python.app.sources.external.zoom.zoom import ZoomDataSource
-from backend.python.app.config.configuration_service import ConfigurationService
-from backend.python.app.config.providers.etcd.etcd3_encrypted_store import (
-    Etcd3EncryptedKeyValueStore,
-)
-
-
-async def main() -> None:
-    # Set up logging
-    logger = logging.getLogger(__name__)
-    logging.basicConfig(level=logging.INFO)
-
-    # Create ETCD store
-    etcd_store = Etcd3EncryptedKeyValueStore(logger=logger)
-
-    # Create configuration service
-    config_service = ConfigurationService(
-        logger=logger,
-        key_value_store=etcd_store,
-    )
-
-    # Build Zoom client using configuration service
-    try:
-        zoom_client = await ZoomClient.build_from_services(
-            logger=logger,
-            config_service=config_service,
-        )
-        print("✅ Zoom client created successfully")
-    except Exception as e:
-        logger.error(f"Failed to create Zoom client: {e}")
-        print(f"❌ Error creating Zoom client: {e}")
-        return
-
-    # Create data source
-    zoom_data_source = ZoomDataSource(zoom_client)
-
-    # Test a simple API call (sanity check)
-    try:
-        response = await zoom_data_source.users()
-        print(f"✅ Users response: {response}")
-    except Exception as e:
-        print(f"❌ Error calling users API: {e}")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-'''
-
-
-# ------------------------------------------------------------
-# GENERATOR LOGIC
-# ------------------------------------------------------------
-
-def generate(overwrite: bool = True) -> None:
-    """
-    Generates Zoom datasource + examples into OUTPUT_DIR.
-    """
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    main_file = OUTPUT_DIR / "zoom.py"
-
-    if main_file.exists() and not overwrite:
-        print("zoom.py exists. Use overwrite=True to regenerate.")
-        return
-
-    # Load specs
-    specs = []
-    for f in sorted(SPEC_DIR.glob("*.json")):
-        try:
-            specs.append(load_json(f))
-        except Exception:
-            print(f"Skipping bad JSON: {f}")
-
-    endpoints = []
-
-    for spec in specs:
-        paths = spec.get("paths", {}) or {}
-        for raw_path, verbs in paths.items():
-            if not isinstance(verbs, dict):
-                continue
-            for verb, op in verbs.items():
-                if not isinstance(op, dict):
-                    continue
-                endpoints.append({
-                    "operationId": op.get("operationId", ""),
-                    "summary": op.get("summary", "") or "",
-                    "path": raw_path,
-                    "verb": verb.upper(),
-                    "params": op.get("parameters", []) or [],
-                    "body": op.get("requestBody")
-                })
-
-    used = set()
-    lines: List[str] = [HEADER, CLASS_HEADER]
-
-    # Generate all Python methods
-    for ep in endpoints:
-
-        op = ep["operationId"]
-        summary = (ep["summary"] or "").replace('"', "'").rstrip()
-        raw_path = ep["path"]
-        verb = ep["verb"]
-
-        # Create method name
-        base = snake(op if op else f"{verb}_{raw_path}")
+# ---------------------------------------------------------------------------
+# Generator
+# ---------------------------------------------------------------------------
+
+class ZoomDataSourceGenerator:
+    """Generates ZoomDataSource class from OpenAPI specs."""
+
+    def __init__(self) -> None:
+        self.generated_methods: List[Dict[str, str]] = []
+        self._used_names: Set[str] = set()
+
+    def _unique_method_name(self, base: str) -> str:
+        """Ensure unique method name within the class."""
         name = base
-        i = 1
-        while name in used:
-            name = f"{base}_{i}"
-            i += 1
-        used.add(name)
+        counter = 1
+        while name in self._used_names:
+            name = f"{base}_{counter}"
+            counter += 1
+        self._used_names.add(name)
+        return name
 
-        # Params
-        path_ph = re.findall(r"{([^}]+)}", raw_path)
-        params = []
-        param_map = []
-        seen = set()
+    def _parse_parameters(self, params_list: list) -> tuple:
+        """Parse OpenAPI parameters into path/query lists.
 
-        for p in ep["params"]:
-            if not isinstance(p, dict):
+        Returns:
+            (path_params, query_params) where each is a list of dicts
+            with keys: original_name, py_name, type, description, required
+        """
+        path_params: List[dict] = []
+        query_params: List[dict] = []
+        seen: Set[str] = set()
+
+        for param in params_list:
+            if not isinstance(param, dict):
                 continue
-            pname = p.get("name")
-            if not pname:
+            name = param.get("name")
+            if not name:
                 continue
 
-            safe = sanitize_param(pname)
-            if safe in seen:
+            py_name = _sanitize_name(name)
+            # Deduplicate
+            if py_name in seen:
                 idx = 1
-                while f"{safe}_{idx}" in seen:
+                while f"{py_name}_{idx}" in seen:
                     idx += 1
-                safe = f"{safe}_{idx}"
+                py_name = f"{py_name}_{idx}"
+            seen.add(py_name)
 
-            seen.add(safe)
-            params.append(f"{safe}: Optional[object] = None")
-            param_map.append(f"'{pname}': {safe}")
+            schema = param.get("schema", {})
+            type_hint = _get_type_hint(schema)
+            raw_desc = (param.get("description") or "").replace("\r", "").replace("\n", " ").strip()
+            description = raw_desc[:120].rstrip()
+            required = param.get("required", False)
+            location = param.get("in", "query")
 
-        # Add missing path variables
-        for ph in path_ph:
-            safe = sanitize_param(ph)
-            if safe not in seen:
-                seen.add(safe)
-                params.append(f"{safe}: Optional[object] = None")
-                param_map.append(f"'{ph}': {safe}")
+            entry = {
+                "original_name": name,
+                "py_name": py_name,
+                "type": type_hint,
+                "description": description[:120],
+                "required": required,
+            }
 
-        # Add timeout
-        params.append("timeout: Optional[int] = None")
+            if location == "path":
+                entry["required"] = True
+                path_params.append(entry)
+            elif location == "query":
+                query_params.append(entry)
 
-        # Replace path placeholders
-        sanitized_path = re.sub(
-            r"{([^}]+)}",
-            lambda m: "{" + sanitize_param(m.group(1)) + "}",
-            raw_path
-        )
+        return path_params, query_params
 
-        body_note = (
-            "        # This endpoint accepts a request body.\n        body = None"
-            if ep["body"] else
-            "        body = None"
-        )
+    def _generate_method(
+        self,
+        method_name: str,
+        http_method: str,
+        path: str,
+        summary: str,
+        path_params: list,
+        query_params: list,
+        has_body: bool,
+    ) -> str:
+        """Generate a single async method."""
+        lines: List[str] = []
 
-        method_src = METHOD_TEMPLATE.format(
-            method=name,
-            args=", " + ", ".join(params) if params else "",
-            op=op or "<none>",
-            verb=verb,
-            raw_path=raw_path,
-            sanitized_path=sanitized_path,
-            summary=summary,
-            params_dict="{ " + ", ".join(param_map) + " }",
-            body_note=body_note,
-        )
+        # --- Signature ---
+        sig_parts = ["self"]
 
-        lines.append(method_src)
+        # Required path params
+        for p in path_params:
+            sig_parts.append(f"{p['py_name']}: str")
 
-    # Write output files
-    main_file.write_text("\n".join(lines), encoding="utf-8")
-    (OUTPUT_DIR / "example.py").write_text(EXAMPLE_TEMPLATE, encoding="utf-8")
-    (OUTPUT_DIR / "example_build_from_services.py").write_text(BFS_TEMPLATE, encoding="utf-8")
+        # Body param
+        if has_body:
+            sig_parts.append("body: dict[str, Any]")
 
-    print(f"✅ Generated zoom.py with {len(endpoints)} endpoints")
-    print(f"📄 Example files written to {OUTPUT_DIR}")
-    print("⚠️ Manually copy files to backend/python/app/sources/external/zoom/")
+        # Optional query params — check for bool
+        optional_parts: List[str] = []
+        has_bool_optional = False
+        for p in query_params:
+            t = p["type"]
+            optional_parts.append(f"{p['py_name']}: {t} | None = None")
+            if t == "bool":
+                has_bool_optional = True
+
+        if has_bool_optional and optional_parts:
+            sig_parts.append("*")
+
+        sig_parts.extend(optional_parts)
+
+        sig_str = ",\n        ".join(sig_parts)
+        lines.append(f"    async def {method_name}(\n        {sig_str}\n    ) -> ZoomResponse:")
+
+        # --- Docstring ---
+        clean_summary = (summary or method_name).replace("\r", "").replace('"', "'").rstrip()
+        lines.append(f'        """{clean_summary}')
+        lines.append("")
+        lines.append(f"        HTTP {http_method} {path}")
+
+        if path_params or query_params or has_body:
+            lines.append("")
+            lines.append("        Args:")
+            for p in path_params:
+                desc = (p['description'] or 'Path parameter').rstrip()
+                lines.append(f"            {p['py_name']}: {desc}")
+            if has_body:
+                lines.append("            body: Request body payload")
+            for p in query_params:
+                desc = (p['description'] or 'Query parameter').rstrip()
+                lines.append(f"            {p['py_name']}: {desc}")
+
+        lines.append("")
+        lines.append("        Returns:")
+        lines.append("            ZoomResponse with operation result")
+        lines.append('        """')
+
+        # --- Query params dict ---
+        has_query = len(query_params) > 0
+        if has_query:
+            lines.append("        query_params: dict[str, Any] = {}")
+            for p in query_params:
+                lines.append(f"        if {p['py_name']} is not None:")
+                if p["type"] == "bool":
+                    lines.append(f"            query_params['{p['original_name']}'] = str({p['py_name']}).lower()")
+                elif p["type"] == "int":
+                    lines.append(f"            query_params['{p['original_name']}'] = str({p['py_name']})")
+                else:
+                    lines.append(f"            query_params['{p['original_name']}'] = {p['py_name']}")
+            lines.append("")
+
+        # --- URL construction ---
+        # Replace {original_name} with {py_name} in path
+        safe_path = path
+        for p in path_params:
+            safe_path = safe_path.replace(
+                f"{{{p['original_name']}}}", f"{{{p['py_name']}}}"
+            )
+
+        if path_params:
+            format_args = ", ".join(
+                f"{p['py_name']}={p['py_name']}" for p in path_params
+            )
+            lines.append(f'        url = self.base_url + "{safe_path}".format({format_args})')
+        else:
+            lines.append(f'        url = self.base_url + "{safe_path}"')
+
+        # --- Body ---
+        if has_body:
+            pass  # body already in signature
+        # If no body param, declare body as None for methods that don't need it
+
+        # --- Request construction ---
+        lines.append("")
+        lines.append("        try:")
+        lines.append("            request = HTTPRequest(")
+        lines.append(f'                method="{http_method}",')
+        lines.append("                url=url,")
+        lines.append('                headers={"Content-Type": "application/json"},')
+        if has_query:
+            lines.append("                query=query_params,")
+        if has_body:
+            lines.append("                body=body,")
+        lines.append("            )")
+        lines.append("            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]")
+        lines.append("            response_data = response.json() if response.text() else None")
+        lines.append("            return ZoomResponse(")
+        lines.append("                success=response.status < HTTP_ERROR_THRESHOLD,")
+        lines.append("                data=response_data,")
+        lines.append(f'                message="Successfully executed {method_name}" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {{response.status}}"')
+        lines.append("            )")
+        lines.append("        except Exception as e:")
+        lines.append(f'            return ZoomResponse(success=False, error=str(e), message="Failed to execute {method_name}")')
+
+        self.generated_methods.append({
+            "name": method_name,
+            "endpoint": path,
+            "method": http_method,
+            "description": clean_summary[:80],
+        })
+
+        return "\n".join(lines)
+
+    def _load_all_endpoints(self) -> List[dict]:
+        """Load all endpoints from zoom_specs/ JSON files."""
+        endpoints: List[dict] = []
+
+        for spec_file in sorted(SPEC_DIR.glob("*.json")):
+            try:
+                spec = _load_json(spec_file)
+            except Exception:
+                print(f"  Skipping bad JSON: {spec_file.name}")
+                continue
+
+            paths = spec.get("paths", {}) or {}
+            for raw_path, path_item in paths.items():
+                if not isinstance(path_item, dict):
+                    continue
+                for verb in ("get", "post", "put", "delete", "patch"):
+                    if verb not in path_item:
+                        continue
+                    operation = path_item[verb]
+                    if not isinstance(operation, dict):
+                        continue
+
+                    endpoints.append({
+                        "operationId": operation.get("operationId", ""),
+                        "summary": (operation.get("summary") or "").strip(),
+                        "path": raw_path,
+                        "method": verb.upper(),
+                        "parameters": operation.get("parameters", []) or [],
+                        "has_body": "requestBody" in operation,
+                    })
+
+        return endpoints
+
+    def generate_zoom_datasource(self) -> str:
+        """Generate the complete ZoomDataSource class from specs."""
+        endpoints = self._load_all_endpoints()
+
+        class_lines = [
+            "# ruff: noqa: FBT001",
+            '"""',
+            "Zoom REST API DataSource - Auto-generated API wrapper",
+            "",
+            "Generated from Zoom OpenAPI specifications.",
+            "Uses HTTP client for direct REST API interactions.",
+            '"""',
+            "",
+            "from __future__ import annotations",
+            "",
+            "from typing import Any",
+            "",
+            "from app.sources.client.http.http_request import HTTPRequest",
+            "from app.sources.client.zoom.zoom import ZoomClient, ZoomResponse",
+            "",
+            "# HTTP status code constant",
+            "HTTP_ERROR_THRESHOLD = 400",
+            "",
+            "",
+            "class ZoomDataSource:",
+            '    """Zoom REST API DataSource',
+            "",
+            "    Auto-generated async wrapper methods for Zoom REST API operations",
+            "    covering Users, Meetings, Phone, Team Chat, Calendar, Rooms,",
+            "    Accounts, Clips, Whiteboard, Mail, and more.",
+            "",
+            "    All methods return ZoomResponse objects.",
+            '    """',
+            "",
+            "    def __init__(self, client: ZoomClient) -> None:",
+            '        """Initialize with ZoomClient.',
+            "",
+            "        Args:",
+            "            client: ZoomClient instance with configured authentication",
+            '        """',
+            "        self._client = client",
+            "        self.http = client.get_client()",
+            "        try:",
+            "            self.base_url = self.http.get_base_url().rstrip('/')",
+            "        except AttributeError as exc:",
+            "            raise ValueError('HTTP client does not have get_base_url method') from exc",
+            "",
+            "    def get_data_source(self) -> 'ZoomDataSource':",
+            '        """Return the data source instance."""',
+            "        return self",
+            "",
+            "    def get_client(self) -> ZoomClient:",
+            '        """Return the underlying ZoomClient."""',
+            "        return self._client",
+            "",
+        ]
+
+        # Generate methods from all specs
+        for ep in endpoints:
+            op_id = ep["operationId"]
+            raw_path = ep["path"]
+            http_method = ep["method"]
+            summary = ep["summary"]
+            has_body = ep["has_body"]
+
+            # Derive method name
+            if op_id:
+                base_name = _to_snake_case(op_id)
+            else:
+                clean_path = raw_path.strip("/").replace("/", "_").replace("{", "").replace("}", "").replace("-", "_")
+                base_name = f"{http_method.lower()}_{clean_path}"
+
+            method_name = self._unique_method_name(base_name)
+
+            # Parse parameters
+            path_params, query_params = self._parse_parameters(ep["parameters"])
+
+            # Generate method
+            method_code = self._generate_method(
+                method_name=method_name,
+                http_method=http_method,
+                path=raw_path,
+                summary=summary,
+                path_params=path_params,
+                query_params=query_params,
+                has_body=has_body,
+            )
+            class_lines.append(method_code)
+            class_lines.append("")
+
+        return "\n".join(class_lines)
+
+    def save_to_file(self, filename: Optional[str] = None) -> None:
+        """Generate and save the Zoom datasource to a file."""
+        if filename is None:
+            filename = "zoom.py"
+
+        zoom_dir = SCRIPT_DIR.parent / "app" / "sources" / "external" / "zoom"
+        zoom_dir.mkdir(parents=True, exist_ok=True)
+
+        full_path = zoom_dir / filename
+        class_code = self.generate_zoom_datasource()
+        # Strip trailing whitespace from every line (OpenAPI descriptions may contain it)
+        clean_lines = [line.rstrip() for line in class_code.split("\n")]
+        full_path.write_text("\n".join(clean_lines), encoding="utf-8")
+
+        print(f"Generated Zoom data source with {len(self.generated_methods)} methods")
+        print(f"Saved to: {full_path}")
+
+        # Print summary by spec category
+        categories: Dict[str, int] = {}
+        for method in self.generated_methods:
+            endpoint = method["endpoint"]
+            # Extract first path segment as category
+            parts = endpoint.strip("/").split("/")
+            category = parts[0] if parts else "other"
+            categories[category] = categories.get(category, 0) + 1
+
+        print(f"\nMethods by API category:")
+        for category, count in sorted(categories.items(), key=lambda x: -x[1]):
+            print(f"  - {category}: {count}")
 
 
-# ------------------------------------------------------------
-# ENTRYPOINT — JUST run:  python zoom.py
-# ------------------------------------------------------------
+def main() -> int:
+    """Main function for Zoom data source generator."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Generate Zoom REST API data source from OpenAPI specs"
+    )
+    parser.add_argument("--filename", "-f", help="Output filename (optional)")
+
+    args = parser.parse_args()
+
+    if not SPEC_DIR.exists():
+        print(f"Spec directory not found: {SPEC_DIR}")
+        return 1
+
+    spec_count = len(list(SPEC_DIR.glob("*.json")))
+    if spec_count == 0:
+        print(f"No JSON specs found in {SPEC_DIR}")
+        return 1
+
+    print(f"Found {spec_count} spec files in {SPEC_DIR}")
+
+    try:
+        generator = ZoomDataSourceGenerator()
+        generator.save_to_file(args.filename)
+        return 0
+    except Exception as e:
+        print(f"Failed to generate Zoom data source: {e}")
+        return 1
+
 
 if __name__ == "__main__":
-    generate(overwrite=True)
+    sys.exit(main())
