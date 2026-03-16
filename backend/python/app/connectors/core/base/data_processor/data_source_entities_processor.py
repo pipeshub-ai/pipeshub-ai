@@ -22,7 +22,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
-    Connectors,
     FileRecord,
     LinkPublicStatus,
     LinkRecord,

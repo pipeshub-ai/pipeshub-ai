@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from fastapi import Request
 
 
-import contextlib
 
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,

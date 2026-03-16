@@ -941,7 +941,7 @@ class GithubConnector(BaseConnector):
         markdown_with_base64 = await self.embed_images_as_base64(markdown_content_raw)
         self.logger.debug(f"Processed markdown content for issue {pull_request.url}")
         # NOTE: Adding record name into Content for record name search Permanently FIX todo
-        markdown_with_base64 = f"# {pull_request.title}\n\n{markdown_with_base64}"
+        markdown_with_base64 = f"{pull_request.title}\n\n{markdown_with_base64}"
         # get linked attachments to pull request
         existing_attachs = None
         async with self.data_store_provider.transaction() as tx_store:
