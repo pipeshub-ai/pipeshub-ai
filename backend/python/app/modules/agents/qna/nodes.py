@@ -2843,6 +2843,7 @@ Generate:
 {github_guidance}
 {clickup_guidance}
 {mariadb_guidance}
+{zoom_guidance}
 
 ## Planning Best Practices
 
@@ -3491,6 +3492,99 @@ This applies equally to start dates, end dates, and recurrence end dates.A wrong
 - When deleting occurrences, batch ALL dates into a SINGLE call (the tool handles them all).
 - `occurrence_dates` must be YYYY-MM-DD format strings.
 """
+ZOOM_GUIDANCE = """
+# Zoom Toolset Guidance
+
+## Available Tools
+
+### User
+- **get_my_profile** — Get the authenticated user's profile (name, email, timezone).
+
+### Meetings
+- **list_meetings** — List scheduled/live/upcoming/all meetings for a user.
+- **list_upcoming_meetings** — Shorthand for upcoming meetings only.
+- **list_past_meetings** — List previously held meetings. Use when user refers to a past call.
+- **search_meetings_by_name** — Search meetings by topic keyword. Use when user refers to a meeting by name instead of ID.
+- **get_meeting** — Get full details of a specific meeting by ID.
+- **get_meeting_invitation** — Get the invitation text/join link for a meeting.
+- **create_meeting** — Create a new scheduled meeting.
+- **update_meeting** — Update fields of an existing meeting (time, topic, duration, agenda).
+- **delete_meeting** — Delete or cancel a meeting.
+
+### Transcripts
+- **get_meeting_transcript** — Fetch the AI Companion transcript for a past meeting as plain text.
+- **delete_meeting_transcript** — Permanently delete a meeting's transcript.
+
+---
+
+## Multi-Step Sequences
+
+### Getting a Transcript When User Gives a Meeting Name
+The user says: *"Get transcript for my standup meeting"*
+```
+1. search_meetings_by_name(query="standup")
+   → get meeting ID from results
+2. get_meeting_transcript(meeting_id=<id>)
+```
+Never skip step 1 — you need the numeric meeting ID before fetching the transcript.
+
+### Getting a Transcript When User Gives a Meeting ID
+The user says: *"Get transcript for meeting 87522501254"*
+```
+1. get_meeting_transcript(meeting_id="87522501254")
+   → internally fetches past instance UUID → downloads VTT → returns plain text
+```
+No extra steps needed — the tool handles UUID resolution internally.
+
+### Updating a Meeting When User Gives a Name
+The user says: *"Reschedule my design review to 5pm tomorrow"*
+```
+1. search_meetings_by_name(query="design review")
+   → get meeting ID from results
+2. update_meeting(meeting_id=<id>, start_time=<iso8601>, timezone=<inferred>)
+```
+
+### Updating a Meeting When User Gives an ID
+The user says: *"Change meeting 123 to 3pm"*
+```
+1. update_meeting(meeting_id="123", start_time=<iso8601>, timezone=<inferred>)
+```
+
+### Deleting a Meeting When User Gives a Name
+```
+1. search_meetings_by_name(query=<name>)
+   → confirm with user if multiple matches
+2. delete_meeting(meeting_id=<id>)
+```
+
+### Finding a Past Meeting's Transcript
+The user says: *"Get transcript from last week's sync"*
+```
+1. list_past_meetings(from_=<last_week_date>)
+   → find meeting ID by topic
+2. get_meeting_transcript(meeting_id=<id>)
+```
+
+---
+
+## Key Rules
+
+1. **Never guess a meeting ID.** If the user gives a name, always call `search_meetings_by_name` first.
+
+2. **Prefer specific tools over general ones.**
+   - Use `list_upcoming_meetings` for "what's next", not `list_meetings`.
+   - Use `list_past_meetings` for "recent/past calls", not `list_meetings`.
+
+3. **Transcript requires a past meeting.** `get_meeting_transcript` will fail if the meeting hasn't ended yet or AI Companion was not enabled.
+
+4. **Update only fields the user mentioned.** Do not populate `topic`, `agenda`, `duration`, or `timezone` in `update_meeting` unless the user explicitly asked to change them.
+
+5. **Infer timezone from context.** If the user is in India, default to `Asia/Kolkata`. Never ask for timezone unless it's ambiguous.
+
+6. **Multiple matches on search — confirm before acting.** If `search_meetings_by_name` returns more than one result and the action is destructive (delete, update), confirm with the user which one to act on.
+
+7. **Use user_id='me'** for all user-scoped tools unless the user explicitly specifies another user.
+"""
 PLANNER_USER_TEMPLATE = """Query: {query}
 
 Plan the tools. Return only valid JSON."""
@@ -3653,7 +3747,7 @@ async def planner_node(
     github_guidance = GITHUB_GUIDANCE if _has_github_tools(state) else ""
     clickup_guidance = CLICKUP_GUIDANCE if _has_clickup_tools(state) else ""
     mariadb_guidance = MARIADB_GUIDANCE if _has_mariadb_tools(state) else ""
-
+    zoom_guidance = ZOOM_GUIDANCE if _has_zoom_tools(state) else ""
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
         jira_guidance=jira_guidance,
@@ -3664,7 +3758,8 @@ async def planner_node(
         teams_guidance=teams_guidance,
         github_guidance=github_guidance,
         clickup_guidance=clickup_guidance,
-        mariadb_guidance=mariadb_guidance
+        mariadb_guidance=mariadb_guidance,
+        zoom_guidance=zoom_guidance
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -4712,6 +4807,10 @@ def _has_mariadb_tools(state: ChatState) -> bool:
     """Check if MariaDB tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "mariadb" in ts.get("name", "").lower() for ts in agent_toolsets)
+def _has_zoom_tools(state: ChatState) -> bool:
+    """Check if Zoom tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "zoom" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
 def _has_clickup_tools(state: ChatState) -> bool:
@@ -7891,6 +7990,9 @@ Use this decision tree to choose the right approach:
 
     if _has_outlook_tools(state):
         base_prompt += "\n" + OUTLOOK_GUIDANCE
+    
+    if _has_zoom_tools(state):
+        base_prompt += "\n" + ZOOM_GUIDANCE
 
     if _has_clickup_tools(state):
         base_prompt += "\n" + CLICKUP_GUIDANCE
