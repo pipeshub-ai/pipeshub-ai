@@ -1,5 +1,6 @@
 services:
   pipeshub-ai:
+    privileged: true
     image: pipeshub-ai:latest
     restart: always
     build:
