@@ -925,6 +925,7 @@ class Crawl4AIFetcher:
             # URLs aren't poisoned by the dead process.
             if self._is_target_crashed(result) or result is None:
                 try:
+                    self.logger.info(f"[crawl4ai] Restarting tier-1 crawler after browser crash")
                     await self._restart_crawler("tier-1")
                 except Exception as exc:
                     self.logger.error(f"[crawl4ai] Failed to restart tier-1: {exc}")
@@ -939,6 +940,7 @@ class Crawl4AIFetcher:
                     return result
                 if self._is_target_crashed(result) or result is None:
                     try:
+                        self.logger.info(f"[crawl4ai] Restarting tier-2 crawler after browser crash")
                         await self._restart_crawler("tier-2")
                     except Exception as exc:
                         self.logger.error(f"[crawl4ai] Failed to restart tier-2: {exc}")
