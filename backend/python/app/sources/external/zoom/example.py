@@ -126,7 +126,7 @@ async def main() -> None:
     if config is None and ACCESS_TOKEN:
         print("  Using Bearer Token authentication")
         config = ZoomTokenConfig(
-            access_token=ACCESS_TOKEN,
+            token=ACCESS_TOKEN,
         )
 
     # Priority 3: Server-to-Server (uses CLIENT_ID, CLIENT_SECRET, and ACCOUNT_ID)

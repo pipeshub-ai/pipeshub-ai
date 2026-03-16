@@ -338,6 +338,52 @@ class ZoomConnectorConfig(BaseModel):
         extra = "allow"
 
 
+class ZoomSharedOAuthConfigEntry(BaseModel):
+    """A single entry from the shared OAuth config list in etcd.
+
+    Handles both camelCase and snake_case key variants from the config store.
+    """
+
+    entry_id: str | None = Field(default=None, alias="_id")
+    accountId: str | None = None
+    account_id: str | None = None
+    clientId: str | None = None
+    client_id: str | None = None
+    clientSecret: str | None = None
+    client_secret: str | None = None
+    redirectUri: str | None = None
+    redirect_uri: str | None = None
+
+    class Config:
+        extra = "allow"
+        populate_by_name = True
+
+    def resolved_account_id(self, fallback: str = "") -> str:
+        return self.accountId or self.account_id or fallback
+
+    def resolved_client_id(self, fallback: str = "") -> str:
+        return self.clientId or self.client_id or fallback
+
+    def resolved_client_secret(self, fallback: str = "") -> str:
+        return self.clientSecret or self.client_secret or fallback
+
+    def resolved_redirect_uri(self, fallback: str = "") -> str:
+        return self.redirectUri or self.redirect_uri or fallback
+
+
+class ZoomSharedOAuthWrapper(BaseModel):
+    """Wrapper for a shared OAuth config entry with nested config."""
+
+    entry_id: str | None = Field(default=None, alias="_id")
+    config: ZoomSharedOAuthConfigEntry = Field(
+        default_factory=ZoomSharedOAuthConfigEntry
+    )
+
+    class Config:
+        extra = "allow"
+        populate_by_name = True
+
+
 # ---------------------------------------------------------------------------
 # Client builder
 # ---------------------------------------------------------------------------
@@ -435,40 +481,14 @@ class ZoomClient(IClient):
                 # Try shared OAuth config if credentials are missing
                 oauth_config_id = connector_config.auth.oauthConfigId
                 if oauth_config_id and not (client_id and client_secret):
-                    try:
-                        oauth_configs_raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
-                            "/services/oauth/zoom", default=[]
-                        )
-                        oauth_configs: list[Any] = (
-                            cast(list[Any], oauth_configs_raw)
-                            if isinstance(oauth_configs_raw, list)
-                            else []
-                        )
-                        for cfg in oauth_configs:
-                            c: dict[str, Any] = cast(dict[str, Any], cfg)
-                            if c.get("_id") == oauth_config_id:
-                                shared: dict[str, Any] = cast(
-                                    dict[str, Any], c.get("config", {})
-                                )
-                                account_id = str(
-                                    shared.get("accountId")
-                                    or shared.get("account_id")
-                                    or account_id
-                                )
-                                client_id = str(
-                                    shared.get("clientId")
-                                    or shared.get("client_id")
-                                    or client_id
-                                )
-                                client_secret = str(
-                                    shared.get("clientSecret")
-                                    or shared.get("client_secret")
-                                    or client_secret
-                                )
-                                break
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to fetch shared OAuth config: {e}"
+                    shared_cfg = await cls._find_shared_oauth_config(
+                        config_service, oauth_config_id, logger
+                    )
+                    if shared_cfg:
+                        account_id = shared_cfg.resolved_account_id(account_id)
+                        client_id = shared_cfg.resolved_client_id(client_id)
+                        client_secret = shared_cfg.resolved_client_secret(
+                            client_secret
                         )
 
                 if not (account_id and client_id and client_secret):
@@ -493,40 +513,16 @@ class ZoomClient(IClient):
                 # Try shared OAuth config if credentials are missing
                 oauth_config_id = connector_config.auth.oauthConfigId
                 if oauth_config_id and not (client_id and client_secret):
-                    try:
-                        oauth_configs_raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
-                            "/services/oauth/zoom", default=[]
+                    shared_cfg = await cls._find_shared_oauth_config(
+                        config_service, oauth_config_id, logger
+                    )
+                    if shared_cfg:
+                        client_id = shared_cfg.resolved_client_id(client_id)
+                        client_secret = shared_cfg.resolved_client_secret(
+                            client_secret
                         )
-                        oauth_configs: list[Any] = (
-                            cast(list[Any], oauth_configs_raw)
-                            if isinstance(oauth_configs_raw, list)
-                            else []
-                        )
-                        for cfg in oauth_configs:
-                            c: dict[str, Any] = cast(dict[str, Any], cfg)
-                            if c.get("_id") == oauth_config_id:
-                                shared: dict[str, Any] = cast(
-                                    dict[str, Any], c.get("config", {})
-                                )
-                                client_id = str(
-                                    shared.get("clientId")
-                                    or shared.get("client_id")
-                                    or client_id
-                                )
-                                client_secret = str(
-                                    shared.get("clientSecret")
-                                    or shared.get("client_secret")
-                                    or client_secret
-                                )
-                                redirect_uri = str(
-                                    shared.get("redirectUri")
-                                    or shared.get("redirect_uri")
-                                    or redirect_uri
-                                )
-                                break
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to fetch shared OAuth config: {e}"
+                        redirect_uri = shared_cfg.resolved_redirect_uri(
+                            redirect_uri
                         )
 
                 if not access_token:
@@ -603,40 +599,16 @@ class ZoomClient(IClient):
             if oauth_config_id and config_service and not (
                 client_id and client_secret
             ):
-                try:
-                    oauth_configs_raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
-                        "/services/oauth/zoom", default=[]
+                shared_cfg = await cls._find_shared_oauth_config(
+                    config_service, oauth_config_id, logger
+                )
+                if shared_cfg:
+                    client_id = shared_cfg.resolved_client_id(client_id)
+                    client_secret = shared_cfg.resolved_client_secret(
+                        client_secret
                     )
-                    oauth_configs: list[Any] = (
-                        cast(list[Any], oauth_configs_raw)
-                        if isinstance(oauth_configs_raw, list)
-                        else []
-                    )
-                    for cfg in oauth_configs:
-                        c: dict[str, Any] = cast(dict[str, Any], cfg)
-                        if c.get("_id") == oauth_config_id:
-                            shared: dict[str, Any] = cast(
-                                dict[str, Any], c.get("config", {})
-                            )
-                            client_id = str(
-                                shared.get("clientId")
-                                or shared.get("client_id")
-                                or client_id
-                            )
-                            client_secret = str(
-                                shared.get("clientSecret")
-                                or shared.get("client_secret")
-                                or client_secret
-                            )
-                            redirect_uri = str(
-                                shared.get("redirectUri")
-                                or shared.get("redirect_uri")
-                                or redirect_uri
-                            )
-                            break
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to fetch shared OAuth config: {e}"
+                    redirect_uri = shared_cfg.resolved_redirect_uri(
+                        redirect_uri
                     )
 
             oauth_cfg = ZoomOAuthConfig(
@@ -652,6 +624,35 @@ class ZoomClient(IClient):
                 f"Failed to build Zoom client from toolset: {str(e)}"
             )
             raise
+
+    @staticmethod
+    async def _find_shared_oauth_config(
+        config_service: ConfigurationService,
+        oauth_config_id: str,
+        logger: logging.Logger,
+    ) -> ZoomSharedOAuthConfigEntry | None:
+        """Look up shared OAuth config by ID from the config store.
+
+        Args:
+            config_service: Configuration service instance
+            oauth_config_id: The shared OAuth config ID to match
+            logger: Logger instance
+
+        Returns:
+            Matched ZoomSharedOAuthConfigEntry or None
+        """
+        try:
+            raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
+                "/services/oauth/zoom", default=[]
+            )
+            entries: list[object] = list(raw) if isinstance(raw, list) else []  # type: ignore[reportUnknownArgumentType]
+            for entry in entries:
+                wrapper = ZoomSharedOAuthWrapper.model_validate(entry)
+                if wrapper.entry_id == oauth_config_id:
+                    return wrapper.config
+        except Exception as e:
+            logger.warning(f"Failed to fetch shared OAuth config: {e}")
+        return None
 
     @staticmethod
     async def _get_connector_config(
