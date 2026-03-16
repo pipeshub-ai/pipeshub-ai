@@ -137,8 +137,6 @@ tags:
     description: Enterprise semantic search across all indexed knowledge with relevance scoring
   - name: Agents
     description: Custom AI agents with specialized capabilities and tool integrations
-  - name: Agent Templates
-    description: Reusable templates for creating AI agents with predefined configurations
   - name: Agent Conversations
     description: Conversations with custom AI agents including streaming and feedback
 
@@ -2698,6 +2696,22 @@ components:
         chatMode:
           type: string
           description: Chat mode for this message
+        modelFriendlyName:
+          type: string
+          description: Friendly display name of the model
+        timezone:
+          type: string
+          description: User's timezone
+          example: "Asia/Calcutta"
+        currentTime:
+          type: string
+          format: date-time
+          description: Current time in ISO 8601 format
+        tools:
+          type: array
+          items:
+            type: object
+          description: Tools available for this message
 
     Message:
       type: object
@@ -3130,6 +3144,115 @@ components:
           description: Relevance score (higher is more relevant)
 
     # ==================== AGENT SCHEMAS ====================
+    AgentCreateResponse:
+      type: object
+      description: Agent object returned from create endpoint
+      properties:
+        _key:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        startMessage:
+          type: string
+        systemPrompt:
+          type: string
+        instructions:
+          type: string
+          nullable: true
+        models:
+          type: array
+          items:
+            type: string
+        tags:
+          type: array
+          items:
+            type: string
+        isActive:
+          type: boolean
+        createdBy:
+          type: string
+        updatedBy:
+          type: string
+          nullable: true
+        createdAtTimestamp:
+          type: integer
+          format: int64
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+        isDeleted:
+          type: boolean
+        toolsets:
+          type: array
+          items:
+            type: object
+        knowledge:
+          type: array
+          items:
+            type: object
+
+    AgentListItem:
+      type: object
+      description: Agent summary returned in list endpoints (models as compact strings)
+      properties:
+        _id:
+          type: string
+        _key:
+          type: string
+        _rev:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        systemPrompt:
+          type: string
+        startMessage:
+          type: string
+        instructions:
+          type: string
+          nullable: true
+        models:
+          type: array
+          items:
+            type: string
+          description: Model entries as compact strings (modelKey_modelName)
+        tags:
+          type: array
+          items:
+            type: string
+        isActive:
+          type: boolean
+        isDeleted:
+          type: boolean
+        shareWithOrg:
+          type: boolean
+        createdBy:
+          type: string
+        updatedBy:
+          type: string
+          nullable: true
+        createdAtTimestamp:
+          type: integer
+          format: int64
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+        can_view:
+          type: boolean
+        can_share:
+          type: boolean
+        can_edit:
+          type: boolean
+        can_delete:
+          type: boolean
+        user_role:
+          type: string
+        access_type:
+          type: string
+
     Agent:
       type: object
       description: |
@@ -3137,167 +3260,181 @@ components:
         Agents can be configured for specific use cases like customer support,
         code review, or domain-specific Q&A.
       properties:
-        agentKey:
+        _id:
           type: string
-          description: Unique identifier key for the agent
-          example: "customer-support-agent"
+          description: Full document ID (collection/key)
+        _key:
+          type: string
+          description: Unique document key
+        _rev:
+          type: string
+          description: Document revision (ArangoDB)
         name:
           type: string
           description: Display name of the agent
-          example: "Customer Support Assistant"
+          example: "Product Support Agent"
         description:
           type: string
           description: What this agent is designed to do
         systemPrompt:
           type: string
           description: System instructions that define agent behavior
-        tools:
+        startMessage:
+          type: string
+          description: Initial greeting shown when conversation starts
+        instructions:
+          type: string
+          nullable: true
+          description: Additional agent execution instructions
+        models:
+          type: array
+          items:
+            type: object
+            properties:
+              modelKey:
+                type: string
+              modelName:
+                type: string
+              modelFriendlyName:
+                type: string
+              provider:
+                type: string
+              isReasoning:
+                type: boolean
+              isMultimodal:
+                type: boolean
+              isDefault:
+                type: boolean
+              modelType:
+                type: string
+          description: Model configuration entries
+        tags:
           type: array
           items:
             type: string
-          description: List of tool keys the agent can use
-        knowledgeBases:
-          type: array
-          items:
-            type: string
-            format: uuid
-          description: Knowledge bases the agent has access to
-        modelConfig:
-          type: object
-          properties:
-            modelKey:
-              type: string
-            temperature:
-              type: number
-            maxTokens:
-              type: integer
-          description: AI model configuration
-        isPublic:
+          description: Tags for categorization
+        isActive:
           type: boolean
-          description: Whether agent is available to all org users
+          description: Whether the agent is active
+        isDeleted:
+          type: boolean
+          description: Soft delete flag
+        shareWithOrg:
+          type: boolean
+          description: Whether agent is shared with the organization
+        toolsets:
+          type: array
+          items:
+            type: object
+          description: Toolsets attached to the agent
+        knowledge:
+          type: array
+          items:
+            type: object
+          description: Knowledge sources connected to the agent
         createdBy:
           type: string
-          format: objectId
-        orgId:
+          description: User key who created the agent
+        updatedBy:
           type: string
-          format: objectId
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
-
-    AgentTemplate:
-      type: object
-      description: |
-        Reusable template for creating agents. Templates define the base
-        configuration that can be customized when creating an agent instance.
-      properties:
-        templateId:
-          type: string
-          description: Unique template identifier
-        name:
-          type: string
-          description: Template name
-          example: "Technical Support Template"
-        description:
-          type: string
-          description: What agents from this template are designed for
-        category:
-          type: string
-          description: Template category for organization
-          example: "Customer Service"
-        defaultSystemPrompt:
-          type: string
-          description: Default system prompt for agents
-        recommendedTools:
-          type: array
-          items:
-            type: string
-          description: Suggested tools for this template
-        configSchema:
-          type: object
-          description: JSON Schema for template customization options
-        isPublic:
+          nullable: true
+          description: User key who last updated the agent
+        createdAtTimestamp:
+          type: integer
+          format: int64
+          description: Creation timestamp in milliseconds
+        updatedAtTimestamp:
+          type: integer
+          format: int64
+          description: Last update timestamp in milliseconds
+        can_view:
           type: boolean
-          description: Whether template is available organization-wide
-        createdBy:
-          type: string
-          format: objectId
-        createdAt:
-          type: string
-          format: date-time
-
-    AgentTool:
-      type: object
-      description: A tool that agents can use to perform actions
-      properties:
-        key:
-          type: string
-          description: Unique tool identifier
-          example: "web-search"
-        name:
-          type: string
-          description: Display name
-          example: "Web Search"
-        description:
-          type: string
-          description: What the tool does
-        inputSchema:
-          type: object
-          description: JSON Schema for tool inputs
-        isEnabled:
+          description: Whether current user can view this agent
+        can_share:
           type: boolean
-          description: Whether tool is currently available
+          description: Whether current user can share this agent
+        can_edit:
+          type: boolean
+          description: Whether current user can edit this agent
+        can_delete:
+          type: boolean
+          description: Whether current user can delete this agent
+        user_role:
+          type: string
+          description: Current user's role on this agent
+          example: "OWNER"
+        access_type:
+          type: string
+          description: How the user has access to this agent
+          example: "INDIVIDUAL"
 
     AgentConversation:
       type: object
       description: |
-        A conversation with a specific AI agent. Similar to regular conversations
-        but tied to an agent's configuration and capabilities.
+        A conversation with a specific AI agent.
       properties:
-        _id:
+        id:
           type: string
-          format: objectId
-        agentKey:
-          type: string
-          description: The agent this conversation is with
-        userId:
-          type: string
-          format: objectId
-        orgId:
-          type: string
-          format: objectId
+          description: Unique conversation identifier
         title:
           type: string
-        messages:
-          type: array
-          items:
-            $ref: '#/components/schemas/Message'
-        status:
+        initiator:
           type: string
-          enum: [INPROGRESS, COMPLETED, FAILED]
+          description: User ID who started the conversation
+        createdAt:
+          type: string
+          format: date-time
         isShared:
           type: boolean
         sharedWith:
           type: array
           items:
             type: object
-            properties:
-              userId:
-                type: string
-              accessLevel:
-                type: string
-                enum: [read, write]
-        lastActivityAt:
-          type: integer
-        createdAt:
+        status:
           type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
+          description: Conversation status (e.g., Complete, INPROGRESS, FAILED)
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        modelInfo:
+          type: object
+          properties:
+            modelKey:
+              type: string
+            modelName:
+              type: string
+            chatMode:
+              type: string
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
+            hasNextPage:
+              type: boolean
+            hasPrevPage:
+              type: boolean
+            messageRange:
+              type: object
+              properties:
+                start:
+                  type: integer
+                end:
+                  type: integer
+        access:
+          type: object
+          properties:
+            isOwner:
+              type: boolean
+            accessLevel:
+              type: string
 
     SSEEvent:
       type: object
@@ -13718,217 +13855,6 @@ paths:
         '404':
           description: Search not found
 
-  /api/v1/agents/template:
-    get:
-      tags:
-        - Agent Templates
-      summary: List agent templates
-      description: |
-        Retrieve all available agent templates.<br><br>
-        <b>Overview:</b><br>
-        Agent templates provide pre-configured starting points for creating
-        custom AI agents. Templates include system prompts, recommended tools,
-        and configuration schemas.<br><br>
-        <b>Template Types:</b><br>
-        <ul>
-        <li>Public templates available to all organization users</li>
-        <li>Private templates created by individual users</li>
-        </ul>
-      operationId: listAgentTemplates
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      responses:
-        '200':
-          description: List of agent templates
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AgentTemplate'
-        '401':
-          description: Unauthorized
-
-    post:
-      tags:
-        - Agent Templates
-      summary: Create agent template
-      description: |
-        Create a new reusable agent template.<br><br>
-        <b>Overview:</b><br>
-        Templates define the base configuration for agents including
-        system prompts, tool recommendations, and customization options.<br><br>
-        <b>Template Components:</b><br>
-        <ul>
-        <li><b>System prompt:</b> Default instructions for agents</li>
-        <li><b>Recommended tools:</b> Suggested tool integrations</li>
-        <li><b>Config schema:</b> JSON Schema for customization options</li>
-        </ul>
-      operationId: createAgentTemplate
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - name
-              properties:
-                name:
-                  type: string
-                  description: Template name
-                  example: "Customer Support Agent"
-                description:
-                  type: string
-                  description: What agents from this template do
-                category:
-                  type: string
-                  description: Template category
-                  example: "Support"
-                defaultSystemPrompt:
-                  type: string
-                  description: Default system instructions
-                recommendedTools:
-                  type: array
-                  items:
-                    type: string
-                  description: Suggested tool keys
-                configSchema:
-                  type: object
-                  description: JSON Schema for customization
-                isPublic:
-                  type: boolean
-                  default: false
-                  description: Make template available organization-wide
-      responses:
-        '201':
-          description: Template created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentTemplate'
-        '400':
-          description: Invalid template configuration
-        '401':
-          description: Unauthorized
-
-  /api/v1/agents/template/{templateId}:
-    get:
-      tags:
-        - Agent Templates
-      summary: Get agent template
-      description: Retrieve a specific agent template by ID.
-      operationId: getAgentTemplate
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: templateId
-          in: path
-          required: true
-          description: Template identifier
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Template details
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentTemplate'
-        '401':
-          description: Unauthorized
-        '404':
-          description: Template not found
-
-    put:
-      tags:
-        - Agent Templates
-      summary: Update agent template
-      description: |
-        Update an existing agent template.<br><br>
-        <b>Permissions:</b><br>
-        Only the template creator can update it.
-      operationId: updateAgentTemplate
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: templateId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request body for Update agent template"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                description:
-                  type: string
-                category:
-                  type: string
-                defaultSystemPrompt:
-                  type: string
-                recommendedTools:
-                  type: array
-                  items:
-                    type: string
-                configSchema:
-                  type: object
-                isPublic:
-                  type: boolean
-      responses:
-        '200':
-          description: Template updated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AgentTemplate'
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only creator can update
-        '404':
-          description: Template not found
-
-    delete:
-      tags:
-        - Agent Templates
-      summary: Delete agent template
-      description: |
-        Delete an agent template.<br><br>
-        <b>Note:</b><br>
-        Existing agents created from this template are not affected.
-      operationId: deleteAgentTemplate
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: templateId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Template deleted
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only creator can delete
-        '404':
-          description: Template not found
-
   # -------------------- Agents --------------------
   /api/v1/agents:
     get:
@@ -13950,11 +13876,22 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Agent'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agents retrieved successfully"
+                  agents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentListItem'
         '401':
           description: Unauthorized
+        '404':
+          description: No agents found
 
   /api/v1/agents/create:
     post:
@@ -13993,6 +13930,7 @@ paths:
               type: object
               required:
                 - name
+                - models
               properties:
                 name:
                   type: string
@@ -14014,6 +13952,7 @@ paths:
                 models:
                   type: array
                   description: Agent model configuration entries
+                  minItems: 1
                   items:
                     oneOf:
                       - type: string
@@ -14027,6 +13966,11 @@ paths:
                             type: string
                           isReasoning:
                             type: boolean
+                  example:
+                    - modelKey: "gpt-4o"
+                      modelName: "GPT-4o"
+                      provider: "openai"
+                      isReasoning: false
                 toolsets:
                   type: array
                   description: Toolsets attached to the agent (instance-aware)
@@ -14069,10 +14013,11 @@ paths:
                           - type: object
                             additionalProperties: true
                           - type: string
-                isPublic:
-                  type: boolean
-                  default: false
-                  description: Make agent available to all org users
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  description: Tags for categorization
                 shareWithOrg:
                   type: boolean
                   default: false
@@ -14083,42 +14028,24 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agent created successfully"
+                  agent:
+                    $ref: '#/components/schemas/AgentCreateResponse'
+                  warnings:
+                    type: array
+                    nullable: true
+                    items:
+                      type: string
+                    description: Warnings from agent creation (e.g., failed toolset connections)
         '400':
           description: Invalid agent configuration
-        '401':
-          description: Unauthorized
-
-  /api/v1/agents/tools/list:
-    get:
-      tags:
-        - Agents
-      summary: List available tools
-      description: |
-        Get all tools that can be assigned to agents.<br><br>
-        <b>Overview:</b><br>
-        Tools extend agent capabilities beyond basic Q&A. Each tool
-        has specific inputs and outputs defined by its schema.<br><br>
-        <b>Common Tools:</b><br>
-        <ul>
-        <li><b>web-search:</b> Search the internet</li>
-        <li><b>code-interpreter:</b> Execute code snippets</li>
-        <li><b>file-reader:</b> Read uploaded files</li>
-        <li><b>api-caller:</b> Make external API requests</li>
-        </ul>
-      operationId: listAgentTools
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      responses:
-        '200':
-          description: List of available tools
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/AgentTool'
         '401':
           description: Unauthorized
 
@@ -14146,7 +14073,16 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agent retrieved successfully"
+                  agent:
+                    $ref: '#/components/schemas/Agent'
         '401':
           description: Unauthorized
         '404':
@@ -14242,8 +14178,10 @@ paths:
                           - type: object
                             additionalProperties: true
                           - type: string
-                isPublic:
-                  type: boolean
+                tags:
+                  type: array
+                  items:
+                    type: string
                 shareWithOrg:
                   type: boolean
       responses:
@@ -14252,7 +14190,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Agent'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agent updated successfully"
         '401':
           description: Unauthorized
         '403':
@@ -14281,134 +14226,34 @@ paths:
       responses:
         '200':
           description: Agent deleted
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only creator can delete
-        '404':
-          description: Agent not found
-
-  /api/v1/agents/{agentKey}/permissions:
-    get:
-      tags:
-        - Agents
-      summary: Get agent permissions
-      description: Get the current permission configuration for an agent.
-      operationId: getAgentPermissions
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:read]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Permission configuration
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  isPublic:
-                    type: boolean
-                  sharedWith:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        userId:
-                          type: string
-                        accessLevel:
-                          type: string
-                          enum: [read, use, edit]
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent not found
-
-    put:
-      tags:
-        - Agents
-      summary: Update agent permissions
-      description: Update who can access and use the agent.
-      operationId: updateAgentPermissions
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request body for Update agent permissions"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                isPublic:
-                  type: boolean
-                sharedWith:
-                  type: array
-                  items:
+                  status:
+                    type: string
+                    example: "success"
+                  message:
+                    type: string
+                    example: "Agent deleted successfully"
+                  deleted:
                     type: object
                     properties:
-                      userId:
-                        type: string
-                        format: objectId
-                      accessLevel:
-                        type: string
-                        enum: [read, use, edit]
-      responses:
-        '200':
-          description: Permissions updated
+                      agents:
+                        type: integer
+                      toolsets:
+                        type: integer
+                      tools:
+                        type: integer
+                      knowledge:
+                        type: integer
+                      edges:
+                        type: integer
         '401':
           description: Unauthorized
         '403':
-          description: Forbidden - Only owner can update permissions
-        '404':
-          description: Agent not found
-
-  /api/v1/agents/{agentKey}/share:
-    post:
-      tags:
-        - Agents
-      summary: Share agent
-      description: Share an agent with specific users.
-      operationId: shareAgent
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request body for Share agent"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ShareRequest'
-      responses:
-        '200':
-          description: Agent shared
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Agent'
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Only owner can share
+          description: Forbidden - Only creator can delete
         '404':
           description: Agent not found
 
@@ -14433,6 +14278,21 @@ paths:
           description: Agent identifier
           schema:
             type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Items per page
       responses:
         '200':
           description: List of agent conversations
@@ -14445,10 +14305,14 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Conversation'
+                    example:
+                      - title: "Q4 Financial Report Discussion"
                   sharedWithMeConversations:
                     type: array
                     items:
                       $ref: '#/components/schemas/Conversation'
+                    example:
+                      - title: "Q4 Financial Report Discussion"
                   pagination:
                     type: object
                     properties:
@@ -14466,6 +14330,7 @@ paths:
                         type: boolean
                   filters:
                     type: object
+                    additionalProperties: true
                     description: Applied and available filters
                   meta:
                     type: object
@@ -14514,7 +14379,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AgentConversation'
+                type: object
+                properties:
+                  conversation:
+                    $ref: '#/components/schemas/AgentConversation'
+                  meta:
+                    type: object
+                    additionalProperties: true
+                    description: Request metadata
         '400':
           description: Invalid request
         '401':
@@ -14588,7 +14460,18 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AgentConversation'
+                type: object
+                properties:
+                  conversation:
+                    $ref: '#/components/schemas/AgentConversation'
+                  filters:
+                    type: object
+                    additionalProperties: true
+                    description: Applied and available filters
+                  meta:
+                    type: object
+                    additionalProperties: true
+                    description: Request metadata
         '401':
           description: Unauthorized
         '404':
@@ -14618,6 +14501,72 @@ paths:
       responses:
         '200':
           description: Conversation deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Conversation deleted successfully"
+                  conversation:
+                    type: object
+                    properties:
+                      _id:
+                        type: string
+                      agentKey:
+                        type: string
+                      userId:
+                        type: string
+                      orgId:
+                        type: string
+                      title:
+                        type: string
+                      initiator:
+                        type: string
+                      messages:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Message'
+                      status:
+                        type: string
+                      modelInfo:
+                        type: object
+                        properties:
+                          modelKey:
+                            type: string
+                          modelName:
+                            type: string
+                          chatMode:
+                            type: string
+                      isShared:
+                        type: boolean
+                      sharedWith:
+                        type: array
+                        items:
+                          type: object
+                      isDeleted:
+                        type: boolean
+                      isArchived:
+                        type: boolean
+                      conversationSource:
+                        type: string
+                      conversationErrors:
+                        type: array
+                        items:
+                          type: object
+                      deletedBy:
+                        type: string
+                      lastActivityAt:
+                        type: integer
+                      __v:
+                        type: integer
+                      createdAt:
+                        type: string
+                        format: date-time
+                      updatedAt:
+                        type: string
+                        format: date-time
         '401':
           description: Unauthorized
         '404':
@@ -14658,7 +14607,17 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AgentConversation'
+                type: object
+                properties:
+                  conversation:
+                    $ref: '#/components/schemas/AgentConversation'
+                  recordsUsed:
+                    type: integer
+                    description: Number of knowledge base records used
+                  meta:
+                    type: object
+                    additionalProperties: true
+                    description: Request metadata
         '401':
           description: Unauthorized
         '404':
@@ -14743,73 +14702,29 @@ paths:
             schema:
               type: object
               properties:
-                filters:
-                  $ref: '#/components/schemas/Filters'
-                modelKey:
+                modelName:
                   type: string
+                  description: Model name
+                  example: "gpt-4o"
+                modelProvider:
+                  type: string
+                  description: Model provider
+                  example: "openAI"
                 chatMode:
                   type: string
+                  description: Chat mode
+                  example: "auto"
       responses:
         '200':
-          description: Response regenerated
+          description: SSE stream with regenerated response
           content:
-            application/json:
+            text/event-stream:
               schema:
-                $ref: '#/components/schemas/AgentConversation'
+                $ref: '#/components/schemas/SSEEvent'
         '401':
           description: Unauthorized
         '404':
           description: Agent, conversation, or message not found
-
-  /api/v1/agents/{agentKey}/unshare:
-    post:
-      tags:
-        - Agents
-      summary: Unshare an agent
-      description: |
-        Revoke sharing for an agent, removing access for specified users or teams.
-      operationId: unshareAgent
-      security:
-        - bearerAuth: []
-        - oauth2: [agent:write]
-      parameters:
-        - name: agentKey
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                userIds:
-                  type: array
-                  items:
-                    type: string
-                    format: objectId
-                teamIds:
-                  type: array
-                  items:
-                    type: string
-                    format: objectId
-      responses:
-        '200':
-          description: Agent unshared successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-        '401':
-          description: Unauthorized
-        '404':
-          description: Agent not found
 
   # ==================== CONNECTOR MANAGER ENDPOINTS ====================
 
