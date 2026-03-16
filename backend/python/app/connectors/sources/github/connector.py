@@ -297,7 +297,7 @@ class GithubConnector(BaseConnector):
                 self.logger.error(f"Error fetching file from {record_url}: {str(e)}")
 
             async def stream_markdown(
-                markdown_content, chunk_size=160000
+                markdown_content:str, chunk_size:int=160000
             ) -> AsyncGenerator[bytes, None]:
                 """Stream markdown content in optimal chunks"""
                 for i in range(0, len(markdown_content), chunk_size):
@@ -373,7 +373,7 @@ class GithubConnector(BaseConnector):
         return app_users
 
     # ---------------------------Repo level Sync-----------------------------------#
-    async def _sync_all_repo_issue(self, full_sync: bool = False) -> None:
+    async def _sync_all_repo_issue(self) -> None:
         # TODO: sync point repo level ask plan acc.
         current_timestamp = self._get_iso_time()
         github_record_sync_key = generate_record_sync_point_key(
@@ -382,7 +382,7 @@ class GithubConnector(BaseConnector):
         github_record_sync_point = await self.record_sync_point.read_sync_point(
             github_record_sync_key
         )
-        if full_sync or not github_record_sync_point.get("timestamp"):
+        if not github_record_sync_point.get("timestamp"):
             await self._sync_issues_full()
             await self.record_sync_point.update_sync_point(
                 github_record_sync_key, {"timestamp": current_timestamp}
@@ -1249,7 +1249,7 @@ class GithubConnector(BaseConnector):
         return list_records_new
 
     # ---------------------------insitu functions-----------------------------------#
-    def datetime_to_epoch_ms(self, dt) -> int:
+    def datetime_to_epoch_ms(self, dt:datetime) -> int:
         # make sure it's timezone-aware (assume UTC if missing)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -1358,7 +1358,7 @@ class GithubConnector(BaseConnector):
         """
         attachments = []
 
-        def get_file_type(url, filename=None) -> str:
+        def get_file_type(url:str, filename:str="") -> str:
             """Determine file type from URL or filename"""
             # Try to get extension from filename first (more reliable)
             if filename:
@@ -1397,7 +1397,7 @@ class GithubConnector(BaseConnector):
             except Exception:
                 return False
 
-        def html_img_handler(match) -> str:
+        def html_img_handler(match:re.Match[str]) -> str:
             url = match.group(1)
             if not _is_allowed_github_image(url):
                 return match.group(0)  # Keep original if not valid
@@ -1422,7 +1422,7 @@ class GithubConnector(BaseConnector):
         # --- 2. MARKDOWN IMAGES: ![alt](url) ---
         md_image_pattern = r"!\[(.*?)\]\((.*?)\)"
 
-        def md_image_handler(match) -> str:
+        def md_image_handler(match:re.Match[str]) -> str:
             alt_text = match.group(1)
             url = match.group(2)
             if not _is_allowed_github_image(url):
@@ -1456,7 +1456,7 @@ class GithubConnector(BaseConnector):
             except Exception:
                 return False
 
-        def md_link_handler(match) -> str:
+        def md_link_handler(match:re.Match[str]) -> str:
             link_text = match.group(1)
             url = match.group(2)
 
