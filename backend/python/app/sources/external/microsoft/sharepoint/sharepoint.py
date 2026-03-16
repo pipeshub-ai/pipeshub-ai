@@ -1198,6 +1198,277 @@ class SharePointDataSource:
             logger.error(f"❌ create_onenote_notebook failed: {e}")
             return SharePointResponse(success=False, error=str(e))
 
+    def _onenote_web_url_from_links(self, links: Any) -> Optional[str]:
+        """Extract web URL from notebook/section/page links object."""
+        if not links:
+            return None
+        web_link = getattr(links, "one_note_web_url", None) or getattr(links, "oneNoteWebUrl", None)
+        if web_link:
+            return getattr(web_link, "href", None)
+        if isinstance(links, dict):
+            w = links.get("oneNoteWebUrl") or links.get("one_note_web_url")
+            return w.get("href") if isinstance(w, dict) else None
+        return None
+
+    def _serialize_onenote_notebook(self, notebook: Any, site_id: str) -> Dict[str, Any]:
+        """Convert Graph Notebook to snake_case dict for action layer."""
+        if isinstance(notebook, dict):
+            links = notebook.get("links")
+            return {
+                "notebook_id": notebook.get("id"),
+                "display_name": notebook.get("displayName") or notebook.get("display_name"),
+                "web_url": self._onenote_web_url_from_links(links),
+                "site_id": site_id,
+            }
+        return {
+            "notebook_id": getattr(notebook, "id", None),
+            "display_name": getattr(notebook, "display_name", None) or getattr(notebook, "displayName", None),
+            "web_url": self._onenote_web_url_from_links(getattr(notebook, "links", None)),
+            "site_id": site_id,
+        }
+
+    def _serialize_onenote_section(self, section: Any, notebook_id: str) -> Dict[str, Any]:
+        """Convert Graph OnenoteSection to snake_case dict."""
+        if isinstance(section, dict):
+            return {
+                "section_id": section.get("id"),
+                "display_name": section.get("displayName") or section.get("display_name"),
+                "notebook_id": notebook_id,
+                "web_url": self._onenote_web_url_from_links(section.get("links")),
+            }
+        return {
+            "section_id": getattr(section, "id", None),
+            "display_name": getattr(section, "display_name", None) or getattr(section, "displayName", None),
+            "notebook_id": notebook_id,
+            "web_url": self._onenote_web_url_from_links(getattr(section, "links", None)),
+        }
+
+    def _serialize_onenote_page(self, page: Any, section_id: str) -> Dict[str, Any]:
+        """Convert Graph OnenotePage to snake_case dict."""
+        if isinstance(page, dict):
+            return {
+                "page_id": page.get("id"),
+                "title": page.get("title"),
+                "section_id": section_id,
+                "order": page.get("order"),
+                "web_url": self._onenote_web_url_from_links(page.get("links")),
+            }
+        return {
+            "page_id": getattr(page, "id", None),
+            "title": getattr(page, "title", None),
+            "section_id": section_id,
+            "order": getattr(page, "order", None),
+            "web_url": self._onenote_web_url_from_links(getattr(page, "links", None)),
+        }
+
+    async def list_onenote_notebooks(
+        self,
+        site_id: str,
+        top: int = 50,
+        skip: int = 0,
+    ) -> SharePointResponse:
+        """List OneNote notebooks in a SharePoint site.
+        GET /sites/{siteId}/onenote/notebooks
+        Uses direct request to /onenote/notebooks (SDK can generate wrong path /notes/notebooks).
+        """
+        try:
+            encoded_site_id = quote(site_id, safe="")
+            top_val = min(top, 50)
+            skip_val = max(skip, 0)
+            url = (
+                f"https://graph.microsoft.com/v1.0/sites/{encoded_site_id}/onenote/notebooks"
+                f"?$top={top_val}&$skip={skip_val}"
+            )
+            ri = RequestInformation()
+            ri.http_method = Method.GET
+            ri.url_template = url
+            ri.path_parameters = {}
+
+            raw: Optional[bytes] = await self.client.request_adapter.send_primitive_async(
+                ri, "bytes", {}
+            )
+            if not raw:
+                return SharePointResponse(
+                    success=True,
+                    data={
+                        "notebooks": [],
+                        "results": [],
+                        "count": 0,
+                        "has_more": False,
+                        "next_skip": skip_val,
+                    },
+                    message="Found 0 notebooks",
+                )
+            payload = json.loads(raw.decode("utf-8"))
+            value = payload.get("value") or []
+            notebooks: List[Dict[str, Any]] = [
+                self._serialize_onenote_notebook(nb, site_id) for nb in value
+            ]
+            logger.info(f"✅ list_onenote_notebooks: {len(notebooks)} for site {site_id}")
+            return SharePointResponse(
+                success=True,
+                data={
+                    "notebooks": notebooks,
+                    "results": notebooks,
+                    "count": len(notebooks),
+                    "has_more": len(notebooks) == top_val,
+                    "next_skip": skip_val + len(notebooks),
+                },
+                message=f"Found {len(notebooks)} notebooks",
+            )
+        except Exception as e:
+            logger.error(f"❌ list_onenote_notebooks failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    async def list_onenote_sections(
+        self,
+        site_id: str,
+        notebook_id: str,
+        top: int = 50,
+        skip: int = 0,
+    ) -> SharePointResponse:
+        """List sections of a OneNote notebook.
+        GET /sites/{siteId}/onenote/notebooks/{notebookId}/sections
+        """
+        try:
+            from msgraph.generated.sites.item.onenote.notebooks.item.sections.sections_request_builder import (  # type: ignore
+                SectionsRequestBuilder,
+            )
+            q = SectionsRequestBuilder.SectionsRequestBuilderGetQueryParameters(
+                top=min(top, 50),
+                skip=max(skip, 0),
+            )
+            config = SectionsRequestBuilder.SectionsRequestBuilderGetRequestConfiguration(
+                query_parameters=q,
+            )
+            response = await (
+                self.client.sites.by_site_id(site_id)
+                .onenote.notebooks.by_notebook_id(notebook_id)
+                .sections.get(request_configuration=config)
+            )
+            sections: List[Dict[str, Any]] = []
+            if response and getattr(response, "value", None):
+                for sec in response.value:
+                    sections.append(self._serialize_onenote_section(sec, notebook_id))
+            logger.info(f"✅ list_onenote_sections: {len(sections)} for notebook {notebook_id}")
+            return SharePointResponse(
+                success=True,
+                data={
+                    "sections": sections,
+                    "results": sections,
+                    "count": len(sections),
+                    "has_more": len(sections) == min(top, 50),
+                    "next_skip": skip + len(sections),
+                },
+                message=f"Found {len(sections)} sections",
+            )
+        except Exception as e:
+            logger.error(f"❌ list_onenote_sections failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    async def list_onenote_pages(
+        self,
+        site_id: str,
+        section_id: str,
+        top: int = 50,
+        skip: int = 0,
+    ) -> SharePointResponse:
+        """List pages in a OneNote section.
+        GET /sites/{siteId}/onenote/sections/{sectionId}/pages
+        """
+        try:
+            from msgraph.generated.sites.item.onenote.sections.item.pages.pages_request_builder import (  # type: ignore
+                PagesRequestBuilder,
+            )
+            q = PagesRequestBuilder.PagesRequestBuilderGetQueryParameters(
+                top=min(top, 50),
+                skip=max(skip, 0),
+            )
+            config = PagesRequestBuilder.PagesRequestBuilderGetRequestConfiguration(
+                query_parameters=q,
+            )
+            response = await (
+                self.client.sites.by_site_id(site_id)
+                .onenote.sections.by_onenote_section_id(section_id)
+                .pages.get(request_configuration=config)
+            )
+            pages: List[Dict[str, Any]] = []
+            if response and getattr(response, "value", None):
+                for pg in response.value:
+                    pages.append(self._serialize_onenote_page(pg, section_id))
+            logger.info(f"✅ list_onenote_pages: {len(pages)} for section {section_id}")
+            return SharePointResponse(
+                success=True,
+                data={
+                    "pages": pages,
+                    "results": pages,
+                    "count": len(pages),
+                    "has_more": len(pages) == min(top, 50),
+                    "next_skip": skip + len(pages),
+                },
+                message=f"Found {len(pages)} pages",
+            )
+        except Exception as e:
+            logger.error(f"❌ list_onenote_pages failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
+    def _html_to_plain_text(self, html: str) -> str:
+        """Strip HTML tags for a plain-text snippet."""
+        if not html:
+            return ""
+        text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html)
+        text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+        text = re.sub(r"(?i)</(p|div|li|tr|h[1-6])>", "\n", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    async def get_onenote_page_content(
+        self,
+        site_id: str,
+        page_id: str,
+        max_chars: int = 12000,
+    ) -> SharePointResponse:
+        """Get HTML and optional plain-text content for a OneNote page.
+        GET /sites/{siteId}/onenote/pages/{pageId}/content
+        """
+        try:
+            page_meta: Optional[OnenotePage] = await (
+                self.client.sites.by_site_id(site_id)
+                .onenote.pages.by_onenote_page_id(page_id)
+                .get()
+            )
+            title: Optional[str] = None
+            if page_meta:
+                title = getattr(page_meta, "title", None)
+            raw = await (
+                self.client.sites.by_site_id(site_id)
+                .onenote.pages.by_onenote_page_id(page_id)
+                .content.get()
+            )
+            html_content = raw.decode("utf-8", errors="replace") if raw else ""
+            content_text = self._html_to_plain_text(html_content)
+            truncated = len(content_text) > max_chars
+            if truncated:
+                content_text = content_text[:max_chars]
+            if len(html_content) > max_chars:
+                html_content = html_content[:max_chars]
+            logger.info(f"✅ get_onenote_page_content: {page_id}")
+            return SharePointResponse(
+                success=True,
+                data={
+                    "page_id": page_id,
+                    "title": title,
+                    "content_html": html_content,
+                    "content_text": content_text,
+                    "truncated": truncated,
+                },
+                message="Page content retrieved",
+            )
+        except Exception as e:
+            logger.error(f"❌ get_onenote_page_content failed: {e}")
+            return SharePointResponse(success=False, error=str(e))
+
     async def get_drive_item_metadata(
         self,
         site_id: str,

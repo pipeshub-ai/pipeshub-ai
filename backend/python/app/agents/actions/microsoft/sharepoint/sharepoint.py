@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from kiota_serialization_json.json_serialization_writer import JsonSerializationWriter  # type: ignore
 from msgraph.generated.sites.item.pages.pages_request_builder import PagesRequestBuilder  # type: ignore
@@ -139,6 +140,24 @@ class CreateOneNoteNotebookInput(BaseModel):
     section_name: Optional[str] = Field(default=None, description="First section name (required if adding a page)")
     page_title: Optional[str] = Field(default=None, description="First page title (requires section_name)")
     page_content_html: Optional[str] = Field(default=None, description="First page HTML body (requires section_name)")
+
+
+class FindNotebookInput(BaseModel):
+    """Resolve a OneNote notebook by name in a given site. Call sharepoint.search_files first to get site_id."""
+    site_id: str = Field(description="SharePoint site ID (from sharepoint.search_files results)")
+    notebook_query: str = Field(description="Notebook name or keyword (e.g. 'mp_plan')")
+
+
+class ListNotebookPagesInput(BaseModel):
+    """List sections and pages of a OneNote notebook (no content). Use after find_notebook."""
+    site_id: str = Field(description="SharePoint site ID (from find_notebook)")
+    notebook_id: str = Field(description="Notebook ID (from find_notebook)")
+
+
+class GetNotebookPageContentInput(BaseModel):
+    """Get HTML/text content for selected OneNote pages. Use page_ids from list_notebook_pages."""
+    site_id: str = Field(description="SharePoint site ID")
+    page_ids: List[str] = Field(description="List of page IDs (from list_notebook_pages)", min_length=1)
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +404,15 @@ class SharePoint:
                         html_parts.append(inner_html)
         
         return "\n\n".join(html_parts) if html_parts else ""
+
+    @staticmethod
+    def _normalize_notebook_name(name: Optional[str]) -> str:
+        """Normalize notebook name for matching: lowercase, strip, remove .one/.onetoc2, collapse spaces."""
+        if not name:
+            return ""
+        s = name.lower().strip().replace(".onetoc2", "").replace(".one", "")
+        s = re.sub(r"[^a-z0-9]+", " ", s)
+        return " ".join(s.split())
 
     # ------------------------------------------------------------------
     # Sites tools
@@ -1102,6 +1130,14 @@ class SharePoint:
                 # Metadata fetch is best-effort; proceed without it
                 pass
 
+            if file_name and file_name.lower().endswith((".one", ".onetoc2")):
+                return False, json.dumps({
+                    "error": (
+                        "OneNote notebook files (.one, .onetoc2) cannot be read with get_file_content. "
+                        "Use sharepoint_find_notebook, then sharepoint_list_notebook_pages, then sharepoint_get_notebook_page_content."
+                    )
+                })
+
             response = await self.client.get_drive_item_content(
                 site_id=site_id,
                 drive_id=drive_id,
@@ -1482,6 +1518,220 @@ class SharePoint:
             return False, json.dumps({"error": response.error or "Failed to move item"})
         except Exception as e:
             return self._handle_error(e, f"move item '{item_id}'")
+
+    @tool(
+        app_name="sharepoint",
+        tool_name="find_notebook",
+        description="Resolve a OneNote notebook by name in a given site. Use after sharepoint.search_files to get site_id.",
+        llm_description="Use after sharepoint.search_files to get site_id. Call with site_id (from search_files results) and notebook name. If result is ambiguous, ask user to choose; do not call list_notebook_pages or get_notebook_page_content until resolved.",
+        args_schema=FindNotebookInput,
+        when_to_use=[
+            "User asks for a notebook, OneNote notebook, or notebook pages by name (after search_files gave site_id)",
+        ],
+        when_not_to_use=[
+            "No site_id yet (call sharepoint.search_files first)",
+            "Already have site_id and notebook_id (use list_notebook_pages)",
+            "User wants to create a notebook (use create_onenote_notebook)",
+            "No OneNote/notebook mention",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show mp_plan notebook",
+            "List pages in notebook X",
+        ],
+        category=ToolCategory.DOCUMENTATION,
+    )
+    async def find_notebook(
+        self,
+        site_id: str,
+        notebook_query: str,
+    ) -> tuple[bool, str]:
+        """Resolve a OneNote notebook by name in the given site. Lists notebooks for that site and matches by name."""
+        try:
+            list_resp = await self.client.list_onenote_notebooks(site_id=site_id, top=50, skip=0)
+            if not list_resp.success:
+                return False, json.dumps({
+                    "resolved": False,
+                    "error": list_resp.error or "Failed to list notebooks for this site.",
+                })
+            notebooks = (list_resp.data or {}).get("results") or (list_resp.data or {}).get("notebooks") or []
+            query_norm = self._normalize_notebook_name(notebook_query)
+            matches: List[Dict[str, Any]] = []
+            for nb in notebooks:
+                if not isinstance(nb, dict):
+                    continue
+                disp = nb.get("display_name") or nb.get("displayName") or ""
+                nb_norm = self._normalize_notebook_name(disp)
+                if not query_norm:
+                    matches.append({**nb, "site_id": site_id})
+                    continue
+                if nb_norm == query_norm or (query_norm in nb_norm) or (nb_norm in query_norm):
+                    matches.append({**nb, "site_id": site_id})
+            if len(matches) == 1:
+                m = matches[0]
+                return True, json.dumps({
+                    "resolved": True,
+                    "site_id": m.get("site_id"),
+                    "notebook_id": m.get("notebook_id"),
+                    "notebook_name": m.get("display_name") or m.get("displayName"),
+                    "usage_hint": "Use sharepoint_list_notebook_pages(site_id, notebook_id) to list sections and pages.",
+                })
+            if len(matches) == 0:
+                return False, json.dumps({
+                    "resolved": False,
+                    "error": f"No OneNote notebook matched '{notebook_query}' in this site.",
+                })
+            candidates = [
+                {
+                    "site_id": m.get("site_id"),
+                    "notebook_id": m.get("notebook_id"),
+                    "notebook_name": m.get("display_name") or m.get("displayName"),
+                    "web_url": m.get("web_url"),
+                }
+                for m in matches
+            ]
+            return True, json.dumps({
+                "resolved": False,
+                "ambiguous": True,
+                "candidates": candidates,
+                "message": "Multiple notebooks with this name in this site. Please specify which one.",
+            })
+        except Exception as e:
+            return self._handle_error(e, f"find notebook '{notebook_query}'")
+
+    @tool(
+        app_name="sharepoint",
+        tool_name="list_notebook_pages",
+        description="List sections and pages of a OneNote notebook",
+        llm_description="List sections and pages (no content). Use site_id and notebook_id from find_notebook. Then use get_notebook_page_content for selected page_ids.",
+        args_schema=ListNotebookPagesInput,
+        when_to_use=[
+            "User wants to see notebook structure or choose which pages to read",
+        ],
+        when_not_to_use=[
+            "Notebook not yet resolved (use find_notebook first)",
+            "User wants page content (use get_notebook_page_content)",
+            "No OneNote notebook mention",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "List pages in this notebook",
+            "What sections are in the notebook?",
+        ],
+        category=ToolCategory.DOCUMENTATION,
+    )
+    async def list_notebook_pages(
+        self,
+        site_id: str,
+        notebook_id: str,
+    ) -> tuple[bool, str]:
+        """List sections and pages of a OneNote notebook (metadata only, no content)."""
+        try:
+            sec_resp = await self.client.list_onenote_sections(
+                site_id=site_id,
+                notebook_id=notebook_id,
+                top=50,
+                skip=0,
+            )
+            if not sec_resp.success:
+                return False, json.dumps({"error": sec_resp.error or "Failed to list sections"})
+            sections_data = (sec_resp.data or {}).get("results") or (sec_resp.data or {}).get("sections") or []
+            sections_with_pages: List[Dict[str, Any]] = []
+            flat_pages: List[Dict[str, Any]] = []
+            for sec in sections_data:
+                if not isinstance(sec, dict):
+                    continue
+                sec_id = sec.get("section_id")
+                sec_name = sec.get("display_name") or sec.get("displayName")
+                if not sec_id:
+                    continue
+                page_resp = await self.client.list_onenote_pages(
+                    site_id=site_id,
+                    section_id=sec_id,
+                    top=50,
+                    skip=0,
+                )
+                raw_pages = (page_resp.data.get("results") or page_resp.data.get("pages") or []) if (page_resp.success and page_resp.data) else []
+                section_pages: List[Dict[str, Any]] = []
+                for p in raw_pages:
+                    if not isinstance(p, dict):
+                        continue
+                    flat_pages.append({
+                        "page_id": p.get("page_id"),
+                        "title": p.get("title"),
+                        "section_id": sec_id,
+                        "section_name": sec_name,
+                        "order": p.get("order"),
+                        "web_url": p.get("web_url"),
+                    })
+                    section_pages.append({**p, "section_name": sec_name})
+                sections_with_pages.append({
+                    "section_id": sec_id,
+                    "section_name": sec_name,
+                    "pages": section_pages,
+                })
+            return True, json.dumps({
+                "notebook_id": notebook_id,
+                "site_id": site_id,
+                "sections": sections_with_pages,
+                "pages": flat_pages,
+                "usage_hint": "Use sharepoint_get_notebook_page_content(site_id, page_ids=[...]) for selected page_ids.",
+            })
+        except Exception as e:
+            return self._handle_error(e, f"list notebook pages {notebook_id}")
+
+    @tool(
+        app_name="sharepoint",
+        tool_name="get_notebook_page_content",
+        description="Get content of OneNote pages",
+        llm_description="Get HTML/text content for selected page_ids from list_notebook_pages. Do not use get_file_content for notebook pages.",
+        args_schema=GetNotebookPageContentInput,
+        when_to_use=[
+            "User wants to read or summarize notebook page content",
+        ],
+        when_not_to_use=[
+            "Page list not yet fetched (use list_notebook_pages first)",
+            "Regular file (use get_file_content)",
+            "No OneNote mention",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Read the overview page",
+            "Summarize all pages in this notebook",
+        ],
+        category=ToolCategory.DOCUMENTATION,
+    )
+    async def get_notebook_page_content(
+        self,
+        site_id: str,
+        page_ids: List[str],
+    ) -> tuple[bool, str]:
+        """Get content for selected OneNote pages."""
+        try:
+            cap = min(len(page_ids), 20)
+            page_ids = page_ids[:cap]
+            results: List[Dict[str, Any]] = []
+            failed_page_ids: List[str] = []
+            for pid in page_ids:
+                content_resp = await self.client.get_onenote_page_content(
+                    site_id=site_id,
+                    page_id=pid,
+                    max_chars=12000,
+                )
+                if content_resp.success and content_resp.data:
+                    results.append(content_resp.data)
+                else:
+                    failed_page_ids.append(pid)
+            out: Dict[str, Any] = {
+                "pages": results,
+                "count": len(results),
+                "usage_hint": "Use these page contents to answer the user; do not call get_file_content for .one or .onetoc2.",
+            }
+            if failed_page_ids:
+                out["failed_page_ids"] = failed_page_ids
+            return True, json.dumps(out)
+        except Exception as e:
+            return self._handle_error(e, "get notebook page content")
 
     @tool(
         app_name="sharepoint",
