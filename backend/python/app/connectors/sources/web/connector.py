@@ -330,7 +330,7 @@ class WebConnector(BaseConnector):
         self.max_depth: int = 3
         self.max_pages: int = 100
         self.follow_external: bool = False
-        self.restrict_to_start_path: bool = True
+        self.restrict_to_start_path: bool = False
         self.start_path_prefix: str = "/"
         self.url_should_contain: List[str] = []
 
@@ -450,7 +450,7 @@ class WebConnector(BaseConnector):
             max_pages = int(sync_config.get("max_pages") or 1000)
             max_size_mb = int(sync_config.get("max_size_mb") or 10)
             follow_external = sync_config.get("follow_external", False)
-            restrict_to_start_path = sync_config.get("restrict_to_start_path", True)
+            restrict_to_start_path = sync_config.get("restrict_to_start_path", False)
             # Accept both a legacy plain string and the new list-of-strings format.
             _usc_raw = sync_config.get("url_should_contain", [])
             if isinstance(_usc_raw, list):
