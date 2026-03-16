@@ -2186,6 +2186,56 @@ GITHUB_GUIDANCE = r"""
 
 """
 
+CLICKUP_GUIDANCE = r"""
+## ClickUp-Specific Guidance
+
+### Call workspace first
+- For any ClickUp request involving spaces, folders, lists, tasks, or docs, **call get_authorized_teams_workspaces first** and use the returned team id (e.g. teams[0].id) as **team_id** or **workspace_id** where required. Pass team_id into get_spaces, get_folders, get_lists, get_folderless_lists, get_workspace_tasks, search_tasks, and get_workspace_docs.
+
+### Two areas: Tasks vs Docs
+- **Tasks (lists, spaces, folders)**: hierarchy **Workspace (team)** → **Space** → **Folder** (optional) → **List** → **Task**. Use for work items, to-dos, issues.
+- **Docs**: **Workspace** → **Doc** → **Page(s)**. Use for documentation, wikis, knowledge base. Docs use API v3; workspace_id is the same as team id.
+
+### Hierarchy and ID flow (Tasks)
+- **get_authorized_teams_workspaces** → returns workspaces; use **team id** (same as workspace_id for Docs) for get_spaces, get_workspace_docs, or get_workspace_tasks.
+- **get_workspace_tasks**(team_id, ...) → search/filter tasks across the whole workspace by status, assignee, tags, dates, or scope (space/folder/list).
+- **get_spaces**(team_id) → returns spaces; use **space id** for get_folders and get_folderless_lists. A space has lists in two places: inside folders (use get_folders then get_lists) and directly in the space with no folder (use get_folderless_lists). For complete tasks in a space, use both.
+- **get_folders**(space_id, team_id) → returns folders; use **folder id** for get_lists. team_id from get_authorized_teams_workspaces (required).
+- **get_lists**(folder_id, team_id) or **get_folderless_lists**(space_id, team_id) → returns lists; use **list id** for get_tasks or create_task. team_id from get_authorized_teams_workspaces (required).
+- **get_tasks**(list_id, ...) supports optional filters (statuses, assignees, tags, dates). **create_task**(list_id, ...) → use **task id** for get_task or update_task.
+
+### Hierarchy and ID flow (Docs)
+- **get_workspace_docs**(workspace_id) → returns docs in a workspace; use **doc id** for get_doc_pages. workspace_id = team id from get_authorized_teams_workspaces.
+- **get_doc_pages**(workspace_id, doc_id) → returns pages in a doc; use **page id** for get_doc_page.
+- **get_doc_page**(workspace_id, doc_id, page_id) → returns full details/content of one page.
+
+### When to use which tool
+- "My workspaces" / "List teams" → **clickup.get_authorized_teams_workspaces** (no args).
+- "Spaces in workspace X" / "List spaces" → **clickup.get_spaces**(team_id). Get team_id from get_authorized_teams_workspaces first.
+- "Folders in space X" → Get team_id from get_authorized_teams_workspaces first, then **clickup.get_folders**(space_id, team_id). Get space_id from get_spaces.
+- "Lists in folder X" → Get team_id from get_authorized_teams_workspaces first, then **clickup.get_lists**(folder_id, team_id). "Lists not in a folder" → **clickup.get_folderless_lists**(space_id, team_id). Get space_id from get_spaces.
+- "Tasks in workspace with status X" / "All tasks assigned to Y" / "Tasks in workspace matching criteria" → **clickup.get_workspace_tasks**(team_id, statuses=..., assignees=..., tags=..., etc.). Get team_id from get_authorized_teams_workspaces. Use when user asks for tasks across the whole workspace without specifying a single list.
+- **"Tasks assigned to me" / "My tasks in [workspace name]"** (e.g. "Pipeshub ai workspace tasks assigned to me"): First call **get_authorized_user** to get the current user's **id** (use this for assignees). Then call **get_authorized_teams_workspaces** and pick the **one** workspace the user meant (e.g. by name "Pipeshub ai" → use that team's id). Then call **get_workspace_tasks**(team_id, assignees=[user_id]) **once** for that workspace only. Do not call get_workspace_tasks for every workspace; call it only for the workspace the user asked about. Pass assignees as a list of one string, e.g. assignees=[str(user_id)].
+- "Tasks containing X" / "Find tasks with word Y" / "Search tasks by keyword" → **clickup.search_tasks**(team_id, keyword). Search by task name, description, custom field text. Get team_id from get_authorized_teams_workspaces.
+- "Tasks in list X" / "List tasks" (possibly with filters) → **clickup.get_tasks**(list_id, statuses=..., assignees=..., ...). Get list_id from get_lists or get_folderless_lists. Supports optional filters (status, assignee, tags, dates).
+- **"All tasks in space X" / "Tasks from one specific space"**: You must get lists from BOTH (1) folders and (2) folderless lists, then get_tasks for each. Call **get_folders**(space_id, team_id) → for each folder **get_lists**(folder_id, team_id) → **get_tasks**(list_id, ...) for each list; and also call **get_folderless_lists**(space_id, team_id) → **get_tasks**(list_id, ...) for each list. If you only use get_folders + get_lists you will miss tasks in lists that live directly in the space (folderless lists).
+- "Task details" / "Get task X" → **clickup.get_task**(task_id). Get task_id from get_tasks, create_task, or search_tasks. If user identifies the task by name/keyword, call **search_tasks** first to get task_id.
+- "Create a task" / "Add task" → **clickup.create_task**(list_id, name, ...). Need list_id; name required.
+- "Update task X" / "Change task status" / "Edit the task named Y" → If user refers to the task by name or keyword (e.g. "update the login bug task"), call **search_tasks**(team_id, keyword) first to get task_id, then **clickup.update_task**(task_id, ...). If user already has task_id, use **update_task** directly.
+- "List docs" / "Docs in workspace" / "All documentation" → **clickup.get_workspace_docs**(workspace_id). Get workspace_id from get_authorized_teams_workspaces (same as team id).
+- "Pages in doc X" / "Doc outline" / "List pages in doc" → **clickup.get_doc_pages**(workspace_id, doc_id). Get doc_id from get_workspace_docs.
+- "Page details" / "Content of page X" / "Get page" → **clickup.get_doc_page**(workspace_id, doc_id, page_id). Get page_id from get_doc_pages.
+
+### Chaining and placeholders
+- **When the user asks about a specific task by name or keyword** (e.g. "update the login bug task", "get details of the invoice task", "change status of Fix auth"): call **search_tasks**(team_id, keyword) first to find the task and get task_id, then use that task_id with **update_task** or **get_task**. Do this every time the query refers to a task by name/keyword rather than by ID.
+- For "tasks containing X" or "find tasks with word Y": use **search_tasks**(team_id, keyword). Get team_id from get_authorized_teams_workspaces. For filter-by-status/assignee/tag only (no free text), use **get_workspace_tasks** instead.
+- For "tasks in workspace with status X" or "all tasks assigned to Y": use **get_workspace_tasks**(team_id, statuses=[...], assignees=[...], ...). Get team_id from get_authorized_teams_workspaces. For **"assigned to me"** or **"my tasks"**: call **get_authorized_user** first, take the user's id from the response, then call get_workspace_tasks(team_id, assignees=[user_id]). Call get_workspace_tasks only for the **one** workspace the user asked about (match by workspace name from get_authorized_teams_workspaces), not for every workspace.
+- For "tasks in list Z with status X": use **get_tasks**(list_id, statuses=[...], ...). Get list_id from get_lists or get_folderless_lists.
+- For "list my tasks" or "tasks in list X" (no workspace-wide criteria): if user did not give list_id, plan **get_authorized_teams_workspaces** first (for team_id) → **get_spaces**(team_id) → **get_folders**(space_id, team_id) and **get_folderless_lists**(space_id, team_id) → **get_lists**(folder_id, team_id) for each folder → **get_tasks** for every list (from get_lists and from get_folderless_lists). Always pass team_id. For "all tasks in a space" you must use both get_folders+get_lists and get_folderless_lists so folderless lists are included.
+- For "list docs" or "pages in doc X" or "show page content": use **get_authorized_teams_workspaces** for workspace_id → **get_workspace_docs** for doc list → **get_doc_pages** for page list → **get_doc_page** for one page content.
+- Never fabricate IDs; always obtain team_id (workspace_id), space_id, folder_id, list_id, task_id, doc_id, page_id from the appropriate prior tool or user input.
+"""
+
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
 
 ## Core Planning Logic - Understanding User Intent
@@ -2523,6 +2573,7 @@ Generate:
 {outlook_guidance}
 {teams_guidance}
 {github_guidance}
+{clickup_guidance}
 
 ## Planning Best Practices
 
@@ -3319,6 +3370,7 @@ async def planner_node(
     outlook_guidance = OUTLOOK_GUIDANCE if _has_outlook_tools(state) else ""
     teams_guidance = TEAMS_GUIDANCE if _has_teams_tools(state) else ""
     github_guidance = GITHUB_GUIDANCE if _has_github_tools(state) else ""
+    clickup_guidance = CLICKUP_GUIDANCE if _has_clickup_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
@@ -3328,7 +3380,8 @@ async def planner_node(
         onedrive_guidance=onedrive_guidance,
         outlook_guidance=outlook_guidance,
         teams_guidance=teams_guidance,
-        github_guidance=github_guidance
+        github_guidance=github_guidance,
+        clickup_guidance=clickup_guidance,
     )
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
@@ -4422,6 +4475,12 @@ def _has_github_tools(state: ChatState) -> bool:
     """Check if GitHub tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "github" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
+def _has_clickup_tools(state: ChatState) -> bool:
+    """Check if ClickUp tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "clickup" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
@@ -7535,6 +7594,8 @@ When you have internal knowledge from retrieval tools:
         _has_outlook_tools(state),
         _has_slack_tools(state),
         _has_teams_tools(state),
+        _has_github_tools(state),
+        _has_clickup_tools(state),
     ])
 
     if has_knowledge and has_service_tools:
@@ -7584,6 +7645,9 @@ Use this decision tree to choose the right approach:
 
     if _has_outlook_tools(state):
         base_prompt += "\n" + OUTLOOK_GUIDANCE
+
+    if _has_clickup_tools(state):
+        base_prompt += "\n" + CLICKUP_GUIDANCE
 
     # ── Multi-step workflow patterns ─────────────────────────────────────────
     workflow_patterns = _build_workflow_patterns(state)

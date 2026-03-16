@@ -390,6 +390,7 @@ class ToolsetRegistry:
             'app.agents.actions.slack.slack',
             'app.agents.actions.jira.jira',
             'app.agents.actions.confluence.confluence',
+            'app.agents.actions.clickup.clickup',
             'app.agents.actions.github.github',
             # 'app.agents.actions.gitlab.gitlab',
             # 'app.agents.actions.linear.linear',
