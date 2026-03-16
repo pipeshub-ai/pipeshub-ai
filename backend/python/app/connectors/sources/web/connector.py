@@ -693,7 +693,7 @@ class WebConnector(BaseConnector):
                 await self._crawl_single_page(self.url)
 
             self.logger.info(
-                f"✅ Web crawl completed: {len(self.visited_urls)} pages processed"
+                f"✅ Web crawl completed: {len(self.visited_urls)} pages processed for {self.url}"
             )
 
         except Exception as e:
