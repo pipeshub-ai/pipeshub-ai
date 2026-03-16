@@ -37,7 +37,7 @@ router = APIRouter()
 
 # Constants
 SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
-
+NO_KB_SELECTED_FILTER = "NO_KB_SELECTED"
 
 # ============================================================================
 # Request Models
@@ -2699,8 +2699,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
         
-        if filters.get("kb") is None or len(filters.get("kb")) == 0:
-            filters["kb"] = ['NO_KB_SELECTED']
+        if not filters.get("kb"):
+            filters["kb"] = [NO_KB_SELECTED_FILTER]
         
         logger.info(f"Filters: {filters}")
 

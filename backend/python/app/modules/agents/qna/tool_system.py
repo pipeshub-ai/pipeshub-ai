@@ -246,7 +246,7 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
                 continue
 
             # Skip retrieval tools when no knowledge is configured
-            is_retrieval = _is_retrieval_tool(full_name, registry_tool)
+            is_retrieval = _is_knowledge_dependent_tool(full_name, registry_tool)
             if is_retrieval and not has_knowledge:
                 if state_logger:
                     state_logger.debug(f"Skipping retrieval tool {full_name} - no knowledge configured")
@@ -339,7 +339,7 @@ def _extract_tool_names_from_toolsets(agent_toolsets: List[Dict]) -> Optional[Se
     return tool_names if tool_names else None
 
 
-def _is_retrieval_tool(full_name: str, registry_tool: 'Tool') -> bool:
+def _is_knowledge_dependent_tool(full_name: str, registry_tool: 'Tool') -> bool:
     """
     Check if a tool is a knowledge-dependent internal tool.
 
@@ -360,7 +360,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
     Check if tool is internal (always included).
 
     Internal tools are marked in registry with isInternal=True.
-    Note: Retrieval tools are handled separately via _is_retrieval_tool.
+    Note: Retrieval tools are handled separately via _is_knowledge_dependent_tool.
     """
     # Check registry metadata
     if hasattr(registry_tool, 'metadata'):
