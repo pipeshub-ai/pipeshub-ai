@@ -1,3 +1,4 @@
+
 """Zoom client implementation.
 
 This module provides clients for interacting with the Zoom API using either:
@@ -677,3 +678,45 @@ class ZoomClient(IClient):
                 f"Failed to get Zoom connector configuration "
                 f"for instance {connector_instance_id}"
             ) from e
+
+    @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: dict[str, Any],
+        logger: logging.Logger,
+    ) -> "ZoomClient":
+        """
+        Build ZoomClient using toolset configuration from etcd.
+
+        Toolset configs are stored per-user at:
+        /services/toolsets/{user_id}/{toolset_type}
+
+        Args:
+            toolset_config: Toolset configuration dictionary from etcd
+            logger: Logger instance
+
+        Returns:
+            ZoomClient instance
+        """
+        try:
+            if not toolset_config:
+                raise ValueError("Toolset config is required for Zoom client")
+
+            credentials_config = toolset_config.get("credentials", {}) or {}
+            token = credentials_config.get("access_token", "")
+            if not token:
+                raise ValueError("Access token required for Zoom client (OAuth)")
+
+            base_url = (
+                toolset_config.get("baseUrl")
+                or toolset_config.get("base_url")
+                or "https://api.zoom.us/v2"
+            )
+
+            client = ZoomRESTClientViaToken(base_url=base_url, token=token)
+            logger.info("Built Zoom client from toolset config")
+            return cls(client)
+
+        except Exception as e:
+            logger.error("Failed to build Zoom client from toolset config: %s", e)
+            raise
