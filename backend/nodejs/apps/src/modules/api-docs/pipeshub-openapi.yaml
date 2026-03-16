@@ -25,11 +25,12 @@ info:
     email: support@pipeshub.com
 
 servers:
-  - url: "{instance_url}/api/v1"
+  - url: "{instance_url}"
     description: Base API URL
     variables:
       instance_url:
         default: https://app.pipeshub.com
+        description: Base server URL (without /api/v1)
         description: Base server URL (without /api/v1)
   - url: "{instance_url}"
     description: Root URL (used for MCP endpoints mounted at /mcp)
@@ -4994,7 +4995,7 @@ security:
 
 paths:
   # ==================== AUTHENTICATION ENDPOINTS ====================
-  /userAccount/initAuth:
+  /api/v1/userAccount/initAuth:
     post:
       tags:
         - User Account
@@ -5057,7 +5058,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthError'
 
-  /userAccount/authenticate:
+  /api/v1/userAccount/authenticate:
     post:
       tags:
         - User Account
@@ -5140,7 +5141,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthError'
 
-  /userAccount/login/otp/generate:
+  /api/v1/userAccount/login/otp/generate:
     post:
       tags:
         - User Account
@@ -5201,7 +5202,7 @@ paths:
         '429':
           description: Too many OTP requests - please wait before requesting again
 
-  /userAccount/password/forgot:
+  /api/v1/userAccount/password/forgot:
     post:
       tags:
         - User Account
@@ -5236,7 +5237,7 @@ paths:
         '429':
           description: Too many requests - rate limited
 
-  /userAccount/password/reset/token:
+  /api/v1/userAccount/password/reset/token:
     post:
       tags:
         - User Account
@@ -5282,7 +5283,7 @@ paths:
         '404':
           description: User not found
 
-  /userAccount/oauth/exchange:
+  /api/v1/userAccount/oauth/exchange:
     post:
       tags:
         - OAuth
@@ -5327,7 +5328,7 @@ paths:
           description: OAuth provider configuration not found
 
   # ==================== OAUTH PROVIDER ENDPOINTS ====================
-  /oauth2/authorize:
+  /api/v1/oauth2/authorize:
     get:
       tags:
         - OAuth Provider
@@ -5474,7 +5475,7 @@ paths:
         '403':
           description: Client not authorized or invalid redirect URI
 
-  /oauth2/token:
+  /api/v1/oauth2/token:
     post:
       tags:
         - OAuth Provider
@@ -5536,7 +5537,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
 
-  /oauth2/revoke:
+  /api/v1/oauth2/revoke:
     post:
       tags:
         - OAuth Provider
@@ -5576,7 +5577,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
 
-  /oauth2/introspect:
+  /api/v1/oauth2/introspect:
     post:
       tags:
         - OAuth Provider
@@ -5637,7 +5638,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OAuthErrorResponse'
 
-  /oauth2/userinfo:
+  /api/v1/oauth2/userinfo:
     get:
       tags:
         - OpenID Connect
@@ -5697,9 +5698,6 @@ paths:
         <b>Note:</b> This endpoint does not require authentication.
       operationId: openidConfiguration
       security: []
-      servers:
-        - url: /
-          description: Root URL (not /api/v1)
       responses:
         '200':
           description: Authorization server metadata
@@ -5736,9 +5734,6 @@ paths:
         <b>Note:</b> This endpoint does not require authentication.
       operationId: oauthAuthorizationServerMetadata
       security: []
-      servers:
-        - url: /
-          description: Root URL (not /api/v1)
       responses:
         '200':
           description: Authorization server metadata
@@ -5781,9 +5776,6 @@ paths:
         - Keys should be cached with appropriate TTL
       operationId: jwks
       security: []
-      servers:
-        - url: /
-          description: Root URL (not /api/v1)
       responses:
         '200':
           description: JSON Web Key Set
@@ -5819,9 +5811,6 @@ paths:
         <b>Note:</b> This endpoint does not require authentication.
       operationId: oauthProtectedResource
       security: []
-      servers:
-        - url: /
-          description: Root URL (not /api/v1)
       responses:
         '200':
           description: Protected resource metadata
@@ -5837,7 +5826,7 @@ paths:
                 resource_documentation: "https://api.pipeshub.com/api/v1/docs"
 
   # ==================== OAUTH APP MANAGEMENT ENDPOINTS ====================
-  /oauth-clients:
+  /api/v1/oauth-clients:
     get:
       tags:
         - OAuth Apps
@@ -5934,7 +5923,7 @@ paths:
         '429':
           description: Rate limit exceeded
 
-  /oauth-clients/scopes:
+  /api/v1/oauth-clients/scopes:
     get:
       tags:
         - OAuth Apps
@@ -5978,7 +5967,7 @@ paths:
         '429':
           description: Rate limit exceeded
 
-  /oauth-clients/{appId}:
+  /api/v1/oauth-clients/{appId}:
     get:
       tags:
         - OAuth Apps
@@ -6107,7 +6096,7 @@ paths:
         '429':
           description: Rate limit exceeded
 
-  /oauth-clients/{appId}/regenerate-secret:
+  /api/v1/oauth-clients/{appId}/regenerate-secret:
     post:
       tags:
         - OAuth Apps
@@ -6150,7 +6139,7 @@ paths:
         '429':
           description: Rate limit exceeded
 
-  /oauth-clients/{appId}/suspend:
+  /api/v1/oauth-clients/{appId}/suspend:
     post:
       tags:
         - OAuth Apps
@@ -6191,7 +6180,7 @@ paths:
         '429':
           description: Rate limit exceeded
 
-  /oauth-clients/{appId}/activate:
+  /api/v1/oauth-clients/{appId}/activate:
     post:
       tags:
         - OAuth Apps
@@ -6229,7 +6218,7 @@ paths:
         '429':
           description: Rate limit exceeded
 
-  /oauth-clients/{appId}/tokens:
+  /api/v1/oauth-clients/{appId}/tokens:
     get:
       tags:
         - OAuth Apps
@@ -6269,7 +6258,7 @@ paths:
         '429':
           description: Rate limit exceeded
 
-  /oauth-clients/{appId}/revoke-all-tokens:
+  /api/v1/oauth-clients/{appId}/revoke-all-tokens:
     post:
       tags:
         - OAuth Apps
@@ -6316,7 +6305,7 @@ paths:
         '429':
           description: Rate limit exceeded
 
-  /userAccount/refresh/token:
+  /api/v1/userAccount/refresh/token:
     post:
       tags:
         - User Account
@@ -6359,7 +6348,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthError'
 
-  /userAccount/logout/manual:
+  /api/v1/userAccount/logout/manual:
     post:
       tags:
         - User Account
@@ -6390,7 +6379,7 @@ paths:
         '401':
           description: Unauthorized - invalid or expired access token
 
-  /userAccount/password/reset:
+  /api/v1/userAccount/password/reset:
     post:
       tags:
         - User Account
@@ -6443,7 +6432,7 @@ paths:
           description: Unauthorized
 
   # ==================== ORGANIZATION AUTH CONFIG ENDPOINTS ====================
-  /orgAuthConfig/authMethods:
+  /api/v1/orgAuthConfig/authMethods:
     get:
       tags:
         - Organization Auth Config
@@ -6484,7 +6473,7 @@ paths:
         '404':
           description: Organization configuration not found
 
-  /orgAuthConfig/updateAuthMethod:
+  /api/v1/orgAuthConfig/updateAuthMethod:
     post:
       tags:
         - Organization Auth Config
@@ -6563,7 +6552,7 @@ paths:
         '404':
           description: Organization configuration not found
 
-  /orgAuthConfig/:
+  /api/v1/orgAuthConfig/:
     post:
       tags:
         - Organization Auth Config
@@ -6596,7 +6585,7 @@ paths:
           description: Forbidden - Admin access required
 
   # ==================== SAML ENDPOINTS ====================
-  /saml/signIn:
+  /api/v1/saml/signIn:
     get:
       tags:
         - SAML
@@ -6648,7 +6637,7 @@ paths:
         '404':
           description: User not found or SAML not configured for organization
 
-  /saml/signIn/callback:
+  /api/v1/saml/signIn/callback:
     post:
       tags:
         - SAML
@@ -6692,7 +6681,7 @@ paths:
                   error:
                     type: string
 
-  /users:
+  /api/v1/users:
     get:
       tags:
         - Users
@@ -6863,7 +6852,7 @@ paths:
         '403':
           description: Forbidden - Admin privileges required
 
-  /users/{id}:
+  /api/v1/users/{id}:
     get:
       tags:
         - Users
@@ -7129,7 +7118,7 @@ paths:
         '404':
           description: User not found
 
-  /users/{id}/email:
+  /api/v1/users/{id}/email:
     get:
       tags:
         - Users
@@ -7222,7 +7211,7 @@ paths:
         '404':
           description: User not found
 
-  /users/dp:
+  /api/v1/users/dp:
     put:
       tags:
         - Users
@@ -7364,7 +7353,7 @@ paths:
         '404':
           description: No display picture to remove
 
-  /users/bulk/invite:
+  /api/v1/users/bulk/invite:
     post:
       tags:
         - Users
@@ -7487,7 +7476,7 @@ paths:
         '503':
           description: Email service unavailable - SMTP not configured
 
-  /users/{id}/resend-invite:
+  /api/v1/users/{id}/resend-invite:
     post:
       tags:
         - Users
@@ -7563,7 +7552,7 @@ paths:
         '503':
           description: Email service unavailable - SMTP not configured
 
-  /users/graph/list:
+  /api/v1/users/graph/list:
     get:
       tags:
         - Users
@@ -7673,7 +7662,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /users/{id}/unblock:
+  /api/v1/users/{id}/unblock:
     put:
       tags:
         - Users
@@ -7733,7 +7722,7 @@ paths:
         '500':
           description: Internal server error
 
-  /users/fetch/with-groups:
+  /api/v1/users/fetch/with-groups:
     get:
       tags:
         - Users
@@ -7761,7 +7750,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /users/by-ids:
+  /api/v1/users/by-ids:
     post:
       tags:
         - Users
@@ -7801,7 +7790,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /users/{id}/fullname:
+  /api/v1/users/{id}/fullname:
     patch:
       tags:
         - Users
@@ -7844,7 +7833,7 @@ paths:
           description: User not found
 
         # TODO: remove these three apis and replace it with changeName update only
-  /users/{id}/firstName:
+  /api/v1/users/{id}/firstName:
     patch:
       tags:
         - Users
@@ -7886,7 +7875,7 @@ paths:
         '404':
           description: User not found
 
-  /users/{id}/lastName:
+  /api/v1/users/{id}/lastName:
     patch:
       tags:
         - Users
@@ -7928,7 +7917,7 @@ paths:
         '404':
           description: User not found
 
-  /users/{id}/designation:
+  /api/v1/users/{id}/designation:
     patch:
       tags:
         - Users
@@ -7970,7 +7959,7 @@ paths:
         '404':
           description: User not found
 
-  /users/{id}/adminCheck:
+  /api/v1/users/{id}/adminCheck:
     get:
       tags:
         - Users
@@ -8004,7 +7993,7 @@ paths:
         '404':
           description: User not found
 
-  /users/teams/list:
+  /api/v1/users/teams/list:
     get:
       tags:
         - Users
@@ -8033,7 +8022,7 @@ paths:
           description: Unauthorized
 
   # ==================== TEAMS ENDPOINTS ====================
-  /teams:
+  /api/v1/teams:
     post:
       tags:
         - Teams
@@ -8200,7 +8189,7 @@ paths:
         '401':
           description: Unauthorized - Valid bearer token required
 
-  /teams/{teamId}:
+  /api/v1/teams/{teamId}:
     get:
       tags:
         - Teams
@@ -8393,7 +8382,7 @@ paths:
         '404':
           description: Team not found
 
-  /teams/user/teams:
+  /api/v1/teams/user/teams:
     get:
       tags:
         - Teams
@@ -8473,7 +8462,7 @@ paths:
         '401':
           description: Unauthorized - Valid authentication required
 
-  /teams/{teamId}/users:
+  /api/v1/teams/{teamId}/users:
     get:
       tags:
         - Teams
@@ -8593,7 +8582,7 @@ paths:
         '404':
           description: Team or user not found
 
-  /teams/{teamId}/users/permissions:
+  /api/v1/teams/{teamId}/users/permissions:
     put:
       tags:
         - Teams
@@ -8632,7 +8621,7 @@ paths:
         '404':
           description: Team not found
 
-  /teams/user/teams/created:
+  /api/v1/teams/user/teams/created:
     get:
       tags:
         - Teams
@@ -8660,7 +8649,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /org/exists:
+  /api/v1/org/exists:
     get:
       tags:
         - Organizations
@@ -8696,7 +8685,7 @@ paths:
                     description: Whether an organization has been created
                     example: true
 
-  /org:
+  /api/v1/org:
     post:
       tags:
         - Organizations
@@ -8998,7 +8987,7 @@ paths:
         '403':
           description: Forbidden - Only organization owner can delete
 
-  /org/logo:
+  /api/v1/org/logo:
     put:
       tags:
         - Organizations
@@ -9154,7 +9143,7 @@ paths:
         '404':
           description: No logo exists to delete
 
-  /org/onboarding-status:
+  /api/v1/org/onboarding-status:
     get:
       tags:
         - Organizations
@@ -9267,7 +9256,7 @@ paths:
           description: Unauthorized - Valid authentication required
 
   # ==================== USER GROUPS ENDPOINTS ====================
-  /userGroups:
+  /api/v1/userGroups:
     post:
       tags:
         - User Groups
@@ -9380,7 +9369,7 @@ paths:
         '403':
           description: Forbidden - Admin privileges required
 
-  /userGroups/{groupId}:
+  /api/v1/userGroups/{groupId}:
     get:
       tags:
         - User Groups
@@ -9534,7 +9523,7 @@ paths:
         '404':
           description: User group not found
 
-  /userGroups/add-users:
+  /api/v1/userGroups/add-users:
     post:
       tags:
         - User Groups
@@ -9614,7 +9603,7 @@ paths:
         '404':
           description: Group or one or more users not found
 
-  /userGroups/remove-users:
+  /api/v1/userGroups/remove-users:
     post:
       tags:
         - User Groups
@@ -9689,7 +9678,7 @@ paths:
         '404':
           description: Group not found
 
-  /userGroups/users/{userId}:
+  /api/v1/userGroups/users/{userId}:
     get:
       tags:
         - User Groups
@@ -9741,7 +9730,7 @@ paths:
         '404':
           description: User not found
 
-  /userGroups/{groupId}/users:
+  /api/v1/userGroups/{groupId}/users:
     get:
       tags:
         - User Groups
@@ -9778,7 +9767,7 @@ paths:
         '404':
           description: Group not found
 
-  /userGroups/stats/list:
+  /api/v1/userGroups/stats/list:
     get:
       tags:
         - User Groups
@@ -9806,7 +9795,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /document/{documentId}/download:
+  /api/v1/document/{documentId}/download:
     get:
       tags:
         - Document Management
@@ -10273,7 +10262,7 @@ paths:
   #       '404':
   #         description: Document not found
   #
-  /knowledgeBase:
+  /api/v1/knowledgeBase:
     post:
       tags:
         - Knowledge Bases
@@ -10449,7 +10438,7 @@ paths:
         '401':
           description: Unauthorized - Valid bearer token required
 
-  /knowledgeBase/{kbId}:
+  /api/v1/knowledgeBase/{kbId}:
     get:
       tags:
         - Knowledge Bases
@@ -10587,7 +10576,7 @@ paths:
           description: Knowledge base not found
 
   # -------------------- Records Endpoints --------------------
-  /knowledgeBase/records:
+  /api/v1/knowledgeBase/records:
     get:
       tags:
         - Records
@@ -10692,7 +10681,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /knowledgeBase/{kbId}/records:
+  /api/v1/knowledgeBase/{kbId}/records:
     get:
       tags:
         - Records
@@ -10873,7 +10862,7 @@ paths:
         '404':
           description: Knowledge base not found
 
-  /knowledgeBase/{kbId}/children:
+  /api/v1/knowledgeBase/{kbId}/children:
     get:
       tags:
         - Records
@@ -11054,7 +11043,7 @@ paths:
         '404':
           description: Knowledge base not found
 
-  /knowledgeBase/record/{recordId}:
+  /api/v1/knowledgeBase/record/{recordId}:
     get:
       tags:
         - Records
@@ -11243,7 +11232,7 @@ paths:
         '404':
           description: Record not found
 
-  /knowledgeBase/stream/record/{recordId}:
+  /api/v1/knowledgeBase/stream/record/{recordId}:
     get:
       tags:
         - Records
@@ -11290,7 +11279,7 @@ paths:
           description: Record not found
 
   # -------------------- Folder Endpoints --------------------
-  /knowledgeBase/{kbId}/folder:
+  /api/v1/knowledgeBase/{kbId}/folder:
     post:
       tags:
         - Folders
@@ -11353,7 +11342,7 @@ paths:
         '404':
           description: Knowledge base not found
 
-  /knowledgeBase/{kbId}/folder/{folderId}:
+  /api/v1/knowledgeBase/{kbId}/folder/{folderId}:
     get:
       tags:
         - Folders
@@ -11506,7 +11495,7 @@ paths:
         '404':
           description: Folder not found
 
-  /knowledgeBase/{kbId}/folder/{folderId}/children:
+  /api/v1/knowledgeBase/{kbId}/folder/{folderId}/children:
     get:
       tags:
         - Folders
@@ -11572,7 +11561,7 @@ paths:
         '404':
           description: Folder or knowledge base not found
 
-  /knowledgeBase/{kbId}/folder/{folderId}/subfolder:
+  /api/v1/knowledgeBase/{kbId}/folder/{folderId}/subfolder:
     post:
       tags:
         - Folders
@@ -11629,7 +11618,7 @@ paths:
           description: Parent folder not found
 
   # -------------------- Upload Endpoints --------------------
-  /knowledgeBase/{kbId}/upload:
+  /api/v1/knowledgeBase/{kbId}/upload:
     post:
       tags:
         - Upload
@@ -11707,7 +11696,7 @@ paths:
         '413':
           description: File size exceeds maximum allowed
 
-  /knowledgeBase/{kbId}/folder/{folderId}/upload:
+  /api/v1/knowledgeBase/{kbId}/folder/{folderId}/upload:
     post:
       tags:
         - Upload
@@ -11768,7 +11757,7 @@ paths:
         '404':
           description: Folder or knowledge base not found
 
-  /knowledgeBase/limits:
+  /api/v1/knowledgeBase/limits:
     get:
       tags:
         - Upload
@@ -11801,7 +11790,7 @@ paths:
           description: Unauthorized
 
   # -------------------- Reindex/Sync Endpoints --------------------
-  /knowledgeBase/reindex/record/{recordId}:
+  /api/v1/knowledgeBase/reindex/record/{recordId}:
     post:
       tags:
         - Connector
@@ -11843,7 +11832,7 @@ paths:
         '404':
           description: Record not found
 
-  /knowledgeBase/reindex/record-group/{recordGroupId}:
+  /api/v1/knowledgeBase/reindex/record-group/{recordGroupId}:
     post:
       tags:
         - Connector
@@ -11883,7 +11872,7 @@ paths:
         '404':
           description: Record group not found
 
-  /knowledgeBase/resync/connector:
+  /api/v1/knowledgeBase/resync/connector:
     post:
       tags:
         - Connector
@@ -11923,7 +11912,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /knowledgeBase/stats/{connectorId}:
+  /api/v1/knowledgeBase/stats/{connectorId}:
     get:
       tags:
         - Connector
@@ -11953,7 +11942,7 @@ paths:
         '404':
           description: Connector not found
 
-  /knowledgeBase/reindex-failed/connector:
+  /api/v1/knowledgeBase/reindex-failed/connector:
     post:
       tags:
         - Knowledge Bases
@@ -11990,7 +11979,7 @@ paths:
         '404':
           description: Connector not found
 
-  /knowledgeBase/{kbId}/record/{recordId}/move:
+  /api/v1/knowledgeBase/{kbId}/record/{recordId}/move:
     put:
       tags:
         - Knowledge Bases
@@ -12036,7 +12025,7 @@ paths:
           description: Record or knowledge base not found
 
   # -------------------- Permissions Endpoints --------------------
-  /knowledgeBase/{kbId}/permissions:
+  /api/v1/knowledgeBase/{kbId}/permissions:
     post:
       tags:
         - Permissions
@@ -12244,7 +12233,7 @@ paths:
           description: Insufficient permissions
 
   # -------------------- Knowledge Hub --------------------
-  /knowledgeBase/knowledge-hub/nodes:
+  /api/v1/knowledgeBase/knowledge-hub/nodes:
     get:
       tags:
         - Knowledge Hub
@@ -12368,7 +12357,7 @@ paths:
         '500':
           description: Internal server error
 
-  /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}:
+  /api/v1/knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}:
     get:
       tags:
         - Knowledge Hub
@@ -12505,7 +12494,7 @@ paths:
   # ==================== ENTERPRISE SEARCH ENDPOINTS ====================
 
   # -------------------- Conversations --------------------
-  /conversations/create:
+  /api/v1/conversations/create:
     post:
       tags:
         - Conversations
@@ -12578,7 +12567,7 @@ paths:
         '504':
           description: Request timeout - AI processing took too long
 
-  /conversations/stream:
+  /api/v1/conversations/stream:
     post:
       tags:
         - Conversations
@@ -12632,7 +12621,7 @@ paths:
         '502':
           description: AI backend service unavailable
 
-  /conversations:
+  /api/v1/conversations:
     get:
       tags:
         - Conversations
@@ -12700,7 +12689,7 @@ paths:
         '401':
           description: Unauthorized - Valid bearer token required
 
-  /conversations/show/archives:
+  /api/v1/conversations/show/archives:
     get:
       tags:
         - Conversations
@@ -12765,7 +12754,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /conversations/{conversationId}:
+  /api/v1/conversations/{conversationId}:
     get:
       tags:
         - Conversations
@@ -12896,7 +12885,7 @@ paths:
         '404':
           description: Conversation not found
 
-  /conversations/{conversationId}/messages:
+  /api/v1/conversations/{conversationId}/messages:
     post:
       tags:
         - Conversations
@@ -12949,7 +12938,7 @@ paths:
         '404':
           description: Conversation not found
 
-  /conversations/{conversationId}/messages/stream:
+  /api/v1/conversations/{conversationId}/messages/stream:
     post:
       tags:
         - Conversations
@@ -12991,7 +12980,7 @@ paths:
         '404':
           description: Conversation not found
 
-  /conversations/{conversationId}/share:
+  /api/v1/conversations/{conversationId}/share:
     post:
       tags:
         - Conversations
@@ -13043,7 +13032,7 @@ paths:
         '404':
           description: Conversation or users not found
 
-  /conversations/{conversationId}/title:
+  /api/v1/conversations/{conversationId}/title:
     patch:
       tags:
         - Conversations
@@ -13099,7 +13088,7 @@ paths:
         '404':
           description: Conversation not found
 
-  /conversations/{conversationId}/archive:
+  /api/v1/conversations/{conversationId}/archive:
     patch:
       tags:
         - Conversations
@@ -13134,7 +13123,7 @@ paths:
         '404':
           description: Conversation not found
 
-  /conversations/{conversationId}/unarchive:
+  /api/v1/conversations/{conversationId}/unarchive:
     patch:
       tags:
         - Conversations
@@ -13166,7 +13155,7 @@ paths:
         '404':
           description: Conversation not found
 
-  /conversations/{conversationId}/message/{messageId}/regenerate:
+  /api/v1/conversations/{conversationId}/message/{messageId}/regenerate:
     post:
       tags:
         - Conversations
@@ -13233,7 +13222,7 @@ paths:
         '404':
           description: Conversation or message not found
 
-  /conversations/{conversationId}/message/{messageId}/feedback:
+  /api/v1/conversations/{conversationId}/message/{messageId}/feedback:
     post:
       tags:
         - Conversations
@@ -13297,7 +13286,7 @@ paths:
         '404':
           description: Conversation or message not found
 
-  /conversations/{conversationId}/unshare:
+  /api/v1/conversations/{conversationId}/unshare:
     post:
       tags:
         - Conversations
@@ -13348,7 +13337,7 @@ paths:
           description: Conversation not found
 
   # -------------------- Semantic Search --------------------
-  /search:
+  /api/v1/search:
     post:
       tags:
         - Semantic Search
@@ -13498,7 +13487,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /search/{searchId}:
+  /api/v1/search/{searchId}:
     get:
       tags:
         - Semantic Search
@@ -13563,7 +13552,7 @@ paths:
         '404':
           description: Search not found
 
-  /search/{searchId}/share:
+  /api/v1/search/{searchId}/share:
     patch:
       tags:
         - Semantic Search
@@ -13611,7 +13600,7 @@ paths:
         '404':
           description: Search not found
 
-  /search/{searchId}/unshare:
+  /api/v1/search/{searchId}/unshare:
     patch:
       tags:
         - Semantic Search
@@ -13659,7 +13648,7 @@ paths:
         '404':
           description: Search not found
 
-  /search/{searchId}/archive:
+  /api/v1/search/{searchId}/archive:
     patch:
       tags:
         - Semantic Search
@@ -13694,7 +13683,7 @@ paths:
         '404':
           description: Search not found
 
-  /search/{searchId}/unarchive:
+  /api/v1/search/{searchId}/unarchive:
     patch:
       tags:
         - Semantic Search
@@ -13729,7 +13718,7 @@ paths:
         '404':
           description: Search not found
 
-  /agents/template:
+  /api/v1/agents/template:
     get:
       tags:
         - Agent Templates
@@ -13827,7 +13816,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /agents/template/{templateId}:
+  /api/v1/agents/template/{templateId}:
     get:
       tags:
         - Agent Templates
@@ -13941,7 +13930,7 @@ paths:
           description: Template not found
 
   # -------------------- Agents --------------------
-  /agents:
+  /api/v1/agents:
     get:
       tags:
         - Agents
@@ -13967,7 +13956,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /agents/create:
+  /api/v1/agents/create:
     post:
       tags:
         - Agents
@@ -14100,7 +14089,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /agents/tools/list:
+  /api/v1/agents/tools/list:
     get:
       tags:
         - Agents
@@ -14133,7 +14122,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /agents/{agentKey}:
+  /api/v1/agents/{agentKey}:
     get:
       tags:
         - Agents
@@ -14299,7 +14288,7 @@ paths:
         '404':
           description: Agent not found
 
-  /agents/{agentKey}/permissions:
+  /api/v1/agents/{agentKey}/permissions:
     get:
       tags:
         - Agents
@@ -14386,7 +14375,7 @@ paths:
         '404':
           description: Agent not found
 
-  /agents/{agentKey}/share:
+  /api/v1/agents/{agentKey}/share:
     post:
       tags:
         - Agents
@@ -14423,7 +14412,7 @@ paths:
         '404':
           description: Agent not found
 
-  /agents/{agentKey}/conversations:
+  /api/v1/agents/{agentKey}/conversations:
     get:
       tags:
         - Agent Conversations
@@ -14533,7 +14522,7 @@ paths:
         '404':
           description: Agent not found
 
-  /agents/{agentKey}/conversations/stream:
+  /api/v1/agents/{agentKey}/conversations/stream:
     post:
       tags:
         - Agent Conversations
@@ -14571,7 +14560,7 @@ paths:
         '404':
           description: Agent not found
 
-  /agents/{agentKey}/conversations/{conversationId}:
+  /api/v1/agents/{agentKey}/conversations/{conversationId}:
     get:
       tags:
         - Agent Conversations
@@ -14634,7 +14623,7 @@ paths:
         '404':
           description: Agent or conversation not found
 
-  /agents/{agentKey}/conversations/{conversationId}/messages:
+  /api/v1/agents/{agentKey}/conversations/{conversationId}/messages:
     post:
       tags:
         - Agent Conversations
@@ -14675,7 +14664,7 @@ paths:
         '404':
           description: Agent or conversation not found
 
-  /agents/{agentKey}/conversations/{conversationId}/messages/stream:
+  /api/v1/agents/{agentKey}/conversations/{conversationId}/messages/stream:
     post:
       tags:
         - Agent Conversations
@@ -14716,7 +14705,7 @@ paths:
         '404':
           description: Agent or conversation not found
 
-  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate:
+  /api/v1/agents/{agentKey}/conversations/{conversationId}/message/{messageId}/regenerate:
     post:
       tags:
         - Agent Conversations
@@ -14772,7 +14761,7 @@ paths:
         '404':
           description: Agent, conversation, or message not found
 
-  /agents/{agentKey}/unshare:
+  /api/v1/agents/{agentKey}/unshare:
     post:
       tags:
         - Agents
@@ -14825,7 +14814,7 @@ paths:
   # ==================== CONNECTOR MANAGER ENDPOINTS ====================
 
   # -------------------- Connector Registry --------------------
-  /connectors/registry:
+  /api/v1/connectors/registry:
     get:
       tags:
         - Connector Registry
@@ -14895,7 +14884,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /connectors/registry/{connectorType}/schema:
+  /api/v1/connectors/registry/{connectorType}/schema:
     get:
       tags:
         - Connector Registry
@@ -14941,7 +14930,7 @@ paths:
           description: Connector type not found
 
   # -------------------- Connector Instances --------------------
-  /connectors:
+  /api/v1/connectors:
     get:
       tags:
         - Connector Instances
@@ -15079,7 +15068,7 @@ paths:
         '403':
           description: Admin required for team-scope connectors
 
-  /connectors/active:
+  /api/v1/connectors/active:
     get:
       tags:
         - Connector Instances
@@ -15110,7 +15099,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /connectors/inactive:
+  /api/v1/connectors/inactive:
     get:
       tags:
         - Connector Instances
@@ -15137,7 +15126,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /connectors/configured:
+  /api/v1/connectors/configured:
     get:
       tags:
         - Connector Instances
@@ -15192,7 +15181,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /connectors/agents/active:
+  /api/v1/connectors/agents/active:
     get:
       tags:
         - Connector Instances
@@ -15247,7 +15236,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /connectors/{connectorId}:
+  /api/v1/connectors/{connectorId}:
     get:
       tags:
         - Connector Instances
@@ -15327,7 +15316,7 @@ paths:
         '404':
           description: Connector not found
 
-  /connectors/{connectorId}/name:
+  /api/v1/connectors/{connectorId}/name:
     put:
       tags:
         - Connector Instances
@@ -15373,7 +15362,7 @@ paths:
           description: Connector not found
 
   # -------------------- Connector Configuration --------------------
-  /connectors/{connectorId}/config:
+  /api/v1/connectors/{connectorId}/config:
     get:
       tags:
         - Connector Configuration
@@ -15462,7 +15451,7 @@ paths:
         '404':
           description: Connector not found
 
-  /connectors/{connectorId}/config/auth:
+  /api/v1/connectors/{connectorId}/config/auth:
     put:
       tags:
         - Connector Configuration
@@ -15511,7 +15500,7 @@ paths:
         '404':
           description: Connector not found
 
-  /connectors/{connectorId}/config/filters-sync:
+  /api/v1/connectors/{connectorId}/config/filters-sync:
     put:
       tags:
         - Connector Configuration
@@ -15556,7 +15545,7 @@ paths:
           description: Connector not found
 
   # -------------------- Connector Control --------------------
-  /connectors/{connectorId}/toggle:
+  /api/v1/connectors/{connectorId}/toggle:
     post:
       tags:
         - Connector Control
@@ -15627,7 +15616,7 @@ paths:
           description: Connector not found
 
   # -------------------- Connector OAuth --------------------
-  /connectors/{connectorId}/oauth/authorize:
+  /api/v1/connectors/{connectorId}/oauth/authorize:
     get:
       tags:
         - Connector OAuth
@@ -15683,7 +15672,7 @@ paths:
         '404':
           description: Connector not found
 
-  /connectors/oauth/callback:
+  /api/v1/connectors/oauth/callback:
     get:
       tags:
         - Connector OAuth
@@ -15734,7 +15723,7 @@ paths:
           description: Invalid or missing state parameter
 
   # -------------------- Connector Filters --------------------
-  /connectors/{connectorId}/filters:
+  /api/v1/connectors/{connectorId}/filters:
     get:
       tags:
         - Connector Filters
@@ -15817,7 +15806,7 @@ paths:
         '404':
           description: Connector not found
 
-  /connectors/{connectorId}/filters/{filterKey}/options:
+  /api/v1/connectors/{connectorId}/filters/{filterKey}/options:
     get:
       tags:
         - Connector Filters
@@ -15912,7 +15901,7 @@ paths:
 
   # -------------------- Legacy Token Exchange --------------------
   # TODO: to remove this from backend
-  /connectors/getTokenFromCode:
+  /api/v1/connectors/getTokenFromCode:
     post:
       tags:
         - Connector OAuth
@@ -16021,7 +16010,7 @@ paths:
 
   # ==================== TOOLSETS ENDPOINTS ====================
   # -------------------- Toolset Registry --------------------
-  /toolsets/registry:
+  /api/v1/toolsets/registry:
     get:
       tags:
         - Toolset Registry
@@ -16077,7 +16066,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /toolsets/registry/{toolsetType}/schema:
+  /api/v1/toolsets/registry/{toolsetType}/schema:
     get:
       tags:
         - Toolset Registry
@@ -16101,7 +16090,7 @@ paths:
           description: Toolset type not found
 
   # -------------------- Toolset Instances --------------------
-  /toolsets:
+  /api/v1/toolsets:
     post:
       tags:
         - Toolset Instances
@@ -16156,7 +16145,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /toolsets/configured:
+  /api/v1/toolsets/configured:
     get:
       tags:
         - Toolset Instances
@@ -16181,7 +16170,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /toolsets/{toolsetId}/status:
+  /api/v1/toolsets/{toolsetId}/status:
     get:
       tags:
         - Toolset Instances
@@ -16205,7 +16194,7 @@ paths:
           description: Toolset not found
 
   # -------------------- Toolset Configuration --------------------
-  /toolsets/{toolsetId}/config:
+  /api/v1/toolsets/{toolsetId}/config:
     get:
       tags:
         - Toolset Configuration
@@ -16323,7 +16312,7 @@ paths:
         '404':
           description: Toolset not found
 
-  /toolsets/{toolsetId}/reauthenticate:
+  /api/v1/toolsets/{toolsetId}/reauthenticate:
     post:
       tags:
         - Toolset Instances
@@ -16356,7 +16345,7 @@ paths:
           description: Toolset not found
 
   # -------------------- Toolset OAuth --------------------
-  /toolsets/{toolsetId}/oauth/authorize:
+  /api/v1/toolsets/{toolsetId}/oauth/authorize:
     get:
       tags:
         - Toolset OAuth
@@ -16392,7 +16381,7 @@ paths:
         '404':
           description: Toolset not found
 
-  /toolsets/oauth/callback:
+  /api/v1/toolsets/oauth/callback:
     get:
       tags:
         - Toolset OAuth
@@ -16435,7 +16424,7 @@ paths:
         '400':
           description: OAuth error or invalid request
 
-  /toolsets/my-toolsets:
+  /api/v1/toolsets/my-toolsets:
     get:
       tags:
         - Toolset Instances
@@ -16455,7 +16444,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /toolsets/instances:
+  /api/v1/toolsets/instances:
     get:
       tags:
         - Toolset Instances
@@ -16518,7 +16507,7 @@ paths:
         '403':
           description: Forbidden
 
-  /toolsets/instances/{instanceId}:
+  /api/v1/toolsets/instances/{instanceId}:
     get:
       tags:
         - Toolset Instances
@@ -16591,7 +16580,7 @@ paths:
         '404':
           description: Instance not found
 
-  /toolsets/instances/{instanceId}/authenticate:
+  /api/v1/toolsets/instances/{instanceId}/authenticate:
     post:
       tags:
         - Toolset Instances
@@ -16622,7 +16611,7 @@ paths:
         '404':
           description: Instance not found
 
-  /toolsets/instances/{instanceId}/credentials:
+  /api/v1/toolsets/instances/{instanceId}/credentials:
     delete:
       tags:
         - Toolset Instances
@@ -16644,7 +16633,7 @@ paths:
         '404':
           description: Instance not found
 
-  /toolsets/instances/{instanceId}/reauthenticate:
+  /api/v1/toolsets/instances/{instanceId}/reauthenticate:
     post:
       tags:
         - Toolset Instances
@@ -16666,7 +16655,7 @@ paths:
         '404':
           description: Instance not found
 
-  /toolsets/instances/{instanceId}/oauth/authorize:
+  /api/v1/toolsets/instances/{instanceId}/oauth/authorize:
     get:
       tags:
         - Toolset OAuth
@@ -16695,7 +16684,7 @@ paths:
         '404':
           description: Instance not found
 
-  /toolsets/instances/{instanceId}/status:
+  /api/v1/toolsets/instances/{instanceId}/status:
     get:
       tags:
         - Toolset Instances
@@ -16717,7 +16706,7 @@ paths:
         '404':
           description: Instance not found
 
-  /toolsets/oauth-configs/{toolsetType}:
+  /api/v1/toolsets/oauth-configs/{toolsetType}:
     get:
       tags:
         - OAuth Configuration
@@ -16739,7 +16728,7 @@ paths:
         '403':
           description: Forbidden
 
-  /toolsets/oauth-configs/{toolsetType}/{oauthConfigId}:
+  /api/v1/toolsets/oauth-configs/{toolsetType}/{oauthConfigId}:
     put:
       tags:
         - OAuth Configuration
@@ -16805,7 +16794,7 @@ paths:
           description: OAuth config is in use by one or more toolset instances
 
   # -------------------- OAuth Configuration (Admin) --------------------
-  /oauth/registry:
+  /api/v1/oauth/registry:
     get:
       tags:
         - OAuth Configuration
@@ -16855,7 +16844,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /oauth/registry/{connectorType}:
+  /api/v1/oauth/registry/{connectorType}:
     get:
       tags:
         - OAuth Configuration
@@ -16887,7 +16876,7 @@ paths:
         '404':
           description: Connector type not found
 
-  /oauth:
+  /api/v1/oauth:
     get:
       tags:
         - OAuth Configuration
@@ -16939,7 +16928,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /oauth/{connectorType}:
+  /api/v1/oauth/{connectorType}:
     get:
       tags:
         - OAuth Configuration
@@ -17044,7 +17033,7 @@ paths:
         '404':
           description: Connector type not found
 
-  /oauth/{connectorType}/{configId}:
+  /api/v1/oauth/{connectorType}/{configId}:
     get:
       tags:
         - OAuth Configuration
@@ -17191,7 +17180,7 @@ paths:
 
   # -------------------- Storage Configuration --------------------
   # Local Storage
-  /configurationManager/storageConfig:
+  /api/v1/configurationManager/storageConfig:
     get:
       tags:
         - Storage Configuration
@@ -17243,7 +17232,7 @@ paths:
           description: Unauthorized
 
   # -------------------- SMTP Configuration --------------------
-  /configurationManager/smtpConfig:
+  /api/v1/configurationManager/smtpConfig:
     post:
       tags:
         - SMTP Configuration
@@ -17332,7 +17321,7 @@ paths:
           description: Unauthorized
 
   # -------------------- Authentication Configuration --------------------
-  /configurationManager/authConfig/azureAd:
+  /api/v1/configurationManager/authConfig/azureAd:
     post:
       tags:
         - Authentication Configuration
@@ -17378,7 +17367,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /configurationManager/authConfig/microsoft:
+  /api/v1/configurationManager/authConfig/microsoft:
     post:
       tags:
         - Authentication Configuration
@@ -17424,7 +17413,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /configurationManager/authConfig/google:
+  /api/v1/configurationManager/authConfig/google:
     post:
       tags:
         - Authentication Configuration
@@ -17470,7 +17459,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /configurationManager/authConfig/sso:
+  /api/v1/configurationManager/authConfig/sso:
     post:
       tags:
         - Authentication Configuration
@@ -17516,7 +17505,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /configurationManager/authConfig/oauth:
+  /api/v1/configurationManager/authConfig/oauth:
     post:
       tags:
         - Authentication Configuration
@@ -17563,7 +17552,7 @@ paths:
           description: Unauthorized
 
   # -------------------- AI Models Configuration --------------------
-  /configurationManager/ai-models/{modelType}:
+  /api/v1/configurationManager/ai-models/{modelType}:
     get:
       tags:
         - AI Models Providers
@@ -17599,7 +17588,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /configurationManager/ai-models/available/{modelType}:
+  /api/v1/configurationManager/ai-models/available/{modelType}:
     get:
       tags:
         - AI Models Providers
@@ -17643,7 +17632,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /configurationManager/ai-models/providers:
+  /api/v1/configurationManager/ai-models/providers:
     post:
       tags:
         - AI Models Providers
@@ -17674,7 +17663,7 @@ paths:
         '403':
           description: Admin access required
 
-  /configurationManager/ai-models/providers/{modelType}/{modelKey}:
+  /api/v1/configurationManager/ai-models/providers/{modelType}/{modelKey}:
     put:
       tags:
         - AI Models Providers
@@ -17746,7 +17735,7 @@ paths:
         '404':
           description: Model provider not found
 
-  /configurationManager/ai-models/default/{modelType}/{modelKey}:
+  /api/v1/configurationManager/ai-models/default/{modelType}/{modelKey}:
     put:
       tags:
         - AI Models Providers
@@ -17778,7 +17767,7 @@ paths:
           description: Model not found
 
   # -------------------- Public URLs --------------------
-  /configurationManager/frontendPublicUrl:
+  /api/v1/configurationManager/frontendPublicUrl:
     post:
       tags:
         - Public URLs
@@ -17824,7 +17813,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /configurationManager/connectorPublicUrl:
+  /api/v1/configurationManager/connectorPublicUrl:
     post:
       tags:
         - Public URLs
@@ -17871,7 +17860,7 @@ paths:
           description: Unauthorized
 
   # -------------------- Platform Settings --------------------
-  /configurationManager/platform/settings:
+  /api/v1/configurationManager/platform/settings:
     post:
       tags:
         - Platform Settings
@@ -17966,7 +17955,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /configurationManager/platform/feature-flags/available:
+  /api/v1/configurationManager/platform/feature-flags/available:
     get:
       tags:
         - Platform Settings
@@ -17991,7 +17980,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /configurationManager/prompts/system:
+  /api/v1/configurationManager/prompts/system:
     put:
       tags:
         - Platform Settings
@@ -18038,7 +18027,7 @@ paths:
           description: Unauthorized
 
   # -------------------- Metrics Collection --------------------
-  /configurationManager/metricsCollection:
+  /api/v1/configurationManager/metricsCollection:
     get:
       tags:
         - Metrics Collection
@@ -18073,7 +18062,7 @@ paths:
         '403':
           description: Forbidden - Admin access required
 
-  /configurationManager/metricsCollection/toggle:
+  /api/v1/configurationManager/metricsCollection/toggle:
     put:
       tags:
         - Metrics Collection
@@ -18466,7 +18455,7 @@ paths:
   #       '403':
   #         description: Forbidden - Admin access required
   #
-  /configurationManager/slack-bot:
+  /api/v1/configurationManager/slack-bot:
     get:
       tags:
         - Configuration Manager
@@ -18526,7 +18515,7 @@ paths:
         '403':
           description: Forbidden - Admin access required
 
-  /configurationManager/slack-bot/{configId}:
+  /api/v1/configurationManager/slack-bot/{configId}:
     put:
       tags:
         - Configuration Manager
@@ -18598,7 +18587,7 @@ paths:
         '404':
           description: Config not found
 
-  /configurationManager/metricsCollection/pushInterval:
+  /api/v1/configurationManager/metricsCollection/pushInterval:
     patch:
       tags:
         - Configuration Manager
@@ -18634,7 +18623,7 @@ paths:
         '403':
           description: Forbidden - Admin access required
 
-  /configurationManager/metricsCollection/serverUrl:
+  /api/v1/configurationManager/metricsCollection/serverUrl:
     patch:
       tags:
         - Configuration Manager
@@ -18670,7 +18659,7 @@ paths:
         '403':
           description: Forbidden - Admin access required
 
-  /configurationManager/aiModelsConfig:
+  /api/v1/configurationManager/aiModelsConfig:
     get:
       tags:
         - Configuration Manager
@@ -18723,7 +18712,7 @@ paths:
         '403':
           description: Forbidden - Admin access required
 
-  /configurationManager/ai-models:
+  /api/v1/configurationManager/ai-models:
     get:
       tags:
         - Configuration Manager
@@ -18745,7 +18734,7 @@ paths:
         '403':
           description: Forbidden - Admin access required
 
-  /crawlingManager/{connector}/{connectorId}/schedule:
+  /api/v1/crawlingManager/{connector}/{connectorId}/schedule:
     post:
       tags:
         - Crawling Jobs
@@ -19014,7 +19003,7 @@ paths:
         '404':
           description: No scheduled job found for this connector
 
-  /crawlingManager/{connector}/{connectorId}/remove:
+  /api/v1/crawlingManager/{connector}/{connectorId}/remove:
     delete:
       tags:
         - Crawling Jobs
@@ -19080,7 +19069,7 @@ paths:
         '404':
           description: Job not found for this connector
 
-  /crawlingManager/schedule/all:
+  /api/v1/crawlingManager/schedule/all:
     get:
       tags:
         - Crawling Jobs
@@ -19131,7 +19120,7 @@ paths:
         '401':
           description: Unauthorized
 
-  /crawlingManager/{connector}/{connectorId}/pause:
+  /api/v1/crawlingManager/{connector}/{connectorId}/pause:
     post:
       tags:
         - Crawling Jobs
@@ -19168,7 +19157,7 @@ paths:
         '404':
           description: Job not found
 
-  /crawlingManager/{connector}/{connectorId}/resume:
+  /api/v1/crawlingManager/{connector}/{connectorId}/resume:
     post:
       tags:
         - Crawling Jobs
@@ -19205,7 +19194,7 @@ paths:
         '404':
           description: Job not found
 
-  /crawlingManager/stats:
+  /api/v1/crawlingManager/stats:
     get:
       tags:
         - Crawling Jobs
