@@ -12,34 +12,83 @@ API v2 Reference: https://clickup.com/api/developer-portal/clickup20api/
 API v3 Reference: https://clickup.com/api/developer-portal/clickupapi/
 """
 
+import base64
 import json
 import logging
-from dataclasses import asdict, dataclass
+from enum import Enum
 from typing import Any, cast
 
+from pydantic import BaseModel, Field  # type: ignore
 from typing_extensions import override
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
 
-@dataclass
-class ClickUpResponse:
-    """Standardized ClickUp API response wrapper."""
 
-    success: bool
-    data: dict[str, Any] | None = None
-    error: str | None = None
-    message: str | None = None
+class ClickUpAuthType(str, Enum):
+    """Authentication types supported by the ClickUp connector."""
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
+    OAUTH = "OAUTH"
+    PERSONAL_TOKEN = "PERSONAL_TOKEN"
+
+
+# ---------------------------------------------------------------------------
+# Response model
+# ---------------------------------------------------------------------------
+
+
+class ClickUpResponse(BaseModel):
+    """Standardized ClickUp API response wrapper.
+
+    The data field supports JSON responses (dict/list) and binary file
+    downloads (bytes). When serializing to dict/JSON, binary data is
+    automatically base64-encoded.
+    """
+
+    success: bool = Field(..., description="Whether the request was successful")
+    data: dict[str, object] | list[object] | bytes | None = Field(
+        default=None, description="Response data (JSON) or file content (bytes)"
+    )
+    error: str | None = Field(default=None, description="Error message if failed")
+    message: str | None = Field(
+        default=None, description="Additional message information"
+    )
+
+    class Config:
+        """Pydantic configuration."""
+
+        extra = "allow"
+
+    def to_dict(self) -> dict[str, object]:
+        """Convert response to dictionary.
+
+        Binary data is base64-encoded for safe serialization.
+        """
+        result = self.model_dump(exclude_none=True)
+        if isinstance(result.get("data"), bytes):
+            result["data"] = base64.b64encode(result["data"]).decode("utf-8")
+        return result
 
     def to_json(self) -> str:
-        """Convert to JSON string."""
-        return json.dumps(self.to_dict())
+        """Convert response to JSON string.
+
+        Binary data is base64-encoded for safe serialization.
+        """
+        if isinstance(self.data, bytes):
+            result = self.model_dump(exclude_none=True)
+            result["data"] = base64.b64encode(self.data).decode("utf-8")
+            return json.dumps(result)
+        return self.model_dump_json(exclude_none=True)
+
+
+# ---------------------------------------------------------------------------
+# REST client classes
+# ---------------------------------------------------------------------------
 
 
 class ClickUpRESTClientViaPersonalToken(HTTPClient):
@@ -107,8 +156,12 @@ class ClickUpRESTClientViaOAuth(HTTPClient):
         return self.version
 
 
-@dataclass
-class ClickUpPersonalTokenConfig:
+# ---------------------------------------------------------------------------
+# Configuration models (Pydantic)
+# ---------------------------------------------------------------------------
+
+
+class ClickUpPersonalTokenConfig(BaseModel):
     """Configuration for ClickUp client via Personal API Token.
 
     Args:
@@ -122,12 +175,8 @@ class ClickUpPersonalTokenConfig:
     def create_client(self) -> ClickUpRESTClientViaPersonalToken:
         return ClickUpRESTClientViaPersonalToken(self.token, self.version)
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
-
-@dataclass
-class ClickUpOAuthConfig:
+class ClickUpOAuthConfig(BaseModel):
     """Configuration for ClickUp client via OAuth 2.0.
 
     Args:
@@ -150,8 +199,53 @@ class ClickUpOAuthConfig:
             self.client_secret,
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+
+# ---------------------------------------------------------------------------
+# Connector configuration models for build_from_services
+# ---------------------------------------------------------------------------
+
+
+class ClickUpAuthConfig(BaseModel):
+    """Auth section of the ClickUp connector configuration from etcd."""
+
+    authType: ClickUpAuthType = ClickUpAuthType.PERSONAL_TOKEN
+    apiToken: str | None = None
+    token: str | None = None
+    clientId: str | None = None
+    clientSecret: str | None = None
+    redirectUri: str | None = None
+    oauthConfigId: str | None = None
+
+    class Config:
+        extra = "allow"
+
+
+class ClickUpCredentialsConfig(BaseModel):
+    """Credentials section of the ClickUp connector configuration."""
+
+    access_token: str | None = None
+    refresh_token: str | None = None
+
+    class Config:
+        extra = "allow"
+
+
+class ClickUpConnectorConfig(BaseModel):
+    """Top-level ClickUp connector configuration from etcd."""
+
+    auth: ClickUpAuthConfig = Field(default_factory=ClickUpAuthConfig)
+    credentials: ClickUpCredentialsConfig = Field(
+        default_factory=ClickUpCredentialsConfig
+    )
+    version: str = "v2"
+
+    class Config:
+        extra = "allow"
+
+
+# ---------------------------------------------------------------------------
+# Client builder
+# ---------------------------------------------------------------------------
 
 
 class ClickUpClient(IClient):
@@ -224,30 +318,21 @@ class ClickUpClient(IClient):
             ClickUpClient instance
         """
         try:
-            config = await cls._get_connector_config(
+            raw_config = await cls._get_connector_config(
                 logger, config_service, connector_instance_id
             )
-            if not config:
+            if not raw_config:
                 raise ValueError("Failed to get ClickUp connector configuration")
 
-            auth_config: dict[str, Any] = cast(
-                dict[str, Any], config.get("auth", {}) or {}
-            )
-            credentials_config: dict[str, Any] = cast(
-                dict[str, Any], config.get("credentials", {}) or {}
-            )
-            auth_type: str = str(auth_config.get("authType", "PERSONAL_TOKEN"))
-            version: str = str(config.get("version", "v2"))
+            connector_config = ClickUpConnectorConfig.model_validate(raw_config)
 
-            if auth_type == "OAUTH":
-                access_token: str = str(credentials_config.get("access_token", ""))
-                client_id: str = str(auth_config.get("clientId", ""))
-                client_secret: str = str(auth_config.get("clientSecret", ""))
+            if connector_config.auth.authType == ClickUpAuthType.OAUTH:
+                access_token = connector_config.credentials.access_token or ""
+                client_id = connector_config.auth.clientId or ""
+                client_secret = connector_config.auth.clientSecret or ""
 
                 # Try shared OAuth config if credentials are missing
-                oauth_config_id: str | None = cast(
-                    str | None, auth_config.get("oauthConfigId")
-                )
+                oauth_config_id = connector_config.auth.oauthConfigId
                 if oauth_config_id and not (client_id and client_secret):
                     try:
                         oauth_configs_raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
@@ -285,18 +370,19 @@ class ClickUpClient(IClient):
                         "Access token required for OAuth auth type"
                     )
 
-                oauth_config = ClickUpOAuthConfig(
+                oauth_cfg = ClickUpOAuthConfig(
                     access_token=access_token,
-                    version=version,
+                    version=connector_config.version,
                     client_id=client_id,
                     client_secret=client_secret,
                 )
-                return cls(oauth_config.create_client())
+                return cls(oauth_cfg.create_client())
 
-            elif auth_type == "PERSONAL_TOKEN":
-                token: str = str(
-                    auth_config.get("apiToken", "")
-                    or auth_config.get("token", "")
+            elif connector_config.auth.authType == ClickUpAuthType.PERSONAL_TOKEN:
+                token = (
+                    connector_config.auth.apiToken
+                    or connector_config.auth.token
+                    or ""
                 )
                 if not token:
                     raise ValueError(
@@ -304,12 +390,14 @@ class ClickUpClient(IClient):
                     )
 
                 token_config = ClickUpPersonalTokenConfig(
-                    token=token, version=version
+                    token=token, version=connector_config.version
                 )
                 return cls(token_config.create_client())
 
             else:
-                raise ValueError(f"Invalid auth type: {auth_type}")
+                raise ValueError(
+                    f"Invalid auth type: {connector_config.auth.authType}"
+                )
 
         except Exception as e:
             logger.error(
@@ -388,13 +476,13 @@ class ClickUpClient(IClient):
                         f"Failed to fetch shared OAuth config: {e}"
                     )
 
-            oauth_config = ClickUpOAuthConfig(
+            oauth_cfg = ClickUpOAuthConfig(
                 access_token=access_token,
                 version=version,
                 client_id=client_id,
                 client_secret=client_secret,
             )
-            return cls(oauth_config.create_client())
+            return cls(oauth_cfg.create_client())
 
         except Exception as e:
             logger.error(

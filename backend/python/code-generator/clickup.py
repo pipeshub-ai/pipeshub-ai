@@ -1172,14 +1172,24 @@ class ClickUpDataSourceGenerator:
                 modern_type = self._modernize_type(param_info["type"])
                 params.append(f"{sanitized_name}: {modern_type}")
 
-        # Add optional parameters
+        # Collect optional parameters, check if any are bool
+        optional_params: List[str] = []
+        has_bool_optional = False
         for param_name, param_info in endpoint_info["parameters"].items():
             if param_name not in endpoint_info["required"]:
                 sanitized_name = self._sanitize_parameter_name(param_name)
                 modern_type = self._modernize_type(param_info["type"])
                 if "| None" not in modern_type:
                     modern_type = f"{modern_type} | None"
-                params.append(f"{sanitized_name}: {modern_type} = None")
+                optional_params.append(f"{sanitized_name}: {modern_type} = None")
+                if "bool" in param_info.get("type", ""):
+                    has_bool_optional = True
+
+        # Force keyword-only if any optional param is bool (FBT001)
+        if has_bool_optional and optional_params:
+            params.append("*")
+
+        params.extend(optional_params)
 
         signature_params = ",\n        ".join(params)
         return f"    async def {method_name}(\n        {signature_params}\n    ) -> ClickUpResponse:"
@@ -1273,6 +1283,7 @@ class ClickUpDataSourceGenerator:
         """Generate the complete ClickUp datasource class."""
 
         class_lines = [
+            "# ruff: noqa: FBT001",
             '"""',
             "ClickUp REST API DataSource - Auto-generated API wrapper",
             "",

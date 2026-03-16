@@ -1,3 +1,4 @@
+# ruff: noqa: FBT001
 """
 ClickUp REST API DataSource - Auto-generated API wrapper
 
@@ -111,6 +112,7 @@ class ClickUpDataSource:
     async def get_spaces(
         self,
         team_id: str,
+        *,
         archived: bool | None = None
     ) -> ClickUpResponse:
         """Get all Spaces in a Workspace (API v2)
@@ -149,6 +151,7 @@ class ClickUpDataSource:
         self,
         team_id: str,
         name: str,
+        *,
         multiple_assignees: bool | None = None,
         features: dict[str, Any] | None = None
     ) -> ClickUpResponse:
@@ -222,6 +225,7 @@ class ClickUpDataSource:
     async def update_space(
         self,
         space_id: str,
+        *,
         name: str | None = None,
         color: str | None = None,
         private: bool | None = None,
@@ -309,6 +313,7 @@ class ClickUpDataSource:
     async def get_folders(
         self,
         space_id: str,
+        *,
         archived: bool | None = None
     ) -> ClickUpResponse:
         """Get all Folders in a Space (API v2)
@@ -478,6 +483,7 @@ class ClickUpDataSource:
     async def get_lists(
         self,
         folder_id: str,
+        *,
         archived: bool | None = None
     ) -> ClickUpResponse:
         """Get all Lists in a Folder (API v2)
@@ -516,6 +522,7 @@ class ClickUpDataSource:
         self,
         folder_id: str,
         name: str,
+        *,
         content: str | None = None,
         due_date: int | None = None,
         due_date_time: bool | None = None,
@@ -575,6 +582,7 @@ class ClickUpDataSource:
     async def get_folderless_lists(
         self,
         space_id: str,
+        *,
         archived: bool | None = None
     ) -> ClickUpResponse:
         """Get Lists that are not in a Folder (folderless Lists) (API v2)
@@ -613,6 +621,7 @@ class ClickUpDataSource:
         self,
         space_id: str,
         name: str,
+        *,
         content: str | None = None,
         due_date: int | None = None,
         due_date_time: bool | None = None,
@@ -702,6 +711,7 @@ class ClickUpDataSource:
     async def update_list(
         self,
         list_id: str,
+        *,
         name: str | None = None,
         content: str | None = None,
         due_date: int | None = None,
@@ -797,6 +807,7 @@ class ClickUpDataSource:
     async def get_tasks(
         self,
         list_id: str,
+        *,
         archived: bool | None = None,
         include_markdown_description: bool | None = None,
         page: int | None = None,
@@ -899,6 +910,7 @@ class ClickUpDataSource:
         self,
         list_id: str,
         name: str,
+        *,
         description: str | None = None,
         markdown_description: str | None = None,
         assignees: list[int] | None = None,
@@ -998,6 +1010,7 @@ class ClickUpDataSource:
     async def get_task(
         self,
         task_id: str,
+        *,
         custom_task_ids: bool | None = None,
         team_id: str | None = None,
         include_subtasks: bool | None = None,
@@ -1047,6 +1060,7 @@ class ClickUpDataSource:
     async def update_task(
         self,
         task_id: str,
+        *,
         custom_task_ids: bool | None = None,
         team_id: str | None = None,
         name: str | None = None,
@@ -1143,6 +1157,7 @@ class ClickUpDataSource:
     async def delete_task(
         self,
         task_id: str,
+        *,
         custom_task_ids: bool | None = None,
         team_id: str | None = None
     ) -> ClickUpResponse:
@@ -1184,6 +1199,7 @@ class ClickUpDataSource:
     async def get_filtered_team_tasks(
         self,
         team_id: str,
+        *,
         page: int | None = None,
         order_by: str | None = None,
         reverse: bool | None = None,
@@ -1285,6 +1301,7 @@ class ClickUpDataSource:
     async def get_task_comments(
         self,
         task_id: str,
+        *,
         custom_task_ids: bool | None = None,
         team_id: str | None = None,
         start: int | None = None,
@@ -1335,6 +1352,7 @@ class ClickUpDataSource:
         self,
         task_id: str,
         comment_text: str,
+        *,
         assignee: int | None = None,
         notify_all: bool | None = None,
         custom_task_ids: bool | None = None,
@@ -1431,6 +1449,7 @@ class ClickUpDataSource:
         self,
         list_id: str,
         comment_text: str,
+        *,
         assignee: int | None = None,
         notify_all: bool | None = None
     ) -> ClickUpResponse:
@@ -1475,6 +1494,7 @@ class ClickUpDataSource:
         self,
         comment_id: str,
         comment_text: str,
+        *,
         assignee: int | None = None,
         resolved: bool | None = None
     ) -> ClickUpResponse:
@@ -1683,6 +1703,7 @@ class ClickUpDataSource:
         self,
         task_id: str,
         tag_name: str,
+        *,
         custom_task_ids: bool | None = None,
         team_id: str | None = None
     ) -> ClickUpResponse:
@@ -1726,6 +1747,7 @@ class ClickUpDataSource:
         self,
         task_id: str,
         tag_name: str,
+        *,
         custom_task_ids: bool | None = None,
         team_id: str | None = None
     ) -> ClickUpResponse:
@@ -1799,6 +1821,7 @@ class ClickUpDataSource:
         self,
         team_id: str,
         name: str,
+        *,
         due_date: int | None = None,
         description: str | None = None,
         multiple_owners: bool | None = None,
@@ -1971,6 +1994,7 @@ class ClickUpDataSource:
     async def get_time_entries_in_range(
         self,
         team_id: str,
+        *,
         start_date: int | None = None,
         end_date: int | None = None,
         assignee: str | None = None,
@@ -2024,6 +2048,7 @@ class ClickUpDataSource:
     async def get_task_time_entries(
         self,
         task_id: str,
+        *,
         custom_task_ids: bool | None = None,
         team_id: str | None = None
     ) -> ClickUpResponse:
@@ -2067,6 +2092,7 @@ class ClickUpDataSource:
         team_id: str,
         start: int,
         duration: int,
+        *,
         description: str | None = None,
         end: int | None = None,
         assignee: int | None = None,
@@ -2379,6 +2405,7 @@ class ClickUpDataSource:
         task_id: str,
         field_id: str,
         value: str | int | float | bool | list[Any] | dict[str, Any],
+        *,
         custom_task_ids: bool | None = None,
         team_id: str | None = None
     ) -> ClickUpResponse:
@@ -2427,6 +2454,7 @@ class ClickUpDataSource:
         self,
         task_id: str,
         field_id: str,
+        *,
         custom_task_ids: bool | None = None,
         team_id: str | None = None
     ) -> ClickUpResponse:
@@ -2630,6 +2658,7 @@ class ClickUpDataSource:
         self,
         task_id: str,
         name: str,
+        *,
         custom_task_ids: bool | None = None,
         team_id: str | None = None
     ) -> ClickUpResponse:
@@ -2788,6 +2817,7 @@ class ClickUpDataSource:
         self,
         checklist_id: str,
         checklist_item_id: str,
+        *,
         name: str | None = None,
         assignee: int | None = None,
         resolved: bool | None = None,
@@ -2900,6 +2930,7 @@ class ClickUpDataSource:
     async def add_task_dependency(
         self,
         task_id: str,
+        *,
         depends_on: str | None = None,
         dependency_of: str | None = None,
         custom_task_ids: bool | None = None,
@@ -2952,6 +2983,7 @@ class ClickUpDataSource:
     async def delete_task_dependency(
         self,
         task_id: str,
+        *,
         depends_on: str | None = None,
         dependency_of: str | None = None,
         custom_task_ids: bool | None = None,
@@ -3002,6 +3034,7 @@ class ClickUpDataSource:
         self,
         team_id: str,
         email: str,
+        *,
         can_edit_tags: bool | None = None,
         can_see_time_spent: bool | None = None,
         can_see_time_estimated: bool | None = None
