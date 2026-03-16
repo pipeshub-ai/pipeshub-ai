@@ -15,7 +15,9 @@ API v3 Reference: https://clickup.com/api/developer-portal/clickupapi/
 import json
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, cast
+
+from typing_extensions import override
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
@@ -120,7 +122,7 @@ class ClickUpPersonalTokenConfig:
     def create_client(self) -> ClickUpRESTClientViaPersonalToken:
         return ClickUpRESTClientViaPersonalToken(self.token, self.version)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -148,7 +150,7 @@ class ClickUpOAuthConfig:
             self.client_secret,
         )
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -166,8 +168,10 @@ class ClickUpClient(IClient):
         client: ClickUpRESTClientViaPersonalToken | ClickUpRESTClientViaOAuth,
     ) -> None:
         """Initialize with a ClickUp client object."""
+        super().__init__()
         self.client = client
 
+    @override
     def get_client(
         self,
     ) -> ClickUpRESTClientViaPersonalToken | ClickUpRESTClientViaOAuth:
@@ -226,44 +230,51 @@ class ClickUpClient(IClient):
             if not config:
                 raise ValueError("Failed to get ClickUp connector configuration")
 
-            auth_config = config.get("auth", {}) or {}
-            credentials_config = config.get("credentials", {}) or {}
-            auth_type = auth_config.get("authType", "PERSONAL_TOKEN")
-            version = config.get("version", "v2")
+            auth_config: dict[str, Any] = cast(
+                dict[str, Any], config.get("auth", {}) or {}
+            )
+            credentials_config: dict[str, Any] = cast(
+                dict[str, Any], config.get("credentials", {}) or {}
+            )
+            auth_type: str = str(auth_config.get("authType", "PERSONAL_TOKEN"))
+            version: str = str(config.get("version", "v2"))
 
             if auth_type == "OAUTH":
-                access_token = credentials_config.get("access_token", "")
-                client_id = auth_config.get("clientId", "")
-                client_secret = auth_config.get("clientSecret", "")
+                access_token: str = str(credentials_config.get("access_token", ""))
+                client_id: str = str(auth_config.get("clientId", ""))
+                client_secret: str = str(auth_config.get("clientSecret", ""))
 
                 # Try shared OAuth config if credentials are missing
-                oauth_config_id = auth_config.get("oauthConfigId")
+                oauth_config_id: str | None = cast(
+                    str | None, auth_config.get("oauthConfigId")
+                )
                 if oauth_config_id and not (client_id and client_secret):
                     try:
-                        oauth_configs = await config_service.get_config(
+                        oauth_configs_raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
                             "/services/oauth/clickup", default=[]
                         )
-                        if isinstance(oauth_configs, list):
-                            matching = next(
-                                (
-                                    c
-                                    for c in oauth_configs
-                                    if c.get("_id") == oauth_config_id
-                                ),
-                                None,
-                            )
-                            if matching:
-                                shared = matching.get("config", {})
-                                client_id = (
+                        oauth_configs: list[Any] = (
+                            cast(list[Any], oauth_configs_raw)
+                            if isinstance(oauth_configs_raw, list)
+                            else []
+                        )
+                        for cfg in oauth_configs:
+                            c: dict[str, Any] = cast(dict[str, Any], cfg)
+                            if c.get("_id") == oauth_config_id:
+                                shared: dict[str, Any] = cast(
+                                    dict[str, Any], c.get("config", {})
+                                )
+                                client_id = str(
                                     shared.get("clientId")
                                     or shared.get("client_id")
                                     or client_id
                                 )
-                                client_secret = (
+                                client_secret = str(
                                     shared.get("clientSecret")
                                     or shared.get("client_secret")
                                     or client_secret
                                 )
+                                break
                     except Exception as e:
                         logger.warning(
                             f"Failed to fetch shared OAuth config: {e}"
@@ -283,8 +294,9 @@ class ClickUpClient(IClient):
                 return cls(oauth_config.create_client())
 
             elif auth_type == "PERSONAL_TOKEN":
-                token = auth_config.get("apiToken", "") or auth_config.get(
-                    "token", ""
+                token: str = str(
+                    auth_config.get("apiToken", "")
+                    or auth_config.get("token", "")
                 )
                 if not token:
                     raise ValueError(
@@ -323,47 +335,54 @@ class ClickUpClient(IClient):
             ClickUpClient instance
         """
         try:
-            credentials = toolset_config.get("credentials", {}) or {}
-            auth_config = toolset_config.get("auth", {}) or {}
-            version = toolset_config.get("version", "v2")
+            credentials: dict[str, Any] = cast(
+                dict[str, Any], toolset_config.get("credentials", {}) or {}
+            )
+            auth_config: dict[str, Any] = cast(
+                dict[str, Any], toolset_config.get("auth", {}) or {}
+            )
+            version: str = str(toolset_config.get("version", "v2"))
 
-            access_token = credentials.get("access_token", "")
+            access_token: str = str(credentials.get("access_token", ""))
             if not access_token:
                 raise ValueError("Access token not found in toolset config")
 
-            client_id = auth_config.get("clientId", "")
-            client_secret = auth_config.get("clientSecret", "")
+            client_id: str = str(auth_config.get("clientId", ""))
+            client_secret: str = str(auth_config.get("clientSecret", ""))
 
             # Try shared OAuth config
-            oauth_config_id = auth_config.get("oauthConfigId")
+            oauth_config_id: str | None = cast(
+                str | None, auth_config.get("oauthConfigId")
+            )
             if oauth_config_id and config_service and not (
                 client_id and client_secret
             ):
                 try:
-                    oauth_configs = await config_service.get_config(
+                    oauth_configs_raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
                         "/services/oauth/clickup", default=[]
                     )
-                    if isinstance(oauth_configs, list):
-                        matching = next(
-                            (
-                                c
-                                for c in oauth_configs
-                                if c.get("_id") == oauth_config_id
-                            ),
-                            None,
-                        )
-                        if matching:
-                            shared = matching.get("config", {})
-                            client_id = (
+                    oauth_configs: list[Any] = (
+                        cast(list[Any], oauth_configs_raw)
+                        if isinstance(oauth_configs_raw, list)
+                        else []
+                    )
+                    for cfg in oauth_configs:
+                        c: dict[str, Any] = cast(dict[str, Any], cfg)
+                        if c.get("_id") == oauth_config_id:
+                            shared: dict[str, Any] = cast(
+                                dict[str, Any], c.get("config", {})
+                            )
+                            client_id = str(
                                 shared.get("clientId")
                                 or shared.get("client_id")
                                 or client_id
                             )
-                            client_secret = (
+                            client_secret = str(
                                 shared.get("clientSecret")
                                 or shared.get("client_secret")
                                 or client_secret
                             )
+                            break
                 except Exception as e:
                     logger.warning(
                         f"Failed to fetch shared OAuth config: {e}"
@@ -391,15 +410,15 @@ class ClickUpClient(IClient):
     ) -> dict[str, Any]:
         """Fetch connector config from etcd for ClickUp."""
         try:
-            config = await config_service.get_config(
+            raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
                 f"/services/connectors/{connector_instance_id}/config"
             )
-            if not config:
+            if not raw:
                 raise ValueError(
                     f"Failed to get ClickUp connector configuration "
                     f"for instance {connector_instance_id}"
                 )
-            return config
+            return cast(dict[str, Any], raw)
         except Exception as e:
             logger.error(f"Failed to get ClickUp connector config: {e}")
             raise ValueError(

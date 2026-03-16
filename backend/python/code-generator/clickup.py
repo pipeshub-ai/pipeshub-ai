@@ -778,7 +778,7 @@ CLICKUP_API_ENDPOINTS = {
         "parameters": {
             "task_id": {"type": "str", "location": "path", "description": "The Task ID"},
             "field_id": {"type": "str", "location": "path", "description": "The Custom Field ID"},
-            "value": {"type": "Any", "location": "body", "description": "The value to set"},
+            "value": {"type": "str | int | float | bool | list[Any] | dict[str, Any]", "location": "body", "description": "The value to set"},
             "custom_task_ids": {"type": "Optional[bool]", "location": "query", "description": "Use custom task IDs"},
             "team_id": {"type": "Optional[str]", "location": "query", "description": "Team ID (required with custom_task_ids)"},
         },
@@ -1037,7 +1037,7 @@ class ClickUpDataSourceGenerator:
 
     def _build_query_params(self, endpoint_info: Dict) -> List[str]:
         """Build query parameter handling code."""
-        lines = ["        query_params = {}"]
+        lines = ["        query_params: dict[str, Any] = {}"]
 
         for param_name, param_info in endpoint_info["parameters"].items():
             if param_info["location"] == "query":
@@ -1094,7 +1094,7 @@ class ClickUpDataSourceGenerator:
         if not body_params:
             return []
 
-        lines = ["        body = {}"]
+        lines = ["        body: dict[str, Any] = {}"]
 
         for param_name, param_info in body_params.items():
             sanitized_name = self._sanitize_parameter_name(param_name)
@@ -1109,6 +1109,57 @@ class ClickUpDataSourceGenerator:
 
         return lines
 
+    @staticmethod
+    def _modernize_type(type_str: str) -> str:
+        """Convert typing-style annotations to modern Python 3.10+ syntax.
+
+        Optional[str] -> str | None, Dict[str, Any] -> dict[str, Any],
+        List[str] -> list[str], etc.
+        """
+        if type_str.startswith("Optional[") and type_str.endswith("]"):
+            inner = type_str[len("Optional["):-1]
+            inner = ClickUpDataSourceGenerator._modernize_type(inner)
+            return f"{inner} | None"
+        if type_str.startswith("Dict["):
+            inner = type_str[len("Dict["):-1]
+            parts = ClickUpDataSourceGenerator._split_type_args(inner)
+            modernized = ", ".join(
+                ClickUpDataSourceGenerator._modernize_type(p.strip()) for p in parts
+            )
+            return f"dict[{modernized}]"
+        if type_str == "Dict":
+            return "dict"
+        if type_str.startswith("List["):
+            inner = type_str[len("List["):-1]
+            parts = ClickUpDataSourceGenerator._split_type_args(inner)
+            modernized = ", ".join(
+                ClickUpDataSourceGenerator._modernize_type(p.strip()) for p in parts
+            )
+            return f"list[{modernized}]"
+        if type_str == "List":
+            return "list"
+        return type_str
+
+    @staticmethod
+    def _split_type_args(s: str) -> List[str]:
+        """Split type arguments respecting nested brackets."""
+        parts = []
+        depth = 0
+        current = ""
+        for ch in s:
+            if ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+            if ch == "," and depth == 0:
+                parts.append(current.strip())
+                current = ""
+            else:
+                current += ch
+        if current.strip():
+            parts.append(current.strip())
+        return parts
+
     def _generate_method_signature(self, method_name: str, endpoint_info: Dict) -> str:
         """Generate method signature with explicit parameters."""
         params = ["self"]
@@ -1118,17 +1169,17 @@ class ClickUpDataSourceGenerator:
             if param_name in endpoint_info["parameters"]:
                 param_info = endpoint_info["parameters"][param_name]
                 sanitized_name = self._sanitize_parameter_name(param_name)
-                params.append(f"{sanitized_name}: {param_info['type']}")
+                modern_type = self._modernize_type(param_info["type"])
+                params.append(f"{sanitized_name}: {modern_type}")
 
         # Add optional parameters
         for param_name, param_info in endpoint_info["parameters"].items():
             if param_name not in endpoint_info["required"]:
                 sanitized_name = self._sanitize_parameter_name(param_name)
-                if param_info["type"].startswith("Optional["):
-                    params.append(f"{sanitized_name}: {param_info['type']} = None")
-                else:
-                    inner_type = param_info["type"]
-                    params.append(f"{sanitized_name}: Optional[{inner_type}] = None")
+                modern_type = self._modernize_type(param_info["type"])
+                if "| None" not in modern_type:
+                    modern_type = f"{modern_type} | None"
+                params.append(f"{sanitized_name}: {modern_type} = None")
 
         signature_params = ",\n        ".join(params)
         return f"    async def {method_name}(\n        {signature_params}\n    ) -> ClickUpResponse:"
@@ -1192,17 +1243,17 @@ class ClickUpDataSourceGenerator:
         lines.append("                url=url,")
         lines.append('                headers={"Content-Type": "application/json"},')
         if has_query:
-            lines.append("                query_params=query_params,")
+            lines.append("                query=query_params,")
         if body_lines:
             lines.append("                body=body,")
         lines.append("            )")
         lines.extend([
-            "            response = await self.http.execute(request)",
+            "            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]",
             "            response_data = response.json() if response.text() else None",
             "            return ClickUpResponse(",
-            "                success=response.status < 400,",
+            "                success=response.status < HTTP_ERROR_THRESHOLD,",
             "                data=response_data,",
-            f'                message="Successfully executed {method_name}" if response.status < 400 else f"Failed with status {{response.status}}"',
+            f'                message="Successfully executed {method_name}" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {{response.status}}"',
             "            )",
             "        except Exception as e:",
             f'            return ClickUpResponse(success=False, error=str(e), message="Failed to execute {method_name}")',
@@ -1222,24 +1273,28 @@ class ClickUpDataSourceGenerator:
         """Generate the complete ClickUp datasource class."""
 
         class_lines = [
-            "# ruff: noqa",
             '"""',
             "ClickUp REST API DataSource - Auto-generated API wrapper",
             "",
             "Generated from ClickUp REST API v2/v3 documentation.",
             "Uses HTTP client for direct REST API interactions.",
-            "All methods have explicit parameter signatures - NO Any type, NO **kwargs.",
+            "All methods have explicit parameter signatures.",
             '"""',
             "",
-            "from typing import Any, Dict, List, Optional",
+            "from __future__ import annotations",
+            "",
+            "from typing import Any",
             "",
             "from app.sources.client.clickup.clickup import ClickUpClient, ClickUpResponse",
             "from app.sources.client.http.http_request import HTTPRequest",
             "",
+            "# HTTP status code constant",
+            "HTTP_ERROR_THRESHOLD = 400",
+            "",
             "",
             "class ClickUpDataSource:",
             '    """ClickUp REST API DataSource',
-            "    ",
+            "",
             "    Provides async wrapper methods for ClickUp REST API operations:",
             "    - Workspace / Team management",
             "    - Space, Folder, List CRUD",
@@ -1248,23 +1303,21 @@ class ClickUpDataSourceGenerator:
             "    - Goals, Time tracking",
             "    - Views, Webhooks, Custom Fields",
             "    - Checklists, Dependencies, Guests",
-            "    ",
+            "",
             "    The base URL is determined by the ClickUpClient's configured version",
             "    (v2 or v3). Create a client with the desired version and pass it here.",
-            "    ",
+            "",
             "    All methods return ClickUpResponse objects.",
             '    """',
             "",
             "    def __init__(self, client: ClickUpClient) -> None:",
             '        """Initialize with ClickUpClient.',
-            "        ",
+            "",
             "        Args:",
             "            client: ClickUpClient instance with configured authentication and version",
             '        """',
             "        self._client = client",
             "        self.http = client.get_client()",
-            "        if self.http is None:",
-            "            raise ValueError('HTTP client is not initialized')",
             "        try:",
             "            self.base_url = self.http.get_base_url().rstrip('/')",
             "        except AttributeError as exc:",

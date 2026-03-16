@@ -3,18 +3,23 @@ ClickUp REST API DataSource - Auto-generated API wrapper
 
 Generated from ClickUp REST API v2/v3 documentation.
 Uses HTTP client for direct REST API interactions.
-All methods have explicit parameter signatures - NO Any type, NO **kwargs.
+All methods have explicit parameter signatures.
 """
 
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
+
+from typing import Any
 
 from app.sources.client.clickup.clickup import ClickUpClient, ClickUpResponse
 from app.sources.client.http.http_request import HTTPRequest
 
+# HTTP status code constant
+HTTP_ERROR_THRESHOLD = 400
+
 
 class ClickUpDataSource:
     """ClickUp REST API DataSource
-    
+
     Provides async wrapper methods for ClickUp REST API operations:
     - Workspace / Team management
     - Space, Folder, List CRUD
@@ -23,23 +28,21 @@ class ClickUpDataSource:
     - Goals, Time tracking
     - Views, Webhooks, Custom Fields
     - Checklists, Dependencies, Guests
-    
+
     The base URL is determined by the ClickUpClient's configured version
     (v2 or v3). Create a client with the desired version and pass it here.
-    
+
     All methods return ClickUpResponse objects.
     """
 
     def __init__(self, client: ClickUpClient) -> None:
         """Initialize with ClickUpClient.
-        
+
         Args:
             client: ClickUpClient instance with configured authentication and version
         """
         self._client = client
         self.http = client.get_client()
-        if self.http is None:
-            raise ValueError('HTTP client is not initialized')
         try:
             self.base_url = self.http.get_base_url().rstrip('/')
         except AttributeError as exc:
@@ -69,12 +72,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_authorized_user" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_authorized_user" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_authorized_user")
@@ -95,12 +98,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_authorized_teams_workspaces" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_authorized_teams_workspaces" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_authorized_teams_workspaces")
@@ -108,7 +111,7 @@ class ClickUpDataSource:
     async def get_spaces(
         self,
         team_id: str,
-        archived: Optional[bool] = None
+        archived: bool | None = None
     ) -> ClickUpResponse:
         """Get all Spaces in a Workspace (API v2)
 
@@ -119,7 +122,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if archived is not None:
             query_params['archived'] = str(archived).lower()
 
@@ -130,14 +133,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_spaces" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_spaces" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_spaces")
@@ -146,8 +149,8 @@ class ClickUpDataSource:
         self,
         team_id: str,
         name: str,
-        multiple_assignees: Optional[bool] = None,
-        features: Optional[Dict[str, Any]] = None
+        multiple_assignees: bool | None = None,
+        features: dict[str, Any] | None = None
     ) -> ClickUpResponse:
         """Create a new Space in a Workspace (API v2)
 
@@ -162,7 +165,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/team/{team_id}/space".format(team_id=team_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['name'] = name
         if multiple_assignees is not None:
             body['multiple_assignees'] = multiple_assignees
@@ -176,12 +179,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_space" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_space" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_space")
@@ -206,12 +209,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_space" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_space" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_space")
@@ -219,12 +222,12 @@ class ClickUpDataSource:
     async def update_space(
         self,
         space_id: str,
-        name: Optional[str] = None,
-        color: Optional[str] = None,
-        private: Optional[bool] = None,
-        admin_can_manage: Optional[bool] = None,
-        multiple_assignees: Optional[bool] = None,
-        features: Optional[Dict[str, Any]] = None
+        name: str | None = None,
+        color: str | None = None,
+        private: bool | None = None,
+        admin_can_manage: bool | None = None,
+        multiple_assignees: bool | None = None,
+        features: dict[str, Any] | None = None
     ) -> ClickUpResponse:
         """Update a Space (API v2)
 
@@ -242,7 +245,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/space/{space_id}".format(space_id=space_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         if name is not None:
             body['name'] = name
         if color is not None:
@@ -263,12 +266,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed update_space" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed update_space" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute update_space")
@@ -293,12 +296,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_space" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_space" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_space")
@@ -306,7 +309,7 @@ class ClickUpDataSource:
     async def get_folders(
         self,
         space_id: str,
-        archived: Optional[bool] = None
+        archived: bool | None = None
     ) -> ClickUpResponse:
         """Get all Folders in a Space (API v2)
 
@@ -317,7 +320,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if archived is not None:
             query_params['archived'] = str(archived).lower()
 
@@ -328,14 +331,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_folders" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_folders" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_folders")
@@ -356,7 +359,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/space/{space_id}/folder".format(space_id=space_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['name'] = name
 
         try:
@@ -366,12 +369,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_folder" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_folder" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_folder")
@@ -396,12 +399,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_folder" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_folder" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_folder")
@@ -422,7 +425,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/folder/{folder_id}".format(folder_id=folder_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['name'] = name
 
         try:
@@ -432,12 +435,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed update_folder" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed update_folder" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute update_folder")
@@ -462,12 +465,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_folder" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_folder" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_folder")
@@ -475,7 +478,7 @@ class ClickUpDataSource:
     async def get_lists(
         self,
         folder_id: str,
-        archived: Optional[bool] = None
+        archived: bool | None = None
     ) -> ClickUpResponse:
         """Get all Lists in a Folder (API v2)
 
@@ -486,7 +489,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if archived is not None:
             query_params['archived'] = str(archived).lower()
 
@@ -497,14 +500,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_lists" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_lists" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_lists")
@@ -513,12 +516,12 @@ class ClickUpDataSource:
         self,
         folder_id: str,
         name: str,
-        content: Optional[str] = None,
-        due_date: Optional[int] = None,
-        due_date_time: Optional[bool] = None,
-        priority: Optional[int] = None,
-        assignee: Optional[int] = None,
-        status: Optional[str] = None
+        content: str | None = None,
+        due_date: int | None = None,
+        due_date_time: bool | None = None,
+        priority: int | None = None,
+        assignee: int | None = None,
+        status: str | None = None
     ) -> ClickUpResponse:
         """Create a List in a Folder (API v2)
 
@@ -537,7 +540,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/folder/{folder_id}/list".format(folder_id=folder_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['name'] = name
         if content is not None:
             body['content'] = content
@@ -559,12 +562,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_list" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_list" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_list")
@@ -572,7 +575,7 @@ class ClickUpDataSource:
     async def get_folderless_lists(
         self,
         space_id: str,
-        archived: Optional[bool] = None
+        archived: bool | None = None
     ) -> ClickUpResponse:
         """Get Lists that are not in a Folder (folderless Lists) (API v2)
 
@@ -583,7 +586,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if archived is not None:
             query_params['archived'] = str(archived).lower()
 
@@ -594,14 +597,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_folderless_lists" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_folderless_lists" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_folderless_lists")
@@ -610,12 +613,12 @@ class ClickUpDataSource:
         self,
         space_id: str,
         name: str,
-        content: Optional[str] = None,
-        due_date: Optional[int] = None,
-        due_date_time: Optional[bool] = None,
-        priority: Optional[int] = None,
-        assignee: Optional[int] = None,
-        status: Optional[str] = None
+        content: str | None = None,
+        due_date: int | None = None,
+        due_date_time: bool | None = None,
+        priority: int | None = None,
+        assignee: int | None = None,
+        status: str | None = None
     ) -> ClickUpResponse:
         """Create a folderless List in a Space (API v2)
 
@@ -634,7 +637,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/space/{space_id}/list".format(space_id=space_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['name'] = name
         if content is not None:
             body['content'] = content
@@ -656,12 +659,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_folderless_list" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_folderless_list" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_folderless_list")
@@ -686,12 +689,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_list" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_list" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_list")
@@ -699,14 +702,14 @@ class ClickUpDataSource:
     async def update_list(
         self,
         list_id: str,
-        name: Optional[str] = None,
-        content: Optional[str] = None,
-        due_date: Optional[int] = None,
-        due_date_time: Optional[bool] = None,
-        priority: Optional[int] = None,
-        assignee_add: Optional[int] = None,
-        assignee_rem: Optional[int] = None,
-        unset_status: Optional[bool] = None
+        name: str | None = None,
+        content: str | None = None,
+        due_date: int | None = None,
+        due_date_time: bool | None = None,
+        priority: int | None = None,
+        assignee_add: int | None = None,
+        assignee_rem: int | None = None,
+        unset_status: bool | None = None
     ) -> ClickUpResponse:
         """Update a List (API v2)
 
@@ -726,7 +729,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/list/{list_id}".format(list_id=list_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         if name is not None:
             body['name'] = name
         if content is not None:
@@ -751,12 +754,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed update_list" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed update_list" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute update_list")
@@ -781,12 +784,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_list" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_list" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_list")
@@ -794,23 +797,23 @@ class ClickUpDataSource:
     async def get_tasks(
         self,
         list_id: str,
-        archived: Optional[bool] = None,
-        include_markdown_description: Optional[bool] = None,
-        page: Optional[int] = None,
-        order_by: Optional[str] = None,
-        reverse: Optional[bool] = None,
-        subtasks: Optional[bool] = None,
-        statuses: Optional[List[str]] = None,
-        include_closed: Optional[bool] = None,
-        assignees: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None,
-        due_date_gt: Optional[int] = None,
-        due_date_lt: Optional[int] = None,
-        date_created_gt: Optional[int] = None,
-        date_created_lt: Optional[int] = None,
-        date_updated_gt: Optional[int] = None,
-        date_updated_lt: Optional[int] = None,
-        custom_fields: Optional[List[Dict[str, Any]]] = None
+        archived: bool | None = None,
+        include_markdown_description: bool | None = None,
+        page: int | None = None,
+        order_by: str | None = None,
+        reverse: bool | None = None,
+        subtasks: bool | None = None,
+        statuses: list[str] | None = None,
+        include_closed: bool | None = None,
+        assignees: list[str] | None = None,
+        tags: list[str] | None = None,
+        due_date_gt: int | None = None,
+        due_date_lt: int | None = None,
+        date_created_gt: int | None = None,
+        date_created_lt: int | None = None,
+        date_updated_gt: int | None = None,
+        date_updated_lt: int | None = None,
+        custom_fields: list[dict[str, Any]] | None = None
     ) -> ClickUpResponse:
         """Get Tasks in a List (API v2)
 
@@ -837,7 +840,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if archived is not None:
             query_params['archived'] = str(archived).lower()
         if include_markdown_description is not None:
@@ -880,14 +883,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_tasks" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_tasks" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_tasks")
@@ -896,22 +899,22 @@ class ClickUpDataSource:
         self,
         list_id: str,
         name: str,
-        description: Optional[str] = None,
-        markdown_description: Optional[str] = None,
-        assignees: Optional[List[int]] = None,
-        tags: Optional[List[str]] = None,
-        status: Optional[str] = None,
-        priority: Optional[int] = None,
-        due_date: Optional[int] = None,
-        due_date_time: Optional[bool] = None,
-        time_estimate: Optional[int] = None,
-        start_date: Optional[int] = None,
-        start_date_time: Optional[bool] = None,
-        notify_all: Optional[bool] = None,
-        parent: Optional[str] = None,
-        links_to: Optional[str] = None,
-        check_required_custom_fields: Optional[bool] = None,
-        custom_fields: Optional[List[Dict[str, Any]]] = None
+        description: str | None = None,
+        markdown_description: str | None = None,
+        assignees: list[int] | None = None,
+        tags: list[str] | None = None,
+        status: str | None = None,
+        priority: int | None = None,
+        due_date: int | None = None,
+        due_date_time: bool | None = None,
+        time_estimate: int | None = None,
+        start_date: int | None = None,
+        start_date_time: bool | None = None,
+        notify_all: bool | None = None,
+        parent: str | None = None,
+        links_to: str | None = None,
+        check_required_custom_fields: bool | None = None,
+        custom_fields: list[dict[str, Any]] | None = None
     ) -> ClickUpResponse:
         """Create a Task in a List (API v2)
 
@@ -940,7 +943,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/list/{list_id}/task".format(list_id=list_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['name'] = name
         if description is not None:
             body['description'] = description
@@ -982,12 +985,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_task" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_task")
@@ -995,10 +998,10 @@ class ClickUpDataSource:
     async def get_task(
         self,
         task_id: str,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None,
-        include_subtasks: Optional[bool] = None,
-        include_markdown_description: Optional[bool] = None
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None,
+        include_subtasks: bool | None = None,
+        include_markdown_description: bool | None = None
     ) -> ClickUpResponse:
         """Get a specific Task (API v2)
 
@@ -1012,7 +1015,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -1029,14 +1032,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_task" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_task")
@@ -1044,21 +1047,21 @@ class ClickUpDataSource:
     async def update_task(
         self,
         task_id: str,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        markdown_description: Optional[str] = None,
-        status: Optional[str] = None,
-        priority: Optional[int] = None,
-        due_date: Optional[int] = None,
-        due_date_time: Optional[bool] = None,
-        time_estimate: Optional[int] = None,
-        start_date: Optional[int] = None,
-        start_date_time: Optional[bool] = None,
-        assignees_add: Optional[List[int]] = None,
-        assignees_rem: Optional[List[int]] = None,
-        archived: Optional[bool] = None
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None,
+        name: str | None = None,
+        description: str | None = None,
+        markdown_description: str | None = None,
+        status: str | None = None,
+        priority: int | None = None,
+        due_date: int | None = None,
+        due_date_time: bool | None = None,
+        time_estimate: int | None = None,
+        start_date: int | None = None,
+        start_date_time: bool | None = None,
+        assignees_add: list[int] | None = None,
+        assignees_rem: list[int] | None = None,
+        archived: bool | None = None
     ) -> ClickUpResponse:
         """Update a Task (API v2)
 
@@ -1083,7 +1086,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -1091,7 +1094,7 @@ class ClickUpDataSource:
 
         url = self.base_url + "/task/{task_id}".format(task_id=task_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         if name is not None:
             body['name'] = name
         if description is not None:
@@ -1124,15 +1127,15 @@ class ClickUpDataSource:
                 method="PUT",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed update_task" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed update_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute update_task")
@@ -1140,8 +1143,8 @@ class ClickUpDataSource:
     async def delete_task(
         self,
         task_id: str,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None
     ) -> ClickUpResponse:
         """Delete a Task (API v2)
 
@@ -1153,7 +1156,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -1166,14 +1169,14 @@ class ClickUpDataSource:
                 method="DELETE",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_task" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_task")
@@ -1181,23 +1184,23 @@ class ClickUpDataSource:
     async def get_filtered_team_tasks(
         self,
         team_id: str,
-        page: Optional[int] = None,
-        order_by: Optional[str] = None,
-        reverse: Optional[bool] = None,
-        subtasks: Optional[bool] = None,
-        statuses: Optional[List[str]] = None,
-        include_closed: Optional[bool] = None,
-        assignees: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None,
-        due_date_gt: Optional[int] = None,
-        due_date_lt: Optional[int] = None,
-        date_created_gt: Optional[int] = None,
-        date_created_lt: Optional[int] = None,
-        date_updated_gt: Optional[int] = None,
-        date_updated_lt: Optional[int] = None,
-        space_ids: Optional[List[str]] = None,
-        project_ids: Optional[List[str]] = None,
-        list_ids: Optional[List[str]] = None
+        page: int | None = None,
+        order_by: str | None = None,
+        reverse: bool | None = None,
+        subtasks: bool | None = None,
+        statuses: list[str] | None = None,
+        include_closed: bool | None = None,
+        assignees: list[str] | None = None,
+        tags: list[str] | None = None,
+        due_date_gt: int | None = None,
+        due_date_lt: int | None = None,
+        date_created_gt: int | None = None,
+        date_created_lt: int | None = None,
+        date_updated_gt: int | None = None,
+        date_updated_lt: int | None = None,
+        space_ids: list[str] | None = None,
+        project_ids: list[str] | None = None,
+        list_ids: list[str] | None = None
     ) -> ClickUpResponse:
         """Get filtered Tasks across an entire Workspace (API v2)
 
@@ -1224,7 +1227,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if page is not None:
             query_params['page'] = str(page)
         if order_by is not None:
@@ -1267,14 +1270,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_filtered_team_tasks" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_filtered_team_tasks" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_filtered_team_tasks")
@@ -1282,10 +1285,10 @@ class ClickUpDataSource:
     async def get_task_comments(
         self,
         task_id: str,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None,
-        start: Optional[int] = None,
-        start_id: Optional[str] = None
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None,
+        start: int | None = None,
+        start_id: str | None = None
     ) -> ClickUpResponse:
         """Get comments on a Task (API v2)
 
@@ -1299,7 +1302,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -1316,14 +1319,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_task_comments" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_task_comments" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_task_comments")
@@ -1332,10 +1335,10 @@ class ClickUpDataSource:
         self,
         task_id: str,
         comment_text: str,
-        assignee: Optional[int] = None,
-        notify_all: Optional[bool] = None,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None
+        assignee: int | None = None,
+        notify_all: bool | None = None,
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None
     ) -> ClickUpResponse:
         """Create a comment on a Task (API v2)
 
@@ -1350,7 +1353,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -1358,7 +1361,7 @@ class ClickUpDataSource:
 
         url = self.base_url + "/task/{task_id}/comment".format(task_id=task_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['comment_text'] = comment_text
         if assignee is not None:
             body['assignee'] = assignee
@@ -1370,15 +1373,15 @@ class ClickUpDataSource:
                 method="POST",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_task_comment" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_task_comment" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_task_comment")
@@ -1386,8 +1389,8 @@ class ClickUpDataSource:
     async def get_list_comments(
         self,
         list_id: str,
-        start: Optional[int] = None,
-        start_id: Optional[str] = None
+        start: int | None = None,
+        start_id: str | None = None
     ) -> ClickUpResponse:
         """Get comments on a List (API v2)
 
@@ -1399,7 +1402,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if start is not None:
             query_params['start'] = str(start)
         if start_id is not None:
@@ -1412,14 +1415,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_list_comments" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_list_comments" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_list_comments")
@@ -1428,8 +1431,8 @@ class ClickUpDataSource:
         self,
         list_id: str,
         comment_text: str,
-        assignee: Optional[int] = None,
-        notify_all: Optional[bool] = None
+        assignee: int | None = None,
+        notify_all: bool | None = None
     ) -> ClickUpResponse:
         """Create a comment on a List (API v2)
 
@@ -1444,7 +1447,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/list/{list_id}/comment".format(list_id=list_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['comment_text'] = comment_text
         if assignee is not None:
             body['assignee'] = assignee
@@ -1458,12 +1461,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_list_comment" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_list_comment" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_list_comment")
@@ -1472,8 +1475,8 @@ class ClickUpDataSource:
         self,
         comment_id: str,
         comment_text: str,
-        assignee: Optional[int] = None,
-        resolved: Optional[bool] = None
+        assignee: int | None = None,
+        resolved: bool | None = None
     ) -> ClickUpResponse:
         """Update a comment (API v2)
 
@@ -1488,7 +1491,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/comment/{comment_id}".format(comment_id=comment_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['comment_text'] = comment_text
         if assignee is not None:
             body['assignee'] = assignee
@@ -1502,12 +1505,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed update_comment" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed update_comment" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute update_comment")
@@ -1532,12 +1535,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_comment" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_comment" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_comment")
@@ -1562,12 +1565,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_task_members" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_task_members" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_task_members")
@@ -1592,12 +1595,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_list_members" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_list_members" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_list_members")
@@ -1622,12 +1625,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_space_tags" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_space_tags" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_space_tags")
@@ -1636,8 +1639,8 @@ class ClickUpDataSource:
         self,
         space_id: str,
         name: str,
-        tag_fg: Optional[str] = None,
-        tag_bg: Optional[str] = None
+        tag_fg: str | None = None,
+        tag_bg: str | None = None
     ) -> ClickUpResponse:
         """Create a Tag in a Space (API v2)
 
@@ -1652,7 +1655,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/space/{space_id}/tag".format(space_id=space_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['name'] = name
         if tag_fg is not None:
             body['tag_fg'] = tag_fg
@@ -1666,12 +1669,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_space_tag" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_space_tag" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_space_tag")
@@ -1680,8 +1683,8 @@ class ClickUpDataSource:
         self,
         task_id: str,
         tag_name: str,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None
     ) -> ClickUpResponse:
         """Add a Tag to a Task (API v2)
 
@@ -1694,7 +1697,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -1707,14 +1710,14 @@ class ClickUpDataSource:
                 method="POST",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed add_tag_to_task" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed add_tag_to_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute add_tag_to_task")
@@ -1723,8 +1726,8 @@ class ClickUpDataSource:
         self,
         task_id: str,
         tag_name: str,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None
     ) -> ClickUpResponse:
         """Remove a Tag from a Task (API v2)
 
@@ -1737,7 +1740,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -1750,14 +1753,14 @@ class ClickUpDataSource:
                 method="DELETE",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed remove_tag_from_task" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed remove_tag_from_task" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute remove_tag_from_task")
@@ -1782,12 +1785,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_goals" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_goals" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_goals")
@@ -1796,11 +1799,11 @@ class ClickUpDataSource:
         self,
         team_id: str,
         name: str,
-        due_date: Optional[int] = None,
-        description: Optional[str] = None,
-        multiple_owners: Optional[bool] = None,
-        owners: Optional[List[int]] = None,
-        color: Optional[str] = None
+        due_date: int | None = None,
+        description: str | None = None,
+        multiple_owners: bool | None = None,
+        owners: list[int] | None = None,
+        color: str | None = None
     ) -> ClickUpResponse:
         """Create a Goal in a Workspace (API v2)
 
@@ -1818,7 +1821,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/team/{team_id}/goal".format(team_id=team_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['name'] = name
         if due_date is not None:
             body['due_date'] = due_date
@@ -1838,12 +1841,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_goal" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_goal" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_goal")
@@ -1868,12 +1871,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_goal" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_goal" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_goal")
@@ -1881,12 +1884,12 @@ class ClickUpDataSource:
     async def update_goal(
         self,
         goal_id: str,
-        name: Optional[str] = None,
-        due_date: Optional[int] = None,
-        description: Optional[str] = None,
-        color: Optional[str] = None,
-        add_owners: Optional[List[int]] = None,
-        rem_owners: Optional[List[int]] = None
+        name: str | None = None,
+        due_date: int | None = None,
+        description: str | None = None,
+        color: str | None = None,
+        add_owners: list[int] | None = None,
+        rem_owners: list[int] | None = None
     ) -> ClickUpResponse:
         """Update a Goal (API v2)
 
@@ -1904,7 +1907,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/goal/{goal_id}".format(goal_id=goal_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         if name is not None:
             body['name'] = name
         if due_date is not None:
@@ -1925,12 +1928,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed update_goal" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed update_goal" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute update_goal")
@@ -1955,12 +1958,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_goal" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_goal" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_goal")
@@ -1968,11 +1971,11 @@ class ClickUpDataSource:
     async def get_time_entries_in_range(
         self,
         team_id: str,
-        start_date: Optional[int] = None,
-        end_date: Optional[int] = None,
-        assignee: Optional[str] = None,
-        include_task_tags: Optional[bool] = None,
-        include_location_names: Optional[bool] = None
+        start_date: int | None = None,
+        end_date: int | None = None,
+        assignee: str | None = None,
+        include_task_tags: bool | None = None,
+        include_location_names: bool | None = None
     ) -> ClickUpResponse:
         """Get time entries within a date range for a Workspace (API v2)
 
@@ -1987,7 +1990,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if start_date is not None:
             query_params['start_date'] = str(start_date)
         if end_date is not None:
@@ -2006,14 +2009,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_time_entries_in_range" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_time_entries_in_range" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_time_entries_in_range")
@@ -2021,8 +2024,8 @@ class ClickUpDataSource:
     async def get_task_time_entries(
         self,
         task_id: str,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None
     ) -> ClickUpResponse:
         """Get tracked time entries for a Task (API v2)
 
@@ -2034,7 +2037,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -2047,14 +2050,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_task_time_entries" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_task_time_entries" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_task_time_entries")
@@ -2064,12 +2067,12 @@ class ClickUpDataSource:
         team_id: str,
         start: int,
         duration: int,
-        description: Optional[str] = None,
-        end: Optional[int] = None,
-        assignee: Optional[int] = None,
-        tid: Optional[str] = None,
-        billable: Optional[bool] = None,
-        tags: Optional[List[Dict[str, str]]] = None
+        description: str | None = None,
+        end: int | None = None,
+        assignee: int | None = None,
+        tid: str | None = None,
+        billable: bool | None = None,
+        tags: list[dict[str, str]] | None = None
     ) -> ClickUpResponse:
         """Create a time entry (API v2)
 
@@ -2089,7 +2092,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/team/{team_id}/time_entries".format(team_id=team_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         if description is not None:
             body['description'] = description
         body['start'] = start
@@ -2112,12 +2115,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_time_entry" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_time_entry" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_time_entry")
@@ -2144,12 +2147,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_time_entry" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_time_entry" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_time_entry")
@@ -2174,12 +2177,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_team_views" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_team_views" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_team_views")
@@ -2204,12 +2207,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_space_views" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_space_views" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_space_views")
@@ -2234,12 +2237,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_folder_views" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_folder_views" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_folder_views")
@@ -2264,12 +2267,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_list_views" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_list_views" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_list_views")
@@ -2294,12 +2297,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_view" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_view" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_view")
@@ -2307,7 +2310,7 @@ class ClickUpDataSource:
     async def get_view_tasks(
         self,
         view_id: str,
-        page: Optional[int] = None
+        page: int | None = None
     ) -> ClickUpResponse:
         """Get Tasks from a View (API v2)
 
@@ -2318,7 +2321,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if page is not None:
             query_params['page'] = str(page)
 
@@ -2329,14 +2332,14 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_view_tasks" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_view_tasks" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_view_tasks")
@@ -2361,12 +2364,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_accessible_custom_fields" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_accessible_custom_fields" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_accessible_custom_fields")
@@ -2375,9 +2378,9 @@ class ClickUpDataSource:
         self,
         task_id: str,
         field_id: str,
-        value: Any,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None
+        value: str | int | float | bool | list[Any] | dict[str, Any],
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None
     ) -> ClickUpResponse:
         """Set a Custom Field value on a Task (API v2)
 
@@ -2391,7 +2394,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -2399,7 +2402,7 @@ class ClickUpDataSource:
 
         url = self.base_url + "/task/{task_id}/field/{field_id}".format(task_id=task_id, field_id=field_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['value'] = value
 
         try:
@@ -2407,15 +2410,15 @@ class ClickUpDataSource:
                 method="POST",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed set_custom_field_value" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed set_custom_field_value" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute set_custom_field_value")
@@ -2424,8 +2427,8 @@ class ClickUpDataSource:
         self,
         task_id: str,
         field_id: str,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None
     ) -> ClickUpResponse:
         """Remove a Custom Field value from a Task (API v2)
 
@@ -2438,7 +2441,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -2451,14 +2454,14 @@ class ClickUpDataSource:
                 method="DELETE",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed remove_custom_field_value" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed remove_custom_field_value" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute remove_custom_field_value")
@@ -2483,12 +2486,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_webhooks" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_webhooks" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_webhooks")
@@ -2497,11 +2500,11 @@ class ClickUpDataSource:
         self,
         team_id: str,
         endpoint: str,
-        events: List[str],
-        space_id: Optional[str] = None,
-        folder_id: Optional[str] = None,
-        list_id: Optional[str] = None,
-        task_id: Optional[str] = None
+        events: list[str],
+        space_id: str | None = None,
+        folder_id: str | None = None,
+        list_id: str | None = None,
+        task_id: str | None = None
     ) -> ClickUpResponse:
         """Create a Webhook in a Workspace (API v2)
 
@@ -2519,7 +2522,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/team/{team_id}/webhook".format(team_id=team_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['endpoint'] = endpoint
         body['events'] = events
         if space_id is not None:
@@ -2538,12 +2541,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_webhook" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_webhook" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_webhook")
@@ -2551,9 +2554,9 @@ class ClickUpDataSource:
     async def update_webhook(
         self,
         webhook_id: str,
-        endpoint: Optional[str] = None,
-        events: Optional[List[str]] = None,
-        status: Optional[str] = None
+        endpoint: str | None = None,
+        events: list[str] | None = None,
+        status: str | None = None
     ) -> ClickUpResponse:
         """Update a Webhook (API v2)
 
@@ -2568,7 +2571,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/webhook/{webhook_id}".format(webhook_id=webhook_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         if endpoint is not None:
             body['endpoint'] = endpoint
         if events is not None:
@@ -2583,12 +2586,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed update_webhook" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed update_webhook" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute update_webhook")
@@ -2613,12 +2616,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_webhook" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_webhook" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_webhook")
@@ -2627,8 +2630,8 @@ class ClickUpDataSource:
         self,
         task_id: str,
         name: str,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None
     ) -> ClickUpResponse:
         """Create a Checklist in a Task (API v2)
 
@@ -2641,7 +2644,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -2649,7 +2652,7 @@ class ClickUpDataSource:
 
         url = self.base_url + "/task/{task_id}/checklist".format(task_id=task_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['name'] = name
 
         try:
@@ -2657,15 +2660,15 @@ class ClickUpDataSource:
                 method="POST",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_checklist" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_checklist" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_checklist")
@@ -2673,8 +2676,8 @@ class ClickUpDataSource:
     async def update_checklist(
         self,
         checklist_id: str,
-        name: Optional[str] = None,
-        position: Optional[int] = None
+        name: str | None = None,
+        position: int | None = None
     ) -> ClickUpResponse:
         """Update a Checklist (API v2)
 
@@ -2688,7 +2691,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/checklist/{checklist_id}".format(checklist_id=checklist_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         if name is not None:
             body['name'] = name
         if position is not None:
@@ -2701,12 +2704,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed update_checklist" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed update_checklist" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute update_checklist")
@@ -2731,12 +2734,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_checklist" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_checklist" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_checklist")
@@ -2745,7 +2748,7 @@ class ClickUpDataSource:
         self,
         checklist_id: str,
         name: str,
-        assignee: Optional[int] = None
+        assignee: int | None = None
     ) -> ClickUpResponse:
         """Create a Checklist Item (API v2)
 
@@ -2759,7 +2762,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/checklist/{checklist_id}/checklist_item".format(checklist_id=checklist_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['name'] = name
         if assignee is not None:
             body['assignee'] = assignee
@@ -2771,12 +2774,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_checklist_item" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed create_checklist_item" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_checklist_item")
@@ -2785,10 +2788,10 @@ class ClickUpDataSource:
         self,
         checklist_id: str,
         checklist_item_id: str,
-        name: Optional[str] = None,
-        assignee: Optional[int] = None,
-        resolved: Optional[bool] = None,
-        parent: Optional[str] = None
+        name: str | None = None,
+        assignee: int | None = None,
+        resolved: bool | None = None,
+        parent: str | None = None
     ) -> ClickUpResponse:
         """Update a Checklist Item (API v2)
 
@@ -2805,7 +2808,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/checklist/{checklist_id}/checklist_item/{checklist_item_id}".format(checklist_id=checklist_id, checklist_item_id=checklist_item_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         if name is not None:
             body['name'] = name
         if assignee is not None:
@@ -2822,12 +2825,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed update_checklist_item" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed update_checklist_item" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute update_checklist_item")
@@ -2854,12 +2857,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_checklist_item" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_checklist_item" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_checklist_item")
@@ -2884,12 +2887,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_shared_hierarchy" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_shared_hierarchy" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_shared_hierarchy")
@@ -2897,10 +2900,10 @@ class ClickUpDataSource:
     async def add_task_dependency(
         self,
         task_id: str,
-        depends_on: Optional[str] = None,
-        dependency_of: Optional[str] = None,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None
+        depends_on: str | None = None,
+        dependency_of: str | None = None,
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None
     ) -> ClickUpResponse:
         """Add a dependency relationship between Tasks (API v2)
 
@@ -2914,7 +2917,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if custom_task_ids is not None:
             query_params['custom_task_ids'] = str(custom_task_ids).lower()
         if team_id is not None:
@@ -2922,7 +2925,7 @@ class ClickUpDataSource:
 
         url = self.base_url + "/task/{task_id}/dependency".format(task_id=task_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         if depends_on is not None:
             body['depends_on'] = depends_on
         if dependency_of is not None:
@@ -2933,15 +2936,15 @@ class ClickUpDataSource:
                 method="POST",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed add_task_dependency" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed add_task_dependency" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute add_task_dependency")
@@ -2949,10 +2952,10 @@ class ClickUpDataSource:
     async def delete_task_dependency(
         self,
         task_id: str,
-        depends_on: Optional[str] = None,
-        dependency_of: Optional[str] = None,
-        custom_task_ids: Optional[bool] = None,
-        team_id: Optional[str] = None
+        depends_on: str | None = None,
+        dependency_of: str | None = None,
+        custom_task_ids: bool | None = None,
+        team_id: str | None = None
     ) -> ClickUpResponse:
         """Remove a dependency from a Task (API v2)
 
@@ -2966,7 +2969,7 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params = {}
+        query_params: dict[str, Any] = {}
         if depends_on is not None:
             query_params['depends_on'] = depends_on
         if dependency_of is not None:
@@ -2983,14 +2986,14 @@ class ClickUpDataSource:
                 method="DELETE",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query_params=query_params,
+                query=query_params,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_task_dependency" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed delete_task_dependency" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_task_dependency")
@@ -2999,9 +3002,9 @@ class ClickUpDataSource:
         self,
         team_id: str,
         email: str,
-        can_edit_tags: Optional[bool] = None,
-        can_see_time_spent: Optional[bool] = None,
-        can_see_time_estimated: Optional[bool] = None
+        can_edit_tags: bool | None = None,
+        can_see_time_spent: bool | None = None,
+        can_see_time_estimated: bool | None = None
     ) -> ClickUpResponse:
         """Invite a guest to a Workspace (API v2)
 
@@ -3017,7 +3020,7 @@ class ClickUpDataSource:
         """
         url = self.base_url + "/team/{team_id}/guest".format(team_id=team_id)
 
-        body = {}
+        body: dict[str, Any] = {}
         body['email'] = email
         if can_edit_tags is not None:
             body['can_edit_tags'] = can_edit_tags
@@ -3033,12 +3036,12 @@ class ClickUpDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed invite_guest_to_workspace" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed invite_guest_to_workspace" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute invite_guest_to_workspace")
@@ -3065,12 +3068,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_guest" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed get_guest" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_guest")
@@ -3097,12 +3100,12 @@ class ClickUpDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
             return ClickUpResponse(
-                success=response.status < 400,
+                success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed remove_guest_from_workspace" if response.status < 400 else f"Failed with status {response.status}"
+                message="Successfully executed remove_guest_from_workspace" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute remove_guest_from_workspace")
