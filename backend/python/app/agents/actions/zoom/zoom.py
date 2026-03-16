@@ -1,9 +1,10 @@
 import json
 import logging
-from typing import Annotated, Any, Literal, Optional, Tuple
+import re
+from typing import Annotated, Literal, Optional, Tuple
+from urllib.parse import quote
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
-from urllib.parse import quote
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
@@ -23,13 +24,17 @@ from app.sources.external.zoom.zoom import ZoomDataSource
 logger = logging.getLogger(__name__)
 
 
-def _coerce_meeting_id(v: Any) -> str:
+def _coerce_meeting_id(v: str | int) -> str:
     """Accept meeting_id as int or str (e.g. from tool result); coerce to str."""
     return str(v)
 
 
 # meeting_id from Zoom API / tool results can be int; coerce to str for API calls
 MeetingId = Annotated[str, BeforeValidator(_coerce_meeting_id)]
+
+# Meeting type constants (avoid magic strings)
+MEETING_TYPES_SEARCH: Tuple[str, ...] = ("scheduled", "upcoming")
+TYPE_PREVIOUS_MEETINGS = "previous_meetings"
 
 
 # ---------------------------------------------------------------------------
@@ -111,24 +116,6 @@ class GetMeetingInvitationInput(BaseModel):
     meeting_id: MeetingId = Field(description="Zoom meeting ID.")
 
 
-# class ListRecordingsInput(BaseModel):
-#     model_config = ConfigDict(populate_by_name=True)
-
-#     user_id: str = Field(
-#         default="me",
-#         description="Zoom user ID or email. Use 'me' for the authenticated user.",
-#     )
-#     page_size: Optional[int] = Field(default=30, ge=1, le=300, description="Results per page.")
-#     next_page_token: Optional[str] = Field(default=None, description="Pagination token.")
-#     from_: Optional[str] = Field(default=None, alias="from", description="Start date (YYYY-MM-DD).")
-#     to: Optional[str] = Field(default=None, description="End date (YYYY-MM-DD).")
-#     meeting_id: Optional[str] = Field(default=None, description="Filter by meeting ID.")
-
-
-# class GetMeetingRecordingsInput(BaseModel):
-#     meeting_id: MeetingId = Field(description="Meeting ID or UUID.")
-
-
 class GetMeetingTranscriptInput(BaseModel):
     meeting_id: MeetingId = Field(description="Meeting ID or UUID of the recorded meeting.")
 
@@ -200,7 +187,11 @@ class Zoom:
     def __init__(self, client: ZoomClient) -> None:
         self.client = ZoomDataSource(client)
 
-    def _handle_response(self, response: Any, success_message: str) -> Tuple[bool, str]:
+    def _handle_response(
+        self,
+        response: ZoomResponse | dict[str, object],
+        success_message: str,
+    ) -> Tuple[bool, str]:
         """Normalize ZoomResponse to (success, json_string)."""
         if isinstance(response, ZoomResponse):
             if response.success:
@@ -272,7 +263,7 @@ class Zoom:
     async def list_meetings(
         self,
         user_id: str,
-        type_: str = "scheduled",
+        type_: Literal["scheduled", "live", "upcoming", "all"] = "scheduled",
         page_size: Optional[int] = 30,
         next_page_token: Optional[str] = None,
         from_: Optional[str] = None,
@@ -362,7 +353,7 @@ class Zoom:
     ) -> Tuple[bool, str]:
         """Create a Zoom meeting."""
         try:
-            body: dict[str, Any] = {"topic": topic}
+            body: dict[str, object] = {"topic": topic}
             if start_time is not None:
                 body["start_time"] = start_time
             if duration is not None:
@@ -416,7 +407,7 @@ class Zoom:
     ) -> Tuple[bool, str]:
         """Update a Zoom meeting — only fields explicitly provided by user."""
         try:
-            body: dict[str, Any] = {}
+            body: dict[str, object] = {}
             if topic is not None:
                 body["topic"] = topic
             if start_time is not None:
@@ -532,21 +523,28 @@ class Zoom:
         try:
             logger.info("zoom.search_meetings_by_name called with query=%s user_id=%s", query, user_id)
             query_lower = query.lower()
-            matched = []
+            matched: list[object] = []
 
-            for meeting_type in ["scheduled", "upcoming"]:
+            for meeting_type in MEETING_TYPES_SEARCH:
                 response = await self.client.meetings(userId=user_id, type_=meeting_type, page_size=100)
                 if isinstance(response, ZoomResponse) and not response.success:
                     continue
                 data = response.data if isinstance(response, ZoomResponse) else response
                 meetings = data.get("meetings", []) if isinstance(data, dict) else []
                 for m in meetings:
-                    if query_lower in m.get("topic", "").lower():
+                    if isinstance(m, dict) and query_lower in str(m.get("topic", "")).lower():
                         matched.append(m)
 
             # deduplicate by meeting id
-            seen: set = set()
-            unique = [m for m in matched if not (m["id"] in seen or seen.add(m["id"]))]  # type: ignore
+            seen: set[str] = set()
+            unique: list[object] = []
+            for m in matched:
+                if not isinstance(m, dict):
+                    continue
+                mid = str(m.get("id", ""))
+                if mid not in seen:
+                    seen.add(mid)
+                    unique.append(m)
 
             if not unique:
                 return False, json.dumps({"error": f"No meetings found matching '{query}'"})
@@ -591,13 +589,15 @@ class Zoom:
             logger.info("zoom.list_past_meetings called for user_id=%s", user_id)
             response = await self.client.meetings(
                 userId=user_id,
-                type_="previous_meetings",
+                type_=TYPE_PREVIOUS_MEETINGS,
                 page_size=page_size,
                 from_=from_,
                 to=to,
             )
             if isinstance(response, ZoomResponse) and not response.success:
-                return False, json.dumps({"error": response.error or response.message})
+                return False, json.dumps({
+                    "error": response.error or response.message or "Unknown error",
+                })
 
             data = response.data if isinstance(response, ZoomResponse) else response
             meetings = data.get("meetings", []) if isinstance(data, dict) else []
@@ -636,88 +636,6 @@ class Zoom:
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
-    # Recording tools
-    # ------------------------------------------------------------------
-
-    # @tool(
-    #     app_name="zoom",
-    #     tool_name="list_recordings",
-    #     description="List all cloud recordings for a Zoom user.",
-    #     llm_description="Returns cloud recordings for user_id filtered by optional date range.",
-    #     args_schema=ListRecordingsInput,
-    #     returns="JSON with list of recordings including download URLs",
-    #     primary_intent=ToolIntent.SEARCH,
-    #     category=ToolCategory.COMMUNICATION,
-    #     when_to_use=[
-    #         "User wants to browse past Zoom recordings",
-    #         "User asks for recorded meetings in a date range",
-    #     ],
-    #     when_not_to_use=[
-    #         "User wants files for a specific meeting (use get_meeting_recordings)",
-    #     ],
-    #     typical_queries=["Show my Zoom recordings", "List recorded meetings", "Recordings from last week"],
-    # )
-    # async def list_recordings(
-    #     self,
-    #     user_id: str = "me",
-    #     page_size: Optional[int] = 30,
-    #     next_page_token: Optional[str] = None,
-    #     from_: Optional[str] = None,
-    #     to: Optional[str] = None,
-    #     meeting_id: Optional[str] = None,
-    # ) -> Tuple[bool, str]:
-    #     """List all cloud recordings for a user."""
-    #     try:
-    #         logger.info("zoom.list_recordings called for user_id=%s", user_id)
-    #         response = await self.client.recordings_list(
-    #             userId=user_id,
-    #             page_size=page_size,
-    #             next_page_token=next_page_token,
-    #             from_=from_,
-    #             to=to,
-    #             meeting_id=meeting_id,
-    #         )
-    #         return self._handle_response(response, "Recordings listed successfully")
-    #     except Exception as e:
-    #         logger.error("Error listing recordings: %s", e)
-    #         return False, json.dumps({"error": str(e)})
-
-    # @tool(
-    #     app_name="zoom",
-    #     tool_name="get_meeting_recordings",
-    #     description="Get all recording files for a specific Zoom meeting.",
-    #     llm_description=(
-    #         "Returns all recording files for a meeting (video, audio, chat, VTT transcript). "
-    #         "The transcript VTT file has recording_type='audio_transcript'."
-    #     ),
-    #     args_schema=GetMeetingRecordingsInput,
-    #     returns="JSON with recording files list including download URLs",
-    #     primary_intent=ToolIntent.SEARCH,
-    #     category=ToolCategory.COMMUNICATION,
-    #     when_to_use=[
-    #         "User wants to download recordings from a specific meeting",
-    #         "User asks for the recording link of a particular call",
-    #     ],
-    #     when_not_to_use=[
-    #         "User wants recordings across all meetings (use list_recordings)",
-    #         "User wants only the transcript (use get_meeting_transcript)",
-    #     ],
-    #     typical_queries=["Get recording for meeting 123", "Download Zoom call recording"],
-    # )
-    # async def get_meeting_recordings(
-    #     self,
-    #     meeting_id: str,
-    # ) -> Tuple[bool, str]:
-    #     """Get all recording files for a specific meeting."""
-    #     try:
-    #         logger.info("zoom.get_meeting_recordings called for meeting_id=%s", meeting_id)
-    #         response = await self.client.recording_get(meetingId=meeting_id)
-    #         return self._handle_response(response, "Meeting recordings fetched successfully")
-    #     except Exception as e:
-    #         logger.error("Error getting meeting recordings: %s", e)
-    #         return False, json.dumps({"error": str(e)})
-
-    # ------------------------------------------------------------------
     # Transcript tools
     # ------------------------------------------------------------------
 
@@ -750,7 +668,9 @@ class Zoom:
             instances_response = await self.client.past_meetings(meetingId=str(meeting_id))
 
             if isinstance(instances_response, ZoomResponse) and not instances_response.success:
-                return False, json.dumps({"error": instances_response.error or instances_response.message})
+                return False, json.dumps({
+                    "error": instances_response.error or instances_response.message or "Unknown error",
+                })
 
             instances_data = instances_response.data if isinstance(instances_response, ZoomResponse) else instances_response
             meetings = instances_data.get("meetings", []) if isinstance(instances_data, dict) else []
@@ -762,9 +682,10 @@ class Zoom:
                 })
 
             # Step 2 — take the most recent instance UUID and double-encode if needed
-            instance_uuid = meetings[-1].get("uuid")  # last = most recent
-            if not instance_uuid:
+            instance_uuid_raw = meetings[-1].get("uuid")  # last = most recent
+            if not instance_uuid_raw:
                 return False, json.dumps({"error": "Instance UUID missing from past meeting data."})
+            instance_uuid = str(instance_uuid_raw)
 
             if instance_uuid.startswith("/") or "/" in instance_uuid:
                 encoded_uuid = quote(quote(instance_uuid, safe=""), safe="")
@@ -777,7 +698,9 @@ class Zoom:
             transcript_response = await self.client.get_meeting_transcript(meetingId=encoded_uuid)
 
             if isinstance(transcript_response, ZoomResponse) and not transcript_response.success:
-                return False, json.dumps({"error": transcript_response.error or transcript_response.message})
+                return False, json.dumps({
+                    "error": transcript_response.error or transcript_response.message or "Unknown error",
+                })
 
             transcript_data = transcript_response.data if isinstance(transcript_response, ZoomResponse) else transcript_response
             download_url = transcript_data.get("download_url") if isinstance(transcript_data, dict) else None
@@ -820,11 +743,10 @@ class Zoom:
         except Exception as e:
             logger.error("Error downloading transcript VTT: %s", e)
             return None
- 
+
     @staticmethod
     def _parse_vtt(vtt: str) -> str:
         """Convert WebVTT content to clean plain text, removing headers and timecodes."""
-        import re
         lines = vtt.splitlines()
         text_lines = []
         for line in lines:
