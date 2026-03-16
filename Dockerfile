@@ -162,6 +162,9 @@ COPY --from=python-deps /usr/local/bin /usr/local/bin
 COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
 COPY --from=python-deps /root/nltk_data /root/nltk_data
 
+# Copy Playwright browser binaries
+COPY --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
+
 # Copy Node.js backend (already pruned)
 COPY --from=nodejs-backend /app/backend/dist ./backend/dist
 COPY --from=nodejs-backend /app/backend/src/modules/mail ./backend/src/modules/mail
