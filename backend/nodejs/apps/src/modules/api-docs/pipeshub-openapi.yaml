@@ -4,15 +4,7 @@ info:
   description: |
     Unified API documentation for PipesHub services.
 
-    PipesHub is an enterprise-grade platform providing:
-    - User authentication and management
-    - Document storage and version control
-    - Knowledge base management
-    - Enterprise search and conversational AI
-    - Third-party integrations via connectors
-    - System configuration management
-    - Crawling job scheduling
-    - Email services
+    PipesHub helps enterprises search, reason, and automate work across connected business systems.
 
     ## Authentication
     Most endpoints require JWT Bearer token authentication. Some internal endpoints use scoped tokens for service-to-service communication.
@@ -22,7 +14,7 @@ info:
   version: 1.0.0
   contact:
     name: API Support
-    email: support@pipeshub.com
+    email: contact@pipeshub.com
 
 servers:
   - url: "{instance_url}/api/v1"
@@ -41,210 +33,164 @@ servers:
 tags:
   # Authentication
   - name: User Account
-    description: User authentication including multi-step MFA, password reset, OTP login, and token management
+    description: End-user authentication and session flows, including sign-in, OTP generation, password reset, token refresh, and logout.
   - name: Organization Auth Config
-    description: Admin configuration of authentication methods including MFA steps and allowed providers
+    description: Organization-level authentication setup, including retrieval and management of allowed sign-in methods and multi-step authentication flows.
   - name: SAML
-    description: SAML 2.0 Single Sign-On integration with enterprise Identity Providers
+    description: SAML 2.0 single sign-on endpoints for initiating enterprise SSO and handling identity provider callbacks.
   - name: OAuth
-    description: OAuth 2.0 token exchange for third-party authentication providers
+    description: OAuth code exchange endpoint for completing third-party sign-in flows and returning PipesHub-compatible tokens.
   - name: OAuth Provider
     description: |
-      PipesHub OAuth 2.0 Authorization Server implementing RFC 6749, RFC 7636 (PKCE), and OpenID Connect.
+      PipesHub OAuth 2.0 authorization server endpoints for authorization, token issuance, token revocation, and token introspection.
 
-      **Supported Grant Types:**
-      - `authorization_code` - Standard OAuth flow with PKCE support
-      - `client_credentials` - Machine-to-machine authentication
-      - `refresh_token` - Token refresh for long-lived access
+      **Supported grant types:**
+      - `authorization_code` for user-delegated access
+      - `client_credentials` for machine-to-machine access
+      - `refresh_token` for renewing access tokens
 
-      **Security Features:**
-      - PKCE (Proof Key for Code Exchange) for public clients
-      - State parameter for CSRF protection
-      - Configurable token lifetimes
+      **Security features:**
+      - PKCE support for public clients
+      - Consent and state handling
       - Token revocation and introspection
+      - Configurable token lifetimes
 
-      **OpenID Connect:**
-      - ID tokens with standard claims
-      - UserInfo endpoint for profile data
-      - Discovery endpoint for automatic configuration
+      **OpenID Connect support:**
+      - ID token issuance
+      - Standard identity claims
+      - UserInfo and discovery compatibility
   - name: OAuth Apps
     description: |
-      Manage OAuth 2.0 client applications registered with PipesHub.
+      OAuth client application management for registering, updating, suspending, deleting, and securing apps that access PipesHub APIs.
 
-      OAuth apps allow third-party applications to access PipesHub APIs on behalf of users
-      or organizations. Each app receives a client ID and secret for authentication.
+      **Includes support for:**
+      - App registration and lifecycle management
+      - Redirect URI and scope configuration
+      - Secret regeneration
+      - App suspension, activation, and token revocation
 
-      **App Types:**
-      - **Confidential clients**: Server-side apps that can securely store secrets
-      - **Public clients**: Browser/mobile apps that cannot securely store secrets (use PKCE)
-
-      **App Lifecycle:**
-      - Create apps with name, redirect URIs, and allowed scopes
-      - Regenerate secrets if compromised
-      - Suspend/activate apps to control access
-      - Revoke all tokens for emergency access removal
+      **Client types:**
+      - Confidential clients for server-side applications
+      - Public clients for browser or mobile applications using PKCE
   - name: OpenID Connect
     description: |
-      OpenID Connect 1.0 endpoints for identity federation and discovery.
+      OpenID Connect discovery and identity endpoints for standards-based client integration.
 
-      **Discovery:**
-      - `/.well-known/openid-configuration` - Authorization server metadata
-      - `/.well-known/oauth-authorization-server` - Authorization server metadata (RFC 8414)
-      - `/.well-known/oauth-protected-resource/mcp` - Protected resource metadata (RFC 9728)
-      - `/.well-known/jwks.json` - Public keys for token verification
-
-      **UserInfo:**
-      - `/oauth2/userinfo` - Get authenticated user's profile information
-
-      **Supported Claims:**
-      - `user_id` - User identifier
-      - `email`, `email_verified` - Email information
-      - `name`, `given_name`, `family_name` - Name information
+      **Includes:**
+      - Discovery metadata endpoints
+      - JWKS for token verification
+      - UserInfo endpoint for authenticated identity claims
+      - Protected resource metadata for MCP clients
 
   # User Management
   - name: Users
-    description: User management operations
+    description: User lifecycle and profile management, including creation, updates, deletion, profile assets, and account-level administration.
   - name: Teams
-    description: Team management operations
+    description: Team management operations, including team creation, membership, access, and role-related administration.
   - name: Organizations
-    description: Organization management operations
+    description: Organization setup and administration, including organization profile, branding, and account-level metadata.
   - name: User Groups
-    description: User group management operations
+    description: User group management for organizing users, assigning memberships, and supporting access control workflows.
 
-  # Storage
-  - name: Document Management
-    description: Document CRUD and retrieval operations
+  # Knowledge Management
   - name: Knowledge Bases
-    description: Knowledge base management operations
+    description: Knowledge base lifecycle operations, including creation, updates, deletion, record movement, and reindexing support.
   - name: Knowledge Hub
-    description: Unified browse API for root and child nodes (apps, record groups, folders, records) with filtering and search
+    description: Unified browsing endpoints for navigating knowledge hub nodes such as apps, record groups, folders, and records.
   - name: Folders
-    description: Folder organization and management
+    description: Folder management within knowledge bases, including creation, updates, deletion, and hierarchical navigation.
   - name: Records
-    description: Record management and operations
+    description: Record-level operations across knowledge bases, including retrieval, updates, deletion, and content streaming.
   - name: Permissions
-    description: Permission management for knowledge bases
+    description: Permission management for knowledge bases, including granting, listing, updating, and revoking access.
   - name: Upload
-    description: File upload operations
+    description: File upload endpoints for adding content to knowledge bases and folders, along with upload limit discovery.
   - name: Connector
-    description: Connector-related operations
+    description: Connector-linked knowledge operations such as reindexing records, resyncing data, and retrieving connector statistics.
 
   # Enterprise Search
   - name: Conversations
-    description: AI-powered conversational chat management with citations and follow-up questions
+    description: Conversational AI endpoints for creating, managing, streaming, archiving, and interacting with enterprise chat sessions.
   - name: Semantic Search
-    description: Enterprise semantic search across all indexed knowledge with relevance scoring
+    description: Semantic search endpoints for querying indexed enterprise knowledge, managing search history, and sharing or archiving results.
   - name: Agents
-    description: Custom AI agents with specialized capabilities and tool integrations
+    description: AI agent management endpoints for creating, configuring, updating, deleting, and controlling agent permissions and tools.
   - name: Agent Templates
-    description: Reusable templates for creating AI agents with predefined configurations
+    description: Reusable agent template management for defining and maintaining standardized agent configurations.
   - name: Agent Conversations
-    description: Conversations with custom AI agents including streaming and feedback
+    description: Conversation endpoints for interacting with individual AI agents, including message exchange, streaming responses, and regeneration.
 
   # Connector Manager
   - name: Connector Registry
-    description: Browse available connector types and their configuration schemas
+    description: Registry endpoints for discovering supported connector types and their configuration schemas.
   - name: Connector Instances
-    description: Create, manage, and delete connector instances for your organization
+    description: Connector instance management for creating, listing, retrieving, updating state, and deleting configured connectors.
   - name: Connector Configuration
-    description: Configure authentication, sync settings, and filters for connectors
+    description: Configuration endpoints for connector authentication, sync behavior, and operational settings.
   - name: Connector Control
-    description: Enable/disable connectors for sync or agent functionality
+    description: Operational control endpoint for enabling or disabling connector sync or agent functionality.
   - name: Connector OAuth
-    description: OAuth 2.0 authorization flow for connectors requiring user consent
+    description: OAuth authorization and callback flows for connectors that require delegated access to external systems.
   - name: Connector Filters
-    description: Dynamic filter options for selecting which data to sync
+    description: Filter management endpoints for defining, saving, and retrieving connector-specific sync filters and option sets.
   - name: OAuth Configuration
-    description: Admin management of OAuth credentials for connector types
+    description: Administrative management of reusable OAuth configurations for connector and toolset integrations.
   - name: Toolset Registry
-    description: Browse available toolsets and their configuration schemas for agent integrations
+    description: Registry endpoints for discovering supported toolsets and their configuration schemas for agent actions.
   - name: Toolset Instances
-    description: Create, manage, and configure toolset instances for your organization
+    description: Toolset instance management for creating, listing, retrieving, authenticating, and operating configured tool integrations.
   - name: Toolset Configuration
-    description: Configure authentication and settings for toolset instances
+    description: Toolset configuration endpoints for storing and updating tool-specific authentication and runtime settings.
   - name: Toolset OAuth
-    description: OAuth 2.0 authorization flow for toolsets requiring user consent
+    description: OAuth authorization and callback flows for toolsets that require delegated external access.
 
   # Configuration Manager
   - name: Storage Configuration
-    description: Configure storage backend for file uploads and documents. Supports AWS S3, Azure Blob Storage, or local filesystem.
+    description: Storage backend configuration for document and file handling, including supported storage provider settings.
   - name: SMTP Configuration
-    description: Configure SMTP email server for sending notifications and invitations.
+    description: SMTP configuration endpoints for outbound email delivery used in notifications, invitations, and account workflows.
   - name: Authentication Configuration
-    description: Configure authentication providers including Azure AD, Microsoft, Google OAuth, SAML SSO, and custom OAuth 2.0.
+    description: Administrative configuration for supported authentication providers such as Google, Microsoft, Azure AD, SAML, and custom OAuth.
   - name: Platform Settings
-    description: Platform-wide settings including file upload limits, feature flags, and custom system prompts.
+    description: Platform-wide operational settings, including feature flags, upload limits, and system prompt configuration.
   - name: AI Models Providers
-    description: Manage individual AI model providers - add, update, delete, and set defaults.
+    description: AI model provider management, including provider registration, model availability, updates, deletion, and default model selection.
   - name: Public URLs
-    description: Configure public URLs for frontend application and connector callbacks.
+    description: Configuration of public-facing application and callback URLs used by the frontend and external integrations.
   - name: Metrics Collection
     description: |
-      Configure telemetry and metrics collection for application monitoring and analytics.
+      Telemetry and metrics configuration for monitoring platform usage and operational health.
 
-      PipesHub collects anonymized usage metrics to help improve the product. Metrics are pushed
-      to a configurable remote server at regular intervals.
+      **Includes:**
+      - Retrieval of current metrics settings
+      - Enabling or disabling metrics collection
+      - Support for privacy-conscious operational analytics
 
-      **Collected Metrics:**
-      - API request counts and response times
-      - User activity patterns (anonymized)
-      - Feature usage statistics
-      - Error rates and types
-
-      **Configuration Options:**
-      - Enable/disable metrics collection entirely
-      - Configure push interval (minimum 1 second, default 60 seconds)
-      - Set custom metrics server URL for self-hosted analytics
-
-      **Privacy:**
-      - All metrics are anonymized before collection
-      - No personally identifiable information (PII) is collected
-      - Organization can disable collection at any time
   # MCP (Model Context Protocol)
   - name: MCP
     description: |
-      Model Context Protocol (MCP) endpoints for AI tool integration.
+      Model Context Protocol endpoints for exposing PipesHub capabilities to MCP-compatible clients over Streamable HTTP.
 
-      PipesHub exposes a Streamable HTTP MCP server that allows MCP-compatible clients
-      (such as Claude Desktop, Cursor, or custom agents) to interact with PipesHub tools
-      including search, conversations, knowledge base management, and connector operations.
-
-      **Transport:** Streamable HTTP (JSON-RPC over HTTP)
-      **Base Path:** `/mcp` (not under `/api/v1`)
-
-      **Authentication:**
-      All MCP requests require a valid Bearer token or OAuth 2.0 access token.
-
-      **Stateless Mode:**
-      The server operates in stateless mode — each request creates an independent MCP session.
+      **Includes:**
+      - JSON-RPC request handling
+      - SSE streaming support
+      - Bearer-token authenticated access to PipesHub tools and workflows
 
   - name: Crawling Jobs
     description: |
-      Endpoints for scheduling, managing, and monitoring data crawling jobs for enterprise connectors.
+      Crawling job scheduling and operations for connector data ingestion into PipesHub.
 
-      The Crawling Manager uses BullMQ (Redis-based queue) to schedule and execute crawling jobs that
-      sync data from external connectors (Google Drive, OneDrive, Slack, Jira, etc.) into PipesHub's
-      search index.
+      **Includes:**
+      - Scheduling recurring or one-time crawls
+      - Viewing job status across connectors
+      - Pausing, resuming, and removing jobs
+      - Queue-level statistics and execution monitoring
 
-      **Key Features:**
-      - Schedule recurring crawls (hourly, daily, weekly, monthly) or one-time crawls
-      - Pause and resume crawling jobs without losing configuration
-      - Priority-based job execution (1-10 scale)
-      - Automatic retry with exponential backoff on failures
-      - Per-connector job isolation and tracking
+      **Typical use cases:**
+      - Keeping connector data fresh
+      - Managing scheduled sync behavior
+      - Monitoring crawl execution health
 
-      **Access Control:**
-      - Team-scoped connectors require admin privileges
-      - Personal-scoped connectors can only be managed by the creator
-      - All operations require valid JWT authentication
-
-      **Schedule Types:**
-      - `hourly`: Run every X hours at specified minute
-      - `daily`: Run once per day at specified time
-      - `weekly`: Run on specified days of the week
-      - `monthly`: Run on specified day of the month
-      - `custom`: Use cron expression for complex schedules
-      - `once`: Run once at a specific future time
 components:
   securitySchemes:
     bearerAuth:
@@ -9806,473 +9752,6 @@ paths:
         '401':
           description: Unauthorized
 
-  /document/{documentId}/download:
-    get:
-      tags:
-        - Document Management
-      summary: Download document
-      description: |
-        Get a time-limited signed URL to download the document, or receive the file directly for local storage.<br><br>
-        <b>Overview:</b><br>
-        This endpoint generates secure download access to documents. For cloud storage (S3/Azure), it returns a presigned URL. For local storage, it streams the file directly.<br><br>
-        <b>Download Behavior by Storage:</b><br>
-        <ul>
-        <li><b>S3/Azure:</b> Returns presigned URL valid for specified duration</li>
-        <li><b>Local:</b> Streams file directly with appropriate headers</li>
-        </ul>
-        <b>Version Download:</b><br>
-        Specify the <code>version</code> parameter to download a specific historical version. Only available for versioned documents.<br><br>
-        <b>URL Expiration:</b><br>
-        <ul>
-        <li>Default: 3600 seconds (1 hour)</li>
-        <li>Configurable via <code>expirationTimeInSeconds</code></li>
-        <li>Maximum depends on storage provider limits</li>
-        </ul>
-        <b>Security:</b><br>
-        Signed URLs are single-use and time-limited. They can be safely shared for temporary access.
-      operationId: downloadDocument
-      security:
-        - bearerAuth: []
-        - oauth2: [document:read]
-      parameters:
-        - name: documentId
-          in: path
-          required: true
-          description: Document ID (24-character MongoDB ObjectId)
-          schema:
-            type: string
-            pattern: '^[a-fA-F0-9]{24}$'
-            example: "507f1f77bcf86cd799439011"
-        - name: version
-          in: query
-          required: false
-          description: Version number to download (0-indexed). Must be less than total versions.
-          schema:
-            type: integer
-            minimum: 0
-            example: 2
-        - name: expirationTimeInSeconds
-          in: query
-          required: false
-          description: Signed URL validity duration in seconds
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 86400
-            default: 3600
-            example: 7200
-      responses:
-        '200':
-          description: Download URL generated or file stream
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                    example: true
-                  signedUrl:
-                    type: string
-                    format: uri
-                    description: Presigned URL for download (S3/Azure only)
-                    example: "https://bucket.s3.amazonaws.com/docs/file.pdf?X-Amz-Signature=..."
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-                description: Direct file stream (local storage only)
-        '400':
-          description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid version number</li>
-            <li>Version requested for non-versioned document</li>
-            <li>Version exceeds available versions</li>
-            </ul>
-        '401':
-          description: Unauthorized - Valid bearer token required
-        '404':
-          description: Document not found
-  # TODO: most of the document operations is done using /knowledgeBase/{recordId} route, none of this methods are being called by frontend do we really need them?
-  # /document/upload:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Upload document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Upload a new document to the storage system.
-  #     operationId: uploadDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [document:write]
-  #     requestBody:
-  #       required: true
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #     responses:
-  #       '200':
-  #         description: Document uploaded successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '400':
-  #         description: Invalid file or missing required fields
-  #       '401':
-  #         description: Unauthorized
-  #
-  # /document/placeholder:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Create placeholder document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Create a placeholder document entry without uploading content.
-  #     operationId: createPlaceholderDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [document:write]
-  #     requestBody:
-  #       required: true
-  #       description: "Request payload"
-  #       content:
-  #         application/json:
-  #           schema:
-  #             type: object
-  #     responses:
-  #       '200':
-  #         description: Placeholder document created successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #
-  # /document/{documentId}:
-  #   get:
-  #     tags:
-  #       - Document Management
-  #     summary: Get document by ID
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve document metadata and details by its ID.
-  #     operationId: getDocumentById
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [document:read]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Document details retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  #   delete:
-  #     tags:
-  #       - Document Management
-  #     summary: Delete document by ID
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Delete a document by its ID.
-  #     operationId: deleteDocumentById
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [document:delete]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Document deleted successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/uploadNextVersion:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Upload next version of document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Upload a new version of an existing document.
-  #     operationId: uploadNextVersionDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [document:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       required: true
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #     responses:
-  #       '200':
-  #         description: New version uploaded successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/rollBack:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Roll back to previous version
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Roll back a document to its previous version.
-  #     operationId: rollBackToPreviousVersion
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [document:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       content:
-  #         application/json:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               version:
-  #                 type: integer
-  #                 description: Version number to roll back to
-  #     responses:
-  #       '200':
-  #         description: Document rolled back successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/buffer:
-  #   get:
-  #     tags:
-  #       - Document Management
-  #     summary: Get document buffer
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve the binary buffer of a document.
-  #     operationId: getDocumentBuffer
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [document:read]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Document buffer retrieved
-  #         content:
-  #           application/octet-stream:
-  #             schema:
-  #               type: string
-  #               format: binary
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  #   put:
-  #     tags:
-  #       - Document Management
-  #     summary: Create/update document buffer
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Create or update the binary buffer of a document.
-  #     operationId: createDocumentBuffer
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [document:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       required: true
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #         application/octet-stream:
-  #           schema:
-  #             type: string
-  #             format: binary
-  #     responses:
-  #       '200':
-  #         description: Document buffer updated successfully
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/directUpload:
-  #   post:
-  #     tags:
-  #       - Document Management
-  #     summary: Direct upload document
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Upload a document directly without intermediate processing.
-  #     operationId: uploadDirectDocument
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [document:write]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     requestBody:
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #     responses:
-  #       '200':
-  #         description: Document uploaded directly
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
-  # /document/{documentId}/isModified:
-  #   get:
-  #     tags:
-  #       - Document Management
-  #     summary: Check if document is modified
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Check if a document has been modified since its last saved version.
-  #     operationId: documentDiffChecker
-  #     security:
-  #       - bearerAuth: []
-  #       - oauth2: [document:read]
-  #     parameters:
-  #       - name: documentId
-  #         in: path
-  #         required: true
-  #         schema:
-  #           type: string
-  #     responses:
-  #       '200':
-  #         description: Modification status retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 isModified:
-  #                   type: boolean
-  #       '401':
-  #         description: Unauthorized
-  #       '404':
-  #         description: Document not found
-  #
   /knowledgeBase:
     post:
       tags:
@@ -18137,335 +17616,7 @@ paths:
         '403':
           description: Forbidden - Admin access required
           # TODO: Cleanup:To remove all these apis from backend code as well
-  # /configurationManager/connectors/atlassian/config:
-  #   get:
-  #     tags:
-  #       - Configuration Manager
-  #     summary: Get Atlassian OAuth config
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve the Atlassian OAuth configuration for the organization.
-  #     operationId: getAtlassianOauthConfig
-  #     security:
-  #       - bearerAuth: []
-  #     responses:
-  #       '200':
-  #         description: Atlassian config retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               required:
-  #                 - clientId
-  #                 - clientSecret
-  #               properties:
-  #                 clientId:
-  #                   type: string
-  #                 clientSecret:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '403':
-  #         description: Forbidden - Admin access required
-  #
-  #   post:
-  #     tags:
-  #       - Configuration Manager
-  #     summary: Set Atlassian OAuth config
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Configure Atlassian OAuth credentials for the organization.
-  #     operationId: setAtlassianOauthConfig
-  #     security:
-  #       - bearerAuth: []
-  #     requestBody:
-  #       required: true
-  #       description: "Request payload"
-  #       content:
-  #         application/json:
-  #           schema:
-  #             type: object
-  #     responses:
-  #       '200':
-  #         description: Atlassian config saved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '403':
-  #         description: Forbidden - Admin access required
-  #
-  # /configurationManager/connectors/onedrive/config:
-  #   get:
-  #     tags:
-  #       - Configuration Manager
-  #     summary: Get OneDrive credentials
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve OneDrive connector credentials.
-  #     operationId: getOneDriveCredentials
-  #     security:
-  #       - bearerAuth: []
-  #     responses:
-  #       '200':
-  #         description: OneDrive credentials retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               required:
-  #                 - clientId
-  #                 - clientSecret
-  #                 - tenantId
-  #               properties:
-  #                 clientId:
-  #                   type: string
-  #                 clientSecret:
-  #                   type: string
-  #                 tenantId:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '403':
-  #         description: Forbidden - Admin access required
-  #
-  #   post:
-  #     tags:
-  #       - Configuration Manager
-  #     summary: Set OneDrive credentials
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Configure OneDrive connector credentials.
-  #     operationId: setOneDriveCredentials
-  #     security:
-  #       - bearerAuth: []
-  #     requestBody:
-  #       required: true
-  #       description: "Request payload"
-  #       content:
-  #         application/json:
-  #           schema:
-  #             type: object
-  #     responses:
-  #       '200':
-  #         description: OneDrive credentials saved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '403':
-  #         description: Forbidden - Admin access required
-  #
-  # /configurationManager/connectors/sharepoint/config:
-  #   get:
-  #     tags:
-  #       - Configuration Manager
-  #     summary: Get SharePoint credentials
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve SharePoint connector credentials.
-  #     operationId: getSharePointCredentials
-  #     security:
-  #       - bearerAuth: []
-  #     responses:
-  #       '200':
-  #         description: SharePoint credentials retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               required:
-  #                 - clientId
-  #                 - clientSecret
-  #                 - tenantId
-  #                 - sharepointDomain
-  #               properties:
-  #                 clientId:
-  #                   type: string
-  #                 clientSecret:
-  #                   type: string
-  #                 tenantId:
-  #                   type: string
-  #                 sharepointDomain:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '403':
-  #         description: Forbidden - Admin access required
-  #
-  #   post:
-  #     tags:
-  #       - Configuration Manager
-  #     summary: Set SharePoint credentials
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Configure SharePoint connector credentials.
-  #     operationId: setSharePointCredentials
-  #     security:
-  #       - bearerAuth: []
-  #     requestBody:
-  #       required: true
-  #       description: "Request payload"
-  #       content:
-  #         application/json:
-  #           schema:
-  #             type: object
-  #     responses:
-  #       '200':
-  #         description: SharePoint credentials saved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '403':
-  #         description: Forbidden - Admin access required
-  #
-  # /configurationManager/connectors/googleWorkspaceCredentials:
-  #   get:
-  #     tags:
-  #       - Configuration Manager
-  #     summary: Get Google Workspace credentials
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve Google Workspace service account credentials.
-  #     operationId: getGoogleWorkspaceCredentials
-  #     security:
-  #       - bearerAuth: []
-  #     responses:
-  #       '200':
-  #         description: Google Workspace credentials retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #       '401':
-  #         description: Unauthorized
-  #       '403':
-  #         description: Forbidden - Admin access required
-  #
-  #   post:
-  #     tags:
-  #       - Configuration Manager
-  #     summary: Upload Google Workspace credentials
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Upload Google Workspace service account credentials file.
-  #     operationId: createGoogleWorkspaceCredentials
-  #     security:
-  #       - bearerAuth: []
-  #     requestBody:
-  #       required: true
-  #       content:
-  #         multipart/form-data:
-  #           schema:
-  #             type: object
-  #             properties:
-  #               file:
-  #                 type: string
-  #                 format: binary
-  #     responses:
-  #       '200':
-  #         description: Google Workspace credentials uploaded
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '403':
-  #         description: Forbidden - Admin access required
-  #
-  # /configurationManager/connectors/googleWorkspaceOauthConfig:
-  #   get:
-  #     tags:
-  #       - Configuration Manager
-  #     summary: Get Google Workspace OAuth config
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Retrieve Google Workspace OAuth configuration.
-  #     operationId: getGoogleWorkspaceOauthConfig
-  #     security:
-  #       - bearerAuth: []
-  #     responses:
-  #       '200':
-  #         description: Google Workspace OAuth config retrieved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               required:
-  #                 - clientId
-  #                 - clientSecret
-  #               properties:
-  #                 clientId:
-  #                   type: string
-  #                 clientSecret:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '403':
-  #         description: Forbidden - Admin access required
-  #
-  #   post:
-  #     tags:
-  #       - Configuration Manager
-  #     summary: Set Google Workspace OAuth config
-  #     deprecated: true
-  #     description: |
-  #       <b>⚠️ Deprecated:</b> This endpoint is deprecated and will be removed in a future release.<br><br>
-  #       Configure Google Workspace OAuth settings.
-  #     operationId: setGoogleWorkspaceOauthConfig
-  #     security:
-  #       - bearerAuth: []
-  #     requestBody:
-  #       required: true
-  #       description: "Request payload"
-  #       content:
-  #         application/json:
-  #           schema:
-  #             type: object
-  #     responses:
-  #       '200':
-  #         description: Google Workspace OAuth config saved
-  #         content:
-  #           application/json:
-  #             schema:
-  #               type: object
-  #               properties:
-  #                 message:
-  #                   type: string
-  #       '401':
-  #         description: Unauthorized
-  #       '403':
-  #         description: Forbidden - Admin access required
-  #
+
   /configurationManager/slack-bot:
     get:
       tags:
@@ -19225,10 +18376,6 @@ paths:
                 type: object
         '401':
           description: Unauthorized
-
-  # ── MCP (Model Context Protocol) ──────────────────────────────────
-  # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).
-  # Use the root server URL: {instance_url}/mcp
 
   /mcp:
     post:
