@@ -684,6 +684,47 @@ class Crawl4AIFetcher:
         self.logger.info("Crawl4AIFetcher tier-3 started (undetected + stealth)")
         return self._undetected_stealth_crawler
 
+    async def _restart_crawler(self, tier: str) -> None:
+        """Close and recreate a crawler whose browser process has crashed."""
+        self.logger.warning(f"[crawl4ai] Restarting {tier} crawler after browser crash")
+        if tier == "tier-1":
+            if self._crawler:
+                try:
+                    await self._crawler.close()
+                except Exception:
+                    pass
+            self._crawler = None
+            from crawl4ai import AsyncWebCrawler
+            self._crawler = AsyncWebCrawler(
+                config=self._build_browser_config(stealth=self._stealth),
+            )
+            await self._crawler.start()
+            self.logger.info(f"[crawl4ai] {tier} crawler restarted successfully")
+        elif tier == "tier-2":
+            if self._undetected_crawler:
+                try:
+                    await self._undetected_crawler.close()
+                except Exception:
+                    pass
+            self._undetected_crawler = None
+            # Next call to _get_undetected_crawler() will lazy-create it
+        elif tier == "tier-3":
+            if self._undetected_stealth_crawler:
+                try:
+                    await self._undetected_stealth_crawler.close()
+                except Exception:
+                    pass
+            self._undetected_stealth_crawler = None
+            # Next call to _get_undetected_stealth_crawler() will lazy-create it
+
+    @staticmethod
+    def _is_target_crashed(result: Optional["FetchResponse"]) -> bool:
+        """Check if a failed result was caused by a browser crash."""
+        if result is None:
+            return False
+        msg = result.error_message or ""
+        return "Target crashed" in msg or "Target closed" in msg
+
     async def close(self) -> None:
         for crawler, label in [
             (self._crawler, "tier-1"),
@@ -880,6 +921,13 @@ class Crawl4AIFetcher:
             if self._is_usable(result):
                 self._log_result(url, result, "tier-1")
                 return result
+            # If the browser process crashed, restart it so subsequent
+            # URLs aren't poisoned by the dead process.
+            if self._is_target_crashed(result) or result is None:
+                try:
+                    await self._restart_crawler("tier-1")
+                except Exception as exc:
+                    self.logger.error(f"[crawl4ai] Failed to restart tier-1: {exc}")
             self.logger.debug(f"Tier-1 failed for {url}, trying tier-2")
 
             # ---- Tier 2: Undetected browser, no stealth ----
@@ -889,6 +937,11 @@ class Crawl4AIFetcher:
                 if self._is_usable(result):
                     self._log_result(url, result, "tier-2")
                     return result
+                if self._is_target_crashed(result) or result is None:
+                    try:
+                        await self._restart_crawler("tier-2")
+                    except Exception as exc:
+                        self.logger.error(f"[crawl4ai] Failed to restart tier-2: {exc}")
                 self.logger.debug(f"Tier-2 failed for {url}, trying tier-3")
 
             # ---- Tier 3: Undetected browser + stealth ----
@@ -1004,17 +1057,6 @@ class Crawl4AIFetcher:
                 f"html_cleaned: {result.cleaned_html}"
                 f"html: {result.html}"
             )
-            # return FetchResponse(
-            #     status_code=result.status_code or 200,
-            #     content_bytes=content_bytes,
-            #     headers=result.response_headers or {},
-            #     final_url=result.url,
-            #     strategy="crawl4ai",
-            #     markdown=None,
-            #     links=None,
-            #     success=False,
-            #     error_message=f"Body too small ({len(content_bytes)} bytes)",
-            # )
 
         # Extract markdown safely (can be str or MarkdownGenerationResult)
         markdown_text = None
