@@ -4,6 +4,7 @@ import hashlib
 import random
 import re
 import uuid
+from enum import Enum
 from dataclasses import dataclass
 from io import BytesIO
 from logging import Logger
@@ -94,7 +95,11 @@ class RetryUrl:
     retries: int
     last_attempted: int
     depth: int = 0                  # depth at which the URL was first encountered
-    referer: Optional[str] = None   # referer at the time of first attempt
+    referer: str | None = None   # referer at the time of first attempt
+
+class Status(Enum):
+    PENDING = "PENDING"
+
 
 RETRYABLE_STATUS_CODES = {
     403, 408, 429,
@@ -336,7 +341,7 @@ class WebConnector(BaseConnector):
 
         # Crawling state
         self.visited_urls: Set[str] = set()
-        self.retry_urls: Dict[str, RetryUrl] = {}
+        self.retry_urls: dict[str, RetryUrl] = {}
         self.processed_urls: int = 0
         self.base_domain: Optional[str] = None
         self.session: Optional[aiohttp.ClientSession] = None
@@ -1000,7 +1005,7 @@ class WebConnector(BaseConnector):
             await asyncio.sleep(1)
 
     async def _fetch_and_process_url(
-        self, url: str, depth: int, referer: Optional[str] = None
+        self, url: str, depth: int, referer: str | None = None
     ) -> Optional[RecordUpdate]:
         """Fetch URL content using multi-strategy fallback and create a RecordUpdate."""
         try:
@@ -1024,7 +1029,7 @@ class WebConnector(BaseConnector):
                 existing_entry = self.retry_urls.get(normalized)
                 self.retry_urls[normalized] = RetryUrl(
                     url=normalized,
-                    status="pending_retry",
+                    status=Status.PENDING,
                     # Synthetic timeout code for connection failures without an HTTP response.
                     status_code=existing_entry.status_code if existing_entry else 408,
                     retries=(existing_entry.retries + 1) if existing_entry else 0,
@@ -1073,7 +1078,7 @@ class WebConnector(BaseConnector):
                     existing_entry = self.retry_urls.get(normalized)  # O(1)
                     self.retry_urls[normalized] = RetryUrl(
                         url=normalized,
-                        status="pending_retry",
+                        status=Status.PENDING,
                         status_code=result.status_code,
                         retries=(existing_entry.retries + 1) if existing_entry else 0,
                         last_attempted=get_epoch_timestamp_in_ms(),
@@ -1316,7 +1321,7 @@ class WebConnector(BaseConnector):
 
     async def _create_failed_placeholder_record(
         self, url: str, status_code: int
-    ) -> Tuple[Optional[FileRecord], Optional[List[Permission]]]:
+    ) -> tuple[FileRecord | None, list[Permission] | None]:
         """Build a FAILED-status placeholder FileRecord for a URL that could not be fetched.
 
         Looks up any existing record by external_id so the same database document is
@@ -1424,12 +1429,12 @@ class WebConnector(BaseConnector):
         self.logger.info("Processing %d retryable URLs", len(snapshot))
 
         for retry_url in snapshot:
-            record_update: Optional[RecordUpdate] = None
-            last_exception: Optional[Exception] = None
+            record_update: RecordUpdate | None = None
+            last_exception: Exception | None = None
 
             for attempt in range(1, max_retries + 1):
                 try:
-                    record_update = await self._fetch_and_process_url(retry_url.url, depth=retry_url.depth, referer=None)
+                    record_update = await self._fetch_and_process_url(retry_url.url, depth=retry_url.depth, referer=retry_url.referer)
 
                     if record_update is not None and record_update.record is not None:
                         # Successful fetch — stop retrying this URL.
@@ -1516,7 +1521,7 @@ class WebConnector(BaseConnector):
           batch and flushed to ``on_new_records`` once the batch reaches
           ``self.batch_size``, with a final flush after all URLs are processed.
         """
-        batch_records: List[Tuple[Record, List[Permission]]] = []
+        batch_records: list[tuple[Record, list[Permission]]] = []
 
         async for record_update in self._retry_urls_generator(max_retries=max_retries):
             if record_update.is_updated:

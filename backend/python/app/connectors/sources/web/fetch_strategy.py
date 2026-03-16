@@ -357,9 +357,10 @@ async def fetch_url_with_fallback(
                     size = int(cl)
                     if size > max_size_bytes:
                         logger.warning(
-                            f"⚠️ Skipping {url}: Content-Length "
-                            + f"{size / (1024 * 1024):.1f}MB exceeds limit of "
-                            + f"{max_size_bytes / (1024 * 1024):.0f}MB"
+                            "⚠️ Skipping %s: Content-Length %.1fMB exceeds limit of %.0fMB",
+                            url,
+                            size / (1024 * 1024),
+                            max_size_bytes / (1024 * 1024),
                         )
                         # Return a concrete response so callers can distinguish
                         # an intentional size skip from a connection failure.
@@ -405,7 +406,7 @@ async def fetch_url_with_fallback(
     # When all strategies are exhausted due to bot-detection or 429s (not a
     # hard connection failure), this lets callers inspect the status code and
     # decide whether to queue the URL for a post-crawl retry.
-    last_failed_result: Optional[FetchResponse] = None
+    last_failed_result: FetchResponse | None = None
 
     for strategy_name, strategy_fn in strategies:
         logger.debug(f"🔄 [{strategy_name}] Attempting {url}")
@@ -441,8 +442,8 @@ async def fetch_url_with_fallback(
                 # ---- Bot detection (403, 999, 520-530) -> retry this strategy,
                 if status in _BOT_DETECTION_CODES:
                     logger.warning(
-                        f"⚠️ [{strategy_name}] Bot blocked (HTTP {status}) for {url} "
-                        + f"(attempt {attempt + 1}/{max_retries_per_strategy})"
+                        "⚠️ [%s] Bot blocked (HTTP %s) for %s (attempt %d/%d)",
+                        strategy_name, status, url, attempt + 1, max_retries_per_strategy
                     )
                     last_failed_result = result
                     break  # break 429 loop, go to next attempt
@@ -502,8 +503,8 @@ async def fetch_url_with_fallback(
     # Returns None only when every strategy failed with a hard connection error.
     if last_failed_result is not None:
         logger.error(
-            f"❌ All fetch strategies failed for {url} "
-            + f"(last status: {last_failed_result.status_code})"
+            "❌ All fetch strategies failed for %s (last status: %s)",
+            url, last_failed_result.status_code
         )
         return last_failed_result
 
