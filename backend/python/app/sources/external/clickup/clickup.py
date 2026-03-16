@@ -1,4 +1,3 @@
-# ruff: noqa: FBT001
 """
 ClickUp REST API DataSource - Auto-generated API wrapper
 
@@ -2404,8 +2403,8 @@ class ClickUpDataSource:
         self,
         task_id: str,
         field_id: str,
-        value: str | int | float | bool | list[Any] | dict[str, Any],
         *,
+        value: str | int | float | bool | list[Any] | dict[str, Any],
         custom_task_ids: bool | None = None,
         team_id: str | None = None
     ) -> ClickUpResponse:

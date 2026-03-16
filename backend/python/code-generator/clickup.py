@@ -1163,18 +1163,25 @@ class ClickUpDataSourceGenerator:
     def _generate_method_signature(self, method_name: str, endpoint_info: Dict) -> str:
         """Generate method signature with explicit parameters."""
         params = ["self"]
+        has_any_bool = False
 
-        # Add required parameters first
+        # Collect required params, split into non-bool and bool groups
+        required_non_bool: List[str] = []
+        required_bool: List[str] = []
         for param_name in endpoint_info["required"]:
             if param_name in endpoint_info["parameters"]:
                 param_info = endpoint_info["parameters"][param_name]
                 sanitized_name = self._sanitize_parameter_name(param_name)
                 modern_type = self._modernize_type(param_info["type"])
-                params.append(f"{sanitized_name}: {modern_type}")
+                param_str = f"{sanitized_name}: {modern_type}"
+                if "bool" in param_info.get("type", ""):
+                    required_bool.append(param_str)
+                    has_any_bool = True
+                else:
+                    required_non_bool.append(param_str)
 
-        # Collect optional parameters, check if any are bool
+        # Collect optional parameters
         optional_params: List[str] = []
-        has_bool_optional = False
         for param_name, param_info in endpoint_info["parameters"].items():
             if param_name not in endpoint_info["required"]:
                 sanitized_name = self._sanitize_parameter_name(param_name)
@@ -1183,12 +1190,13 @@ class ClickUpDataSourceGenerator:
                     modern_type = f"{modern_type} | None"
                 optional_params.append(f"{sanitized_name}: {modern_type} = None")
                 if "bool" in param_info.get("type", ""):
-                    has_bool_optional = True
+                    has_any_bool = True
 
-        # Force keyword-only if any optional param is bool (FBT001)
-        if has_bool_optional and optional_params:
+        # Build signature: non-bool required first, then * if needed, then bool required + optional
+        params.extend(required_non_bool)
+        if has_any_bool and (required_bool or optional_params):
             params.append("*")
-
+        params.extend(required_bool)
         params.extend(optional_params)
 
         signature_params = ",\n        ".join(params)
@@ -1283,7 +1291,6 @@ class ClickUpDataSourceGenerator:
         """Generate the complete ClickUp datasource class."""
 
         class_lines = [
-            "# ruff: noqa: FBT001",
             '"""',
             "ClickUp REST API DataSource - Auto-generated API wrapper",
             "",
