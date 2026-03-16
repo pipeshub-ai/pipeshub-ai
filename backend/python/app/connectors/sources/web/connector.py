@@ -2250,8 +2250,12 @@ class WebConnector(BaseConnector):
             # Process HTML content
             cleaned_html_content = None
             if "html" in mime_type.lower():
+                if result.strategy == "crawl4ai":
+                    strategy = None
+                else:
+                    strategy = result.strategy
                 cleaned_html_content = await self._process_html_content(
-                    content_bytes, record, headers, result.strategy
+                    content_bytes, record, headers, strategy
                 )
 
             # Prepare response content
