@@ -548,22 +548,32 @@ class Crawl4AIFetcher:
     # Minimum meaningful body length
     _MIN_BODY_LENGTH = 256
 
+    # Shorter timeout for tier-1 so fallback to tier-2/3 happens fast
+    # when a server tarpits the regular browser.
+    _TIER1_PAGE_TIMEOUT = 20_000  # 20s
+
     def __init__(
         self,
         logger: logging.Logger | None = None,
         *,
         headless: bool = True,
-        stealth: bool = False,
+        stealth: bool = True,
         text_mode: bool = False,
         extra_browser_args: list[str] | None = None,
         user_agent: str | None = None,
         proxy_config=None,
     ) -> None:
+        # Tier 1 (regular + stealth) is created eagerly in start().
+        # Tier 2 (undetected, no stealth) and Tier 3 (undetected + stealth)
+        # are lazy-created on first need.
         self._crawler = None
+        self._undetected_crawler = None
+        self._undetected_stealth_crawler = None
         self._semaphore: Optional[asyncio.Semaphore] = None
         self.logger = logger or logging.getLogger(__name__)
+        self._patchright_available: Optional[bool] = None
 
-        # Store config params for deferred construction in start()
+        # Store config params for deferred construction
         self._headless = headless
         self._stealth = stealth
         self._text_mode = text_mode
@@ -574,29 +584,26 @@ class Crawl4AIFetcher:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    async def start(self) -> None:
-        from crawl4ai import AsyncWebCrawler
+    def _build_browser_config(self, *, stealth: bool) -> "BrowserConfig":
+        """Build a BrowserConfig with the given stealth setting."""
         from crawl4ai.async_configs import BrowserConfig
 
-        browser_config = BrowserConfig(
+        return BrowserConfig(
             browser_type="chromium",
             headless=self._headless,
             viewport_width=1280,
             viewport_height=720,
             ignore_https_errors=True,
             java_script_enabled=True,
-            enable_stealth=self._stealth,
+            enable_stealth=stealth,
             text_mode=self._text_mode,
             extra_args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                # Hide webdriver flag without full stealth (which breaks
-                # ServiceNow sites). This prevents basic bot-detection 403s.
                 "--disable-blink-features=AutomationControlled",
                 *self._extra_args,
             ],
-            # Use a realistic user-agent when none is explicitly provided
             **({"user_agent": self._user_agent} if self._user_agent else {
                 "user_agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -606,18 +613,91 @@ class Crawl4AIFetcher:
             }),
         )
 
-        self._crawler = AsyncWebCrawler(config=browser_config)
+    def _has_patchright(self) -> bool:
+        """Check once whether patchright is available."""
+        if self._patchright_available is None:
+            try:
+                import patchright  # noqa: F401
+                self._patchright_available = True
+            except ImportError:
+                self._patchright_available = False
+                self.logger.warning(
+                    "patchright not installed — undetected browser tiers unavailable. "
+                    "Install with: pip install patchright && python -m patchright install chromium"
+                )
+        return self._patchright_available
+
+    async def start(self) -> None:
+        """Start tier-1 crawler: regular browser + stealth."""
+        from crawl4ai import AsyncWebCrawler
+
+        self._crawler = AsyncWebCrawler(
+            config=self._build_browser_config(stealth=self._stealth),
+        )
         await self._crawler.start()
         self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_PAGES)
-        self.logger.info("Crawl4AIFetcher started (headless Chromium via Crawl4AI)")
+        self.logger.info("Crawl4AIFetcher started (tier-1: regular + stealth)")
+
+    async def _get_undetected_crawler(self):
+        """Lazy-create tier-2: undetected browser, no stealth."""
+        if self._undetected_crawler is not None:
+            return self._undetected_crawler
+        if not self._has_patchright():
+            return None
+
+        from crawl4ai import AsyncWebCrawler
+        from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+        from crawl4ai.browser_adapter import UndetectedAdapter
+
+        config = self._build_browser_config(stealth=False)
+        strategy = AsyncPlaywrightCrawlerStrategy(
+            browser_config=config,
+            browser_adapter=UndetectedAdapter(),
+        )
+        self._undetected_crawler = AsyncWebCrawler(
+            crawler_strategy=strategy, config=config,
+        )
+        await self._undetected_crawler.start()
+        self.logger.info("Crawl4AIFetcher tier-2 started (undetected, no stealth)")
+        return self._undetected_crawler
+
+    async def _get_undetected_stealth_crawler(self):
+        """Lazy-create tier-3: undetected browser + stealth."""
+        if self._undetected_stealth_crawler is not None:
+            return self._undetected_stealth_crawler
+        if not self._has_patchright():
+            return None
+
+        from crawl4ai import AsyncWebCrawler
+        from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+        from crawl4ai.browser_adapter import UndetectedAdapter
+
+        config = self._build_browser_config(stealth=True)
+        strategy = AsyncPlaywrightCrawlerStrategy(
+            browser_config=config,
+            browser_adapter=UndetectedAdapter(),
+        )
+        self._undetected_stealth_crawler = AsyncWebCrawler(
+            crawler_strategy=strategy, config=config,
+        )
+        await self._undetected_stealth_crawler.start()
+        self.logger.info("Crawl4AIFetcher tier-3 started (undetected + stealth)")
+        return self._undetected_stealth_crawler
 
     async def close(self) -> None:
-        if self._crawler:
-            try:
-                await self._crawler.close()
-            except Exception as exc:
-                self.logger.warning(f"Error closing crawler: {exc}")
-            self._crawler = None
+        for crawler, label in [
+            (self._crawler, "tier-1"),
+            (self._undetected_crawler, "tier-2"),
+            (self._undetected_stealth_crawler, "tier-3"),
+        ]:
+            if crawler:
+                try:
+                    await crawler.close()
+                except Exception as exc:
+                    self.logger.warning(f"Error closing {label} crawler: {exc}")
+        self._crawler = None
+        self._undetected_crawler = None
+        self._undetected_stealth_crawler = None
         self.logger.info("Crawl4AIFetcher closed")
 
     async def __aenter__(self) -> "Crawl4AIFetcher":
@@ -626,6 +706,26 @@ class Crawl4AIFetcher:
 
     async def __aexit__(self, *exc_info) -> None:
         await self.close()
+
+    @staticmethod
+    def _is_usable(result: Optional[FetchResponse]) -> bool:
+        """Check whether a fetch result has real page content.
+
+        Catches two failure modes:
+        - Navigation failed entirely (no headers from server).
+        - In-page JS redirect hit a Chromium error page. The initial HTTP
+          response has headers, but the captured HTML is Chromium's internal
+          error page. We detect this via an exact browser-generated string
+          that no real web server would ever send.
+        """
+        if result is None or not result.success:
+            return False
+        if not result.headers:
+            return False
+        content = result.content_bytes.decode("utf-8", errors="replace")
+        if "This page has been blocked by Chromium" in content:
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Public API
@@ -756,35 +856,70 @@ class Crawl4AIFetcher:
         # If no explicit wait_for, use our Shadow DOM–aware content check
         effective_wait_for = wait_for if wait_for is not None else self._DEFAULT_CSR_WAIT_JS
 
+        fetch_kwargs = dict(
+            page_timeout=page_timeout,
+            wait_until=wait_until,
+            wait_for=effective_wait_for,
+            delay_before_return_html=delay_before_return_html,
+            magic=magic,
+            process_iframes=process_iframes,
+            remove_overlay_elements=remove_overlay_elements,
+            exclude_external_links=exclude_external_links,
+            word_count_threshold=word_count_threshold,
+            css_selector=css_selector,
+            excluded_tags=excluded_tags,
+            scan_full_page=scan_full_page,
+            js_code=js_code,
+            proxy_config=proxy_config,
+        )
+
         async with self._semaphore:
-            
-            result = await self._do_fetch(
-                url,
-                page_timeout=page_timeout,
-                wait_until=wait_until,
-                wait_for=effective_wait_for,
-                delay_before_return_html=delay_before_return_html,
-                magic=magic,
-                process_iframes=process_iframes,
-                remove_overlay_elements=remove_overlay_elements,
-                exclude_external_links=exclude_external_links,
-                word_count_threshold=word_count_threshold,
-                css_selector=css_selector,
-                excluded_tags=excluded_tags,
-                scan_full_page=scan_full_page,
-                js_code=js_code,
-                proxy_config=proxy_config,
-            )
-            final_url = result.final_url
-            if final_url != url:
-                self.logger.warning(f"⚠️ Crawl4AI redirected {url} to {final_url}")
+            # ---- Tier 1: Regular browser + stealth (shorter timeout) ----
+            tier1_kwargs = {**fetch_kwargs, "page_timeout": self._TIER1_PAGE_TIMEOUT}
+            result = await self._do_fetch(url, crawler=self._crawler, **tier1_kwargs)
+            if self._is_usable(result):
+                self._log_result(url, result, "tier-1")
+                return result
+            self.logger.debug(f"Tier-1 failed for {url}, trying tier-2")
+
+            # ---- Tier 2: Undetected browser, no stealth ----
+            undetected = await self._get_undetected_crawler()
+            if undetected:
+                result = await self._do_fetch(url, crawler=undetected, **fetch_kwargs)
+                if self._is_usable(result):
+                    self._log_result(url, result, "tier-2")
+                    return result
+                self.logger.debug(f"Tier-2 failed for {url}, trying tier-3")
+
+            # ---- Tier 3: Undetected browser + stealth ----
+            undetected_stealth = await self._get_undetected_stealth_crawler()
+            if undetected_stealth:
+                result = await self._do_fetch(url, crawler=undetected_stealth, **fetch_kwargs)
+                if self._is_usable(result):
+                    self._log_result(url, result, "tier-3")
+                    return result
+
+            # All tiers exhausted — return whatever the last result was
+            self._log_result(url, result, "all-tiers-failed")
             return result
+
+    def _log_result(
+        self, url: str, result: Optional[FetchResponse], tier: str
+    ) -> None:
+        if result and result.final_url != url:
+            self.logger.warning(f"⚠️ Crawl4AI redirected {url} to {result.final_url}")
+        if result and result.success:
+            self.logger.debug(f"[crawl4ai] {tier} succeeded for {url}")
+        else:
+            self.logger.warning(f"[crawl4ai] {tier} for {url}")
     # ------------------------------------------------------------------
     # Internal fetch logic
     # ------------------------------------------------------------------
     async def _do_fetch(
         self,
         url: str,
+        *,
+        crawler,
         **kwargs,
     ) -> Optional[FetchResponse]:
         from crawl4ai.async_configs import CrawlerRunConfig, CacheMode
@@ -835,7 +970,7 @@ class Crawl4AIFetcher:
         )
 
         try:
-            result = await self._crawler.arun(url=url, config=run_config)
+            result = await crawler.arun(url=url, config=run_config)
         except Exception as exc:
             self.logger.error(f"[crawl4ai] Unhandled error for {url}: {exc}")
             return None
