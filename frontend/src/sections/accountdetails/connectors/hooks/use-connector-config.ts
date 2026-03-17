@@ -790,6 +790,8 @@ export const useConnectorConfig = ({
     privateKeyError,
   ]);
 
+  const appCategoriesKey = (connector.appCategories ?? []).join(',');
+
   // Load connector configuration - simplified with proper dependency management
   useEffect(() => {
     // Skip if account type is still loading
@@ -931,7 +933,7 @@ export const useConnectorConfig = ({
     connector.authType,
     connector.supportsRealtime,
     connector.appDescription,
-    connector.appCategories,
+    appCategoriesKey,
     connector.iconPath,
     connector._key,
     isCreateMode,

@@ -5372,6 +5372,17 @@ async def toggle_connector_instance(
 
             await producer.send_message(topic="entity-events", message=message)
 
+            # When disabling sync, remove connector from map and cleanup so re-enable does full init
+            if not target_status and hasattr(container, "connectors_map") and connector_id in container.connectors_map:
+                logger.info(f"Removing connector {connector_id} from connectors_map after toggle off")
+                existing_connector = container.connectors_map.pop(connector_id)
+                try:
+                    if hasattr(existing_connector, "cleanup"):
+                        await existing_connector.cleanup()
+                    logger.info(f"Cleaned up connector instance {connector_id}")
+                except Exception as cleanup_err:
+                    logger.error(f"Error cleaning up connector {connector_id} after toggle off: {cleanup_err}")
+
         return {
             "success": True,
             "message": f"Connector instance {connector_id} {toggle_type} toggled successfully"
