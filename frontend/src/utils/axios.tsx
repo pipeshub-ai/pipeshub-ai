@@ -325,7 +325,7 @@ axiosInstance.interceptors.response.use(
       if (errorContext && errorContext.showError) {
         errorContext.showError(processedError.message);
       }
-    } catch (e) {
+    } catch (e : unknown) {
       console.error('Failed to show error in snackbar:', e);
     }
 
