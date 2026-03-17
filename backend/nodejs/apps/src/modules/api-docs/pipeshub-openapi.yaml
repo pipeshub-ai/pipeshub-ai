@@ -19063,10 +19063,12 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - pushIntervalMs
               properties:
-                pushInterval:
+                pushIntervalMs:
                   type: integer
-                  description: Push interval in seconds
+                  description: Push interval in milliseconds
       responses:
         '200':
           description: Push interval updated
@@ -19099,6 +19101,8 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - serverUrl
               properties:
                 serverUrl:
                   type: string
