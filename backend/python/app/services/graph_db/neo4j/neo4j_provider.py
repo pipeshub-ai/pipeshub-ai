@@ -5235,6 +5235,8 @@ class Neo4jProvider(IGraphDBProvider):
                 CollectionNames.PERMISSION.value,
                 CollectionNames.INHERIT_PERMISSIONS.value,
                 CollectionNames.USER_APP_RELATION.value,
+                CollectionNames.ENTITY_RELATIONS.value,
+                CollectionNames.ANYONE.value,
             ]
             deleted_count, failed = await self._delete_all_edges_for_nodes(
                 transaction or "", node_ids, sync_edge_collections

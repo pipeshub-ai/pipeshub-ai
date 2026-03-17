@@ -7788,6 +7788,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     CollectionNames.INHERIT_PERMISSIONS.value,
                     CollectionNames.IS_OF_TYPE.value,
                     CollectionNames.USER_APP_RELATION.value,
+                    CollectionNames.ENTITY_RELATIONS.value,
+                    CollectionNames.ANYONE.value,
                 ]
             else:
                 # ArangoDB REST API returns graph info with 'graph' key containing the definition
