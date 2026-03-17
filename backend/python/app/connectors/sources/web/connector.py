@@ -105,7 +105,7 @@ RETRYABLE_STATUS_CODES = {
     403, 408, 429,
     500, 502, 503, 504,
     999,
-    520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530,
+    520, 522, 524, 525, 529,
 }
 
 # Base and cap (seconds) for the exponential back-off between attempts.
