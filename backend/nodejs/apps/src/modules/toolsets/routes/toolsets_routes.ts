@@ -43,6 +43,7 @@ import {
   listToolsetOAuthConfigs,
   updateToolsetOAuthConfig,
   deleteToolsetOAuthConfig,
+  updateUserToolsetInstance,
 } from '../controller/toolsets_controller';
 
 // ============================================================================
@@ -163,6 +164,22 @@ const handleOAuthCallbackSchema = z.object({
     state: z.string().optional(),
     error: z.string().optional(),
     base_url: z.string().optional(),
+  }),
+});
+
+/**
+ * Schema for updating user's credentials for a non-OAuth toolset instance
+ */
+const updateUserToolsetInstanceSchema = z.object({
+  body: z.object({
+    auth: z.object({
+      apiToken: z.string().optional(),
+      username: z.string().optional(),
+      password: z.string().optional(),
+    }),
+  }),
+  params: z.object({
+    instanceId: z.string().min(1, 'Instance ID is required'),
   }),
 });
 
@@ -420,6 +437,19 @@ export function createToolsetsRouter(container: Container): Router {
     authenticateToolsetInstance(config)
   );
 
+
+  /**
+   * PUT /instances/:instanceId/credentials
+   *  Update user's credentials for an instance (non-OAuth: API token, bearer, username/password)
+   */
+  router.put(
+    '/instances/:instanceId/credentials',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateUserToolsetInstanceSchema),
+    updateUserToolsetInstance(config) // Reuse the same controller for both create and update of credentials 
+  );
+  
   /**
    * DELETE /instances/:instanceId/credentials
    * Remove user's credentials for an instance

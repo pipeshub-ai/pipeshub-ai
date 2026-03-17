@@ -6,7 +6,7 @@ to avoid circular dependencies.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, List, Optional,Literal
 
 
 @dataclass
@@ -22,6 +22,7 @@ class AuthField:
     min_length: int = 1
     max_length: int = 1000
     is_secret: bool = False
+    usage: Literal["CONFIGURE", "AUTHENTICATE", "BOTH"] = "BOTH"
 
 
 @dataclass

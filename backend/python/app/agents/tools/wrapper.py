@@ -140,7 +140,11 @@ class ToolInstanceCreator:
             if client is not None:
                 if self.logger:
                     self.logger.debug(f"Reusing cached client for {app_name} (toolset: {toolset_id})")
-                return action_class(client)
+                params = inspect.signature(action_class.__init__).parameters
+                if "state" in params:
+                    return action_class(client, state=self.state)
+                else:
+                    return action_class(client)
 
             # Acquire per-key lock to prevent parallel tool calls from
             # each creating their own client for the same cache key
@@ -152,7 +156,11 @@ class ToolInstanceCreator:
                 if client is not None:
                     if self.logger:
                         self.logger.debug(f"Reusing cached client for {app_name} (toolset: {toolset_id})")
-                    return action_class(client)
+                    params = inspect.signature(action_class.__init__).parameters
+                    if "state" in params:
+                        return action_class(client, state=self.state)
+                    else:
+                        return action_class(client)
 
                 if self.logger:
                     if toolset_config:
@@ -174,6 +182,10 @@ class ToolInstanceCreator:
                 self._client_cache[cache_key] = client
                 if self.logger:
                     self.logger.debug(f"Cached client for {app_name} (toolset: {toolset_id})")
+            
+            params = inspect.signature(action_class.__init__).parameters
+            if "state" in params:
+                return action_class(client, state=self.state)
 
             return action_class(client)
         except Exception as e:

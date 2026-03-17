@@ -25,6 +25,7 @@ def auth_field_to_dict(field: AuthField) -> Dict[str, Any]:
         "description": field.description,
         "fieldType": field.field_type,
         "required": field.required,
+        "usage": field.usage,
         "defaultValue": field.default_value,
         "validation": {
             "minLength": min_length,

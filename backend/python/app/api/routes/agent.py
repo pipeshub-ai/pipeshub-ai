@@ -59,6 +59,7 @@ class ChatQuery(BaseModel):
     modelName: Optional[str] = None
     timezone: Optional[str] = None
     currentTime: Optional[str] = None
+    conversationId: Optional[str] = None  
 
 
 # ============================================================================
@@ -2352,6 +2353,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "instructions": agent.get("instructions"),
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
+            "conversationId": chat_query.conversationId,
         }
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm, agent=agent)
 
@@ -2676,6 +2678,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "toolsets": agent_toolsets,
             "knowledge": agent_knowledge,
             "toolsetConfigs": toolset_configs,
+            "conversationId": chat_query.conversationId,
         }
 
         return StreamingResponse(
