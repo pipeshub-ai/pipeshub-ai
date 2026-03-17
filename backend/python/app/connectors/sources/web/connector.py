@@ -696,6 +696,13 @@ class WebConnector(BaseConnector):
         try:
             await self.reload_config()
 
+            self.logger.info(
+                f"🔧 Sync config: url={self.url}, type={self.crawl_type}, "
+                f"depth={self.max_depth}, max_pages={self.max_pages}, "
+                f"follow_external={self.follow_external}, restrict_to_start_path={self.restrict_to_start_path}, "
+                f"headless={self.use_headless_browser}"
+            )
+
             # Load filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "web", self.connector_id, self.logger
@@ -915,6 +922,10 @@ class WebConnector(BaseConnector):
         """
         # Queue for BFS crawling: (url, depth, referer)
         queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
+        self.logger.info(
+            f"🕷️ BFS crawl starting from {start_url} "
+            f"(max_depth={self.max_depth}, max_pages={self.max_pages})"
+        )
 
         while queue and len(self.visited_urls) < self.max_pages:
             current_url, current_depth, referer = queue.pop(0)
@@ -922,10 +933,14 @@ class WebConnector(BaseConnector):
             # Skip if already visited
             normalized_url = self._normalize_url(current_url)
             if normalized_url in self.visited_urls:
+                self.logger.debug(f"⏭️ Already visited, skipping: {current_url}")
                 continue
 
             # Skip if depth exceeded
             if current_depth > self.max_depth:
+                self.logger.debug(
+                    f"⏭️ Depth {current_depth} > max {self.max_depth}, skipping: {current_url}"
+                )
                 continue
 
             self.logger.info(
@@ -967,6 +982,11 @@ class WebConnector(BaseConnector):
                             ):
                                 queue.append((link, current_depth + 1, current_url))
 
+                        self.logger.debug(
+                            f"📋 Queue: {len(queue)} pending after {current_url} "
+                            f"(visited: {len(self.visited_urls)}/{self.max_pages})"
+                        )
+
                     yield record_update
 
             except Exception as e:
@@ -986,6 +1006,11 @@ class WebConnector(BaseConnector):
                 self.logger.error("❌ Session not initialized")
                 return None
 
+            self.logger.debug(
+                f"🌐 Fetching {url} via "
+                f"{'headless (crawl4ai)' if self.use_headless_browser else 'fallback chain'} "
+                f"(depth={depth})"
+            )
             if self.use_headless_browser and self.crawl4ai_fetcher:
                 result = await self.crawl4ai_fetcher.fetch(
                     url=url,
@@ -1055,7 +1080,11 @@ class WebConnector(BaseConnector):
 
             # Determine MIME type and file extension
             mime_type, extension = self._determine_mime_type(url, content_type)
+            self.logger.debug(
+                f"🔍 {url}: content_type='{content_type}' → mime={mime_type.value}, ext={extension}"
+            )
             if not self._pass_extension_filter(extension):
+                self.logger.info(f"⏭️ Skipping {url}: extension '{extension}' excluded by filter")
                 return None
             html_bytes = content_bytes if mime_type == MimeTypes.HTML else None
 
@@ -1138,6 +1167,11 @@ class WebConnector(BaseConnector):
                     is_updated = metadata_changed or content_changed
             else:
                 is_new = True
+
+            self.logger.debug(
+                f"📊 {url}: is_new={is_new}, is_updated={is_updated}, "
+                f"metadata_changed={metadata_changed}, content_changed={content_changed}"
+            )
 
             # Create FileRecord
             file_record = FileRecord(
@@ -1266,6 +1300,7 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to extract links from {base_url}: {e}")
 
+        self.logger.debug(f"🔗 {base_url}: extracted {len(links)} valid links")
         return links
 
     def _check_index_filter(self, record: Record) -> bool:

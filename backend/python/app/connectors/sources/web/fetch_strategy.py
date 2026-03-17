@@ -915,12 +915,16 @@ class Crawl4AIFetcher:
         )
 
         async with self._semaphore:
+            failed_tiers: list[str] = []
+
             # ---- Tier 1: Regular browser + stealth (shorter timeout) ----
             tier1_kwargs = {**fetch_kwargs, "page_timeout": self._TIER1_PAGE_TIMEOUT}
             result = await self._do_fetch(url, crawler=self._crawler, **tier1_kwargs)
             if self._is_usable(result):
-                self._log_result(url, result, "tier-1")
+                self._log_result(url, result, "tier-1", failed_tiers)
                 return result
+            failed_tiers.append("tier-1")
+            self.logger.warning(f"⚠️ [crawl4ai] tier-1 failed for {url}, trying tier-2")
             # If the browser process crashed, restart it so subsequent
             # URLs aren't poisoned by the dead process.
             if self._is_target_crashed(result) or result is None:
@@ -929,44 +933,57 @@ class Crawl4AIFetcher:
                     await self._restart_crawler("tier-1")
                 except Exception as exc:
                     self.logger.error(f"[crawl4ai] Failed to restart tier-1: {exc}")
-            self.logger.debug(f"Tier-1 failed for {url}, trying tier-2")
 
             # ---- Tier 2: Undetected browser, no stealth ----
             undetected = await self._get_undetected_crawler()
             if undetected:
                 result = await self._do_fetch(url, crawler=undetected, **fetch_kwargs)
                 if self._is_usable(result):
-                    self._log_result(url, result, "tier-2")
+                    self._log_result(url, result, "tier-2", failed_tiers)
                     return result
+                failed_tiers.append("tier-2")
+                self.logger.warning(f"⚠️ [crawl4ai] tier-2 failed for {url}, trying tier-3")
                 if self._is_target_crashed(result) or result is None:
                     try:
                         self.logger.info(f"[crawl4ai] Restarting tier-2 crawler after browser crash")
                         await self._restart_crawler("tier-2")
                     except Exception as exc:
                         self.logger.error(f"[crawl4ai] Failed to restart tier-2: {exc}")
-                self.logger.debug(f"Tier-2 failed for {url}, trying tier-3")
+            else:
+                failed_tiers.append("tier-2 (unavailable)")
+                self.logger.warning(f"⚠️ [crawl4ai] tier-2 unavailable for {url}, trying tier-3")
 
             # ---- Tier 3: Undetected browser + stealth ----
             undetected_stealth = await self._get_undetected_stealth_crawler()
             if undetected_stealth:
                 result = await self._do_fetch(url, crawler=undetected_stealth, **fetch_kwargs)
                 if self._is_usable(result):
-                    self._log_result(url, result, "tier-3")
+                    self._log_result(url, result, "tier-3", failed_tiers)
                     return result
+                failed_tiers.append("tier-3")
+            else:
+                failed_tiers.append("tier-3 (unavailable)")
 
             # All tiers exhausted — return whatever the last result was
-            self._log_result(url, result, "all-tiers-failed")
+            self._log_result(url, result, "all-tiers-failed", failed_tiers)
             return result
 
     def _log_result(
-        self, url: str, result: Optional[FetchResponse], tier: str
+        self, url: str, result: Optional[FetchResponse], tier: str,
+        failed_tiers: list[str] | None = None,
     ) -> None:
         if result and result.final_url != url:
-            self.logger.warning(f"⚠️ Crawl4AI redirected {url} to {result.final_url}")
-        if result and result.success:
-            self.logger.debug(f"[crawl4ai] {tier} succeeded for {url}")
+            self.logger.warning(f"⚠️ [crawl4ai] Redirected {url} → {result.final_url}")
+        failed_ctx = f" (failed: {', '.join(failed_tiers)})" if failed_tiers else ""
+        if tier == "all-tiers-failed":
+            self.logger.error(
+                f"❌ [crawl4ai] All tiers failed for {url}"
+                + (f" (tried: {', '.join(failed_tiers)})" if failed_tiers else "")
+            )
+        elif result and result.success:
+            self.logger.info(f"✅ [crawl4ai] {tier} succeeded for {url}{failed_ctx}")
         else:
-            self.logger.warning(f"[crawl4ai] {tier} for {url}")
+            self.logger.warning(f"⚠️ [crawl4ai] {tier} failed for {url}{failed_ctx}")
     # ------------------------------------------------------------------
     # Internal fetch logic
     # ------------------------------------------------------------------
@@ -1025,6 +1042,10 @@ class Crawl4AIFetcher:
         )
 
         try:
+            self.logger.debug(
+                f"[crawl4ai] arun {url} "
+                f"(timeout={kwargs['page_timeout']}ms, wait_until={kwargs['wait_until']!r})"
+            )
             result = await crawler.arun(url=url, config=run_config)
         except Exception as exc:
             self.logger.error(f"[crawl4ai] Unhandled error for {url}: {exc}")

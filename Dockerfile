@@ -154,8 +154,6 @@ RUN apt-get update && \
 FROM runtime-base AS runtime
 WORKDIR /app
 
-ENV LOG_LEVEL=debug
-
 # Copy Python site-packages from build stage
 COPY --from=python-deps /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 COPY --from=python-deps /usr/local/bin /usr/local/bin
