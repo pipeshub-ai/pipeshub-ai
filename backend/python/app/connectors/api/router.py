@@ -347,8 +347,9 @@ def _sanitize_app_name(app_name: str) -> str:
 
 
 def _trim_config_values(
+    *,
     obj: str | int | float | bool | None | list[Any] | dict[str, Any],
-    path: str = ""
+    path: str = "",
 ) -> str | int | float | bool | None | list[Any] | dict[str, Any]:
     """
     Recursively trims leading and trailing whitespace from string values in a configuration object.
@@ -387,14 +388,14 @@ def _trim_config_values(
 
     # If it's a list, recursively trim each element
     if isinstance(obj, list):
-        return [_trim_config_values(item, f"{path}[{i}]") for i, item in enumerate(obj)]
+        return [_trim_config_values(obj=item, path=f"{path}[{i}]") for i, item in enumerate(obj)]
 
     # If it's a dict, recursively trim each property
     if isinstance(obj, dict):
         trimmed = {}
         for key, value in obj.items():
             new_path = f"{path}.{key}" if path else key
-            trimmed[key] = _trim_config_values(value, new_path)
+            trimmed[key] = _trim_config_values(obj=value, path=new_path)
         return trimmed
 
     # Preserve all other types as-is:
@@ -423,7 +424,7 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
 
     for section in ["auth", "sync", "filters"]:
         if section in trimmed_config and isinstance(trimmed_config[section], dict):
-            trimmed_config[section] = _trim_config_values(trimmed_config[section], section)
+            trimmed_config[section] = _trim_config_values(obj=trimmed_config[section], path=section)
 
     return trimmed_config
 

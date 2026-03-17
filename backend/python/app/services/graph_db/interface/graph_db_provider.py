@@ -509,8 +509,9 @@ class IGraphDBProvider(ABC):
         self,
         collection: str,
         field_name: str,
+        *,
         field_value: str,
-        transaction: str | None = None
+        transaction: str | None = None,
     ) -> int:
         """
         Remove nodes from a collection matching a field value.
@@ -528,7 +529,7 @@ class IGraphDBProvider(ABC):
 
         Example:
             # Remove 'anyone' permissions for a file
-            await provider.remove_nodes_by_field("anyone", "file_key", file_key)
+            await provider.remove_nodes_by_field("anyone", "file_key", field_value=file_key)
         """
         pass
 

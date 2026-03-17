@@ -2050,8 +2050,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         collection: str,
         field: str,
-        value: str | int | bool | None,
-        transaction: str | None = None
+        *,
+        field_value: str | int | bool | None,
+        transaction: str | None = None,
     ) -> int:
         """
         Remove nodes matching field value - FULLY ASYNC.
@@ -2059,7 +2060,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             collection: Collection name
             field: Field name
-            value: Field value to match
+            field_value: Field value to match
             transaction: Optional transaction ID
 
         Returns:
@@ -2075,7 +2076,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"value": value},
+                bind_vars={"value": field_value},
                 txn_id=transaction
             )
             return len(results)

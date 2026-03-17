@@ -1620,8 +1620,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         collection: str,
         field_name: str,
+        *,
         field_value: str | int | bool | None,
-        transaction: str | None = None
+        transaction: str | None = None,
     ) -> int:
         """Remove nodes matching field value"""
         try:
