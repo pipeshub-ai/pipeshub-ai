@@ -5995,13 +5995,13 @@ class BaseArangoService:
             return Record.from_arango_base_record(record_dict)
 
     async def get_record_by_id(
-        self, record_id: str, transaction: Optional[TransactionDatabase] = None
+        self, id: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Record]:
         """
         Get internal file key using the id
 
         Args:
-            record_id: The internal record ID (_key) to look up
+            id (str): The internal record ID (_key) to look up
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
@@ -6009,7 +6009,7 @@ class BaseArangoService:
         """
         try:
             self.logger.info(
-                "🚀 Retrieving internal key for id %s", record_id
+                "🚀 Retrieving internal key for id %s", id
             )
 
             query = f"""
@@ -6032,13 +6032,13 @@ class BaseArangoService:
 
             db = transaction if transaction else self.db
             cursor = db.aql.execute(
-                query, bind_vars={"id": record_id}
+                query, bind_vars={"id": id}
             )
             result = next(cursor, None)
 
             if result:
                 self.logger.info(
-                    "✅ Successfully retrieved internal key for id %s", record_id
+                    "✅ Successfully retrieved internal key for id %s", id
                 )
                 return self._create_typed_record_from_arango(
                     result["record"],
@@ -6046,13 +6046,13 @@ class BaseArangoService:
                 )
             else:
                 self.logger.warning(
-                    "⚠️ No internal key found for id %s", record_id
+                    "⚠️ No internal key found for id %s", id
                 )
                 return None
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve internal key for id %s: %s", record_id, str(e)
+                "❌ Failed to retrieve internal key for id %s: %s", id, str(e)
             )
             return None
 
@@ -17204,20 +17204,20 @@ class BaseArangoService:
             return None
 
     async def get_file_record_by_id(
-        self, record_id: str, transaction: Optional[TransactionDatabase] = None
+        self, id: str, transaction: Optional[TransactionDatabase] = None
     ) -> Optional[FileRecord]:
         """
         Get file record using the id
 
         Args:
-            record_id: The internal record ID (_key) to look up
+            id (str): The internal record ID (_key) to look up
             transaction (Optional[TransactionDatabase]): Optional database transaction
 
         Returns:
             Optional[FileRecord]: FileRecord object if found, None otherwise
         """
         try:
-            self.logger.info("🚀 Retrieving file record for id %s", record_id)
+            self.logger.info("🚀 Retrieving file record for id %s", id)
 
             # Query both the file record and base record
             query = f"""
@@ -17231,21 +17231,21 @@ class BaseArangoService:
             """
 
             db = transaction if transaction else self.db
-            cursor = db.aql.execute(query, bind_vars={"id": record_id})
+            cursor = db.aql.execute(query, bind_vars={"id": id})
             result = next(cursor, None)
             if result and result.get("file") and result.get("record"):
-                self.logger.info("✅ Successfully retrieved file record for id %s", record_id)
+                self.logger.info("✅ Successfully retrieved file record for id %s", id)
                 return FileRecord.from_arango_record(
                     arango_base_file_record=result["file"],
                     arango_base_record=result["record"]
                 )
             else:
-                self.logger.warning("⚠️ No file record found for id %s", record_id)
+                self.logger.warning("⚠️ No file record found for id %s", id)
                 return None
 
         except Exception as e:
             self.logger.error(
-                "❌ Failed to retrieve file record for id %s: %s", record_id, str(e)
+                "❌ Failed to retrieve file record for id %s: %s", id, str(e)
             )
             return None
 

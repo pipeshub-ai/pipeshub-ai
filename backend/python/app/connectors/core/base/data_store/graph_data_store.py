@@ -66,11 +66,11 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return await self.graph_provider.get_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
-    async def get_file_record_by_id(self, record_id: str) -> Optional[FileRecord]:
-        return await self.graph_provider.get_file_record_by_id(record_id, transaction=self.txn)
+    async def get_file_record_by_id(self, id: str) -> Optional[FileRecord]:
+        return await self.graph_provider.get_file_record_by_id(id, transaction=self.txn)
 
-    async def get_record_group_by_id(self, record_group_id: str) -> Optional[RecordGroup]:
-        return await self.graph_provider.get_record_group_by_id(record_group_id, transaction=self.txn)
+    async def get_record_group_by_id(self, id: str) -> Optional[RecordGroup]:
+        return await self.graph_provider.get_record_group_by_id(id, transaction=self.txn)
 
     async def create_record_groups_relation(self, child_id: str, parent_id: str) -> None:
         """
@@ -155,7 +155,7 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.get_app_role_by_external_id(connector_id, external_id, transaction=self.txn)
 
     async def get_users(self, org_id: str, active: bool = True) -> List[User]:
-        users_dict = await self.graph_provider.get_users(org_id, active=active)
+        users_dict = await self.graph_provider.get_users(org_id, active)
         return [User.from_arango_user(user_dict) for user_dict in users_dict if user_dict is not None]
 
     async def get_app_users(self, org_id: str, connector_id: str) -> List[AppUser]:
@@ -590,9 +590,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:
         """Delete a record and all its relations"""
-        return await self.graph_provider.delete_records_and_relations(
-            record_key, hard_delete=hard_delete, transaction=self.txn
-        )
+        return await self.graph_provider.delete_records_and_relations(record_key, hard_delete, transaction=self.txn)
 
     async def process_file_permissions(self, org_id: str, file_key: str, permissions: List[Dict]) -> None:
         """Process file permissions"""
