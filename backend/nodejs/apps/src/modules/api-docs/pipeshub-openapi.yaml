@@ -4578,6 +4578,22 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
+        ocr:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        slm:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        reasoning:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        multiModal:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
       description: Must have at least one model type configured
 
     # Authentication Configuration Schemas
@@ -19172,6 +19188,13 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  models:
+                    $ref: '#/components/schemas/AIModelsConfig'
         '401':
           description: Unauthorized
         '403':
