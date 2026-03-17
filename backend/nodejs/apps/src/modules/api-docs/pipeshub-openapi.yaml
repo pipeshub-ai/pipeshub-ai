@@ -4495,7 +4495,7 @@ components:
 
     ModelType:
       type: string
-      enum: [llm, embedding, ocr, slm, reasoning, multiModal]
+      enum: [llm, embedding]
       description: Type of AI model
 
     AIModelProviderConfig:
@@ -4572,27 +4572,11 @@ components:
     AIModelsConfig:
       type: object
       properties:
-        ocr:
-          type: array
-          items:
-            $ref: '#/components/schemas/AIModelProviderConfig'
-        embedding:
-          type: array
-          items:
-            $ref: '#/components/schemas/AIModelProviderConfig'
-        slm:
-          type: array
-          items:
-            $ref: '#/components/schemas/AIModelProviderConfig'
         llm:
           type: array
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
-        reasoning:
-          type: array
-          items:
-            $ref: '#/components/schemas/AIModelProviderConfig'
-        multiModal:
+        embedding:
           type: array
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
