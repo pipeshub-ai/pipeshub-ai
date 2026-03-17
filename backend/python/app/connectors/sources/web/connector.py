@@ -59,6 +59,9 @@ from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
+_headless_sync_semaphore = asyncio.Semaphore(1)
+
+
 async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
     """Wrap raw bytes as an async generator for StreamingResponse."""
     yield data
@@ -661,6 +664,33 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to reload config: {e}", exc_info=True)
             raise
 
+    async def _do_crawl(self) -> None:
+        """Execute the crawl: sync users, create record group, and crawl URLs."""
+        self.logger.info(f"🚀 Starting web crawl: {self.url}")
+
+        # Step 1: fetch and sync all active users
+        self.logger.info("Syncing users...")
+        all_active_users = await self.data_entities_processor.get_all_active_users()
+        app_users = self.get_app_users(all_active_users)
+        await self.data_entities_processor.on_new_app_users(app_users)
+
+        # Step 2: create record group with permissions
+        await self.create_record_group(app_users)
+
+        # Reset state for new sync
+        self.visited_urls.clear()
+
+        # Start crawling
+        assert self.url is not None, "URL not set — init() must be called first"
+        if self.crawl_type == "recursive":
+            await self._crawl_recursive(self.url, depth=0)
+        else:
+            await self._crawl_single_page(self.url)
+
+        self.logger.info(
+            f"✅ Web crawl completed: {len(self.visited_urls)} pages processed for {self.url}"
+        )
+
     async def run_sync(self) -> None:  # type: ignore[override]
         """Main sync method to crawl and index web pages."""
         try:
@@ -671,30 +701,19 @@ class WebConnector(BaseConnector):
                 self.config_service, "web", self.connector_id, self.logger
             )
 
-            self.logger.info(f"🚀 Starting web crawl: {self.url}")
-
-            # Step 1: fetch and sync all active users
-            self.logger.info("Syncing users...")
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
-
-            # Step 2: create record group with permissions
-            await self.create_record_group(app_users)
-
-            # Reset state for new sync
-            self.visited_urls.clear()
-
-            # Start crawling
-            assert self.url is not None, "URL not set — init() must be called first"
-            if self.crawl_type == "recursive":
-                await self._crawl_recursive(self.url, depth=0)
+            if self.use_headless_browser:
+                self.logger.info(
+                    f"Headless browser sync requested for {self.url} "
+                    f"(connector {self.connector_id}). Waiting for headless sync slot..."
+                )
+                async with _headless_sync_semaphore:
+                    self.logger.info(
+                        f"Acquired headless sync slot for {self.url} "
+                        f"(connector {self.connector_id})"
+                    )
+                    await self._do_crawl()
             else:
-                await self._crawl_single_page(self.url)
-
-            self.logger.info(
-                f"✅ Web crawl completed: {len(self.visited_urls)} pages processed for {self.url}"
-            )
+                await self._do_crawl()
 
         except Exception as e:
             self.logger.error(f"❌ Error during web sync: {e}", exc_info=True)

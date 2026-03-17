@@ -23,7 +23,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 20G
+          memory: 10G
     shm_size: 2gb
     init: true
     environment:
