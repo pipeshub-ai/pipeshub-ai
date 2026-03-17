@@ -1931,6 +1931,63 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Delete all edges for node failed: {str(e)}")
             raise
+
+    async def _delete_all_edges_for_nodes(
+        self,
+        transaction: str | None,
+        node_ids: list[str],
+        edge_collections: list[str],
+    ) -> tuple[int, list[str]]:
+        """
+        Delete all edges where _from or _to matches any of the node_ids.
+        Iterates through each edge collection dynamically.
+
+        Returns:
+            Tuple of (total_deleted_count, list_of_failed_collections)
+        """
+        if not node_ids:
+            return (0, [])
+
+        total_deleted = 0
+        failed_collections: list[str] = []
+
+        deletion_query = """
+        FOR edge IN @@edge_collection
+            FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+            REMOVE edge IN @@edge_collection
+            RETURN 1
+        """
+
+        for edge_collection in edge_collections:
+            try:
+                results = await self.http_client.execute_aql(
+                    query=deletion_query,
+                    bind_vars={
+                        "@edge_collection": edge_collection,
+                        "node_ids": node_ids,
+                    },
+                    txn_id=transaction,
+                )
+                deleted_count = len(results or [])
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.debug(f"🗑️ Deleted {deleted_count} edges from {edge_collection}")
+
+            except Exception as e:
+                self.logger.error(f"❌ Error deleting edges from {edge_collection}: {str(e)}")
+                failed_collections.append(edge_collection)
+                # Continue with other collections
+
+        if failed_collections:
+            self.logger.warning(
+                f"⚠️ Failed to delete edges from {len(failed_collections)} collections: {failed_collections}"
+            )
+        else:
+            self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections")
+
+        return (total_deleted, failed_collections)
+
     # ==================== Query Operations ====================
 
     async def execute_query(
