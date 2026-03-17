@@ -22,7 +22,7 @@ env:
 
 jobs:
   integration-tests:
-    runs-on: ubuntu-latest
+    runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64
     timeout-minutes: 45
 
     steps:
