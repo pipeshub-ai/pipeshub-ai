@@ -1429,85 +1429,23 @@ class WebConnector(BaseConnector):
         self.logger.info("Processing %d retryable URLs", len(snapshot))
 
         for retry_url in snapshot:
-            record_update: RecordUpdate | None = None
-            last_exception: Exception | None = None
+            placeholder, perms = await self._create_failed_placeholder_record(
+                retry_url.url, retry_url.status_code
+            )
 
-            for attempt in range(1, max_retries + 1):
-                try:
-                    record_update = await self._fetch_and_process_url(retry_url.url, depth=retry_url.depth, referer=retry_url.referer)
+            if placeholder is None:
+                continue
 
-                    if record_update is not None and record_update.record is not None:
-                        # Successful fetch — stop retrying this URL.
-                        break
-
-                    # Fetch returned None — treat as a soft failure and retry.
-                    self.logger.warning(
-                        "⚠️ Retry %d/%d — no content returned for %s",
-                        attempt, max_retries, retry_url.url,
-                    )
-
-                except Exception as exc:
-                    last_exception = exc
-                    self.logger.warning(
-                        "⚠️ Retry %d/%d — exception for %s: %s",
-                        attempt, max_retries, retry_url.url, exc,
-                    )
-                    record_update = None
-
-                # Back-off before the next attempt (skip after the last one).
-                if attempt < max_retries:
-                    # Exponential back-off with full jitter:
-                    #   delay = random(0, min(cap, base * 2 ** (attempt - 1)))
-                    ceiling = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** (attempt - 1)))
-                    delay = random.uniform(0, ceiling)
-                    self.logger.debug(
-                        "⏳ Back-off %.1f s before retry %d for %s",
-                        delay, attempt + 1, retry_url.url,
-                    )
-                    await asyncio.sleep(delay)
-
-            # --- post-retry routing ---
-            if record_update is not None and record_update.record is not None:
-                # At least one attempt succeeded.
-                self.retry_urls.pop(retry_url.url, None)
-                self.logger.info("✅ Retry succeeded for %s", retry_url.url)
-
-                is_disabled = self._check_index_filter(record_update.record)
-                if is_disabled:
-                    record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
-                yield record_update
-            else:
-                # All attempts exhausted — surface a FAILED placeholder.
-                if last_exception is not None:
-                    self.logger.error(
-                        "❌ All %d retries failed for %s: %s",
-                        max_retries, retry_url.url, last_exception,
-                        exc_info=True,
-                    )
-                else:
-                    self.logger.error(
-                        "❌ All %d retries failed for %s (no content returned)",
-                        max_retries, retry_url.url,
-                    )
-
-                placeholder, perms = await self._create_failed_placeholder_record(
-                    retry_url.url, retry_url.status_code
-                )
-
-                if placeholder is None:
-                    continue
-
-                yield RecordUpdate(
-                    record=placeholder,
-                    is_new=True,
-                    is_updated=False,
-                    is_deleted=False,
-                    metadata_changed=False,
-                    content_changed=False,
-                    permissions_changed=False,
-                    new_permissions=perms,
-                )
+            yield RecordUpdate(
+                record=placeholder,
+                is_new=True,
+                is_updated=False,
+                is_deleted=False,
+                metadata_changed=False,
+                content_changed=False,
+                permissions_changed=False,
+                new_permissions=perms,
+            )
 
     async def process_retry_urls(self, max_retries: int = 2) -> None:
         """Process retry URLs in batches.
@@ -1524,9 +1462,7 @@ class WebConnector(BaseConnector):
         batch_records: list[tuple[Record, list[Permission]]] = []
 
         async for record_update in self._retry_urls_generator(max_retries=max_retries):
-            if record_update.is_updated:
-                await self._handle_record_updates(record_update)
-            elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
+            if record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
                 batch_records.append((record_update.record, record_update.new_permissions))
 
                 if len(batch_records) >= self.batch_size:
