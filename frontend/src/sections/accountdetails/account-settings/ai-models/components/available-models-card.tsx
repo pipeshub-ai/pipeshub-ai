@@ -27,14 +27,14 @@ import { AVAILABLE_MODEL_PROVIDERS, ModelProvider, ModelType } from '../types';
 
 interface ProviderCardsProps {
   onProviderSelect: (provider: ModelProvider, modelType?: ModelType) => void;
-  configuredProviders: { [key: string]: { llm: number; embedding: number } };
+  configuredProviders: { [key: string]: { llm: number; embedding: number; imageGeneration: number } };
 }
 
 // Compact capabilities mapping - only show most important ones
 const PROVIDER_CAPABILITIES = {
-  openAI: ['CHAT', 'EMBEDDING'],
+  openAI: ['CHAT', 'EMBEDDING', 'IMAGE GEN'],
   anthropic: ['CHAT'],
-  gemini: ['CHAT', 'EMBEDDING'],
+  gemini: ['CHAT', 'EMBEDDING', 'IMAGE GEN'],
   azureAI: ['CHAT', 'EMBEDDING'],
   azureOpenAI: ['CHAT', 'EMBEDDING'],
   cohere: ['CHAT', 'EMBEDDING'],
@@ -232,9 +232,11 @@ const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configu
             const configCount = configuredProviders[provider.id];
             const llmCount = configCount?.llm || 0;
             const embeddingCount = configCount?.embedding || 0;
-            const totalConfigured = llmCount + embeddingCount;
+            const imageGenCount = configCount?.imageGeneration || 0;
+            const totalConfigured = llmCount + embeddingCount + imageGenCount;
             const hasLlm = provider.supportedTypes.includes('llm');
             const hasEmbedding = provider.supportedTypes.includes('embedding');
+            const hasImageGeneration = provider.supportedTypes.includes('imageGeneration');
             const capabilities =
               PROVIDER_CAPABILITIES[provider.id as keyof typeof PROVIDER_CAPABILITIES] ||
               provider.supportedTypes.map((type) => type.toUpperCase());
@@ -460,6 +462,31 @@ const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configu
                           {embeddingCount > 0 ? `${embeddingCount} Embed` : 'No Embed'}
                         </Typography>
                       </Stack>
+
+                      {hasImageGeneration && (
+                        <Stack direction="row" spacing={0.5} alignItems="center">
+                          <Box
+                            sx={{
+                              width: 4,
+                              height: 4,
+                              borderRadius: '50%',
+                              backgroundColor: imageGenCount > 0 
+                                ? theme.palette.info.main 
+                                : theme.palette.text.disabled,
+                            }}
+                          />
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              fontSize: '0.75rem',
+                              fontWeight: 500,
+                              color: theme.palette.text.secondary,
+                            }}
+                          >
+                            {imageGenCount > 0 ? `${imageGenCount} ImgGen` : 'No ImgGen'}
+                          </Typography>
+                        </Stack>
+                      )}
                     </Box>
 
                     {/* Action Buttons */}
@@ -515,6 +542,34 @@ const ProviderCards: React.FC<ProviderCardsProps> = ({ onProviderSelect, configu
                           }}
                         >
                           Add Embedding
+                        </Button>
+                      )}
+
+                      {hasImageGeneration && (
+                        <Button
+                          fullWidth 
+                          variant="outlined"
+                          size="medium"
+                          startIcon={<Iconify icon={addIcon} width={16} height={16} />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onProviderSelect(provider, 'imageGeneration');
+                          }}
+                          sx={{
+                            height: 38,
+                            borderRadius: 1.5,
+                            textTransform: 'none',
+                            fontWeight: 600,
+                            fontSize: '0.8125rem',
+                            borderColor: alpha('#FF5722', 0.3),
+                            color: '#FF5722',
+                            '&:hover': {
+                              borderColor: '#FF5722',
+                              backgroundColor: alpha('#FF5722', 0.04),
+                            },
+                          }}
+                        >
+                          Add Image Generation
                         </Button>
                       )}
                     </Stack>

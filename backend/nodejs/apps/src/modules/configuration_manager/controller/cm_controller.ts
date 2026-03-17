@@ -2509,6 +2509,7 @@ export const getAIModelsProviders =
             llm: [],
             reasoning: [],
             multiModal: [],
+            imageGeneration: [],
           },
           message: 'No AI models found',
         });
@@ -2530,6 +2531,7 @@ export const getAIModelsProviders =
         llm: [],
         reasoning: [],
         multiModal: [],
+        imageGeneration: [],
       };
 
       for (const key of Object.keys(defaultStructure)) {
@@ -2568,6 +2570,7 @@ export const getModelsByType =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2637,6 +2640,7 @@ export const getAvailableModelsByType =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2763,6 +2767,7 @@ export const addAIModelProvider =
         'slm',
         'reasoning',
         'multiModal',
+        'imageGeneration',
       ];
       if (!validTypes.includes(modelType)) {
         res.status(400).json({
@@ -2835,6 +2840,7 @@ export const addAIModelProvider =
         llm: [],
         reasoning: [],
         multiModal: [],
+        imageGeneration: [],
       };
       for (const key of Object.keys(defaultStructure)) {
         if (!(key in aiModels)) {

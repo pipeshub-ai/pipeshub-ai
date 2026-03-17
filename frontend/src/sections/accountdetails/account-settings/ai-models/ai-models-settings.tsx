@@ -43,9 +43,10 @@ const AiModelsSettings: React.FC = () => {
   
   const [configuredModels, setConfiguredModels] = useState<{ [key: string]: ConfiguredModel[] }>({
     llm: [],
-    embedding: []
+    embedding: [],
+    imageGeneration: []
   });
-  const [configuredProviders, setConfiguredProviders] = useState<{ [key: string]: { llm: number; embedding: number } }>({});
+  const [configuredProviders, setConfiguredProviders] = useState<{ [key: string]: { llm: number; embedding: number; imageGeneration: number } }>({});
   const [selectedProvider, setSelectedProvider] = useState<(ModelProvider & { 
     editingModel?: ConfiguredModel;
     targetModelType?: ModelType;
@@ -65,22 +66,24 @@ const AiModelsSettings: React.FC = () => {
     }
     
     try {
-      const [llmModels, embeddingModels] = await Promise.all([
+      const [llmModels, embeddingModels, imageGenerationModels] = await Promise.all([
         modelService.getAllModels('llm'),
-        modelService.getAllModels('embedding')
+        modelService.getAllModels('embedding'),
+        modelService.getAllModels('imageGeneration')
       ]);
 
       setConfiguredModels({
         llm: llmModels,
-        embedding: embeddingModels
+        embedding: embeddingModels,
+        imageGeneration: imageGenerationModels
       });
 
       // Calculate provider counts
-      const providerCounts: { [key: string]: { llm: number; embedding: number } } = {};
+      const providerCounts: { [key: string]: { llm: number; embedding: number; imageGeneration: number } } = {};
       
-      [...llmModels, ...embeddingModels].forEach(model => {
+      [...llmModels, ...embeddingModels, ...imageGenerationModels].forEach(model => {
         if (!providerCounts[model.provider]) {
-          providerCounts[model.provider] = { llm: 0, embedding: 0 };
+          providerCounts[model.provider] = { llm: 0, embedding: 0, imageGeneration: 0 };
         }
         providerCounts[model.provider][model.modelType]+=1;
       });

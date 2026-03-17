@@ -35,6 +35,7 @@ import robotIcon from '@iconify-icons/mdi/robot';
 import generativeIcon from '@iconify-icons/mdi/brain';
 import embeddingIcon from '@iconify-icons/mdi/vector-polygon';
 import magnifyIcon from '@iconify-icons/mdi/magnify';
+import imageIcon from '@iconify-icons/mdi/image-auto-adjust';
 import deleteIcon from '@iconify-icons/mdi/delete';
 import starIcon from '@iconify-icons/mdi/star';   
 import pencilIcon from '@iconify-icons/mdi/pencil';
@@ -65,6 +66,7 @@ const ConfiguredModelsDisplay: React.FC<ConfiguredModelsDisplayProps> = ({
   const [expandedTypes, setExpandedTypes] = useState<{ [key: string]: boolean }>({
     llm: true,
     embedding: true,
+    imageGeneration: true,
   });
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [selectedModel, setSelectedModel] = useState<ConfiguredModel | null>(null);
@@ -72,7 +74,7 @@ const ConfiguredModelsDisplay: React.FC<ConfiguredModelsDisplayProps> = ({
   const [modelToDelete, setModelToDelete] = useState<ConfiguredModel | null>(null);
   const [isPerformingAction, setIsPerformingAction] = useState(false);
 
-  const modelTypes: ModelType[] = ['llm', 'embedding'];
+  const modelTypes: ModelType[] = ['llm', 'embedding', 'imageGeneration'];
 
   const handleAccordionChange =
     (type: string) => (event: React.SyntheticEvent, isExpanded: boolean) => {
@@ -146,6 +148,12 @@ const ConfiguredModelsDisplay: React.FC<ConfiguredModelsDisplayProps> = ({
         icon: embeddingIcon,
         color: '#7c3aed',
         description: 'Vectorization for semantic search',
+      },
+      imageGeneration: {
+        name: 'Image Generation Models',
+        icon: imageIcon,
+        color: '#e64a19',
+        description: 'Generate images from text prompts',
       },
     })[type] || {
       name: type,

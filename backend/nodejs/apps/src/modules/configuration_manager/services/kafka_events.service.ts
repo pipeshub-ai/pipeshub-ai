@@ -5,6 +5,7 @@ import { KafkaConfig, KafkaMessage } from '../../../libs/types/kafka.types';
 
 export enum EventType {
   LLMConfiguredEvent = 'llmConfigured',
+  ImageGenerationModelConfiguredEvent = 'imageGenerationModelConfigured',
   ConnectorPublicUrlChangedEvent = 'connectorPublicUrlChanged',
   GmailUpdatesEnabledEvent = 'gmailUpdatesEnabledEvent',
   GmailUpdatesDisabledEvent = 'gmailUpdatesDisabledEvent',
@@ -47,6 +48,7 @@ export interface Event {
   timestamp: number;
   payload:
     | LLMConfiguredEvent
+    | ImageGenerationModelConfiguredEvent
     | ConnectorPublicUrlChangedEvent
     | GmailUpdatesEnabledEvent
     | GmailUpdatesDisabledEvent
@@ -56,6 +58,10 @@ export interface Event {
 }
 
 export interface LLMConfiguredEvent {
+  credentialsRoute: string;
+}
+
+export interface ImageGenerationModelConfiguredEvent {
   credentialsRoute: string;
 }
 

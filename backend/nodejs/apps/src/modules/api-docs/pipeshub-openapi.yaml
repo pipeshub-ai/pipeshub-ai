@@ -3930,7 +3930,7 @@ components:
 
     ModelType:
       type: string
-      enum: [llm, embedding, ocr, slm, reasoning, multiModal]
+      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration]
       description: Type of AI model
 
     AIModelProviderConfig:
@@ -4000,6 +4000,10 @@ components:
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
         multiModal:
+          type: array
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        imageGeneration:
           type: array
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'

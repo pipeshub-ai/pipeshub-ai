@@ -13,6 +13,7 @@ from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
     get_generator_model,
+    generate_test_image,
 )
 from app.utils.llm import get_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -591,6 +592,97 @@ async def perform_embedding_health_check(
         )
 
 
+async def perform_image_generation_health_check(
+    image_gen_config: dict,
+    logger: Logger,
+) -> JSONResponse:
+    """Perform health check for image generation models."""
+    model_name = image_gen_config.get("configuration", {}).get("model", "")
+    try:
+        logger.info(
+            f"Performing image generation health check for {image_gen_config.get('provider')} "
+            f"with configuration model {image_gen_config.get('configuration', {}).get('model', '')}"
+        )
+        model_string = image_gen_config.get("configuration", {}).get("model", "")
+        model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+
+        if not model_names:
+            logger.error(
+                f"No valid model names found in configuration for {image_gen_config.get('provider')} "
+                f"with configuration model {image_gen_config.get('configuration', {}).get('model', '')}"
+            )
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": "No valid model names found in configuration",
+                    "details": {
+                        "provider": image_gen_config.get("provider"),
+                        "model": model_string,
+                    },
+                },
+            )
+
+        model_name = model_names[0]
+
+        resolved_model = await asyncio.wait_for(
+            asyncio.to_thread(
+                generate_test_image,
+                image_gen_config.get("provider"),
+                image_gen_config,
+                model_name,
+            ),
+            timeout=120.0,
+        )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "healthy",
+                "message": f"Image generation model {resolved_model} is responding",
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
+
+    except asyncio.TimeoutError:
+        logger.error(
+            f"Image generation health check timed out for {image_gen_config.get('provider')} "
+            f"with configuration {image_gen_config.get('configuration')}"
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "Image generation health check timed out",
+                "details": {
+                    "provider": image_gen_config.get("provider"),
+                    "model": model_name,
+                    "timeout_seconds": 120,
+                },
+            },
+        )
+    except HTTPException as he:
+        return JSONResponse(status_code=he.status_code, content=he.detail)
+    except Exception as e:
+        logger.error(
+            f"Image generation health check failed for {image_gen_config.get('provider')} "
+            f"with configuration {image_gen_config.get('configuration')}: {str(e)}",
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Image generation health check failed: {str(e)}",
+                "details": {
+                    "provider": image_gen_config.get("provider"),
+                    "model": model_name,
+                    "error_type": type(e).__name__,
+                },
+            },
+        )
+
+
 @router.post("/health-check/{model_type}")
 async def health_check(request: Request, model_type: str, model_config: dict = Body(...)) -> JSONResponse:
     """Health check endpoint to validate the health of the application."""
@@ -607,6 +699,10 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
         elif model_type == "llm":
             logger.info(f"Performing LLM health check for {model_config.get('provider')} with configuration model {model_config.get('configuration', {}).get('model', '')}")
             return await perform_llm_health_check(model_config, logger)
+
+        elif model_type == "imageGeneration":
+            logger.info(f"Performing image generation health check for {model_config.get('provider')} with configuration model {model_config.get('configuration', {}).get('model', '')}")
+            return await perform_image_generation_health_check(model_config, logger)
 
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}", exc_info=True)

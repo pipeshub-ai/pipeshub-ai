@@ -190,7 +190,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
       if (isSwitchingProvider) return () => {};
 
       const handler = setTimeout(() => {
-        const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
+        const isLegacyModelType = ['llm', 'embedding', 'imageGeneration'].includes(finalConfigType);
         const shouldReportValid = isLegacyModelType
           ? isValid && isEditing && !isSwitchingProvider
           : isRequired
@@ -308,7 +308,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
         return await new Promise<SaveResult>((resolve) => {
           handleSubmit(async (data: any) => {
             try {
-              const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
+              const isLegacyModelType = ['llm', 'embedding', 'imageGeneration'].includes(finalConfigType);
               const saveData = {
                 ...data,
                 [isLegacyModelType ? 'modelType' : 'providerType']: currentProvider,
@@ -362,7 +362,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
 
       getFormData: async (): Promise<any> => {
         const formData = getValues();
-        const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
+        const isLegacyModelType = ['llm', 'embedding', 'imageGeneration'].includes(finalConfigType);
         
         const result = {
           ...formData,
@@ -514,7 +514,7 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
       setSaveError(null);
       setFormSubmitSuccess(false);
 
-      const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
+      const isLegacyModelType = ['llm', 'embedding', 'imageGeneration'].includes(finalConfigType);
       if (isLegacyModelType && originalApiConfigRef.current) {
         // For legacy model types, reset to the original configuration
         const originalProvider =
@@ -545,6 +545,8 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
         return 'Configure your LLM model to enable AI capabilities in your application.';
       case 'embedding':
         return 'Configure your embedding model to enable semantic search and document retrieval in your application.';
+      case 'imageGeneration':
+        return 'Configure your image generation model to enable AI-powered image creation.';
       case 'storage':
         return 'Configure your storage settings for file management.';
       case 'smtp':
