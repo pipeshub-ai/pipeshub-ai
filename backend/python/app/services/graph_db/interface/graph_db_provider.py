@@ -8,7 +8,7 @@ All methods support optional transaction parameter for atomic operations.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Optional
 
 from app.models.entities import Person
 
@@ -119,7 +119,7 @@ class IGraphDBProvider(ABC):
     # ==================== Transaction Management ====================
 
     @abstractmethod
-    def begin_transaction(self, read: List[str], write: List[str]) -> str:
+    def begin_transaction(self, read: list[str], write: list[str]) -> str:
         """
         Begin a database transaction.
 
@@ -150,7 +150,7 @@ class IGraphDBProvider(ABC):
         document_key: str,
         collection: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get a document by its key from a collection.
 
@@ -187,7 +187,7 @@ class IGraphDBProvider(ABC):
         self,
         collection: str,
         transaction: Optional[str] = None,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all documents from a collection.
 
@@ -203,7 +203,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_nodes(
         self,
-        nodes: List[Dict],
+        nodes: list[dict],
         collection: str,
         transaction: Optional[str] = None,
     ) -> Optional[bool]:
@@ -228,7 +228,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def delete_nodes(
         self,
-        keys: List[str],
+        keys: list[str],
         collection: str,
         transaction: Optional[str] = None
     ) -> bool:
@@ -250,7 +250,7 @@ class IGraphDBProvider(ABC):
         self,
         key: str,
         collection: str,
-        node_updates: Dict,
+        node_updates: dict,
         transaction: Optional[str] = None
     ) -> bool:
         """
@@ -272,7 +272,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_create_edges(
         self,
-        edges: List[Dict],
+        edges: list[dict],
         collection: str,
         transaction: Optional[str] = None,
     ) -> bool:
@@ -305,7 +305,7 @@ class IGraphDBProvider(ABC):
         to_collection: str,
         collection: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get an edge/relationship between two nodes.
 
@@ -376,7 +376,7 @@ class IGraphDBProvider(ABC):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: List[str],
+        relationship_types: list[str],
         transaction: Optional[str] = None
     ) -> int:
         """
@@ -462,7 +462,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def delete_nodes_and_edges(
         self,
-        keys: List[str],
+        keys: list[str],
         collection: str,
         graph_name: str = "knowledgeGraph",
         transaction: Optional[str] = None
@@ -483,7 +483,7 @@ class IGraphDBProvider(ABC):
         self,
         from_key: str,
         to_key: str,
-        edge_updates: Dict,
+        edge_updates: dict,
         collection: str,
         transaction: Optional[str] = None
     ) -> bool:
@@ -538,7 +538,7 @@ class IGraphDBProvider(ABC):
         node_id: str,
         edge_collection: str,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all edges pointing to a specific node.
 
@@ -560,7 +560,7 @@ class IGraphDBProvider(ABC):
         node_id: str,
         edge_collection: str,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all edges originating from a specific node.
 
@@ -584,7 +584,7 @@ class IGraphDBProvider(ABC):
         target_collection: str,
         direction: str = "inbound",
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get related nodes through an edge collection.
 
@@ -611,7 +611,7 @@ class IGraphDBProvider(ABC):
         field_name: str,
         direction: str = "inbound",
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get a specific field from related nodes.
 
@@ -636,9 +636,9 @@ class IGraphDBProvider(ABC):
     async def execute_query(
         self,
         query: str,
-        bind_vars: Optional[Dict] = None,
+        bind_vars: Optional[dict] = None,
         transaction: Optional[str] = None
-    ) -> Optional[List[Dict]]:
+    ) -> Optional[list[dict]]:
         """
         Execute a database-specific query (AQL for ArangoDB, Cypher for Neo4j).
 
@@ -656,10 +656,10 @@ class IGraphDBProvider(ABC):
     async def get_nodes_by_filters(
         self,
         collection: str,
-        filters: Dict[str, Any],
-        return_fields: Optional[List[str]] = None,
+        filters: dict[str, Any],
+        return_fields: Optional[list[str]] = None,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get nodes from a collection matching multiple field filters.
 
@@ -681,10 +681,10 @@ class IGraphDBProvider(ABC):
         self,
         collection: str,
         field_name: str,
-        field_values: List[Any],
-        return_fields: Optional[List[str]] = None,
+        field_values: list[Any],
+        return_fields: Optional[list[str]] = None,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get nodes from a collection where a field value is in a list.
 
@@ -710,7 +710,7 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         path: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get a record by its file path.
 
@@ -789,11 +789,11 @@ class IGraphDBProvider(ABC):
         self,
         org_id: str,
         connector_id: str,
-        status_filters: List[str],
+        status_filters: list[str],
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[str] = None
-    ) -> List['Record']:
+    ) -> list['Record']:
         """
         Get records by their indexing status.
 
@@ -818,17 +818,17 @@ class IGraphDBProvider(ABC):
         skip: int,
         limit: int,
         search: Optional[str],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connectors: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        permissions: Optional[List[str]],
+        record_types: Optional[list[str]],
+        origins: Optional[list[str]],
+        connectors: Optional[list[str]],
+        indexing_status: Optional[list[str]],
+        permissions: Optional[list[str]],
         date_from: Optional[int],
         date_to: Optional[int],
         sort_by: str,
         sort_order: str,
         source: str,
-    ) -> Tuple[List[Dict], int, Dict]:
+    ) -> tuple[list[dict], int, dict]:
         """
         List all records the user can access.
 
@@ -862,7 +862,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         request: Optional["Request"] = None,
         depth: int = 0,
-    ) -> Dict:
+    ) -> dict:
         """
         Validate and prepare reindex for a single record (permission checks, reset status).
         Does NOT publish events; caller should publish after success.
@@ -886,7 +886,7 @@ class IGraphDBProvider(ABC):
         depth: int,
         user_id: str,
         org_id: str,
-    ) -> Dict:
+    ) -> dict:
         """
         Validate record group and user permissions for reindexing.
         Does NOT publish events; caller should publish.
@@ -908,7 +908,7 @@ class IGraphDBProvider(ABC):
         collection: str,
         status: str,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all documents with a specific indexing status.
 
@@ -995,7 +995,7 @@ class IGraphDBProvider(ABC):
         parent_external_record_id: str,
         record_type: Optional[str] = None,
         transaction: Optional[str] = None
-    ) -> List['Record']:
+    ) -> list['Record']:
         """
         Get all child records for a parent record by parent_external_record_id.
         Optionally filter by record_type.
@@ -1022,7 +1022,7 @@ class IGraphDBProvider(ABC):
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[str] = None
-    ) -> List['Record']:
+    ) -> list['Record']:
         """
         Get all records belonging to a record group up to a specified depth.
         Uses belongsTo edges for nested record group traversal and optional
@@ -1061,7 +1061,7 @@ class IGraphDBProvider(ABC):
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[str] = None
-    ) -> List['Record']:
+    ) -> list['Record']:
         """
         Get all child records of a parent record (folder) up to a specified depth.
         Uses graph traversal on record relations. Parent record is always included.
@@ -1112,7 +1112,7 @@ class IGraphDBProvider(ABC):
         self,
         id: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get a record group by its internal ID.
 
@@ -1187,7 +1187,7 @@ class IGraphDBProvider(ABC):
     async def get_user_by_user_id(
         self,
         user_id: str
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get a user by their internal user ID.
 
@@ -1217,7 +1217,7 @@ class IGraphDBProvider(ABC):
         self,
         org_id: str,
         connector_id: str,
-    ) -> Dict:
+    ) -> dict:
         """
         Get connector statistics for a specific connector.
 
@@ -1235,7 +1235,7 @@ class IGraphDBProvider(ABC):
         self,
         org_id: str,
         active: bool = True
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all users in an organization.
 
@@ -1273,7 +1273,7 @@ class IGraphDBProvider(ABC):
         self,
         org_id: str,
         connector_id: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all users for a specific connector in an organization.
 
@@ -1294,11 +1294,11 @@ class IGraphDBProvider(ABC):
         skip: int,
         limit: int,
         search: Optional[str] = None,
-        permissions: Optional[List[str]] = None,
+        permissions: Optional[list[str]] = None,
         sort_by: str = "name",
         sort_order: str = "asc",
         transaction: Optional[str] = None,
-    ) -> Tuple[List[Dict], int, Dict]:
+    ) -> tuple[list[dict], int, dict]:
         """
         List knowledge bases with pagination, search, and filtering.
         Includes both direct user permissions and team-based permissions.
@@ -1327,14 +1327,14 @@ class IGraphDBProvider(ABC):
         limit: int,
         level: int = 1,
         search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
+        record_types: Optional[list[str]] = None,
+        origins: Optional[list[str]] = None,
+        connectors: Optional[list[str]] = None,
+        indexing_status: Optional[list[str]] = None,
         sort_by: str = "name",
         sort_order: str = "asc",
         transaction: Optional[str] = None,
-    ) -> Dict:
+    ) -> dict:
         """
         Get KB root contents with folders_first pagination.
 
@@ -1353,14 +1353,14 @@ class IGraphDBProvider(ABC):
         limit: int,
         level: int = 1,
         search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
+        record_types: Optional[list[str]] = None,
+        origins: Optional[list[str]] = None,
+        connectors: Optional[list[str]] = None,
+        indexing_status: Optional[list[str]] = None,
         sort_by: str = "name",
         sort_order: str = "asc",
         transaction: Optional[str] = None,
-    ) -> Dict:
+    ) -> dict:
         """
         Get folder contents with folders_first pagination.
 
@@ -1376,7 +1376,7 @@ class IGraphDBProvider(ABC):
         kb_id: str,
         user_id: str,
         transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """Get knowledge base with user permissions."""
         pass
 
@@ -1384,7 +1384,7 @@ class IGraphDBProvider(ABC):
     async def update_knowledge_base(
         self,
         kb_id: str,
-        updates: Dict,
+        updates: dict,
         transaction: Optional[str] = None,
     ) -> bool:
         """Update knowledge base."""
@@ -1400,7 +1400,7 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> Dict:
+    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> dict:
         """Shared validation logic for folder creation."""
         pass
 
@@ -1411,7 +1411,7 @@ class IGraphDBProvider(ABC):
         folder_name: str,
         parent_folder_id: Optional[str] = None,
         transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """Find a folder by name within a specific parent (KB root or folder)."""
         pass
 
@@ -1423,7 +1423,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         parent_folder_id: Optional[str] = None,
         transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """Create folder with proper RECORDS document and edges."""
         pass
 
@@ -1433,7 +1433,7 @@ class IGraphDBProvider(ABC):
         kb_id: str,
         folder_id: str,
         transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """Get folder contents (container, folders, records)."""
         pass
 
@@ -1451,7 +1451,7 @@ class IGraphDBProvider(ABC):
     async def update_folder(
         self,
         folder_id: str,
-        updates: Dict,
+        updates: dict,
         transaction: Optional[str] = None,
     ) -> bool:
         """Update folder."""
@@ -1463,7 +1463,7 @@ class IGraphDBProvider(ABC):
         kb_id: str,
         folder_id: str,
         transaction: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Delete a folder and all nested content."""
         pass
 
@@ -1472,21 +1472,21 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         user_id: str,
-        updates: Dict,
-        file_metadata: Optional[Dict] = None,
+        updates: dict,
+        file_metadata: Optional[dict] = None,
         transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """Update a record by ID with automatic KB and permission detection."""
         pass
 
     @abstractmethod
     async def delete_records(
         self,
-        record_ids: List[str],
+        record_ids: list[str],
         kb_id: str,
         folder_id: Optional[str] = None,
         transaction: Optional[str] = None,
-    ) -> Dict:
+    ) -> dict:
         """Delete multiple records and publish delete events."""
         pass
 
@@ -1495,10 +1495,10 @@ class IGraphDBProvider(ABC):
         self,
         kb_id: str,
         requester_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
+        user_ids: list[str],
+        team_ids: list[str],
         role: str,
-    ) -> Dict:
+    ) -> dict:
         """Create KB permissions for users and teams."""
         pass
 
@@ -1515,8 +1515,8 @@ class IGraphDBProvider(ABC):
     async def remove_kb_permission(
         self,
         kb_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
+        user_ids: list[str],
+        team_ids: list[str],
         transaction: Optional[str] = None,
     ) -> bool:
         """Remove permissions for multiple users and teams from a KB."""
@@ -1538,9 +1538,9 @@ class IGraphDBProvider(ABC):
         kb_id: str,
         user_id: str,
         org_id: str,
-        files: List[Dict],
+        files: list[dict],
         parent_folder_id: Optional[str] = None,
-    ) -> Dict:
+    ) -> dict:
         """Upload records to KB root or a folder."""
         pass
 
@@ -1554,7 +1554,7 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """Get parent folder/kb info for a record."""
         pass
 
@@ -1601,10 +1601,10 @@ class IGraphDBProvider(ABC):
     async def get_kb_permissions(
         self,
         kb_id: str,
-        user_ids: Optional[List[str]] = None,
-        team_ids: Optional[List[str]] = None,
+        user_ids: Optional[list[str]] = None,
+        team_ids: Optional[list[str]] = None,
         transaction: Optional[str] = None,
-    ) -> Dict[str, Dict[str, str]]:
+    ) -> dict[str, dict[str, str]]:
         """Get current roles for users and teams on a KB."""
         pass
 
@@ -1613,10 +1613,10 @@ class IGraphDBProvider(ABC):
         self,
         kb_id: str,
         requester_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
+        user_ids: list[str],
+        team_ids: list[str],
         new_role: str,
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """Update permissions for users/teams on a KB."""
         pass
 
@@ -1625,7 +1625,7 @@ class IGraphDBProvider(ABC):
         self,
         kb_id: str,
         transaction: Optional[str] = None,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """List all permissions for a KB with entity details."""
         pass
 
@@ -1637,17 +1637,17 @@ class IGraphDBProvider(ABC):
         skip: int,
         limit: int,
         search: Optional[str],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connectors: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        permissions: Optional[List[str]],
+        record_types: Optional[list[str]],
+        origins: Optional[list[str]],
+        connectors: Optional[list[str]],
+        indexing_status: Optional[list[str]],
+        permissions: Optional[list[str]],
         date_from: Optional[int],
         date_to: Optional[int],
         sort_by: str,
         sort_order: str,
         source: str,
-    ) -> Tuple[List[Dict], int, Dict]:
+    ) -> tuple[list[dict], int, dict]:
         """List all records the user can access. Returns (records, total_count, available_filters)."""
         pass
 
@@ -1660,16 +1660,16 @@ class IGraphDBProvider(ABC):
         skip: int,
         limit: int,
         search: Optional[str],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connectors: Optional[List[str]],
-        indexing_status: Optional[List[str]],
+        record_types: Optional[list[str]],
+        origins: Optional[list[str]],
+        connectors: Optional[list[str]],
+        indexing_status: Optional[list[str]],
         date_from: Optional[int],
         date_to: Optional[int],
         sort_by: str,
         sort_order: str,
         folder_id: Optional[str] = None,
-    ) -> Tuple[List[Dict], int, Dict]:
+    ) -> tuple[list[dict], int, dict]:
         """List records in a KB. Returns (records, total_count, available_filters)."""
         pass
 
@@ -1701,7 +1701,7 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         org_id: str,
         transaction: Optional[str] = None
-    ) -> List['AppUserGroup']:
+    ) -> list['AppUserGroup']:
         """
         Get all user groups for a connector in an organization.
 
@@ -1718,7 +1718,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_people(
         self,
-        people: List[Person],
+        people: list[Person],
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -1778,7 +1778,7 @@ class IGraphDBProvider(ABC):
         self,
         active: bool = True,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all organizations.
 
@@ -1796,7 +1796,7 @@ class IGraphDBProvider(ABC):
         self,
         org_id: Optional[str] = None,
         transaction: Optional[str] = None
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Get all departments that either have no org_id or match the given org_id.
 
@@ -1813,7 +1813,7 @@ class IGraphDBProvider(ABC):
     async def get_org_apps(
         self,
         org_id: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all apps for an organization.
 
@@ -1833,7 +1833,7 @@ class IGraphDBProvider(ABC):
         record_type: Optional[str] = None,
         size_in_bytes: Optional[int] = None,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Find duplicate records based on MD5 checksum.
         This method queries the RECORDS collection and works for all record types.
@@ -1855,7 +1855,7 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Find the next QUEUED duplicate record with the same md5 hash.
         Works with all record types by querying the RECORDS collection directly.
@@ -1917,7 +1917,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_records(
         self,
-        records: List,
+        records: list,
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -1956,7 +1956,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_record_groups(
         self,
-        record_groups: List,
+        record_groups: list,
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2024,9 +2024,9 @@ class IGraphDBProvider(ABC):
         self,
         user_id: str,
         org_id: str,
-        filters: Optional[Dict[str, List[str]]] = None,
+        filters: Optional[dict[str, list[str]]] = None,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all records accessible to a user based on their permissions and apply filters.
 
@@ -2053,10 +2053,68 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_accessible_virtual_record_ids(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None = None
+    ) -> list[str]:
+        """
+        Get virtualRecordIds of all records accessible to a user (optimized version).
+
+        This is an optimized version that:
+        - Returns only virtualRecordIds (not full records)
+        - Filters by indexingStatus = COMPLETED
+        - Applies KB/app filters during traversal (not post-filter)
+        - Parallelizes per-connector queries
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
+                Format: {
+                    'departments': [dept_ids],
+                    'categories': [cat_ids],
+                    'subcategories1': [subcat1_ids],
+                    'subcategories2': [subcat2_ids],
+                    'subcategories3': [subcat3_ids],
+                    'languages': [language_ids],
+                    'topics': [topic_ids],
+                    'kb': [kb_ids],
+                    'apps': [connector_ids]
+                }
+
+        Returns:
+            List[str]: List of virtualRecordIds
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        org_id: str
+    ) -> list[dict]:
+        """
+        Batch fetch full record documents by their virtualRecordIds.
+
+        This is used after vector search to fetch only the records that were actually returned,
+        instead of fetching all accessible records upfront.
+
+        Args:
+            virtual_record_ids: List of virtualRecordIds to fetch
+            org_id: Organization ID for additional filtering
+
+        Returns:
+            List[Dict]: List of full record dictionaries
+        """
+        pass
+
+    @abstractmethod
     async def batch_upsert_record_permissions(
         self,
         record_id: str,
-        permissions: List[Dict],
+        permissions: list[dict],
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2074,7 +2132,7 @@ class IGraphDBProvider(ABC):
         self,
         file_key: str,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all permissions for a file.
 
@@ -2113,7 +2171,7 @@ class IGraphDBProvider(ABC):
         node_id: str,
         node_collection: str,
         transaction: Optional[str] = None
-    ) -> List['User']:
+    ) -> list['User']:
         """
         Get all users with permission to a node.
 
@@ -2133,7 +2191,7 @@ class IGraphDBProvider(ABC):
         user_id: str,
         org_id: str,
         record_id: str,
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Check record access and return record details if accessible.
 
@@ -2173,7 +2231,7 @@ class IGraphDBProvider(ABC):
         self,
         file_key: str,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all parent IDs for a file.
 
@@ -2194,7 +2252,7 @@ class IGraphDBProvider(ABC):
         key: str,
         collection: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get a sync point by key.
 
@@ -2212,7 +2270,7 @@ class IGraphDBProvider(ABC):
     async def upsert_sync_point(
         self,
         sync_point_key: str,
-        sync_point_data: Dict,
+        sync_point_data: dict,
         collection: str,
         transaction: Optional[str] = None
     ) -> bool:
@@ -2255,7 +2313,7 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         transaction: Optional[str] = None
-    ) -> Tuple[int, bool]:
+    ) -> tuple[int, bool]:
         """
         Delete all sync points for a given connector.
 
@@ -2273,7 +2331,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_app_users(
         self,
-        users: List,
+        users: list,
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2290,7 +2348,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_user_groups(
         self,
-        user_groups: List,
+        user_groups: list,
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2305,7 +2363,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_app_roles(
         self,
-        app_roles: List,
+        app_roles: list,
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2320,7 +2378,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_orgs(
         self,
-        orgs: List[Dict],
+        orgs: list[dict],
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2335,7 +2393,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_domains(
         self,
-        domains: List[Dict],
+        domains: list[dict],
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2350,7 +2408,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_anyone(
         self,
-        anyone: List[Dict],
+        anyone: list[dict],
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2365,7 +2423,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_anyone_with_link(
         self,
-        anyone_with_link: List[Dict],
+        anyone_with_link: list[dict],
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2380,7 +2438,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_upsert_anyone_same_org(
         self,
-        anyone_same_org: List[Dict],
+        anyone_same_org: list[dict],
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2395,7 +2453,7 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_create_user_app_edges(
         self,
-        edges: List[Dict]
+        edges: list[dict]
     ) -> int:
         """
         Batch create user-app relationship edges.
@@ -2431,9 +2489,9 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def bulk_get_entity_ids_by_email(
         self,
-        emails: List[str],
+        emails: list[str],
         transaction: Optional[str] = None
-    ) -> Dict[str, Tuple[str, str, str]]:
+    ) -> dict[str, tuple[str, str, str]]:
         """
         Bulk get entity IDs for multiple emails.
 
@@ -2453,7 +2511,7 @@ class IGraphDBProvider(ABC):
         self,
         org_id: str,
         file_key: str,
-        permissions: List[Dict],
+        permissions: list[dict],
         transaction: Optional[str] = None
     ) -> None:
         """
@@ -2490,7 +2548,7 @@ class IGraphDBProvider(ABC):
         record_id: str,
         user_id: str,
         transaction: Optional[str] = None
-    ) -> Dict:
+    ) -> dict:
         """
         Main entry point for record deletion - routes to connector-specific methods.
 
@@ -2548,7 +2606,7 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         org_id: str,
         transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Delete a connector instance and all its related data.
 
@@ -2620,7 +2678,7 @@ class IGraphDBProvider(ABC):
         user_email: str,
         service_type: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get user's sync state for a specific service.
 
@@ -2641,7 +2699,7 @@ class IGraphDBProvider(ABC):
         state: str,
         service_type: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Update user's sync state for a specific service.
 
@@ -2661,7 +2719,7 @@ class IGraphDBProvider(ABC):
         self,
         drive_id: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get drive's sync state.
 
@@ -2680,7 +2738,7 @@ class IGraphDBProvider(ABC):
         drive_id: str,
         state: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Update drive's sync state.
 
@@ -2728,7 +2786,7 @@ class IGraphDBProvider(ABC):
     async def batch_update_connector_status(
         self,
         collection: str,
-        connector_keys: List[str],
+        connector_keys: list[str],
         is_active: bool,
         is_agent_active: bool,
         transaction: Optional[str] = None,
@@ -2757,7 +2815,7 @@ class IGraphDBProvider(ABC):
         team_scope: str,
         personal_scope: str,
         transaction: Optional[str] = None,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all connector instances accessible to a user (personal + team).
 
@@ -2789,7 +2847,7 @@ class IGraphDBProvider(ABC):
         kb_connector_type: Optional[str] = None,
         is_admin: bool = False,
         transaction: Optional[str] = None,
-    ) -> Tuple[List[Dict], int, Dict[str, int]]:
+    ) -> tuple[list[dict], int, dict[str, int]]:
         """
         Get filtered connector instances with pagination and scope counts.
 
@@ -2824,7 +2882,7 @@ class IGraphDBProvider(ABC):
         token: str,
         expiration: Optional[str] = None,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Store page token for a channel/resource.
 
@@ -2848,7 +2906,7 @@ class IGraphDBProvider(ABC):
         resource_id: Optional[str] = None,
         user_email: Optional[str] = None,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get page token for specific channel/resource/user.
 
@@ -2912,7 +2970,7 @@ class IGraphDBProvider(ABC):
         self,
         org_id: str,
         connector_id: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get failed records along with their active users who have permissions.
 
@@ -2932,7 +2990,7 @@ class IGraphDBProvider(ABC):
         self,
         org_id: str,
         connector_id: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all failed records for an organization and connector.
 
@@ -2952,7 +3010,7 @@ class IGraphDBProvider(ABC):
         self,
         instance_id: str,
         transaction: Optional[str] = None
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Check if a toolset instance is currently in use by any active agents.
 
@@ -2976,14 +3034,14 @@ class IGraphDBProvider(ABC):
         self,
         user_key: str,
         org_id: str,
-        user_app_ids: List[str],
+        user_app_ids: list[str],
         skip: int,
         limit: int,
         sort_field: str,
         sort_dir: str,
         only_containers: bool,
         transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Get root level nodes (Apps) for Knowledge Hub.
 
@@ -3016,7 +3074,7 @@ class IGraphDBProvider(ABC):
         sort_dir: str,
         only_containers: bool = False,
         transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Get direct children of a parent node for tree navigation (browse mode).
 
@@ -3051,19 +3109,19 @@ class IGraphDBProvider(ABC):
         sort_field: str,
         sort_dir: str,
         search_query: Optional[str] = None,
-        node_types: Optional[List[str]] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connector_ids: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        created_at: Optional[Dict[str, Optional[int]]] = None,
-        updated_at: Optional[Dict[str, Optional[int]]] = None,
-        size: Optional[Dict[str, Optional[int]]] = None,
+        node_types: Optional[list[str]] = None,
+        record_types: Optional[list[str]] = None,
+        origins: Optional[list[str]] = None,
+        connector_ids: Optional[list[str]] = None,
+        indexing_status: Optional[list[str]] = None,
+        created_at: Optional[dict[str, Optional[int]]] = None,
+        updated_at: Optional[dict[str, Optional[int]]] = None,
+        size: Optional[dict[str, Optional[int]]] = None,
         only_containers: bool = False,
         parent_id: Optional[str] = None,
         parent_type: Optional[str] = None,
         transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Unified search for knowledge hub nodes with permission-first traversal.
 
@@ -3112,7 +3170,7 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         transaction: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get breadcrumb trail for a node.
 
@@ -3132,7 +3190,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         parent_id: Optional[str],
         transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Get user's context-level permissions (for upload, create folder, etc.).
 
@@ -3153,7 +3211,7 @@ class IGraphDBProvider(ABC):
         user_key: str,
         org_id: str,
         transaction: Optional[str] = None
-    ) -> Dict[str, List[Dict[str, Any]]]:
+    ) -> dict[str, list[dict[str, Any]]]:
         """
         Get available filter options (KBs and Apps) for a user.
 
@@ -3171,9 +3229,9 @@ class IGraphDBProvider(ABC):
     async def get_knowledge_hub_node_info(
         self,
         node_id: str,
-        folder_mime_types: List[str],
+        folder_mime_types: list[str],
         transaction: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """
         Get node information including type and subtype.
 
@@ -3191,9 +3249,9 @@ class IGraphDBProvider(ABC):
     async def get_knowledge_hub_parent_node(
         self,
         node_id: str,
-        folder_mime_types: List[str],
+        folder_mime_types: list[str],
         transaction: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """
         Get the parent node of a given node.
 
@@ -3232,7 +3290,7 @@ class IGraphDBProvider(ABC):
         self,
         kb_id: str,
         user_id: str
-    ) -> Dict:
+    ) -> dict:
         """
         Validate user permissions for folder creation.
 
@@ -3270,7 +3328,7 @@ class IGraphDBProvider(ABC):
         relation_type: str,
         edge_collection: str,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get related records connected via a specific relation type.
 
@@ -3312,7 +3370,7 @@ class IGraphDBProvider(ABC):
         exclude_key: str,
         collection: str,
         transaction: Optional[str] = None
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Find all mail records with the same messageIdHeader, excluding a specific key.
 
@@ -3358,8 +3416,8 @@ class IGraphDBProvider(ABC):
     @abstractmethod
     async def batch_update_nodes(
         self,
-        node_ids: List[str],
-        updates: Dict[str, Any],
+        node_ids: list[str],
+        updates: dict[str, Any],
         collection: str,
         transaction: Optional[str] = None
     ) -> bool:
@@ -3388,7 +3446,7 @@ class IGraphDBProvider(ABC):
         page: int = 1,
         limit: int = 20,
         transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
+    ) -> tuple[list[dict], int]:
         """
         Get connector instances with filters, pagination, and access control.
 
@@ -3442,7 +3500,7 @@ class IGraphDBProvider(ABC):
         page: int = 1,
         limit: int = 10,
         transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
+    ) -> tuple[list[dict], int]:
         """
         Get teams for an organization with pagination, search, members, and permissions.
 
@@ -3465,7 +3523,7 @@ class IGraphDBProvider(ABC):
         team_id: str,
         user_key: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get a single team with its members and permissions.
 
@@ -3487,7 +3545,7 @@ class IGraphDBProvider(ABC):
         page: int = 1,
         limit: int = 100,
         transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
+    ) -> tuple[list[dict], int]:
         """
         Get all teams that a user is a member of.
 
@@ -3512,7 +3570,7 @@ class IGraphDBProvider(ABC):
         page: int = 1,
         limit: int = 100,
         transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
+    ) -> tuple[list[dict], int]:
         """
         Get all teams created by a user.
 
@@ -3536,7 +3594,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         user_key: str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> Optional[dict]:
         """
         Get all users in a specific team.
 
@@ -3560,7 +3618,7 @@ class IGraphDBProvider(ABC):
         limit: int = 10,
         offset: int = 0,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Search teams by name or description.
 
@@ -3581,9 +3639,9 @@ class IGraphDBProvider(ABC):
     async def delete_team_member_edges(
         self,
         team_id: str,
-        user_ids: List[str],
+        user_ids: list[str],
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Delete edges to remove team members.
 
@@ -3601,10 +3659,10 @@ class IGraphDBProvider(ABC):
     async def batch_update_team_member_roles(
         self,
         team_id: str,
-        user_roles: List[Dict[str, str]],
+        user_roles: list[dict[str, str]],
         timestamp: int,
         transaction: Optional[str] = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Batch update user roles in a team.
 
@@ -3641,9 +3699,9 @@ class IGraphDBProvider(ABC):
     async def get_team_owner_removal_info(
         self,
         team_id: str,
-        user_ids: List[str],
+        user_ids: list[str],
         transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Get information about owners being removed and total owner count for a team.
 
@@ -3663,9 +3721,9 @@ class IGraphDBProvider(ABC):
     async def get_team_permissions_and_owner_count(
         self,
         team_id: str,
-        user_ids: List[str],
+        user_ids: list[str],
         transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Get team info, current permissions for specific users, and total owner count.
 
@@ -3692,7 +3750,7 @@ class IGraphDBProvider(ABC):
         page: int = 1,
         limit: int = 100,
         transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
+    ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
 
