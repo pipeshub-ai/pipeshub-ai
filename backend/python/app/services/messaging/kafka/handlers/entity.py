@@ -1,4 +1,4 @@
-from typing import Optional
+import logging
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
@@ -18,9 +18,12 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class EntityEventService(BaseEventService):
-    def __init__(self, logger,
-                graph_provider: IGraphDBProvider,
-                app_container: ConnectorAppContainer) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        graph_provider: IGraphDBProvider,
+        app_container: ConnectorAppContainer,
+    ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
         self.app_container = app_container
@@ -582,7 +585,7 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
             return {}
 
-    async def __create_kb_connector_app_instance(self, org_id: str, created_by_user_id: Optional[str] = None) -> Optional[dict]:
+    async def __create_kb_connector_app_instance(self, org_id: str, created_by_user_id: str | None = None) -> dict | None:
         """
         Automatically create a Knowledge Base connector instance when an org is created.
 
@@ -705,7 +708,7 @@ class EntityEventService(BaseEventService):
             # Don't fail org creation if KB connector creation fails
             return None
 
-    async def __get_or_create_kb_app_for_org(self, org_id: str, created_by_user_id: Optional[str] = None) -> Optional[dict]:
+    async def __get_or_create_kb_app_for_org(self, org_id: str, created_by_user_id: str | None = None) -> dict | None:
         """
         Get or create a Knowledge Base connector instance for an org.
 
@@ -731,8 +734,7 @@ class EntityEventService(BaseEventService):
 
             # Create KB app if it doesn't exist
             self.logger.info(f"KB app not found for org {org_id}, creating one...")
-            new_kb_app = await self.__create_kb_connector_app_instance(org_id, created_by_user_id)
-            return new_kb_app
+            return await self.__create_kb_connector_app_instance(org_id, created_by_user_id)
 
         except Exception as e:
             self.logger.error(f"❌ Error getting or creating KB app for org {org_id}: {str(e)}")

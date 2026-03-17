@@ -1,11 +1,16 @@
 """Generic Event Service for handling connector-specific events"""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from dependency_injector import providers
 
-from app.config.constants.arangodb import AppStatus, CollectionNames, Connectors, EventTypes
+from app.config.constants.arangodb import (
+    AppStatus,
+    CollectionNames,
+    Connectors,
+    EventTypes,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -32,8 +37,8 @@ class EventService:
         self,
         connector_id: str,
         *,
-        status: Optional[str] = None,
-        is_locked: Optional[bool] = None,
+        status: str | None = None,
+        is_locked: bool | None = None,
     ) -> None:
         """Update app document status and/or isLocked for a connector.
 
@@ -41,7 +46,7 @@ class EventService:
         Omitted arguments (None) are not written to the DB.
         Always sets updatedAtTimestamp.
         """
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "id": connector_id,
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         }
@@ -53,7 +58,7 @@ class EventService:
             [payload], CollectionNames.APPS.value
         )
 
-    def _get_connector(self, connector_id: str) -> Optional[BaseConnector]:
+    def _get_connector(self, connector_id: str) -> BaseConnector | None:
         """
         Get connector instance from app_container.
         """
@@ -76,7 +81,7 @@ class EventService:
                 self.app_container.connectors_map = {}
             self.app_container.connectors_map[connector_id] = connector
 
-    async def _ensure_connector(self, connector_name: str, connector_id: str) -> Optional[BaseConnector]:
+    async def _ensure_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
         """
         Get connector from memory, or auto-initialize it if missing.
         Handles the case where the init event was missed or the service restarted.
@@ -134,7 +139,7 @@ class EventService:
             )
             return None
 
-    async def process_event(self, event_type: str, payload: Dict[str, Any]) -> bool:
+    async def process_event(self, event_type: str, payload: dict[str, Any]) -> bool:
         """Handle connector-specific events - implementing abstract method"""
         try:
             if "." in event_type:
@@ -165,7 +170,7 @@ class EventService:
             self.logger.error(f"Error handling connector event {event_type}: {e}", exc_info=True)
             return False
 
-    async def _handle_init(self, connector_name: str, payload: Dict[str, Any]) -> bool:
+    async def _handle_init(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Initializes the event service connector and its dependencies."""
         try:
             org_id = payload.get("orgId")
@@ -205,7 +210,7 @@ class EventService:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
             return False
 
-    async def _handle_start_sync(self, connector_name: str, payload: Dict[str, Any]) -> bool:
+    async def _handle_start_sync(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Queue immediate start of the sync service"""
         org_id = payload.get("orgId")
         connector_id = payload.get("connectorId")
@@ -302,7 +307,7 @@ class EventService:
 
         return True
 
-    async def _run_sync_and_clear_status(self, connector: Any, connector_id: str) -> None:
+    async def _run_sync_and_clear_status(self, connector: BaseConnector, connector_id: str) -> None:
         """Wrap run_sync() so that status is cleared to null when the task finishes."""
         try:
             await connector.run_sync()
@@ -313,7 +318,7 @@ class EventService:
             except Exception as clear_err:
                 self.logger.error(f"❌ Failed to clear status for connector {connector_id}: {clear_err}")
 
-    async def _handle_reindex(self, connector_name: str, payload: Dict[str, Any]) -> bool:
+    async def _handle_reindex(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Handle reindex event for a connector with pagination support.
 
         Supports three modes:
@@ -420,7 +425,7 @@ class EventService:
             self.logger.error(f"Failed to handle reindex for {connector_name.capitalize()} {connector_id}: {str(e)}", exc_info=True)
             return False
 
-    async def _handle_delete(self, connector_name: str, payload: Dict[str, Any]) -> bool:
+    async def _handle_delete(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """
         Handle the async connector deletion event.
 
