@@ -482,9 +482,13 @@ class ExcelParser:
             # for sheets that only have ~1k rows of actual data because empty-but-styled
             # rows are counted. Iterating sheet._cells (the internal non-empty cell dict)
             # is 50-100x faster than iter_rows() for such sheets.
+            # NOTE: sheet._cells is a private openpyxl implementation detail (tested with
+            # openpyxl==3.1.5). It may change or be removed in future versions. The
+            # getattr fallback below ensures graceful degradation to iter_rows() if the
+            # attribute no longer exists.
             _raw_cells = getattr(sheet, '_cells', None)
             if _raw_cells is not None:
-                non_empty_positions: set = {
+                non_empty_positions: set[tuple[int, int]] = {
                     (r, c) for (r, c), _cell in _raw_cells.items() if _cell.value is not None
                 }
             else:
@@ -508,7 +512,7 @@ class ExcelParser:
                     f"(openpyxl reported {sheet.max_row}\u00d7{sheet.max_column})"
                 )
 
-            def get_visited_range(row: int, col: int) -> Tuple[int, int, int, int] | None:
+            def get_visited_range(row: int, col: int) -> tuple[int, int, int, int] | None:
                 for start_row, end_row, start_col, end_col in visited_ranges:
                     if start_row <= row <= end_row and start_col <= col <= end_col:
                         return (start_row, end_row, start_col, end_col)

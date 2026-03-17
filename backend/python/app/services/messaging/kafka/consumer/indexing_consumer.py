@@ -8,6 +8,7 @@ from logging import Logger
 from typing import Any, AsyncGenerator, Callable, Dict, Optional, Set, Tuple
 
 from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
+from aiokafka.structs import ConsumerRecord  # type: ignore
 
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
@@ -65,8 +66,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._futures_lock = threading.Lock()
         self._message_count = 0
         self._commit_lock: Optional[asyncio.Lock] = None
-        self._next_commit_offset: Dict[Tuple[str, int], int] = {}
-        self._completed_offsets: Dict[Tuple[str, int], Set[int]] = {}
+        self._next_commit_offset: dict[tuple[str, int], int] = {}
+        self._completed_offsets: dict[tuple[str, int], set[int]] = {}
         self._backpressure_logged = False
 
     @staticmethod
@@ -418,7 +419,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
             return None
 
-    async def __start_processing_task(self, message, topic_partition: TopicPartition) -> None:
+    async def __start_processing_task(self, message: ConsumerRecord, topic_partition: TopicPartition) -> None:
         """Start a new task for processing a message with semaphore control.
         Submits the task to the worker thread's event loop instead of the main loop.
         Tracks futures to ensure proper cleanup during shutdown.
@@ -506,7 +507,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 f"Committed offset {commit_upto} for topic={topic_partition.topic}, partition={topic_partition.partition}"
             )
 
-    async def __process_message_wrapper(self, message) -> bool:
+    async def __process_message_wrapper(self, message: ConsumerRecord) -> bool:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
 
         Iterates over events yielded by the message handler:
