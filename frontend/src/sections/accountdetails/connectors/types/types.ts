@@ -16,6 +16,7 @@ interface BaseField {
   options?: string[];
   validation?: FieldValidation;
   isSecret?: boolean;
+  nonEditable?: boolean;
 }
 
 // Auth schema field
