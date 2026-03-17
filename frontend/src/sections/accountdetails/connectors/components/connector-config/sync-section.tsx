@@ -283,7 +283,13 @@ const SyncSection = forwardRef<HTMLDivElement, SyncSectionProps>(
                   value={formData[field.name]}
                   onChange={(value) => onFieldChange('sync', field.name, value)}
                   error={formErrors[field.name]}
-                  disabled={readOnly}
+                  disabled={
+                    readOnly ||
+                    (
+                      field.nonEditable &&
+                      connectorConfig?.config?.sync?.values?.[field.name]
+                    )
+                  }
                 />
               </Grid>
             ))}

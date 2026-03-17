@@ -263,7 +263,8 @@ class ConnectorConfigBuilder:
             "required": field.required,
             "defaultValue": field.default_value,
             "validation": {},
-            "isSecret": field.is_secret
+            "isSecret": field.is_secret,
+            "nonEditable": field.non_editable
         }
 
         if field.options:
