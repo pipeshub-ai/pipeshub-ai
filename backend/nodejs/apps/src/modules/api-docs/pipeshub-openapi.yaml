@@ -4507,8 +4507,30 @@ components:
         provider:
           type: string
           description: AI provider name
+          enum:
+            - anthropic
+            - bedrock
+            - azureAI
+            - azureOpenAI
+            - cohere
+            - fireworks
+            - gemini
+            - groq
+            - huggingFace
+            - jinaAI
+            - mistral
+            - ollama
+            - openAI
+            - openAICompatible
+            - sentenceTransformers
+            - together
+            - vertexAI
+            - voyage
+            - xai
         configuration:
           type: object
+          description: Provider-specific configuration. Keys vary by provider (e.g., ollama includes endpoint).
+          additionalProperties: true
           properties:
             model:
               type: string
@@ -4520,6 +4542,9 @@ components:
               type: string
               format: uri
               description: Endpoint URL for the model
+            modelFriendlyName:
+              type: string
+              description: Human-readable display name for the model
         isMultimodal:
           type: boolean
           default: false
@@ -4540,6 +4565,9 @@ components:
           type: string
           description: Unique identifier for this model configuration
           readOnly: true
+        modelFriendlyName:
+          type: string
+          description: Human-readable display name for the model
 
     AIModelsConfig:
       type: object
@@ -4856,7 +4884,8 @@ components:
           example: "openai"
         configuration:
           type: object
-          description: Provider-specific configuration
+          description: Provider-specific configuration. Keys vary by provider.
+          additionalProperties: true
           properties:
             model:
               type: string
@@ -4865,6 +4894,9 @@ components:
             apiKey:
               type: string
               description: API key for the provider
+            modelFriendlyName:
+              type: string
+              description: Human-readable display name for the model
             endpoint:
               type: string
               format: uri
@@ -4913,7 +4945,22 @@ components:
           description: Provider name
         configuration:
           type: object
-          description: Updated provider configuration
+          description: Provider-specific configuration. Keys vary by provider.
+          additionalProperties: true
+          properties:
+            model:
+              type: string
+              description: Model name/identifier
+            apiKey:
+              type: string
+              description: API key for the provider
+            modelFriendlyName:
+              type: string
+              description: Human-readable display name for the model
+            endpoint:
+              type: string
+              format: uri
+              description: Custom endpoint URL (for Azure, self-hosted)
         isMultimodal:
           type: boolean
         isReasoning:
@@ -4933,8 +4980,30 @@ components:
           enum: [success, error]
         message:
           type: string
-        data:
-          $ref: '#/components/schemas/AIModelProviderConfig'
+        details:
+          type: object
+          properties:
+            modelKey:
+              type: string
+              description: Unique identifier for this model configuration
+            modelType:
+              type: string
+              description: Type of model
+            provider:
+              type: string
+              description: AI provider name
+            model:
+              type: string
+              description: Model name/identifier
+            isDefault:
+              type: boolean
+            isMultimodal:
+              type: boolean
+            isReasoning:
+              type: boolean
+            contextLength:
+              type: integer
+              nullable: true
 
     # ==================== CRAWLING MANAGER SCHEMAS ====================
     CrawlingScheduleType:
@@ -17943,10 +18012,21 @@ paths:
                           type: string
                         provider:
                           type: string
-                        model:
+                        modelName:
                           type: string
+                          description: Model name
+                        modelType:
+                          type: string
+                          description: Type of model (e.g., llm, embedding)
                         isDefault:
                           type: boolean
+                        isMultimodal:
+                          type: boolean
+                        isReasoning:
+                          type: boolean
+                        modelFriendlyName:
+                          type: string
+                          description: Human-readable display name for the model
         '401':
           description: Unauthorized
 
@@ -17968,7 +18048,7 @@ paths:
             schema:
               $ref: '#/components/schemas/AddAIModelProviderRequest'
       responses:
-        '201':
+        '200':
           description: AI model provider added successfully
           content:
             application/json:
@@ -18013,6 +18093,10 @@ paths:
       responses:
         '200':
           description: AI model provider updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelProviderResponse'
         '400':
           description: Invalid configuration
         '401':
@@ -18044,6 +18128,29 @@ paths:
       responses:
         '200':
           description: AI model provider deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success, error]
+                  message:
+                    type: string
+                  details:
+                    type: object
+                    properties:
+                      modelKey:
+                        type: string
+                      modelType:
+                        type: string
+                      provider:
+                        type: string
+                      model:
+                        type: string
+                      wasDefault:
+                        type: boolean
         '400':
           description: Cannot delete default model
         '401':
@@ -18077,6 +18184,27 @@ paths:
       responses:
         '200':
           description: Default model updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success, error]
+                  message:
+                    type: string
+                  details:
+                    type: object
+                    properties:
+                      modelKey:
+                        type: string
+                      modelType:
+                        type: string
+                      provider:
+                        type: string
+                      model:
+                        type: string
         '401':
           description: Unauthorized
         '403':
