@@ -160,7 +160,7 @@ tags:
   - name: SMTP Configuration
     description: Configure SMTP email server for sending notifications and invitations.
   - name: Authentication Configuration
-    description: Configure authentication providers including Azure AD, Microsoft, Google OAuth, SAML SSO, and custom OAuth 2.0.
+    description: Configure authentication providers including Microsoft, Google OAuth, SAML SSO, and custom OAuth 2.0.
   - name: Platform Settings
     description: Platform-wide settings including file upload limits, feature flags, and custom system prompts.
   - name: AI Models Providers
@@ -355,14 +355,13 @@ components:
       properties:
         type:
           type: string
-          enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
+          enum: [samlSso, otp, password, google, microsoft, oauth]
           description: |
             Type of authentication method:
             - `password`: Email/password authentication
             - `otp`: One-time password via email (6-digit, expires in 10 minutes)
             - `google`: Google OAuth 2.0
             - `microsoft`: Microsoft OAuth 2.0
-            - `azureAd`: Azure Active Directory
             - `samlSso`: SAML 2.0 Single Sign-On
             - `oauth`: Generic OAuth 2.0 provider
       required:
@@ -431,7 +430,7 @@ components:
           type: array
           items:
             type: string
-            enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
+            enum: [samlSso, otp, password, google, microsoft, oauth]
           description: List of allowed authentication methods for the current step
           example: ["password", "google", "otp"]
         message:
@@ -465,10 +464,10 @@ components:
           properties:
             tenantId:
               type: string
-              description: Azure AD tenant ID
+              description: Microsoft tenant ID
             clientId:
               type: string
-              description: Azure AD client ID
+              description: Microsoft client ID
         oauth:
           type: object
           properties:
@@ -491,13 +490,12 @@ components:
         - `otp`: `{ otp: "123456" }` (6-digit code)
         - `google`: `"google-id-token-string"`
         - `microsoft`: `{ accessToken: "...", idToken: "..." }`
-        - `azureAd`: `{ accessToken: "...", idToken: "..." }`
         - `oauth`: `{ accessToken: "...", idToken: "..." }`
         - `samlSso`: handled via redirect flow
       properties:
         method:
           type: string
-          enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
+          enum: [samlSso, otp, password, google, microsoft, oauth]
           description: Authentication method to use
         credentials:
           oneOf:
@@ -543,7 +541,7 @@ components:
 
     OAuthCredentials:
       type: object
-      description: Credentials for OAuth authentication (Microsoft, Azure AD, generic OAuth)
+      description: Credentials for OAuth authentication (Microsoft, generic OAuth)
       properties:
         accessToken:
           type: string
@@ -576,7 +574,7 @@ components:
           type: array
           items:
             type: string
-            enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
+            enum: [samlSso, otp, password, google, microsoft, oauth]
           description: Allowed methods for next step (if multi-step auth continues)
         authProviders:
           $ref: '#/components/schemas/AuthProviders'
@@ -4583,23 +4581,12 @@ components:
       description: Must have at least one model type configured
 
     # Authentication Configuration Schemas
-    AzureAdAuthConfig:
-      type: object
-      description: Azure Active Directory authentication configuration
-      properties:
-        clientId:
-          type: string
-          description: Azure AD application client ID
-          example: "12345678-1234-1234-1234-123456789abc"
-        tenantId:
-          type: string
-          description: Azure AD tenant ID (use 'common' for multi-tenant)
-          default: "common"
-          example: "common"
-
     MicrosoftAuthConfig:
       type: object
       description: Microsoft authentication configuration
+      required:
+        - clientId
+        - tenantId
       properties:
         clientId:
           type: string
@@ -4609,36 +4596,70 @@ components:
           type: string
           description: Microsoft tenant ID
           default: "common"
+          example: "common"
+        authority:
+          type: string
+          description: Microsoft authority URL
+          example: "https://login.microsoftonline.com/common"
+          readOnly: true
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time user provisioning
+          default: false
 
     GoogleAuthConfig:
       type: object
       description: Google authentication configuration
+      required:
+        - clientId
       properties:
         clientId:
           type: string
           description: Google OAuth client ID
           example: "123456789-abc.apps.googleusercontent.com"
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time user provisioning
+          default: true
 
     SSOAuthConfig:
       type: object
       description: SAML SSO authentication configuration
+      required:
+        - certificate
+        - entryPoint
+        - emailKey
       properties:
+        certificate:
+          type: string
+          description: X.509 certificate for signature validation (PEM format)
+          example: "MIIDezCCAmOgAwIBAgIQT..."
         entryPoint:
           type: string
           format: uri
           description: Identity provider SSO URL
           example: "https://idp.example.com/sso/saml"
-        certificate:
-          type: string
-          description: X.509 certificate for signature validation (PEM format)
         emailKey:
           type: string
           description: SAML attribute name for user email
-          example: "email"
+          example: "nameID"
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time user provisioning
+          default: true
 
     GenericOAuthConfig:
       type: object
       description: Generic OAuth 2.0 provider configuration
+      required:
+        - providerName
+        - clientId
+        - clientSecret
+        - authorizationUrl
+        - tokenEndpoint
+        - userInfoEndpoint
+        - scope
+        - redirectUri
       properties:
         providerName:
           type: string
@@ -4654,22 +4675,30 @@ components:
           type: string
           format: uri
           description: Authorization endpoint URL
+          example: "https://provider.example.com/authorize"
         tokenEndpoint:
           type: string
           format: uri
           description: Token endpoint URL
+          example: "https://provider.example.com/token"
         userInfoEndpoint:
           type: string
           format: uri
           description: User info endpoint URL
+          example: "https://provider.example.com/userinfo"
         scope:
           type: string
           description: OAuth scopes to request
-          example: "openid profile email"
+          example: "openid email profile"
         redirectUri:
           type: string
           format: uri
           description: OAuth redirect URI
+          example: "http://localhost:3001/auth/oauth/callback"
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time user provisioning
+          default: true
 
     # Connector Configuration Schemas
     GoogleWorkspaceCredentials:
@@ -5689,7 +5718,6 @@ paths:
         - <code>otp</code>: <code>{ "credentials": { "otp": "123456" } }</code> (6-digit code, valid for 10 minutes)<br>
         - <code>google</code>: <code>{ "credentials": "google-id-token-string" }</code><br>
         - <code>microsoft</code>: <code>{ "credentials": { "accessToken": "...", "idToken": "..." } }</code><br>
-        - <code>azureAd</code>: <code>{ "credentials": { "accessToken": "...", "idToken": "..." } }</code><br>
         - <code>oauth</code>: <code>{ "credentials": { "accessToken": "...", "idToken": "..." } }</code><br>
         - <code>samlSso</code>: Handled via redirect flow (use <code>/saml/signIn</code> instead)
         <br><br>
@@ -7111,7 +7139,6 @@ paths:
         - <code>otp</code>: One-time password via email<br>
         - <code>google</code>: Google OAuth 2.0<br>
         - <code>microsoft</code>: Microsoft OAuth 2.0<br>
-        - <code>azureAd</code>: Azure Active Directory<br>
         - <code>samlSso</code>: SAML 2.0 Single Sign-On<br>
         - <code>oauth</code>: Generic OAuth 2.0 provider
         <br><br>
@@ -17692,52 +17719,6 @@ paths:
           description: Unauthorized
 
   # -------------------- Authentication Configuration --------------------
-  /api/v1/configurationManager/authConfig/azureAd:
-    post:
-      tags:
-        - Authentication Configuration
-      summary: Configure Azure AD authentication
-      description: Set up Azure Active Directory as an authentication provider for user login.
-      operationId: setAzureAdAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:write]
-      requestBody:
-        required: true
-        description: "Request body for Configure Azure AD authentication"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AzureAdAuthConfig'
-      responses:
-        '200':
-          description: Azure AD configuration saved
-        '400':
-          description: Invalid configuration
-        '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
-
-    get:
-      tags:
-        - Authentication Configuration
-      summary: Get Azure AD configuration
-      description: Retrieve Azure AD authentication configuration.
-      operationId: getAzureAdAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:read]
-      responses:
-        '200':
-          description: Azure AD configuration retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AzureAdAuthConfig'
-        '401':
-          description: Unauthorized
-
   /api/v1/configurationManager/authConfig/microsoft:
     post:
       tags:
@@ -17758,6 +17739,14 @@ paths:
       responses:
         '200':
           description: Microsoft auth configuration saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Microsoft Auth config created successfully"
         '400':
           description: Invalid configuration
         '401':
@@ -17804,6 +17793,14 @@ paths:
       responses:
         '200':
           description: Google auth configuration saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Google Auth config created successfully"
         '400':
           description: Invalid configuration
         '401':
@@ -17850,6 +17847,14 @@ paths:
       responses:
         '200':
           description: SSO configuration saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "SSO Auth config created successfully"
         '400':
           description: Invalid configuration
         '401':
@@ -17896,6 +17901,14 @@ paths:
       responses:
         '200':
           description: OAuth configuration saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "OAuth config created successfully"
         '400':
           description: Invalid configuration
         '401':
