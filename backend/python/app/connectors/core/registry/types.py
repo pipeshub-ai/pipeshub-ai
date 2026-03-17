@@ -37,7 +37,7 @@ class CustomField:
     min_length: Optional[int] = None
     max_length: Optional[int] = None
     is_secret: bool = False
-
+    non_editable: bool = False
 
 @dataclass
 class DocumentationLink:
