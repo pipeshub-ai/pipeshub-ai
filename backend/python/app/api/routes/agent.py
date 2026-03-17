@@ -70,6 +70,7 @@ class ChatQuery(BaseModel):
     modelName: Optional[str] = None
     timezone: Optional[str] = None
     currentTime: Optional[str] = None
+    conversationId: Optional[str] = None  
 
 
 # ============================================================================
@@ -276,11 +277,6 @@ async def _auto_select_graph(
     logger: Logger,
     llm: BaseChatModel,
 ):
-    """
-    Auto-select graph using an LLM call to classify the query into one of
-    three agent types: quick, verification, or deep.
-    Falls back to 'verification' if parsing fails.
-    """
     from langchain_core.messages import HumanMessage
 
     tool_names = _extract_tool_names_for_routing(query_info)
@@ -289,44 +285,62 @@ async def _auto_select_graph(
         for name in tool_names
         if isinstance(name, str) and "." in name
     })
-    user_query = query_info.get("query", "")
+    user_query = query_info.get("query", "").strip()
     domains_str = ", ".join(apps) if apps else "none"
 
+    # ── Compact context extraction ────────────────────────────────────────────
+    # We only need enough signal to resolve follow-ups and clarifications.
+    # Heavy truncation keeps this routing call fast.
+    context_block = _build_routing_context(query_info)
+
     prompt = (
-        "You are a query router. Classify the user query into exactly one agent type "
-        "based on the structural complexity of the work required.\n\n"
+    "You are a query router. Analyze the user query and classify it into exactly one tier.\n\n"
 
-        "## Agent Types\n\n"
+    + context_block +
 
-        "**quick**: Zero or one tool call with no dependency resolution. "
-        "Covers general knowledge, greetings, or a single straightforward "
-        "read/write where all parameters are obvious from the query.\n"
-        "Examples: 'Create a Jira ticket', 'What is LangGraph?', 'Show today's meetings'\n\n"
+    "## Tiers\n\n"
 
-        "**react**: Multiple tool calls that form a sequential chain — output of one step "
-        "feeds the next. Includes entity resolution (name → ID → use in next call), "
-        "search-then-act patterns, and conditional branching.\n"
-        "RULE: If the query mentions a person by name or any entity needing an ID lookup "
-        "before the main action, this is ALWAYS react, never quick.\n"
-        "Examples: 'Find tickets assigned to Vishwjeet', "
-        "'Investigate this error and fetch related logs', "
-        "'Find user → get repos → analyze activity'\n\n"
+    "**quick**\n"
+    "The complete execution plan — every tool call and every parameter value — can be "
+    "fully determined from the query and current context alone, before any tool runs. "
+    "This includes zero tool calls (direct answer), one tool call, or multiple parallel "
+    "tool calls where all arguments are already known.\n\n"
 
-        "**deep**: Parallel independent work streams, bulk processing, or synthesis across "
-        "multiple unrelated data sources. The defining characteristic is that the work "
-        "CANNOT be serialized — it requires fan-out, batch processing, or aggregation "
-        "across separate result sets.\n"
-        "Examples: 'Generate weekly report from Jira, Slack, and GitHub', "
-        "'Analyze team performance trends', 'Compare metrics across departments'\n\n"
+    "**react**\n"
+    "There is a data dependency: at least one tool call requires a value that only "
+    "becomes available from a previous tool's result. The dependency chain is fixed and "
+    "linear — the number of steps and their sequence can be determined upfront, even "
+    "though the parameter values cannot.\n\n"
 
-        "## Decision Rule\n"
-        "1. Zero or one independent call → quick\n"
-        "2. Multiple calls where each depends on the previous result → react\n"
-        "3. Multiple INDEPENDENT calls that must be gathered and combined → deep\n\n"
+    "**deep**\n"
+    "Either: (a) a discovery call (list/search) must run first and its results determine "
+    "how many subsequent operations are needed — the number of tool calls is unknown until "
+    "runtime; or (b) the task requires querying multiple fully independent sources in "
+    "parallel and synthesizing their results into a single unified answer.\n\n"
 
-        f"Available tool domains: {domains_str}\n"
-        f"User query: {user_query}\n\n"
-        "Respond with exactly one word: quick, react, or deep."
+    "## How to decide\n\n"
+    "Work through these questions in order:\n\n"
+    "1. Can I write out every tool call with every parameter right now, without needing "
+    "any tool result first?\n"
+    "   → YES: quick\n\n"
+    "2. Does completing the task require first fetching a list or set of items, then "
+    "doing something with each item in that list?\n"
+    "   → YES: deep\n\n"
+    "3. Does completing the task require merging results from multiple independent "
+    "services or data sources that have no dependency on each other?\n"
+    "   → YES: deep\n\n"
+    "4. Does completing the task require chaining calls where each call's input comes "
+    "from the previous call's output?\n"
+    "   → YES: react\n\n"
+    "5. Default → react\n\n"
+
+    "For short or ambiguous follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', "
+    "'proceed'), first infer the intended action from the prior conversation context "
+    "above, then apply the questions above to that inferred intent.\n\n"
+
+    f"Tool domains available: {domains_str}\n"
+    f"Query: {user_query}\n\n"
+    "Reply with exactly one word: quick, react, or deep."
     )
 
     try:
@@ -351,17 +365,62 @@ async def _auto_select_graph(
                 return graph
 
         logger.warning(
-            "Agent graph route: verification (default) | LLM returned unparseable: %s",
+            "Agent graph route: react (default) | LLM returned unparseable: %s",
             raw[:100],
         )
         return modern_agent_graph
 
     except Exception as e:
         logger.warning(
-            "Agent graph route: verification (fallback) | LLM router failed: %s", e
+            "Agent graph route: react (fallback) | LLM router failed: %s", e
         )
         return modern_agent_graph
 
+
+def _build_routing_context(query_info: Dict[str, Any]) -> str:
+    """
+    Build a compact context block for the router prompt.
+
+    Design goals:
+    - Fast: minimal tokens, heavy truncation
+    - Signal-dense: captures topic, pending actions, and referenced entities
+    - Resolves: follow-ups, confirmations, clarifications
+
+    Returns an empty string if no prior conversation exists.
+    """
+    previous = query_info.get("previous_conversations", [])
+    if not previous:
+        return ""
+
+    # Take only the last 3 turns (6 messages max) — enough for any follow-up
+    recent = previous[-6:]
+
+    turns = []
+    for conv in recent:
+        role = conv.get("role", "")
+        content = str(conv.get("content", "")).strip()
+
+        if role == "user_query":
+            # Full user queries are short — keep them complete (cap at 200)
+            turns.append(f"User: {content[:200]}")
+
+        elif role == "bot_response":
+            # Bot responses can be long — extract only the leading summary.
+            # The first 200 chars typically contain the topic + key entities
+            # (IDs, names, services) needed to resolve follow-ups.
+            summary = content[:200]
+            if len(content) > 200:
+                summary += "…"
+            turns.append(f"Assistant: {summary}")
+
+    if not turns:
+        return ""
+
+    return (
+        "## Prior Conversation (last few turns — use to resolve follow-ups)\n"
+        + "\n".join(turns)
+        + "\n\n"
+    )
 
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> Dict[str, Any]:
     """Get user document with validation"""
@@ -2367,6 +2426,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "instructions": agent.get("instructions"),
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
+            "conversationId": chat_query.conversationId,
         }
         selected_graph = await _select_agent_graph_for_query(query_info, logger, llm, agent=agent)
 
@@ -2691,6 +2751,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "toolsets": agent_toolsets,
             "knowledge": agent_knowledge,
             "toolsetConfigs": toolset_configs,
+            "conversationId": chat_query.conversationId,
         }
 
         return StreamingResponse(
