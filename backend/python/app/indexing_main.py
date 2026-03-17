@@ -414,10 +414,24 @@ async def health_check() -> JSONResponse:
         )
 
 
-def run(host: str = "0.0.0.0", port: int = 8091, reload: bool = True) -> None:
+def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, reload: bool = True) -> None:
     """Run the application"""
+    import warnings
+    workers = workers or max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
+    if reload and workers > 1:
+        warnings.warn(
+            "INDEXING_UVICORN_WORKERS>1 is not compatible with reload=True; falling back to 1 worker.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        workers = 1
     uvicorn.run(
-        "app.indexing_main:app", host=host, port=port, log_level="info", reload=reload
+        "app.indexing_main:app",
+        host=host,
+        port=port,
+        log_level="info",
+        reload=reload,
+        workers=workers,
     )
 
 

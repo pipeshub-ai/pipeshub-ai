@@ -1,4 +1,5 @@
 import asyncio
+import os
 import signal
 import sys
 from contextlib import asynccontextmanager
@@ -149,8 +150,14 @@ async def health_check() -> JSONResponse:
 
 def run(host: str = "0.0.0.0", port: int = 8081, reload: bool = False) -> None:
     """Run the Docling service"""
+    workers = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
     uvicorn.run(
-        "app.docling_main:app", host=host, port=port, log_level="info", reload=reload
+        "app.docling_main:app",
+        host=host,
+        port=port,
+        log_level="info",
+        reload=reload,
+        workers=workers,
     )
 
 if __name__ == "__main__":

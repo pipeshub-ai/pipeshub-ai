@@ -1,5 +1,11 @@
+import asyncio
 import hashlib
+import logging
+import math
+import multiprocessing
 import os
+from concurrent.futures import ProcessPoolExecutor
+from functools import lru_cache
 from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
 
@@ -18,6 +24,53 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
+def _get_pdf_ocr_detection_worker_count() -> int:
+    raw_value = os.getenv("PDF_OCR_DETECTION_WORKERS")
+    if raw_value:
+        try:
+            return max(1, int(raw_value))
+        except ValueError:
+            return 1
+
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(4, cpu_count))
+
+
+PDF_OCR_DETECTION_WORKERS = _get_pdf_ocr_detection_worker_count()
+
+
+@lru_cache(maxsize=1)
+def _get_pdf_ocr_detection_pool() -> ProcessPoolExecutor:
+    return ProcessPoolExecutor(
+        max_workers=PDF_OCR_DETECTION_WORKERS,
+        mp_context=multiprocessing.get_context("spawn"),
+    )
+
+
+def _detect_pdf_needs_ocr(file_content: bytes) -> bool:
+    logger = logging.getLogger(__name__)
+
+    with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
+        page_count = len(temp_doc)
+        if page_count == 0:
+            return False
+
+        threshold = math.ceil(page_count * 0.5)
+        ocr_pages = 0
+
+        for page_index, page in enumerate(temp_doc):
+            if OCRStrategy.needs_ocr(page, logger):
+                ocr_pages += 1
+                if ocr_pages >= threshold:
+                    return True
+
+            remaining_pages = page_count - (page_index + 1)
+            if ocr_pages + remaining_pages < threshold:
+                return False
+
+        return ocr_pages >= threshold
+
+
 class EventProcessor:
     def __init__(self, logger, processor, graph_provider: IGraphDBProvider, config_service: ConfigurationService = None) -> None:
         self.logger = logger
@@ -25,6 +78,17 @@ class EventProcessor:
         self.processor = processor
         self.graph_provider = graph_provider
         self.config_service = config_service
+
+    async def _pdf_needs_ocr(self, file_content: bytes) -> bool:
+        if PDF_OCR_DETECTION_WORKERS <= 1:
+            return await asyncio.to_thread(_detect_pdf_needs_ocr, file_content)
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _get_pdf_ocr_detection_pool(),
+            _detect_pdf_needs_ocr,
+            file_content,
+        )
 
 
 
@@ -330,12 +394,7 @@ class EventProcessor:
 
                 self.logger.info("🔍 Checking if PDF needs OCR processing")
                 try:
-                    with fitz.open(stream=file_content, filetype="pdf") as temp_doc:
-
-                        # Check if 50% or more pages need OCR
-                        ocr_pages = [OCRStrategy.needs_ocr(page, self.logger) for page in temp_doc]
-                        needs_ocr = sum(ocr_pages) >= len(ocr_pages) * 0.5 if ocr_pages else False
-
+                    needs_ocr = await self._pdf_needs_ocr(file_content)
                     self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser'}")
                 except Exception as e:
                     self.logger.warning(f"⚠️ Error checking OCR need: {str(e)}, defaulting to layout parser")

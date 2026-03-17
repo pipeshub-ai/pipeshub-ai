@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import os
 from typing import Optional
 
 import uvicorn
@@ -365,12 +366,14 @@ async def create_blocks_endpoint(request: CreateBlocksRequest) -> CreateBlocksRe
 
 def run(host: str = "0.0.0.0", port: int = 8081, reload: bool = False) -> None:
     """Run the Docling service"""
+    workers = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
     uvicorn.run(
         "app.services.docling.docling_service:app",
         host=host,
         port=port,
         log_level="info",
-        reload=reload
+        reload=reload,
+        workers=workers,
     )
 
 

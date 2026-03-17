@@ -79,7 +79,14 @@ class KafkaUtils:
     @staticmethod
     async def create_record_kafka_consumer_config(app_container: IndexingAppContainer) -> KafkaConsumerConfig:
         """Create Kafka configuration for record events"""
-        return await KafkaUtils._create_base_consumer_config(app_container, "records_consumer_client", "records_consumer_group", ["record-events"])
+        config = await KafkaUtils._create_base_consumer_config(
+            app_container,
+            "records_consumer_client",
+            "records_consumer_group",
+            ["record-events"],
+        )
+        config.enable_auto_commit = False
+        return config
 
 
     @staticmethod
