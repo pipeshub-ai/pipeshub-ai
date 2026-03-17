@@ -18938,6 +18938,29 @@ paths:
                     type: array
                     items:
                       type: object
+                      properties:
+                        id:
+                          type: string
+                          description: Unique config identifier
+                        name:
+                          type: string
+                          description: Bot display name
+                        agentId:
+                          type: string
+                          nullable: true
+                          description: Associated agent ID
+                        botToken:
+                          type: string
+                          description: Slack bot token
+                        signingSecret:
+                          type: string
+                          description: Slack signing secret
+                        createdAt:
+                          type: string
+                          format: date-time
+                        updatedAt:
+                          type: string
+                          format: date-time
         '401':
           description: Unauthorized
         '403':
@@ -18959,6 +18982,24 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - name
+                - botToken
+                - signingSecret
+              properties:
+                name:
+                  type: string
+                  description: Bot display name
+                botToken:
+                  type: string
+                  description: Slack bot token
+                signingSecret:
+                  type: string
+                  description: Slack signing secret
+                agentId:
+                  type: string
+                  nullable: true
+                  description: Associated agent ID
       responses:
         '200':
           description: Slack bot config created
@@ -18967,8 +19008,28 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      botToken:
+                        type: string
+                      signingSecret:
+                        type: string
+                      createdAt:
+                        type: string
+                        format: date-time
+                      updatedAt:
+                        type: string
+                        format: date-time
         '401':
           description: Unauthorized
         '403':
@@ -18997,6 +19058,24 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - name
+                - botToken
+                - signingSecret
+              properties:
+                name:
+                  type: string
+                  description: Bot display name
+                botToken:
+                  type: string
+                  description: Slack bot token
+                signingSecret:
+                  type: string
+                  description: Slack signing secret
+                agentId:
+                  type: string
+                  nullable: true
+                  description: Associated agent ID
       responses:
         '200':
           description: Slack bot config updated
@@ -19005,8 +19084,28 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      botToken:
+                        type: string
+                      signingSecret:
+                        type: string
+                      createdAt:
+                        type: string
+                        format: date-time
+                      updatedAt:
+                        type: string
+                        format: date-time
         '401':
           description: Unauthorized
         '403':
@@ -19037,6 +19136,8 @@ paths:
               schema:
                 type: object
                 properties:
+                  status:
+                    type: string
                   message:
                     type: string
         '401':
@@ -19138,38 +19239,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-        '401':
-          description: Unauthorized
-        '403':
-          description: Forbidden - Admin access required
-
-    post:
-      tags:
-        - Configuration Manager
-      summary: Create AI models configuration
-      description: |
-        Create or initialize AI models configuration for the organization.
-      operationId: createAIModelsConfig
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '200':
-          description: AI models config created
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
+                $ref: '#/components/schemas/AIModelsConfig'
         '401':
           description: Unauthorized
         '403':
