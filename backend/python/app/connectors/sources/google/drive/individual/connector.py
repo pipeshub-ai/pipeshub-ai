@@ -19,6 +19,7 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -37,6 +38,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -62,7 +64,6 @@ from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -132,7 +133,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
             description="Sync files with specific extensions",
-            default_value=[],
             option_source_type=OptionSourceType.STATIC,
             options=[
                 FilterOption(id=MimeTypes.GOOGLE_DOCS.value, label="google docs"),
@@ -151,7 +151,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             description="Enable indexing of shared items",
             default_value=True
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
@@ -659,7 +659,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
                     shared_disabled = record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
                     if files_disabled or shared_disabled:
-                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)

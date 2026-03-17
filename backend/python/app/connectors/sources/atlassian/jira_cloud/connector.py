@@ -24,6 +24,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
+    ProgressStatus,
     RecordRelations,
 )
 from app.config.constants.http_status_code import HttpStatusCode
@@ -44,6 +45,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -79,7 +81,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     MimeTypes,
     OriginTypes,
     Record,
@@ -716,7 +717,7 @@ async def adf_to_text_with_images(
             'https://docs.pipeshub.com/connectors/jira/jira',
             'pipeshub'
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
@@ -2969,7 +2970,7 @@ class JiraConnector(BaseConnector):
 
             # Set indexing status based on filters
             if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
-                issue_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                issue_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             # Parse issue links and set related_external_records for creating LINKED_TO edges
             related_external_records = self._parse_issue_links(issue)
@@ -4036,7 +4037,7 @@ class JiraConnector(BaseConnector):
         # Set indexing status based on filters (if loaded and not skipping filter check)
         # Skip filter check during reindexing to allow reindexing regardless of filter settings
         if not skip_filter_check and self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
-            file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
         return file_record
 

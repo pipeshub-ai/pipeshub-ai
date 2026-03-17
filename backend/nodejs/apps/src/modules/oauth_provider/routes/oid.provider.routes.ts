@@ -9,7 +9,8 @@
  *
  * This exposes:
  *   GET /.well-known/openid-configuration
- *   GET /.well-known/oauth-protected-resource
+ *   GET /.well-known/oauth-authorization-server
+ *   GET /.well-known/oauth-protected-resource/mcp
  *   GET /.well-known/jwks.json
  */
 
@@ -46,19 +47,33 @@ export function createOIDCDiscoveryRouter(container: Container): Router {
   )
 
   /**
+   * GET /.well-known/oauth-authorization-server
+   * OAuth 2.0 Authorization Server Metadata endpoint
+   *
+   * Returns the same metadata as openid-configuration but at the
+   * RFC 8414 standard path. MCP clients like Claude Code use this
+   * endpoint for discovery instead of openid-configuration.
+   *
+   * @see RFC 8414 - OAuth 2.0 Authorization Server Metadata
+   */
+  router.get(
+    '/oauth-authorization-server',
+    (req: Request, res: Response, next: NextFunction) =>
+      controller.openidConfiguration(req, res, next),
+  )
+
+  /**
    * GET /.well-known/oauth-protected-resource
    * OAuth Protected Resource Metadata endpoint
    *
-   * Returns metadata about the protected resource including:
-   * - resource identifier
-   * - authorization servers
-   * - scopes_supported
-   * - bearer_methods_supported
+   * Per RFC 9728, clients append the resource path to the well-known URL.
+   * For example, for a resource at /mcp, clients request:
+   *   /.well-known/oauth-protected-resource/mcp
    *
    * @see RFC 9728 - OAuth 2.0 Protected Resource Metadata
    */
   router.get(
-    '/oauth-protected-resource',
+    '/oauth-protected-resource/mcp',
     (req: Request, res: Response, next: NextFunction) =>
       controller.oauthProtectedResource(req, res, next),
   )

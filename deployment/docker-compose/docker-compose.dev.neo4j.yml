@@ -90,6 +90,9 @@ services:
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-500}
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
 
+      # MCP OAuth scopes
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,connector:read,connector:write,semantic:read,semantic:write,conversation:read,conversation:write,conversation:chat}
+
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}

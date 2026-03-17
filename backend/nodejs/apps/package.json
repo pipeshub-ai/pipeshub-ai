@@ -7,7 +7,8 @@
     "start": "node dist/index.js",
     "build": "tsc",
     "dev": "nodemon src/index.ts",
-    "lint": "eslint . --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
     "format": "prettier --write .",
     "test": "mocha",
     "slack": "nodemon src/integrations/slack-bot/src/index.ts"
@@ -41,7 +42,8 @@
     "prettier": "^3.4.2",
     "sinon": "^19.0.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.57.0"
   },
   "dependencies": {
     "@azure/msal-node": "^3.8.4",
@@ -70,7 +72,7 @@
     "dotenv": "^16.4.7",
     "etcd3": "^1.1.2",
     "express": "^4.21.2",
-    "express-rate-limit": "^8.2.1",
+    "express-rate-limit": "^8.3.0",
     "express-session": "^1.18.2",
     "form-data": "^4.0.4",
     "google-auth-library": "^9.15.1",

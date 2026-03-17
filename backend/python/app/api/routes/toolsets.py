@@ -487,6 +487,20 @@ def _get_registry(request: Request) -> ToolsetRegistry:
     return registry
 
 
+def _get_graph_provider(request: Request):
+    """
+    Get graph provider from app state (same pattern as KB router).
+    Graph provider is set at application startup in app.state.graph_provider.
+    """
+    graph_provider = getattr(request.app.state, 'graph_provider', None)
+    if not graph_provider:
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Graph provider not initialized. Please contact system administrator."
+        )
+    return graph_provider
+
+
 def _get_toolset_metadata(registry: ToolsetRegistry, toolset_type: str) -> Dict[str, Any]:
     """Get and validate toolset metadata"""
     if not toolset_type or not toolset_type.strip():
@@ -590,6 +604,37 @@ def _generate_oauth_config_id() -> str:
 # Auth Config Helpers
 # ============================================================================
 
+def _apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: Optional[str]) -> str:
+    """Substitute the tenant segment in a Microsoft login URL.
+
+    Microsoft OAuth URLs are of the form:
+        https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize
+        https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+
+    If *tenant_id* is provided and is not empty / "common" / "organizations",
+    we replace the current tenant segment with the supplied value so that
+    single-tenant Azure AD applications (which cannot use the /common endpoint)
+    can authenticate successfully.
+    """
+    if not url or "login.microsoftonline.com" not in url:
+        return url
+
+    # Normalise – treat blank or "common" as no-op
+    tenant = (tenant_id or "").strip()
+    if not tenant or tenant.lower() == "common":
+        return url
+
+    # Replace the tenant segment — URL looks like:
+    #   https://login.microsoftonline.com/<current_tenant>/oauth2/...
+    import re as _re
+    return _re.sub(
+        r"(https://login\.microsoftonline\.com/)[^/]+(/)",
+        rf"\g<1>{tenant}\2",
+        url,
+        count=1,
+    )
+
+
 def _get_oauth_config_from_registry(toolset_type: str, registry: ToolsetRegistry) -> OAuthConfig:
     """Get OAuth config from toolset registry (returns dataclass instance)"""
     metadata = registry.get_toolset_metadata(toolset_type, serialize=False)
@@ -651,11 +696,19 @@ async def _prepare_toolset_auth_config(
     from app.connectors.core.registry.auth_builder import OAuthScopeType
     scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
 
+    # If a tenantId is supplied in the auth config, substitute it into the
+    # Microsoft OAuth URLs so single-tenant Azure AD applications can authenticate.
+    tenant_id = auth_config.get("tenantId", "").strip()
+    effective_authorize_url = _apply_tenant_to_microsoft_oauth_url(oauth_config.authorize_url, tenant_id)
+    effective_token_url = _apply_tenant_to_microsoft_oauth_url(oauth_config.token_url, tenant_id)
+
+    # Enrich auth_config with OAuth infrastructure fields
+    # Always update these fields to ensure they're current
     enriched_auth = {
         **auth_config,
-        "authorizeUrl": oauth_config.authorize_url,
-        "tokenUrl": oauth_config.token_url,
-        "redirectUri": redirect_uri,
+        "authorizeUrl": effective_authorize_url,
+        "tokenUrl": effective_token_url,
+        "redirectUri": redirect_uri,  # Always refreshed based on current base_url
         "scopes": scopes,
     }
 
@@ -699,15 +752,28 @@ async def _build_oauth_config(
     if not scopes:
         scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
 
+
+    # If a tenantId is supplied in the auth config, substitute it into the
+    # Microsoft OAuth URLs so single-tenant Azure AD applications can authenticate.
+    tenant_id = auth_config.get("tenantId", "").strip()
+    base_authorize_url = auth_config.get("authorizeUrl") or oauth_config.authorize_url
+    base_token_url = auth_config.get("tokenUrl") or oauth_config.token_url
+    effective_authorize_url = _apply_tenant_to_microsoft_oauth_url(base_authorize_url, tenant_id)
+    effective_token_url = _apply_tenant_to_microsoft_oauth_url(base_token_url, tenant_id)
+
+    # Build config - prefer stored values from auth_config
     config = {
         "clientId": client_id,
         "clientSecret": client_secret,
         "redirectUri": redirect_uri,
         "scopes": scopes,
-        "authorizeUrl": auth_config.get("authorizeUrl") or oauth_config.authorize_url,
-        "tokenUrl": auth_config.get("tokenUrl") or oauth_config.token_url,
+        "authorizeUrl": effective_authorize_url,
+        "tokenUrl": effective_token_url,
         "name": toolset_type,
     }
+
+    if "tenantId" in auth_config:
+        config["tenantId"] = auth_config["tenantId"]
 
     if "additionalParams" in auth_config:
         config["additionalParams"] = auth_config["additionalParams"]
@@ -1615,24 +1681,100 @@ async def delete_toolset_instance(
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
 
-    # Safe-delete check: block if any user has authenticated against this instance
+    # Safe-delete check: block if any agent is using this toolset instance
+    # This check must happen BEFORE deleting user credentials to prevent data loss
+    # FAIL-CLOSED: Block deletion if we cannot verify agent usage
+    try:
+        graph_provider = _get_graph_provider(request)
+        agent_names = await graph_provider.check_toolset_instance_in_use(instance_id)
+        
+        # Validate that agent_names is a list (defensive programming)
+        if not isinstance(agent_names, list):
+            logger.error(f"check_toolset_instance_in_use returned unexpected type: {type(agent_names)} for instance {instance_id}")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Cannot delete toolset instance: Invalid response from agent usage check. Please try again or contact support."
+            )
+        
+        # Explicit check: if any agents are using this instance, block deletion
+        # ToolsetInUseError will automatically be handled by FastAPI (it's an HTTPException)
+        if agent_names and len(agent_names) > 0:
+            logger.warning(f"⚠️ Blocking deletion of instance {instance_id}: found {len(agent_names)} agent(s) using this toolset")
+            raise ToolsetInUseError(
+                toolset_name=instance.get('instanceName', instance_id),
+                agent_names=agent_names
+            )
+        
+        logger.info(f"✅ Agent usage check passed for instance {instance_id}: no agents found using this toolset")
+    except HTTPException:
+        # Let HTTPException (including ToolsetInUseError) propagate - FastAPI handles it automatically
+        raise
+    except Exception as e:
+        logger.error(f"Failed to check agent usage for instance {instance_id}: {e}", exc_info=True)
+        # FAIL-CLOSED: Block deletion if we cannot verify (prevent accidental deletion)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Cannot delete toolset instance: Unable to verify if it's in use by agents. Please try again or contact support."
+        )
+
+    # Cancel all refresh tasks for this instance BEFORE deleting credentials
+    # This prevents errors from trying to refresh deleted credentials
+    cancelled_tasks_count = 0
+    try:
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+        refresh_service = startup_service.get_toolset_token_refresh_service()
+        if refresh_service:
+            cancelled_tasks_count = refresh_service.cancel_refresh_tasks_for_instance(instance_id)
+            if cancelled_tasks_count > 0:
+                logger.info(f"Cancelled {cancelled_tasks_count} refresh task(s) for instance {instance_id}")
+    except Exception as e:
+        logger.warning(f"Could not cancel refresh tasks for instance {instance_id}: {e}")
+
+    # After agent check passes, delete all user credentials for this instance
+    # This happens AFTER agent check to prevent deleting credentials if agents are using the instance
+    deleted_credentials_count = 0
     try:
         prefix = _get_instance_users_prefix(instance_id)
         user_keys = await config_service.list_keys_in_directory(prefix)
+        
         if user_keys:
-            raise HTTPException(
-                status_code=HttpStatusCode.CONFLICT.value,
-                detail=(
-                    f"Cannot delete toolset instance '{instance.get('instanceName', instance_id)}': "
-                    f"{len(user_keys)} user(s) have authenticated against it. "
-                    "Please remove all user credentials before deleting the instance."
-                )
-            )
-    except HTTPException:
-        raise
+            # Validate that all keys are for this specific instance to prevent accidental deletion
+            expected_prefix = f"/services/toolsets/{instance_id}/"
+            valid_user_keys = []
+            for key in user_keys:
+                # Ensure the key matches the expected pattern for this instance
+                if key.startswith(expected_prefix):
+                    # Extract user_id from key: /services/toolsets/{instanceId}/{userId}
+                    # Key format: /services/toolsets/{instanceId}/{userId}
+                    # Split by "/" gives: ["", "services", "toolsets", "{instanceId}", "{userId}"]
+                    key_parts = key.split("/")
+                    if len(key_parts) >= 5 and key_parts[1] == "services" and key_parts[2] == "toolsets" and key_parts[3] == instance_id:
+                        valid_user_keys.append(key)
+                    else:
+                        logger.warning(f"Skipping invalid key format for instance {instance_id}: {key}")
+                else:
+                    logger.warning(f"Skipping key that doesn't match expected prefix for instance {instance_id}: {key}")
+            
+            # Delete all valid user credentials in parallel
+            if valid_user_keys:
+                delete_tasks = [config_service.delete_config(key) for key in valid_user_keys]
+                delete_results = await asyncio.gather(*delete_tasks, return_exceptions=True)
+                
+                # Count successful deletions
+                for i, result in enumerate(delete_results):
+                    if isinstance(result, Exception):
+                        logger.warning(f"Failed to delete credential {valid_user_keys[i]}: {result}")
+                    elif result:
+                        deleted_credentials_count += 1
+                
+                if deleted_credentials_count > 0:
+                    logger.info(f"Deleted {deleted_credentials_count} user credential(s) for instance {instance_id}")
     except Exception as e:
-        logger.warning(f"Could not check user auth records for instance {instance_id}: {e}")
-        # Proceed with deletion if we can't verify (fail-open for listing errors)
+        logger.error(f"Error deleting user credentials for instance {instance_id}: {e}", exc_info=True)
+        # Don't block deletion if credential cleanup fails, but log the error
+        # The instance deletion will proceed, but credentials may remain
 
     updated = [i for i in instances if i.get("_id") != instance_id]
 
@@ -1645,7 +1787,16 @@ async def delete_toolset_instance(
         logger.error(f"Failed to delete toolset instance from {instances_path}: {e}", exc_info=True)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.")
 
-    return {"status": "success", "message": "Toolset instance deleted successfully.", "instanceId": instance_id}
+    message = "Toolset instance deleted successfully."
+    if deleted_credentials_count > 0:
+        message += f" {deleted_credentials_count} user credential(s) were also deleted."
+    
+    return {
+        "status": "success",
+        "message": message,
+        "instanceId": instance_id,
+        "deletedCredentialsCount": deleted_credentials_count
+    }
 
 
 # ============================================================================
@@ -1832,6 +1983,18 @@ async def remove_toolset_credentials(
     user_id = user_context["user_id"]
 
     auth_path = _get_user_auth_path(instance_id, user_id)
+    
+    # Cancel refresh task before deleting credentials to prevent errors
+    try:
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+        refresh_service = startup_service.get_toolset_token_refresh_service()
+        if refresh_service:
+            refresh_service.cancel_refresh_task(auth_path)
+    except Exception as e:
+        logger.warning(f"Could not cancel refresh task for {auth_path}: {e}")
+    
     try:
         await config_service.delete_config(auth_path)
     except Exception as e:
@@ -1863,22 +2026,20 @@ async def reauthenticate_toolset_instance(
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"Toolset instance '{instance_id}' not found.")
 
     auth_path = _get_user_auth_path(instance_id, user_id)
+    
+    # Cancel refresh task before deleting credentials to prevent errors
     try:
-        current_auth = await config_service.get_config(auth_path, default=None)
-        if current_auth:
-            updated = {
-                **current_auth,
-                "isAuthenticated": False,
-                "updatedAt": get_epoch_timestamp_in_ms(),
-                "updatedBy": user_id,
-            }
-            # Clear credentials and oauthConfigId to force fresh authentication
-            # This ensures that if admin changed OAuth config, user gets the new one
-            updated.pop("credentials", None)
-            updated.pop("oauthConfigId", None)  # Will be refreshed on next auth
-            await config_service.set_config(auth_path, updated)
-        else:
-            await config_service.delete_config(auth_path)
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+        refresh_service = startup_service.get_toolset_token_refresh_service()
+        if refresh_service:
+            refresh_service.cancel_refresh_task(auth_path)
+    except Exception as e:
+        logger.warning(f"Could not cancel refresh task for {auth_path}: {e}")
+    
+    try:
+        await config_service.delete_config(auth_path)
     except Exception as e:
         logger.error(f"Failed to reauthenticate instance {instance_id}: {e}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to clear credentials.")

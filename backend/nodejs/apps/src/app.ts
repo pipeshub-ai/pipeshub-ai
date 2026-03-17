@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
 import http from 'http';
+import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { TokenManagerContainer } from './modules/tokens_manager/container/token-manager.container';
 import { Logger } from './libs/services/logger.service';
@@ -321,7 +322,7 @@ export class Application {
         origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'], // Be more specific than '*'
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
-        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
         allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token']
       }),
     );
@@ -464,6 +465,7 @@ export class Application {
 
     // OIDC Discovery routes - mounted at root level per RFC 8414 & RFC 9728
     // Exposes: GET /.well-known/openid-configuration
+    //          GET /.well-known/oauth-authorization-server
     //          GET /.well-known/oauth-protected-resource
     //          GET /.well-known/jwks.json
     this.app.use(
@@ -500,7 +502,7 @@ export class Application {
           .get<NotificationService>(NotificationService)
           .shutdown();
       } catch (err) {
-        this.logger.warn('NotificationService not available during shutdown', 
+        this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
       }
       await NotificationContainer.dispose();

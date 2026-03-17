@@ -421,16 +421,33 @@ export const useConnectorConfig = ({
       initializeFilterFields(indexingFilters.schema, config.config.filters?.indexing?.values);
     }
 
+    // Build sync data from saved values first
+    const syncData: Record<string, any> = {
+      selectedStrategy:
+        config.config.sync?.selectedStrategy ||
+        config.config.sync?.supportedStrategies?.[0] ||
+        'MANUAL',
+      scheduledConfig: config.config.sync?.scheduledConfig || {},
+      ...(config.config.sync?.values || config.config.sync || {}),
+    };
+
+    // Seed sync customField defaults for fields not yet saved
+    // (mirrors the same pattern used for auth fields above)
+    const syncCustomFields: any[] = config.config.sync?.customFields || [];
+    syncCustomFields.forEach((field: any) => {
+      if (field.defaultValue !== undefined && syncData[field.name] === undefined) {
+        if (field.fieldType === 'BOOLEAN') {
+          // Backend may send defaultValue as string "true"/"false" — normalise to boolean
+          syncData[field.name] = field.defaultValue === true || field.defaultValue === 'true';
+        } else {
+          syncData[field.name] = field.defaultValue;
+        }
+      }
+    });
+
     return {
       auth: authData,
-      sync: {
-        selectedStrategy:
-          config.config.sync?.selectedStrategy ||
-          config.config.sync?.supportedStrategies?.[0] ||
-          'MANUAL',
-        scheduledConfig: config.config.sync?.scheduledConfig || {},
-        ...(config.config.sync?.values || config.config.sync || {}),
-      },
+      sync: syncData,
       filters: filtersData,
     };
   }, []);

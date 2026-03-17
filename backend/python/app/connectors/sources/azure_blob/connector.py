@@ -23,6 +23,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -48,6 +49,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -67,7 +69,6 @@ from app.connectors.sources.azure_blob.common.apps import AzureBlobApp
 from app.models.entities import (
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -288,7 +289,7 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)

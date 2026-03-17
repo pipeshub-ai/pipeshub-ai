@@ -1,4 +1,3 @@
-import asyncio
 import traceback
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
@@ -167,7 +166,7 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
         ConnectorFactory.initialize_beta_connector_registry()
         # Register connectors using generic factory
         available_connectors = ConnectorFactory.list_connectors()
-        for name, connector_class in available_connectors.items():
+        for connector_class in available_connectors.values():
             registry.register_connector(connector_class)
         logger.info("✅ Connectors registered")
         logger.info(f"Registered {len(registry._connectors)} connectors")
@@ -430,6 +429,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
         raise
 
+    # Resume sync services BEFORE starting Kafka consumers so that
+    # connectors_map is populated before we begin processing sync events.
+    try:
+        await resume_sync_services(app_container, data_store)
+    except Exception as e:
+        logger.error(f"❌ Error during sync service resumption: {str(e)}")
+
     # Start all Kafka consumers centrally - pass already resolved graph_provider
     try:
         consumers = await start_kafka_consumers(app_container, graph_provider)
@@ -438,9 +444,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
         raise
-
-    # Resume sync services - pass already resolved graph_provider and data_store
-    asyncio.create_task(resume_sync_services(app_container, data_store))
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
@@ -506,8 +509,7 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     try:
         logger.debug(f"Applying authentication for path: {request_path}")
         authenticated_request = await authMiddleware(request)
-        response = await call_next(authenticated_request)
-        return response
+        return await call_next(authenticated_request)
 
     except HTTPException as exc:
         # Handle authentication errors

@@ -3,6 +3,7 @@ import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { loadConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { configPaths } from '../../configuration_manager/paths/paths';
+import { DefaultMcpScopes } from '../../oauth_provider/config/scopes.config';
 import { normalizeUrl } from '../utils/utils';
 
 // Define interfaces for all service configurations
@@ -659,7 +660,9 @@ export class ConfigService {
         ...parsedUrl.oauthProvider,
         issuer:
           normalizeUrl(process.env.OAUTH_ISSUER!) ||
-          `http://localhost:${process.env.PORT ?? 3000}`,
+          (process.env.NODE_ENV === 'development'
+            ? `http://localhost:${process.env.PORT ?? 3000}`
+            : await this.getFrontendUrl()),
       };
 
       await this.keyValueStoreService.set<string>(
@@ -684,8 +687,18 @@ export class ConfigService {
     return (
       normalizeUrl(process.env.OAUTH_ISSUER!) ||
       normalizeUrl(parsedUrl.oauthProvider?.issuer) ||
-      `http://localhost:${process.env.PORT ?? 3000}`
+      (process.env.NODE_ENV === 'development'
+        ? `http://localhost:${process.env.PORT ?? 3000}`
+        : await this.getFrontendUrl())
     );
+  }
+
+  public async getMcpScopes(): Promise<string[]> {
+    const scopes = process.env.MCP_SCOPES;
+    if (!scopes) {
+      return DefaultMcpScopes;
+    }
+    return scopes.split(',').map((s) => s.trim()).filter(Boolean);
   }
 
   public async getRsAvailable(): Promise<string> {

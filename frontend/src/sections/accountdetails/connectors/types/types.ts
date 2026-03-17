@@ -292,6 +292,8 @@ interface Connector {
   supportsSync: boolean;
   supportsAgent: boolean;
   scope: 'personal' | 'team';
+  /** Generic operational status. null/undefined = idle. */
+  status?: 'DELETING' | 'SYNCING' | null;
   createdBy?: string;
   updatedBy?: string;
   createdAtTimestamp: number;
@@ -335,7 +337,6 @@ interface IndexingStatusStats {
   EMPTY: number;
   ENABLE_MULTIMODAL_MODELS: number;
   QUEUED: number;
-  CONNECTOR_DISABLED: number;
 }
 
 interface BasicStats {

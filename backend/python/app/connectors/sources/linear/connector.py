@@ -21,6 +21,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
+    ProgressStatus,
     RecordRelations,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -43,6 +44,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -75,7 +77,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     ItemType,
     LinkPublicStatus,
     LinkRecord,
@@ -152,7 +153,7 @@ LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
             'https://docs.pipeshub.com/connectors/linear/linear',
             'pipeshub'
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
@@ -992,7 +993,7 @@ class LinearConnector(BaseConnector):
 
                         # Set indexing status based on filters
                         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUES):
-                            ticket_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                            ticket_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                         # Records inherit permissions from RecordGroup (team), so pass empty list
                         batch_records.append((ticket_record, []))
@@ -1167,7 +1168,7 @@ class LinearConnector(BaseConnector):
 
                             # Set indexing status based on filters
                             if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
-                                link_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                link_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                             # Look up related record by weburl
                             if link_record.weburl:
@@ -1338,7 +1339,7 @@ class LinearConnector(BaseConnector):
 
                             # Set indexing status based on filters
                             if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS):
-                                webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                             batch_records.append((webpage_record, []))
                             total_documents += 1
@@ -1562,7 +1563,7 @@ class LinearConnector(BaseConnector):
 
                         # Set indexing status based on filters
                         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
-                            project_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                            project_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                         # Extract issues data directly from full_project_data and add to related_external_records
                         issues_data = full_project_data.get("issues", {}).get("nodes", [])
@@ -1729,7 +1730,7 @@ class LinearConnector(BaseConnector):
 
                 # Set indexing status based on FILES filter (external links are treated as files)
                 if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
-                    link_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    link_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 # Look up related record by weburl
                 if link_record.weburl:
@@ -1825,7 +1826,7 @@ class LinearConnector(BaseConnector):
 
                 # Set indexing status based on PROJECTS filter (documents are part of project content)
                 if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
-                    webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 document_records.append((webpage_record, []))
 
@@ -1907,7 +1908,7 @@ class LinearConnector(BaseConnector):
 
                     # Set indexing status based on filters
                     if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
-                        link_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        link_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     # Save the record
                     await self.data_entities_processor.on_new_records([(link_record, [])])
@@ -1976,7 +1977,7 @@ class LinearConnector(BaseConnector):
 
                     # Set indexing status based on filters
                     if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS):
-                        webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     # Save the record
                     await self.data_entities_processor.on_new_records([(webpage_record, [])])
@@ -2231,7 +2232,7 @@ class LinearConnector(BaseConnector):
                 # Set indexing status based on filters (use provided filter key or default to FILES)
                 filter_key = indexing_filter_key or IndexingFilterKey.FILES
                 if self.indexing_filters and not self.indexing_filters.is_enabled(filter_key):
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 # Files inherit permissions from parent, so pass empty list
                 file_records.append((file_record, []))

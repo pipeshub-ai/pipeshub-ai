@@ -51,6 +51,12 @@ import type {
 import { ORIGIN } from './constants/knowledge-search';
 // OLD: ACTIVE_UPLOADS_STORAGE_KEY and SOCKET_EVENT_TIMEOUT_MS no longer needed
 
+/**
+ * Maximum traversal depth used when reindexing a folder and all its descendants.
+ * A value of 100 is treated as effectively unlimited by the backend graph traversal.
+ */
+const FOLDER_REINDEX_DEPTH = 100;
+
 type ViewMode = 'grid' | 'list';
 
 interface MenuItemWithAction extends KnowledgeBase {
@@ -830,10 +836,32 @@ export default function Collections() {
       } else {
         setError(response.reason || 'Failed to start reindexing');
       }
-      handleMenuClose();
     } catch (err: any) {
       console.error('Failed to reindexing document', err);
       setError(err.response?.data?.reason || err.message || 'Failed to start reindexing');
+    } finally {
+      handleMenuClose();
+    } 
+  };
+
+  const handleRetryIndexingFolder = async (recordId: string) => {
+    if (!currentKB) {
+      setError('No KB id found, please refresh');
+      return;
+    }
+    try {
+      // Folder: reindex all children up to FOLDER_REINDEX_DEPTH
+      const response = await KnowledgeBaseAPI.reindexRecord(recordId, false, FOLDER_REINDEX_DEPTH);
+      if (response.success) {
+        setSuccess('Folder indexing started successfully');
+        await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
+      } else {
+        setError(response.reason || 'Failed to start reindexing folder');
+      }
+    } catch (err: any) {
+      console.error('Failed to reindex folder', err);
+      setError(err.response?.data?.reason || err.message || 'Failed to start reindexing folder');
+    } finally {
       handleMenuClose();
     }
   };
@@ -844,6 +872,7 @@ export default function Collections() {
       setSuccess('Download started successfully');
     } catch (err: any) {
       console.error('Failed to download document', err);
+      setError(err?.message || 'Failed to download document. Please try again.');
     }
   };
 
@@ -875,6 +904,19 @@ export default function Collections() {
           },
         ]
         : []),
+        ...(canReindex
+          ? [
+            {
+              key: 'reindex',
+              label: 'Start Indexing',
+              icon: refreshIcon,
+              onClick: () => {
+                handleRetryIndexingFolder(contextItem.id);
+                handleMenuClose();
+              },
+            },
+          ]
+          : []),
       ...(canModify
         ? [
           {

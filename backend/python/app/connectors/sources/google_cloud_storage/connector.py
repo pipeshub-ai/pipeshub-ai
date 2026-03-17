@@ -24,6 +24,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -49,6 +50,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -67,7 +69,6 @@ from app.connectors.sources.google_cloud_storage.common.apps import GCSApp
 from app.models.entities import (
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -280,14 +281,13 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             category=FilterCategory.SYNC,
             description="Select specific GCS buckets to sync",
             option_source_type=OptionSourceType.DYNAMIC,
-            default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
@@ -1143,7 +1143,7 @@ class GCSConnector(BaseConnector):
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_gcs_permissions(bucket_name, key)
 
@@ -1571,7 +1571,7 @@ class GCSConnector(BaseConnector):
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    updated_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_gcs_permissions(bucket_name, normalized_key)
 

@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from fastapi import Request
 
 
+import contextlib
+
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
@@ -36,7 +38,6 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
-    IndexingStatus,
     LinkRecord,
     MailRecord,
     Person,
@@ -1504,8 +1505,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 collection, arango_nodes, txn_id=transaction, overwrite=True
             )
 
-            success = result.get("errors", 0) == 0
-            return success
+            return result.get("errors", 0) == 0
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert failed: {str(e)}")
@@ -2492,7 +2492,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             # Generate conditions for each collection
-            for collection, record_types in collection_to_types.items():
+            for record_types in collection_to_types.values():
                 # Create condition for checking if record type matches any in this group
                 if len(record_types) == 1:
                     type_check = f"record.recordType == @type_{record_types[0].lower()}"
@@ -2652,7 +2652,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             '''
 
             # Build dynamic typeDoc conditions
-            for collection, record_types in collection_to_types.items():
+            for record_types in collection_to_types.values():
                 if len(record_types) == 1:
                     type_check = f"record.recordType == @type_{record_types[0].lower()}"
                     bind_vars[f"type_{record_types[0].lower()}"] = record_types[0]
@@ -4141,8 +4141,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if not user_doc:
                 return None
-            user_ = User.from_arango_user(user_doc)
-            return user_
+            return User.from_arango_user(user_doc)
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch user for {connector_id}: {str(e)}")
             return None
@@ -4200,7 +4199,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars = {}
 
             results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
-            return [dept for dept in results] if results else []
+            return list(results) if results else []
         except Exception as e:
             self.logger.error(f"❌ Get departments failed: {str(e)}")
             return []
@@ -4245,10 +4244,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             ref_record = None
             if results:
-                try:
+                with contextlib.suppress(IndexError, StopIteration):
                     ref_record = results[0]
-                except (IndexError, StopIteration):
-                    pass
 
             if not ref_record:
                 self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
@@ -5791,47 +5788,126 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger.debug(f"📊 Found {len(edge_collections)} edge collections from graph")
         return edge_collections
 
-    async def _delete_all_edges_for_nodes(
+    async def _delete_edges_by_connector_id(
         self,
-        transaction: str,
-        node_ids: List[str],
+        transaction: Optional[str],
+        connector_id: str,
         edge_collections: List[str]
     ) -> Tuple[int, List[str]]:
         """
-        Delete all edges where _from or _to matches any of the node_ids.
-        Iterates through each edge collection dynamically.
+        Delete all edges connected to nodes belonging to a connector.
 
         Returns:
             Tuple of (total_deleted_count, list_of_failed_collections)
         """
-        if not node_ids:
-            return (0, [])
-
         total_deleted = 0
         failed_collections = []
 
-        deletion_query = """
+        # Node collections that have connectorId attribute
+        node_collections_with_connector_id = [
+            CollectionNames.RECORDS.value,
+            CollectionNames.RECORD_GROUPS.value,
+            CollectionNames.ROLES.value,
+            CollectionNames.GROUPS.value,
+        ]
+
+        # Query templates for deleting edges by joining with node collections
+        # Using separate queries for _from and _to to better leverage indexes.
+        # Use @node_collection_name (string) in CONCAT - @@ bind vars resolve to collection refs
+        # and cannot be used as expression operands (ArangoDB error 1568).
+        delete_edges_from_query = """
+        FOR node IN @@node_collection
+            FILTER node.connectorId == @connector_id
+            LET node_id = CONCAT(@node_collection_name, '/', node._key)
+            FOR edge IN @@edge_collection
+                FILTER edge._from == node_id
+                REMOVE edge IN @@edge_collection
+                RETURN 1
+        """
+
+        delete_edges_to_query = """
+        FOR node IN @@node_collection
+            FILTER node.connectorId == @connector_id
+            LET node_id = CONCAT(@node_collection_name, '/', node._key)
+            FOR edge IN @@edge_collection
+                FILTER edge._to == node_id
+                REMOVE edge IN @@edge_collection
+                RETURN 1
+        """
+
+        # Special query for apps collection (filter by _key instead of connectorId)
+        delete_edges_from_app_query = """
+        LET app_id = CONCAT('apps/', @connector_id)
         FOR edge IN @@edge_collection
-            FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+            FILTER edge._from == app_id
+            REMOVE edge IN @@edge_collection
+            RETURN 1
+        """
+
+        delete_edges_to_app_query = """
+        LET app_id = CONCAT('apps/', @connector_id)
+        FOR edge IN @@edge_collection
+            FILTER edge._to == app_id
             REMOVE edge IN @@edge_collection
             RETURN 1
         """
 
         for edge_collection in edge_collections:
             try:
+                collection_deleted = 0
+
+                # Delete edges for each node collection with connectorId
+                for node_collection in node_collections_with_connector_id:
+                    # Delete edges where _from matches nodes with connector_id
+                    results = await self.http_client.execute_aql(
+                        query=delete_edges_from_query,
+                        bind_vars={
+                            "@node_collection": node_collection,
+                            "node_collection_name": node_collection,
+                            "@edge_collection": edge_collection,
+                            "connector_id": connector_id
+                        },
+                        txn_id=transaction
+                    )
+                    collection_deleted += len(results or [])
+
+                    # Delete edges where _to matches nodes with connector_id
+                    results = await self.http_client.execute_aql(
+                        query=delete_edges_to_query,
+                        bind_vars={
+                            "@node_collection": node_collection,
+                            "node_collection_name": node_collection,
+                            "@edge_collection": edge_collection,
+                            "connector_id": connector_id
+                        },
+                        txn_id=transaction
+                    )
+                    collection_deleted += len(results or [])
+
+                # Delete edges connected to the app itself
                 results = await self.http_client.execute_aql(
-                    query=deletion_query,
+                    query=delete_edges_from_app_query,
                     bind_vars={
                         "@edge_collection": edge_collection,
-                        "node_ids": node_ids
+                        "connector_id": connector_id
                     },
                     txn_id=transaction
                 )
-                deleted_count = len(results or [])
-                total_deleted += deleted_count
+                collection_deleted += len(results or [])
 
-                if deleted_count > 0:
-                    self.logger.debug(f"🗑️ Deleted {deleted_count} edges from {edge_collection}")
+                results = await self.http_client.execute_aql(
+                    query=delete_edges_to_app_query,
+                    bind_vars={
+                        "@edge_collection": edge_collection,
+                        "connector_id": connector_id
+                    },
+                    txn_id=transaction
+                )
+                collection_deleted += len(results or [])
+
+                total_deleted += collection_deleted
+                if collection_deleted > 0:
+                    self.logger.debug(f"🗑️ Deleted {collection_deleted} edges from {edge_collection}")
 
             except Exception as e:
                 self.logger.error(f"❌ Error deleting edges from {edge_collection}: {str(e)}")
@@ -5841,34 +5917,37 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if failed_collections:
             self.logger.warning(f"⚠️ Failed to delete edges from {len(failed_collections)} collections: {failed_collections}")
         else:
-            self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections")
+            self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections for connector {connector_id}")
 
         return (total_deleted, failed_collections)
 
-    async def _collect_isoftype_targets(self, transaction: str, record_ids: List[str]) -> Tuple[List[Dict], bool]:
+    async def _collect_isoftype_targets(self, transaction: Optional[str], connector_id: str) -> Tuple[List[Dict], bool]:
         """
         Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges.
-        This must be called before _delete_all_edges_for_nodes to ensure we can find the targets.
 
         Returns:
             Tuple of (list_of_targets, success_flag)
         """
-        if not record_ids:
+        if not connector_id:
             return ([], True)
 
         collect_query = """
-        FOR edge IN @@isOfType
-            FILTER edge._from IN @record_ids
-            LET target = PARSE_IDENTIFIER(edge._to)
-            RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
+        FOR record IN @@records
+            FILTER record.connectorId == @connector_id
+            LET record_id = CONCAT('records/', record._key)
+            FOR edge IN @@isOfType
+                FILTER edge._from == record_id
+                LET target = PARSE_IDENTIFIER(edge._to)
+                RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
         """
 
         try:
             results = await self.http_client.execute_aql(
                 query=collect_query,
                 bind_vars={
+                    "@records": CollectionNames.RECORDS.value,
                     "@isOfType": CollectionNames.IS_OF_TYPE.value,
-                    "record_ids": record_ids
+                    "connector_id": connector_id
                 },
                 txn_id=transaction
             )
@@ -5892,24 +5971,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             transaction: The transaction ID
             targets: List of target dicts with keys: collection, key, full_id (from _collect_isoftype_targets)
-            edge_collections: List of edge collection names for cleanup
+            edge_collections: List of edge collection names for cleanup (unused, kept for signature compatibility)
 
         Returns:
             Tuple of (total_deleted_count, list_of_failed_collections)
         """
         if not targets:
             return (0, [])
-
-        # Build list of type node IDs for edge cleanup
-        type_node_ids = [target["full_id"] for target in targets]
-
-        # Delete edges connected to type nodes BEFORE deleting the nodes
-        _, failed_edge_collections = await self._delete_all_edges_for_nodes(transaction, type_node_ids, edge_collections)
-        if failed_edge_collections:
-            raise Exception(
-                f"CRITICAL: Failed to delete edges from isOfType target nodes in {len(failed_edge_collections)} collections: {failed_edge_collections}. "
-                f"Transaction will be rolled back."
-            )
 
         # Group targets by collection
         targets_by_collection: Dict[str, List[str]] = {}
@@ -5953,7 +6021,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
         return (total_deleted, [])
 
-    async def _delete_nodes_by_keys(self, transaction: str, keys: List[str], collection: str, batch_size: int = 1000) -> Tuple[int, int]:
+    async def _delete_nodes_by_keys(self, transaction: str, keys: List[str], collection: str, batch_size: int = 5000) -> Tuple[int, int]:
         """
         Delete documents by their _key values using batching.
 
@@ -6107,7 +6175,39 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Step 3: Get all edge collections from graph definition
             edge_collections = await self._get_all_edge_collections()
 
-            # Step 4: Define all node collections that might have documents to delete
+            # Step 4: Collect isOfType targets BEFORE opening the write transaction.
+            # This is a read-only operation and running it inside a write transaction causes
+            # significant lock contention when processing tens of thousands of nodes.
+            # Uses connectorId directly to avoid passing large lists of record IDs.
+            isoftype_targets, isoftype_collect_success = await self._collect_isoftype_targets(
+                None,
+                connector_id
+            )
+            if not isoftype_collect_success:
+                return {
+                    "success": False,
+                    "error": "Failed to collect isOfType targets. Cannot safely delete type nodes (files, mails, etc.)."
+                }
+
+            # Step 5: Delete edges OUTSIDE the main transaction.
+            # Edge deletion runs non-transactionally to avoid lock contention when processing
+            # tens of thousands of nodes across multiple edge collections. Orphan edges
+            # (edges pointing to deleted nodes) don't break data integrity and can be
+            # cleaned up later if needed. The critical part is deleting nodes atomically.
+            self.logger.info(f"🗑️ Deleting edges for connector {connector_id} (non-transactional)")
+            deleted_edges, failed_edge_collections = await self._delete_edges_by_connector_id(
+                None,  # No transaction - run each query independently
+                connector_id,
+                edge_collections
+            )
+            if failed_edge_collections:
+                # Log warning but continue - partial edge deletion is acceptable
+                self.logger.warning(
+                    f"⚠️ Failed to delete edges from {len(failed_edge_collections)} collections: {failed_edge_collections}. "
+                    f"Continuing with node deletion - orphan edges are acceptable."
+                )
+
+            # Step 6: Define all node collections that might have documents to delete
             node_collections = [
                 CollectionNames.RECORDS.value,
                 CollectionNames.RECORD_GROUPS.value,
@@ -6125,10 +6225,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
             ]
 
-            # Start transaction if not provided
-            # Note: lock_timeout is set to 60 seconds (60000ms).
-            # For very large connector instances with millions of records, this may need to be increased.
-            # Consider implementing a more granular deletion strategy for extremely large datasets if timeouts occur.
+            # Start transaction for node deletions only
+            # Edge collections still included for isOfType target edge deletion
             if transaction is None:
                 transaction = await self.begin_transaction(
                     read=edge_collections + node_collections,
@@ -6137,29 +6235,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 created_transaction = True
 
             try:
-                # Step 5: Collect isOfType targets BEFORE deleting edges
-                # If this fails, we can't properly clean up type nodes, so fail the transaction
-                isoftype_targets, isoftype_collect_success = await self._collect_isoftype_targets(
-                    transaction,
-                    collected["record_ids"]
-                )
-                if not isoftype_collect_success:
-                    raise Exception(
-                        "CRITICAL: Failed to collect isOfType targets. "
-                        "Cannot safely delete type nodes (files, mails, etc.). Transaction will be rolled back."
-                    )
-
-                # Step 6: Delete all edges connected to nodes (CRITICAL - all must succeed)
-                deleted_edges, failed_edge_collections = await self._delete_all_edges_for_nodes(
-                    transaction,
-                    collected["all_node_ids"],
-                    edge_collections
-                )
-                if failed_edge_collections:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete edges from {len(failed_edge_collections)} collections: {failed_edge_collections}. "
-                        f"Transaction will be rolled back to maintain data consistency."
-                    )
 
                 # Step 7: Delete isOfType target nodes (files, mails, etc.)
                 # This method will raise an exception if any failures occur
@@ -8397,7 +8472,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             total_count = count_result[0] if count_result and len(count_result) > 0 else 0
             filter_data = await self.execute_query(filters_query, filters_bind_vars, transaction) or []
 
-            available_permissions = list(set(item["permission"] for item in filter_data if item.get("permission")))
+            available_permissions = list({item["permission"] for item in filter_data if item.get("permission")})
             available_filters = {
                 "permissions": available_permissions,
                 "sortFields": ["name", "createdAtTimestamp", "updatedAtTimestamp", "userRole"],
@@ -9478,7 +9553,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             timestamp = get_epoch_timestamp_in_ms()
 
             # Construct the payload matching the Node.js NewRecordEvent interface
-            payload = {
+            return {
                 "orgId": record_doc.get("orgId"),
                 "recordId": record_id,
                 "recordName": record_doc.get("recordName"),
@@ -9493,7 +9568,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
             }
 
-            return payload
         except Exception as e:
             self.logger.error(f"❌ Failed to create new record event payload: {str(e)}")
             return None
@@ -10495,9 +10569,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     return {"success": False, "reason": "Knowledge base not found", "code": 404}
             users_to_insert = result.get("users_to_insert", [])
             teams_to_insert = result.get("teams_to_insert", [])
-            insert_docs = []
-            for u in users_to_insert:
-                insert_docs.append({
+            insert_docs = [
+                {
                     "from_id": u["user_key"],
                     "from_collection": CollectionNames.USERS.value,
                     "to_id": kb_id,
@@ -10508,9 +10581,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                     "lastUpdatedTimestampAtSource": timestamp,
-                })
-            for t in teams_to_insert:
-                insert_docs.append({
+                }
+                for u in users_to_insert
+            ]
+            insert_docs.extend(
+                {
                     "from_id": t["team_key"],
                     "from_collection": CollectionNames.TEAMS.value,
                     "to_id": kb_id,
@@ -10520,7 +10595,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                     "lastUpdatedTimestampAtSource": timestamp,
-                })
+                }
+                for t in teams_to_insert
+            )
             if insert_docs:
                 await self.batch_create_edges(insert_docs, CollectionNames.PERMISSION.value)
             granted_count = len(users_to_insert) + len(teams_to_insert)
@@ -10559,8 +10636,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 },
                 transaction=transaction,
             )
-            count = results[0] if results else 0
-            return count
+            return results[0] if results else 0
         except Exception as e:
             self.logger.error(f"❌ Failed to count KB owners: {str(e)}")
             return 0
@@ -11728,10 +11804,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # Delete type-specific documents (files, mails, etc.)
         for collection in type_collections:
-            try:
+            with contextlib.suppress(Exception):  # Collection might not have this document
                 await self.delete_nodes([record_key], collection, transaction)
-            except Exception:
-                pass  # Collection might not have this document
 
         # Delete main record
         await self.delete_nodes([record_key], CollectionNames.RECORDS.value, transaction)
@@ -12265,97 +12339,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int,
         sort_field: str,
         sort_dir: str,
-        include_kbs: bool,
-        include_apps: bool,
         only_containers: bool,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Get root level nodes (KBs and Apps) for Knowledge Hub."""
+        """Get root level nodes (Apps) for Knowledge Hub."""
         start = time.perf_counter()
         query = """
-        LET user_doc = DOCUMENT(CONCAT("users/", @user_key))
-        LET user_id = user_doc != null ? user_doc.userId : null
-
-        LET kbs = @include_kbs ? (
-            FOR kb IN recordGroups
-                FILTER kb.orgId == @org_id
-                FILTER kb.connectorName == "KB"
-
-                LET has_direct_user_perm = (LENGTH(
-                    FOR perm IN permission
-                        FILTER perm._from == CONCAT("users/", @user_key)
-                        FILTER perm._to == kb._id
-                        FILTER perm.type == "USER"
-                        RETURN 1
-                ) > 0)
-
-                LET has_team_perm = (LENGTH(
-                    FOR user_team_perm IN permission
-                        FILTER user_team_perm._from == CONCAT("users/", @user_key)
-                        FILTER user_team_perm.type == "USER"
-                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
-                        FOR team_kb_perm IN permission
-                            FILTER team_kb_perm._from == user_team_perm._to
-                            FILTER team_kb_perm._to == kb._id
-                            FILTER team_kb_perm.type == "TEAM"
-                            RETURN 1
-                ) > 0)
-
-                LET has_permission = has_direct_user_perm OR has_team_perm
-                FILTER has_permission
-                // Check for children via belongsTo edges
-                LET has_record_children = (LENGTH(
-                    // KB: Use belongsTo edges (record -> belongsTo -> recordGroup)
-                    // Only direct children: externalParentId must be null
-                    FOR edge IN belongsTo
-                        FILTER edge._to == kb._id AND STARTS_WITH(edge._from, "records/")
-                        LET record = DOCUMENT(edge._from)
-                        FILTER record != null
-                        FILTER record.externalParentId == null
-                        RETURN 1
-                ) > 0)
-
-                LET has_children = has_record_children
-
-                LET is_creator = kb.createdBy == @user_key OR kb.createdBy == user_id
-                LET user_perms = (
-                    FOR perm IN permission
-                        FILTER perm._to == kb._id
-                        FILTER perm.type == "USER"
-                        RETURN perm
-                )
-                LET team_perms = (
-                    FOR perm IN permission
-                        FILTER perm._to == kb._id
-                        FILTER perm.type == "TEAM"
-                        RETURN perm
-                )
-                LET has_other_users = (
-                    LENGTH(user_perms) > (is_creator ? 1 : 0) OR
-                    LENGTH(team_perms) > 0
-                )
-                LET sharingStatus = is_creator AND NOT has_other_users ? "private" : "shared"
-
-                RETURN {
-                    id: kb._key,
-                    name: kb.groupName,
-                    nodeType: "kb",
-                    parentId: null,
-                    origin: "KB",
-                    connector: "KB",
-                    createdAt: kb.sourceCreatedAtTimestamp != null ? kb.sourceCreatedAtTimestamp : 0,
-                    updatedAt: kb.sourceLastModifiedTimestamp != null ? kb.sourceLastModifiedTimestamp : 0,
-                    webUrl: CONCAT("/kb/", kb._key),
-                    hasChildren: has_children,
-                    sharingStatus: sharingStatus
-                }
-        ) : []
-
         // Get Apps
-        LET apps = @include_apps ? (
+        LET apps = (
             FOR app IN apps
                 FILTER app._key IN @user_app_ids
-                FILTER app.type != "KB"  // Exclude KB app
                 LET has_children = (LENGTH(
                     FOR rg IN recordGroups
                         FILTER rg.connectorId == app._key
@@ -12377,10 +12370,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     sharingStatus: sharingStatus
                 }
-        ) : []
+        )
 
-        LET all_nodes = APPEND(kbs, apps)
-        // KBs and Apps are always containers, so include all when only_containers is true
+        LET all_nodes = apps
+        // Apps are always containers, so include all when only_containers is true
         LET filtered_nodes = all_nodes
         LET sorted_nodes = (
             FOR node IN filtered_nodes
@@ -12395,11 +12388,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
 
         bind_vars = {
-            "org_id": org_id,
-            "user_key": user_key,
             "user_app_ids": user_app_ids,
-            "include_kbs": include_kbs,
-            "include_apps": include_apps,
             "skip": skip,
             "limit": limit,
             "sort_field": sort_field,
@@ -12431,7 +12420,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Args:
             parent_id: The ID of the parent node.
-            parent_type: The type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'.
+            parent_type: The type of parent: 'app', 'recordGroup', 'folder', 'record'.
             org_id: The organization ID.
             user_key: The user's key for permission filtering.
             skip: Number of items to skip for pagination.
@@ -12444,7 +12433,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         start = time.perf_counter()
 
         # Use optimized split query for recordGroup types
-        if parent_type in ("kb", "recordGroup"):
+        if parent_type == "recordGroup":
             result = await self._get_record_group_children_split(
                 parent_id, user_key, skip, limit, sort_field, sort_dir, only_containers, transaction
             )
@@ -12479,7 +12468,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET filtered_children = (
             FOR node IN raw_children
                 // Include all container types (app, kb, recordGroup, folder) even if empty
-                FILTER @only_containers == false OR node.hasChildren == true OR node.nodeType IN ["app", "kb", "recordGroup", "folder"]
+                FILTER @only_containers == false OR node.hasChildren == true OR node.nodeType IN ["app", "recordGroup", "folder"]
                 RETURN node
         )
         LET sorted_children = (FOR child IN filtered_children SORT child[@sort_field] @sort_dir RETURN child)
@@ -12507,14 +12496,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_types: Optional[List[str]] = None,
         origins: Optional[List[str]] = None,
         connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
         indexing_status: Optional[List[str]] = None,
         created_at: Optional[Dict[str, Optional[int]]] = None,
         updated_at: Optional[Dict[str, Optional[int]]] = None,
         size: Optional[Dict[str, Optional[int]]] = None,
         only_containers: bool = False,
         parent_id: Optional[str] = None,  # For scoped search
-        parent_type: Optional[str] = None,  # Type of parent (app/kb/recordGroup/record)
+        parent_type: Optional[str] = None,  # Type of parent (app/recordGroup/record)
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -12543,7 +12531,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             size=size,
             origins=origins,
             connector_ids=connector_ids,
-            kb_ids=kb_ids,
             only_containers=only_containers,
         )
 
@@ -12570,9 +12557,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.warning(f"Failed to fetch parent record connectorId: {str(e)}")
                 parent_connector_id = None
 
-        # For children-first approach (kb/recordGroup/record/folder), skip scope filters
+        # For children-first approach (recordGroup/record/folder), skip scope filters
         # The intersection will handle scoping instead
-        if parent_id and parent_type in ("kb", "recordGroup", "record", "folder"):
+        if parent_id and parent_type in ("recordGroup", "record", "folder"):
             # Don't apply scope filters - let children intersection handle it
             scope_filter_rg = ""
             scope_filter_record = ""
@@ -12999,12 +12986,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN {{
                     id: rg._key,
                     name: rg.groupName,
-                    nodeType: (rg.groupType == "KB" || rg.connectorName == "KB") ? "kb" : "recordGroup",
+                    nodeType: "recordGroup",
                     parentId: rg.parentId,
-                    origin: rg.connectorName == "KB" ? "KB" : "CONNECTOR",
+                    origin: rg.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
                     connector: rg.connectorName,
                     connectorId: rg.connectorName != "KB" ? rg.connectorId : null,
-                    kbId: rg.connectorName == "KB" ? rg._key : null,
                     externalGroupId: rg.externalGroupId,
                     recordType: null,
                     recordGroupType: rg.groupType,
@@ -13038,8 +13024,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0
 
-                LET record_connector = DOCUMENT(CONCAT("recordGroups/", record.connectorId)) || DOCUMENT(CONCAT("apps/", record.connectorId))
-                LET source = (record_connector != null AND record_connector.connectorName == "KB") ? "KB" : "CONNECTOR"
+                LET source = record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR"
 
                 RETURN {{
                     id: record._key,
@@ -13049,7 +13034,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     origin: source,
                     connector: record.connectorName,
                     connectorId: source == "CONNECTOR" ? record.connectorId : null,
-                    kbId: source == "KB" ? record.externalGroupId : null,
                     externalGroupId: record.externalGroupId,
                     recordType: record.recordType,
                     recordGroupType: null,
@@ -13144,9 +13128,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET node_type = record != null ? (
                 is_folder ? "folder" : "record"
             ) : (
-                rg != null ? (
-                    rg.connectorName == "KB" ? "kb" : "recordGroup"
-                ) : (
+                rg != null ? "recordGroup" : (
                     app != null ? "app" : null
                 )
             )
@@ -13221,7 +13203,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 id: rg._key,
                 name: rg.groupName,
                 nodeType: node_type,
-                subType: rg.connectorName == "KB" ? "KB" : (rg.groupType || rg.connectorName),
+                subType: rg.connectorName == "KB" ? "COLLECTION" : (rg.groupType || rg.connectorName),
                 parentId: parent_id
             } : (app != null ? {
                 id: app._key,
@@ -13629,8 +13611,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         } : (rg != null AND rg._key != null AND rg.groupName != null ? {
             id: rg._key,
             name: rg.groupName,
-            nodeType: rg.connectorName == "KB" ? "kb" : "recordGroup",
-            subType: rg.connectorName == "KB" ? "KB" : (rg.groupType || rg.connectorName)
+            nodeType: "recordGroup",
+            subType: rg.connectorName == "KB" ? "COLLECTION" : (rg.groupType || rg.connectorName)
         } : (app != null AND app._key != null AND app.name != null ? {
             id: app._key,
             name: app.name,
@@ -13749,8 +13731,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         } : (parent_rg != null AND parent_rg._key != null AND parent_rg.groupName != null ? {
             id: parent_rg._key,
             name: parent_rg.groupName,
-            nodeType: parent_rg.connectorName == "KB" ? "kb" : "recordGroup",
-            subType: parent_rg.connectorName == "KB" ? "KB" : (parent_rg.groupType || parent_rg.connectorName)
+            nodeType: "recordGroup",
+            subType: parent_rg.connectorName == "KB" ? "COLLECTION" : (parent_rg.groupType || parent_rg.connectorName)
         } : (parent_app != null AND parent_app._key != null AND parent_app.name != null ? {
             id: parent_app._key,
             name: parent_app.name,
@@ -13774,95 +13756,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: Optional[str] = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Get available filter options (KBs and Apps) for a user.
-        Returns only KBs and Connectors that the user has access to.
+        Get available filter options (connector Apps) for a user.
+        Returns connector apps the user has access to. Excludes the Collection app (type='KB').
         """
         self.logger.info(f"🔍 Getting filter options for user_key={user_key}, org_id={org_id}")
         start = time.perf_counter()
         query = """
-        // Get KBs the user has access to (via direct or team/group permissions)
-        LET user_from = CONCAT("users/", @user_key)
-
-        // Direct KB permissions
-        LET direct_kb_perms = (
-            FOR perm IN permission
-                FILTER perm._from == user_from
-                FILTER perm.type == "USER"
-                FILTER STARTS_WITH(perm._to, "recordGroups/")
-                LET kb = DOCUMENT(perm._to)
-                FILTER kb != null AND kb.isDeleted != true
-                FILTER kb.groupType == "KB" AND kb.connectorName == "KB"
-                FILTER kb.orgId == @org_id
-                RETURN kb._key
-        )
-
-        // Team-based KB permissions
-        LET team_kb_perms = (
-            FOR user_team_perm IN permission
-                FILTER user_team_perm._from == user_from
-                FILTER user_team_perm.type == "USER"
-                FILTER STARTS_WITH(user_team_perm._to, "teams/")
-                FOR team_kb_perm IN permission
-                    FILTER team_kb_perm._from == user_team_perm._to
-                    FILTER team_kb_perm.type == "TEAM"
-                    FILTER STARTS_WITH(team_kb_perm._to, "recordGroups/")
-                    LET kb = DOCUMENT(team_kb_perm._to)
-                    FILTER kb != null AND kb.isDeleted != true
-                    FILTER kb.groupType == "KB" AND kb.connectorName == "KB"
-                    FILTER kb.orgId == @org_id
-                    RETURN kb._key
-        )
-
-        // Group-based KB permissions
-        LET group_kb_perms = (
-            FOR user_group_perm IN permission
-                FILTER user_group_perm._from == user_from
-                FILTER user_group_perm.type == "USER"
-                FILTER STARTS_WITH(user_group_perm._to, "groups/")
-                FOR group_kb_perm IN permission
-                    FILTER group_kb_perm._from == user_group_perm._to
-                    FILTER group_kb_perm.type == "GROUP"
-                    FILTER STARTS_WITH(group_kb_perm._to, "recordGroups/")
-                    LET kb = DOCUMENT(group_kb_perm._to)
-                    FILTER kb != null AND kb.isDeleted != true
-                    FILTER kb.groupType == "KB" AND kb.connectorName == "KB"
-                    FILTER kb.orgId == @org_id
-                    RETURN kb._key
-        )
-
-        // Combine and deduplicate KB IDs
-        LET all_kb_ids = UNIQUE(UNION(direct_kb_perms, team_kb_perms, group_kb_perms))
-
-        LET kbs = (
-            FOR kb_id IN all_kb_ids
-                LET kb = DOCUMENT("recordGroups", kb_id)
-                FILTER kb != null
-                RETURN { id: kb._key, name: kb.groupName }
-        )
-
-        // Get connector apps the user has access to
-        // Apps don't have orgId field - they're scoped via user relationship
+        // Get connector apps the user has access to (exclude Collection app)
         LET apps = (
             FOR app IN OUTBOUND CONCAT("users/", @user_key) userAppRelation
                 FILTER app != null
+                FILTER app.type != "KB"
                 RETURN { id: app._key, name: app.name, type: app.type }
         )
 
-        RETURN { kbs: kbs, apps: apps }
+        RETURN { apps: apps }
         """
 
         try:
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"user_key": user_key, "org_id": org_id},
+                bind_vars={"user_key": user_key},
                 txn_id=transaction
             )
             elapsed = time.perf_counter() - start
             self.logger.info(f"get_knowledge_hub_filter_options finished in {elapsed * 1000} ms")
-            return results[0] if results else {"kbs": [], "apps": []}
+            return results[0] if results else {"apps": []}
         except Exception:
             # self.logger.error(f"Failed to get filter options: {e}")
-            return {"kbs": [], "apps": []}
+            return {"apps": []}
 
     async def check_record_access_with_details(
         self,
@@ -14382,7 +14304,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Returns:
             Dict: Statistics data with success status
         """
-        statuses = [s.value for s in IndexingStatus]
+        statuses = [s.value for s in ProgressStatus]
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
@@ -14510,7 +14432,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     name: node.groupName,
                     nodeType: "recordGroup",
                     parentId: CONCAT("apps/", @app_id),
-                    origin: node.connectorName == "KB" ? "KB" : "CONNECTOR",
+                    origin: node.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
                     connector: node.connectorName,
                     recordType: null,
                     recordGroupType: node.groupType,
@@ -14585,10 +14507,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     name: record.recordName,
                     nodeType: is_folder ? "folder" : "record",
                     parentId: @rg_doc_id,
-                    origin: record.connectorName == "KB" ? "KB" : "CONNECTOR",
+                    origin: record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
                     connector: record.connectorName,
                     connectorId: record.connectorName != "KB" ? record.connectorId : null,
-                    kbId: record.connectorName == "KB" ? record.externalGroupId : null,
                     externalGroupId: record.externalGroupId,
                     recordType: record.recordType,
                     recordGroupType: null,
@@ -14656,10 +14577,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     name: node.groupName,
                     nodeType: "recordGroup",
                     parentId: @rg_doc_id,
-                    origin: node.connectorName == "KB" ? "KB" : "CONNECTOR",
+                    origin: node.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
                     connector: node.connectorName,
                     connectorId: node.connectorName != "KB" ? node.connectorId : null,
-                    kbId: node.connectorName == "KB" ? PARSE_IDENTIFIER(@rg_doc_id).key : null,
                     externalGroupId: node.externalGroupId,
                     recordType: null,
                     recordGroupType: node.groupType,
@@ -14720,10 +14640,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     name: record.recordName,
                     nodeType: is_folder ? "folder" : "record",
                     parentId: @rg_doc_id,
-                    origin: record.connectorName == "KB" ? "KB" : "CONNECTOR",
+                    origin: record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
                     connector: record.connectorName,
                     connectorId: record.connectorName != "KB" ? record.connectorId : null,
-                    kbId: record.connectorName == "KB" ? record.externalGroupId : null,
                     externalGroupId: record.externalGroupId,
                     recordType: record.recordType,
                     recordGroupType: null,
@@ -14749,14 +14668,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         direct_records = direct_records_result[0] if direct_records_result else []
 
         # Combine results: use internal_records if available, otherwise use child_rgs + direct_records
-        if internal_records:
-            all_children = internal_records
-        else:
-            all_children = child_rgs + direct_records
+        all_children = internal_records or child_rgs + direct_records
 
         filtered_children = [
             node for node in all_children
-            if not only_containers or node.get("hasChildren") or node.get("nodeType") in ["app", "kb", "recordGroup", "folder"]
+            if not only_containers or node.get("hasChildren") or node.get("nodeType") in ["app", "recordGroup", "folder"]
         ]
 
         reverse = (sort_dir == "DESC")
@@ -14826,10 +14742,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     name: record.recordName,
                     nodeType: is_folder ? "folder" : "record",
                     parentId: @rg_doc_id,
-                    origin: record.connectorName == "KB" ? "KB" : "CONNECTOR",
+                    origin: record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
                     connector: record.connectorName,
                     connectorId: record.connectorName != "KB" ? record.connectorId : null,
-                    kbId: record.connectorName == "KB" ? record.externalGroupId : null,
                     externalGroupId: record.externalGroupId,
                     recordType: record.recordType,
                     recordGroupType: null,
@@ -14887,10 +14802,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     name: node.groupName,
                     nodeType: "recordGroup",
                     parentId: @rg_doc_id,
-                    origin: node.connectorName == "KB" ? "KB" : "CONNECTOR",
+                    origin: node.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
                     connector: node.connectorName,
                     connectorId: node.connectorName != "KB" ? node.connectorId : null,
-                    kbId: node.connectorName == "KB" ? PARSE_IDENTIFIER(@rg_doc_id).key : null,
                     externalGroupId: node.externalGroupId,
                     recordType: null,
                     recordGroupType: node.groupType,
@@ -14941,10 +14855,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     name: record.recordName,
                     nodeType: is_folder ? "folder" : "record",
                     parentId: @rg_doc_id,
-                    origin: record.connectorName == "KB" ? "KB" : "CONNECTOR",
+                    origin: record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
                     connector: record.connectorName,
                     connectorId: record.connectorName != "KB" ? record.connectorId : null,
-                    kbId: record.connectorName == "KB" ? record.externalGroupId : null,
                     externalGroupId: record.externalGroupId,
                     recordType: record.recordType,
                     recordGroupType: null,
@@ -15032,10 +14945,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     name: record.recordName,
                     nodeType: is_folder ? "folder" : "record",
                     parentId: @record_doc_id,
-                    origin: record.connectorName == "KB" ? "KB" : "CONNECTOR",
+                    origin: record.connectorName == "KB" ? "COLLECTION" : "CONNECTOR",
                     connector: record.connectorName,
                     connectorId: record.connectorName != "KB" ? record.connectorId : null,
-                    kbId: record.connectorName == "KB" ? record.externalGroupId : null,
                     externalGroupId: record.externalGroupId,
                     recordType: record.recordType,
                     recordGroupType: null,
@@ -15065,7 +14977,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         size: Optional[Dict[str, Optional[int]]] = None,
         origins: Optional[List[str]] = None,
         connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
         only_containers: bool = False,
     ) -> tuple[List[str], Dict[str, Any]]:
         """
@@ -15094,8 +15005,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     type_conditions.append('node.nodeType == "recordGroup"')
                 elif nt == "app":
                     type_conditions.append('node.nodeType == "app"')
-                elif nt == "kb":
-                    type_conditions.append('node.nodeType == "kb"')
             if type_conditions:
                 filter_conditions.append(f"({' OR '.join(type_conditions)})")
 
@@ -15136,19 +15045,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             filter_params["origins"] = origins
             filter_conditions.append("node.origin IN @origins")
 
-        if connector_ids and kb_ids:
-            filter_params["connector_ids"] = connector_ids
-            filter_params["kb_ids"] = kb_ids
-            filter_conditions.append(
-                '((node.nodeType == "app" AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids) OR '
-                '(node.nodeType == "kb" AND node.id IN @kb_ids) OR (node.externalGroupId IN @kb_ids))'
-            )
-        elif connector_ids:
+        if connector_ids:
             filter_params["connector_ids"] = connector_ids
             filter_conditions.append('((node.nodeType == "app" AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids))')
-        elif kb_ids:
-            filter_params["kb_ids"] = kb_ids
-            filter_conditions.append('((node.nodeType == "kb" AND node.id IN @kb_ids) OR (node.externalGroupId IN @kb_ids))')
 
         # Add search condition to filter conditions if present
         if search_query:
@@ -15156,7 +15055,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # Add only_containers filter
         if only_containers:
-            filter_conditions.append("(node.hasChildren == true OR node.nodeType IN ['app', 'kb', 'recordGroup', 'folder'])")
+            filter_conditions.append("(node.hasChildren == true OR node.nodeType IN ['app', 'recordGroup', 'folder'])")
 
         return filter_conditions, filter_params
 
@@ -15840,7 +15739,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def delete_parent_child_edge_to_record(
         self,
         record_id: str,
-        collection: str,
         transaction: Optional[str] = None
     ) -> int:
         """
@@ -15867,7 +15765,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "record_id": record_id,
-                    "@record_relations": collection,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 },
                 txn_id=transaction
             )
@@ -16137,10 +16035,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             ref_record = None
             if results:
-                try:
+                with contextlib.suppress(IndexError, StopIteration):
                     ref_record = results[0]
-                except (IndexError, StopIteration):
-                    pass
 
             if not ref_record:
                 self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
@@ -16186,10 +16082,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             queued_record = None
             if results:
-                try:
+                with contextlib.suppress(IndexError, StopIteration):
                     queued_record = results[0]
-                except (IndexError, StopIteration):
-                    pass
 
             if queued_record:
                 self.logger.info(
@@ -17637,53 +17531,56 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Error in get_organization_users: {str(e)}", exc_info=True)
             return [], 0
 
-    async def check_toolset_in_use(self, toolset_name: str, user_id: str, transaction: Optional[str] = None) -> List[str]:
+    async def check_toolset_instance_in_use(self, instance_id: str, transaction: Optional[str] = None) -> List[str]:
         """
-        Check if a toolset is currently in use by any active agents.
+        Check if a toolset instance is currently in use by any active agents.
+
+        This method finds all toolset nodes with the given instanceId and checks
+        if any non-deleted agents are using them.
 
         Args:
-            toolset_name: Normalized toolset name
-            user_id: User ID who owns the toolset
+            instance_id: Toolset instance ID to check
             transaction: Optional transaction ID
 
         Returns:
-            List of agent names that are using the toolset. Empty list if not in use.
+            List of agent names that are using the toolset instance. Empty list if not in use.
         """
         try:
-            # Find toolset nodes
+            # Find all toolset nodes with the given instanceId
             toolset_query = f"""
             FOR ts IN {CollectionNames.AGENT_TOOLSETS.value}
-                FILTER ts.name == @name AND ts.userId == @user_id
+                FILTER ts.instanceId == @instance_id
                 RETURN ts._id
             """
             toolset_ids = await self.http_client.execute_aql(toolset_query, bind_vars={
-                "name": toolset_name,
-                "user_id": user_id
+                "instance_id": instance_id
             }, txn_id=transaction)
 
             # Handle None or empty results
             if not toolset_ids:
                 return []
 
-            # Check for active agents using this toolset
+            # Check for active agents using these toolset nodes, filtering by org_id
             agent_query = f"""
             FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
                 FILTER edge._to IN @toolset_ids
                 LET agent = DOCUMENT(edge._from)
-                FILTER agent != null AND agent.isDeleted != true AND agent.deleted != true
+                FILTER agent != null
+                    AND agent.isDeleted != true
                 RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
             """
-            agents = await self.http_client.execute_aql(agent_query, bind_vars={"toolset_ids": toolset_ids}, txn_id=transaction)
+            agents = await self.http_client.execute_aql(agent_query, bind_vars={
+                "toolset_ids": toolset_ids,
+            }, txn_id=transaction)
 
             # Handle None or empty results, and filter out any None values
             if agents:
-                agent_names = list(set(a.get("agentName", "Unknown") for a in agents if a and isinstance(a, dict)))
-                return agent_names
+                return list({a.get("agentName", "Unknown") for a in agents if a and isinstance(a, dict)})
 
             return []
 
         except Exception as e:
-            self.logger.error(f"Failed to check toolset usage: {str(e)}")
+            self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
     async def get_agent(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
@@ -18204,96 +18101,114 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             agent_doc_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
 
-            # Step 1: Delete agent -> knowledge edges (AGENT_HAS_KNOWLEDGE)
+            # Step 1: Delete agent -> knowledge edges and collect the _to IDs
             delete_knowledge_edges_query = f"""
             FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
                 FILTER edge._from == @agent_doc_id
                 REMOVE edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
-                RETURN OLD
+                RETURN OLD._to
             """
 
-            deleted_knowledge_edges = await self.execute_query(
+            knowledge_ids = await self.execute_query(
                 delete_knowledge_edges_query,
                 bind_vars={"agent_doc_id": agent_doc_id},
                 transaction=transaction
             )
 
-            if deleted_knowledge_edges:
-                edges_deleted += len(deleted_knowledge_edges)
+            if knowledge_ids:
+                edges_deleted += len(knowledge_ids)
 
-                # Step 2: Delete knowledge nodes (AGENT_KNOWLEDGE)
-                knowledge_ids = [edge['_to'] for edge in deleted_knowledge_edges]
-                if knowledge_ids:
-                    delete_knowledge_query = f"""
-                    FOR knowledge_id IN @knowledge_ids
-                        LET knowledge = DOCUMENT(knowledge_id)
-                        FILTER knowledge != null
-                        REMOVE knowledge IN {CollectionNames.AGENT_KNOWLEDGE.value}
-                        RETURN OLD
-                    """
+                # Step 2: Delete orphaned knowledge nodes (no remaining edges pointing to them)
+                delete_orphaned_knowledge_query = f"""
+                FOR kid IN @knowledge_ids
+                    LET remaining = FIRST(
+                        FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                            FILTER edge._to == kid
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER remaining == null
+                    REMOVE PARSE_IDENTIFIER(kid).key IN {CollectionNames.AGENT_KNOWLEDGE.value}
+                    RETURN OLD
+                """
 
-                    deleted_knowledge = await self.execute_query(
-                        delete_knowledge_query,
-                        bind_vars={"knowledge_ids": knowledge_ids},
-                        transaction=transaction
+                deleted_knowledge = await self.execute_query(
+                    delete_orphaned_knowledge_query,
+                    bind_vars={"knowledge_ids": knowledge_ids},
+                    transaction=transaction
+                )
+
+                if deleted_knowledge:
+                    knowledge_deleted = len(deleted_knowledge)
+
+                skipped = len(knowledge_ids) - knowledge_deleted
+                if skipped > 0:
+                    self.logger.warning(
+                        f"Skipped {skipped} knowledge node(s) still referenced by other agents for agent {agent_id}"
                     )
 
-                    if deleted_knowledge:
-                        knowledge_deleted = len(deleted_knowledge)
-
-            # Step 3: Find toolsets connected to agent
-            find_toolset_edges_query = f"""
+            # Step 3: Find toolsets connected to this agent
+            find_toolset_ids_query = f"""
             FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
                 FILTER edge._from == @agent_doc_id
                 RETURN edge._to
             """
 
             toolset_ids = await self.execute_query(
-                find_toolset_edges_query,
+                find_toolset_ids_query,
                 bind_vars={"agent_doc_id": agent_doc_id},
                 transaction=transaction
             )
 
             if toolset_ids:
-                # Step 4: Delete toolset -> tool edges (TOOLSET_HAS_TOOL)
+                # Step 4: Delete toolset -> tool edges and collect the _to IDs
                 delete_tool_edges_query = f"""
-                FOR toolset_id IN @toolset_ids
+                FOR tsid IN @toolset_ids
                     FOR edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
-                        FILTER edge._from == toolset_id
+                        FILTER edge._from == tsid
                         REMOVE edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
-                        RETURN OLD
+                        RETURN OLD._to
                 """
 
-                deleted_tool_edges = await self.execute_query(
+                tool_ids = await self.execute_query(
                     delete_tool_edges_query,
                     bind_vars={"toolset_ids": toolset_ids},
                     transaction=transaction
                 )
 
-                if deleted_tool_edges:
-                    edges_deleted += len(deleted_tool_edges)
+                if tool_ids:
+                    edges_deleted += len(tool_ids)
 
-                    # Step 5: Delete tool nodes (AGENT_TOOLS)
-                    tool_ids = [edge['_to'] for edge in deleted_tool_edges]
-                    if tool_ids:
-                        delete_tools_query = f"""
-                        FOR tool_id IN @tool_ids
-                            LET tool = DOCUMENT(tool_id)
-                            FILTER tool != null
-                            REMOVE tool IN {CollectionNames.AGENT_TOOLS.value}
-                            RETURN OLD
-                        """
+                    # Step 5: Delete orphaned tool nodes
+                    delete_orphaned_tools_query = f"""
+                    FOR tid IN @tool_ids
+                        LET remaining = FIRST(
+                            FOR edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
+                                FILTER edge._to == tid
+                                LIMIT 1
+                                RETURN 1
+                        )
+                        FILTER remaining == null
+                        REMOVE PARSE_IDENTIFIER(tid).key IN {CollectionNames.AGENT_TOOLS.value}
+                        RETURN OLD
+                    """
 
-                        deleted_tools = await self.execute_query(
-                            delete_tools_query,
-                            bind_vars={"tool_ids": tool_ids},
-                            transaction=transaction
+                    deleted_tools = await self.execute_query(
+                        delete_orphaned_tools_query,
+                        bind_vars={"tool_ids": tool_ids},
+                        transaction=transaction
+                    )
+
+                    if deleted_tools:
+                        tools_deleted = len(deleted_tools)
+
+                    skipped = len(tool_ids) - tools_deleted
+                    if skipped > 0:
+                        self.logger.warning(
+                            f"Skipped {skipped} tool node(s) still referenced by other toolsets for agent {agent_id}"
                         )
 
-                        if deleted_tools:
-                            tools_deleted = len(deleted_tools)
-
-            # Step 6: Delete agent -> toolset edges (AGENT_HAS_TOOLSET)
+            # Step 6: Delete agent -> toolset edges
             delete_toolset_edges_query = f"""
             FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
                 FILTER edge._from == @agent_doc_id
@@ -18310,18 +18225,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if deleted_toolset_edges:
                 edges_deleted += len(deleted_toolset_edges)
 
-            # Step 7: Delete toolset nodes (AGENT_TOOLSETS)
+            # Step 7: Delete orphaned toolset nodes
             if toolset_ids:
-                delete_toolsets_query = f"""
-                FOR toolset_id IN @toolset_ids
-                    LET toolset = DOCUMENT(toolset_id)
-                    FILTER toolset != null
-                    REMOVE toolset IN {CollectionNames.AGENT_TOOLSETS.value}
+                delete_orphaned_toolsets_query = f"""
+                FOR tsid IN @toolset_ids
+                    LET remaining = FIRST(
+                        FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                            FILTER edge._to == tsid
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER remaining == null
+                    REMOVE PARSE_IDENTIFIER(tsid).key IN {CollectionNames.AGENT_TOOLSETS.value}
                     RETURN OLD
                 """
 
                 deleted_toolsets = await self.execute_query(
-                    delete_toolsets_query,
+                    delete_orphaned_toolsets_query,
                     bind_vars={"toolset_ids": toolset_ids},
                     transaction=transaction
                 )
@@ -18329,7 +18249,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if deleted_toolsets:
                     toolsets_deleted = len(deleted_toolsets)
 
-            # Step 8: Delete all permission edges (user, org, team)
+                skipped = len(toolset_ids) - toolsets_deleted
+                if skipped > 0:
+                    self.logger.warning(
+                        f"Skipped {skipped} toolset node(s) still referenced by other agents for agent {agent_id}"
+                    )
+
+            # Step 8: Delete all permission edges pointing to this agent
             delete_permissions_query = f"""
             FOR edge IN {CollectionNames.PERMISSION.value}
                 FILTER edge._to == @agent_doc_id
@@ -18429,7 +18355,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.debug(f"Deleted {len(deleted_knowledge_edges)} agent -> knowledge edges")
 
                 # Step 2: Delete all knowledge nodes (AGENT_KNOWLEDGE)
-                knowledge_ids = list(set([edge['_to'] for edge in deleted_knowledge_edges]))
+                knowledge_ids = list({edge['_to'] for edge in deleted_knowledge_edges})
                 if knowledge_ids:
                     delete_knowledge_query = f"""
                     FOR knowledge_id IN @knowledge_ids
@@ -18485,7 +18411,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     self.logger.debug(f"Deleted {len(deleted_tool_edges)} toolset -> tool edges")
 
                     # Step 5: Delete all tool nodes (AGENT_TOOLS)
-                    tool_ids = list(set([edge['_to'] for edge in deleted_tool_edges]))
+                    tool_ids = list({edge['_to'] for edge in deleted_tool_edges})
                     if tool_ids:
                         delete_tools_query = f"""
                         FOR tool_id IN @tool_ids

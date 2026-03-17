@@ -12,10 +12,11 @@ TLS fingerprints / impersonation profiles.
 """
 
 import asyncio
+import contextlib
 import logging
 import random
 from dataclasses import dataclass
-from typing import Any, Callable, Coroutine, List, Optional, Tuple
+from typing import Any, Callable, Coroutine, List, Optional, Tuple, cast
 from urllib.parse import urlparse
 
 import aiohttp
@@ -89,7 +90,7 @@ def _get_supported_profiles() -> list[str]:
     supported = []
     for p in candidates:
         try:
-            s = Session(impersonate=p)
+            s = Session(impersonate=cast(Any, p))
             s.close()
             supported.append(p)
         except Exception:
@@ -159,7 +160,7 @@ def _sync_curl_cffi_fetch(
     timeout: int,
     use_http2: bool,
     profiles: Optional[list] = None,
-    logger: logging.Logger = None,
+    logger: Optional[logging.Logger] = None,
 ) -> Optional[FetchResponse]:
     """
     Synchronous curl_cffi fetch with profile rotation.
@@ -169,7 +170,8 @@ def _sync_curl_cffi_fetch(
         from curl_cffi import CurlOpt
         from curl_cffi.requests import Session
     except ImportError:
-        logger.error("❌ [curl_cffi] Not installed")
+        if logger:
+            logger.error("❌ [curl_cffi] Not installed")
         return None
 
     pool = profiles or _CURL_PROFILES
@@ -182,11 +184,8 @@ def _sync_curl_cffi_fetch(
         try:
             with Session(impersonate=profile, timeout=timeout) as sess:
                 if not use_http2:
-                    try:
-                        sess.curl.setopt(CurlOpt.HTTP_VERSION, 2)  # CURL_HTTP_VERSION_1_1
-                    except Exception:
-                        pass
-
+                    with contextlib.suppress(Exception):
+                        _ = sess.curl.setopt(CurlOpt.HTTP_VERSION, 2)  # CURL_HTTP_VERSION_1_1
                 resp = sess.get(url, headers=headers, allow_redirects=True)
                 return FetchResponse(
                     status_code=resp.status_code,
@@ -298,6 +297,8 @@ async def fetch_url_with_fallback(
     timeout: int = REQUEST_TIMEOUT,
     max_429_retries: int = MAX_429_RETRIES,
     max_retries_per_strategy: int = 2,
+    max_size_mb: Optional[int] = None,
+    preferred_strategy: Optional[str] = None,
 ) -> Optional[FetchResponse]:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -327,19 +328,70 @@ async def fetch_url_with_fallback(
         timeout:                   Per-request timeout in seconds.
         max_429_retries:           Max retries on 429 per attempt.
         max_retries_per_strategy:  Max attempts per strategy before moving to next (default 2).
-
+        max_size_mb:               Max size in mb of the response.
+        preferred_strategy:        When set, only this strategy is tried (no fallback). Use the
+                                   ``strategy`` field from a prior FetchResponse to pin image/asset
+                                   fetches to the same strategy that worked for the parent page.
+                                   If the name doesn't match any known strategy the full chain is
+                                   used as a safety net.
     Returns:
         FetchResponse on success or non-retryable error, None if all strategies fail.
     """
     headers = build_stealth_headers(url, referer=referer, extra=extra_headers)
 
+    if max_size_mb is not None:
+        max_size_bytes = max_size_mb * 1024 * 1024
+
+        try:
+            async with session.head(
+                url,
+                headers=headers,
+                allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as head_resp:
+                cl = (
+                    head_resp.headers.get("Content-Length")
+                    or head_resp.headers.get("content-length")
+                )
+                if cl:
+                    size = int(cl)
+                    if size > max_size_bytes:
+                        logger.warning(
+                            f"⚠️ Skipping {url}: Content-Length "
+                            + f"{size / (1024 * 1024):.1f}MB exceeds limit of "
+                            + f"{max_size_bytes:.0f}MB"
+                        )
+                        return None
+        except Exception:
+            # HEAD not supported (405), connection error, timeout — proceed with GET
+            pass
+
     # Define the strategy chain: (name, async callable returning Optional[FetchResponse])
-    strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
-        ("aiohttp", lambda: _try_aiohttp(session, url, headers, timeout, logger)),
+    all_strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
         ("curl_cffi(H2)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=True, logger=logger)),
         # ("curl_cffi(H1)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=False, logger=logger)),
         ("cloudscraper", lambda: _try_cloudscraper(url, headers, timeout, logger=logger)),
+        ("aiohttp", lambda: _try_aiohttp(session, url, headers, timeout, logger)),
     ]
+
+    # When a preferred strategy is given (e.g. from a cached page-level fetch),
+    # use ONLY that strategy — no fallback — to avoid wasted attempts.
+    if preferred_strategy:
+        preferred_lower = preferred_strategy.lower()
+        strategies = [
+            (name, fn) for name, fn in all_strategies
+            if name.lower().split('(')[0].strip() in preferred_lower
+        ]
+        if not strategies:
+            logger.warning(
+                f"⚠️ preferred_strategy='{preferred_strategy}' did not match any strategy name; "
+                + "falling back to full chain"
+            )
+            strategies = all_strategies
+        else:
+            logger.debug(f"🔒 Using pinned strategy '{strategies[0][0]}' for {url}")
+    else:
+        strategies = all_strategies
 
     for strategy_name, strategy_fn in strategies:
         logger.debug(f"🔄 [{strategy_name}] Attempting {url}")
@@ -350,7 +402,7 @@ async def fetch_url_with_fallback(
                 retry_delay = attempt + random.uniform(0, 0.5)
                 logger.debug(
                     f"🔄 [{strategy_name}] Retry {attempt + 1}/{max_retries_per_strategy} "
-                    f"for {url} after {retry_delay:.1f}s"
+                    + f"for {url} after {retry_delay:.1f}s"
                 )
                 await asyncio.sleep(retry_delay)
 
@@ -376,7 +428,7 @@ async def fetch_url_with_fallback(
                 if status in _BOT_DETECTION_CODES or status > HttpStatusCode.CLOUDFLARE_NETWORK_ERROR.value:
                     logger.warning(
                         f"⚠️ [{strategy_name}] Bot blocked (HTTP {status}) for {url} "
-                        f"(attempt {attempt + 1}/{max_retries_per_strategy})"
+                        + f"(attempt {attempt + 1}/{max_retries_per_strategy})"
                     )
                     break  # break 429 loop, go to next attempt
 
@@ -385,7 +437,7 @@ async def fetch_url_with_fallback(
                     if retry_429 >= max_429_retries:
                         logger.warning(
                             f"⚠️ [{strategy_name}] 429 persists after {max_429_retries} "
-                            f"retries for {url}, trying next strategy"
+                            + f"retries for {url}, trying next strategy"
                         )
                         break
 
@@ -401,7 +453,7 @@ async def fetch_url_with_fallback(
 
                     logger.warning(
                         f"⚠️ [{strategy_name}] 429 Rate Limited for {url}, "
-                        f"retrying in {delay}s ({retry_429 + 1}/{max_429_retries})"
+                        + f"retrying in {delay}s ({retry_429 + 1}/{max_429_retries})"
                     )
                     await asyncio.sleep(delay)
                     continue

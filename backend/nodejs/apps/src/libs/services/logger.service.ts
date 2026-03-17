@@ -10,6 +10,24 @@ export enum LogLevel {
   Error = 'error',
 }
 
+
+const customLevels = {
+  levels: {
+    error: 0,
+    warning: 1,
+    info: 2,
+    debug: 3,
+  },
+  colors: {
+    error: 'red',
+    warning: 'yellow',
+    info: 'green',
+    debug: 'green',
+  },
+};
+
+winston.addColors(customLevels.colors);
+
 export function getLogLevel(): LogLevel {
   const level = process.env.LOG_LEVEL?.toLowerCase();
   if (Object.values(LogLevel).includes(level as LogLevel)) {
@@ -75,6 +93,7 @@ export class Logger {
     );
 
     return winston.createLogger({
+      levels: customLevels.levels,
       level: config?.level || getLogLevel(),
       format: logFormat,
       defaultMeta: this.defaultMeta,

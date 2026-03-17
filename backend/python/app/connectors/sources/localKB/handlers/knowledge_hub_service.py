@@ -5,6 +5,7 @@ import traceback
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     AppliedFilters,
     AvailableFilters,
@@ -24,7 +25,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     SortField,
     SortOrder,
 )
-from app.models.entities import IndexingStatus, RecordType
+from app.models.entities import RecordType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 FOLDER_MIME_TYPES = [
@@ -52,28 +53,28 @@ class KnowledgeHubService:
 
     def _has_search_filters(self, q: Optional[str], node_types: Optional[List[str]],
                              record_types: Optional[List[str]], origins: Optional[List[str]],
-                             connector_ids: Optional[List[str]], kb_ids: Optional[List[str]],
+                             connector_ids: Optional[List[str]],
                              indexing_status: Optional[List[str]],
                              created_at: Optional[Dict], updated_at: Optional[Dict],
                              size: Optional[Dict]) -> bool:
         """Check if any search/filter parameters are provided."""
-        return any([q, node_types, record_types, origins, connector_ids, kb_ids,
+        return any([q, node_types, record_types, origins, connector_ids,
                     indexing_status, created_at, updated_at, size])
 
     def _has_flattening_filters(self, q: Optional[str], node_types: Optional[List[str]],
                                  record_types: Optional[List[str]], origins: Optional[List[str]],
-                                 connector_ids: Optional[List[str]], kb_ids: Optional[List[str]],
+                                 connector_ids: Optional[List[str]],
                                  indexing_status: Optional[List[str]],
                                  created_at: Optional[Dict], updated_at: Optional[Dict],
                                  size: Optional[Dict]) -> bool:
         """Check if any filters that should trigger flattened/recursive search are provided.
 
         These filters should return flattened results (all nested children):
-        - q, nodeTypes, recordTypes, origins, connectorIds, kbIds,
+        - q, nodeTypes, recordTypes, origins, connectorIds,
           createdAt, updatedAt, size, indexingStatus
         Note: sortBy and sortOrder are NOT included as they don't trigger flattening.
         """
-        return any([q, node_types, record_types, origins, connector_ids, kb_ids,
+        return any([q, node_types, record_types, origins, connector_ids,
                     indexing_status, created_at, updated_at, size])
 
     async def get_nodes(
@@ -92,7 +93,6 @@ class KnowledgeHubService:
         record_types: Optional[List[str]] = None,
         origins: Optional[List[str]] = None,
         connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
         indexing_status: Optional[List[str]] = None,
         created_at: Optional[Dict[str, Optional[int]]] = None,
         updated_at: Optional[Dict[str, Optional[int]]] = None,
@@ -106,7 +106,7 @@ class KnowledgeHubService:
         try:
             # Determine if this is a search request
             is_search = self._has_search_filters(
-                q, node_types, record_types, origins, connector_ids, kb_ids,
+                q, node_types, record_types, origins, connector_ids,
                 indexing_status, created_at, updated_at, size
             )
 
@@ -138,7 +138,7 @@ class KnowledgeHubService:
 
             # Check if flattening filters are applied (these should return flattened results)
             has_flattening_filters = self._has_flattening_filters(
-                q, node_types, record_types, origins, connector_ids, kb_ids,
+                q, node_types, record_types, origins, connector_ids,
                 indexing_status, created_at, updated_at, size
             )
 
@@ -159,7 +159,6 @@ class KnowledgeHubService:
                     record_types=record_types,
                     origins=origins,
                     connector_ids=connector_ids,
-                    kb_ids=kb_ids,
                     indexing_status=indexing_status,
                     created_at=created_at,
                     updated_at=updated_at,
@@ -185,7 +184,6 @@ class KnowledgeHubService:
                     record_types=record_types,
                     origins=origins,
                     connector_ids=connector_ids,
-                    kb_ids=kb_ids,
                     indexing_status=indexing_status,
                     created_at=created_at,
                     updated_at=updated_at,
@@ -227,7 +225,6 @@ class KnowledgeHubService:
                 recordTypes=record_types,
                 origins=origins,
                 connectorIds=connector_ids,
-                kbIds=kb_ids,
                 indexingStatus=indexing_status,
                 createdAt=created_at,
                 updatedAt=updated_at,
@@ -275,7 +272,6 @@ class KnowledgeHubService:
 
                     # Map nodeType to display label
                     label_map = {
-                        'kb': 'knowledge bases',
                         'app': 'apps',
                         'folder': 'folders',
                         'recordGroup': 'groups',
@@ -344,7 +340,6 @@ class KnowledgeHubService:
         record_types: Optional[List[str]],
         origins: Optional[List[str]],
         connector_ids: Optional[List[str]],
-        kb_ids: Optional[List[str]],
         indexing_status: Optional[List[str]],
         created_at: Optional[Dict[str, Optional[int]]],
         updated_at: Optional[Dict[str, Optional[int]]],
@@ -353,10 +348,10 @@ class KnowledgeHubService:
     ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
         """Get children nodes for a given parent using unified provider method."""
         if parent_id is None:
-            # Root level: return KBs and Apps
+            # Root level: return Apps
             return await self._get_root_level_nodes(
                 user_key, org_id, skip, limit, sort_by, sort_order,
-                node_types, origins, connector_ids, kb_ids, only_containers
+                node_types, origins, connector_ids, only_containers
             )
 
         # Validate that the node exists and type matches
@@ -410,38 +405,10 @@ class KnowledgeHubService:
         node_types: Optional[List[str]],
         origins: Optional[List[str]],
         connector_ids: Optional[List[str]],
-        kb_ids: Optional[List[str]],
         only_containers: bool,
     ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
-        """Get root level nodes (KBs and Apps)"""
+        """Get root level nodes (Apps, including Collection App)"""
         try:
-            # Determine if we should include KBs and Apps
-            include_kbs = True
-            include_apps = True
-
-            # Handle connector_ids and kb_ids filters:
-            # - If only connector_ids provided: exclude KBs (show filtered apps only)
-            # - If only kb_ids provided: exclude apps (show filtered KBs only)
-            # - If both provided: include both, filter each appropriately
-            if connector_ids and not kb_ids:
-                include_kbs = False  # Only show apps matching connector_ids
-            elif kb_ids and not connector_ids:
-                include_apps = False  # Only show KBs matching kb_ids
-
-            if node_types:
-                if 'kb' not in node_types and 'recordGroup' not in node_types:
-                    # Note: recordGroup can be in KB too.
-                    # But root nodes are just KB and APP.
-                    include_kbs = False
-                if 'app' not in node_types:
-                    include_apps = False
-
-            if origins:
-                if 'KB' not in origins:
-                    include_kbs = False
-                if 'CONNECTOR' not in origins:
-                    include_apps = False
-
             # Get user's accessible apps
             user_apps_ids = await self.graph_provider.get_user_app_ids(user_key)
 
@@ -467,21 +434,11 @@ class KnowledgeHubService:
                 limit=limit,
                 sort_field=sort_field,
                 sort_dir=sort_dir,
-                include_kbs=include_kbs,
-                include_apps=include_apps,
                 only_containers=only_containers,
             )
 
             nodes_data = result.get('nodes', [])
             total_count = result.get('total', 0)
-
-            # Filter KBs by kb_ids if provided (keeps apps as-is, filters KBs to match kb_ids)
-            if kb_ids:
-                nodes_data = [
-                    n for n in nodes_data
-                    if n.get('nodeType') != 'kb' or n.get('id') in kb_ids
-                ]
-                total_count = len(nodes_data)
 
             # Convert to NodeItem objects
             items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
@@ -493,19 +450,10 @@ class KnowledgeHubService:
             raise
 
     async def _get_available_filters(self, user_key: str, org_id: str) -> AvailableFilters:
-        """Get filter options (dynamic KBs/Apps + static others)"""
+        """Get filter options (dynamic Apps + static others)"""
         try:
             options = await self.graph_provider.get_knowledge_hub_filter_options(user_key, org_id)
-            kbs_data = options.get('kbs', [])
             apps_data = options.get('apps', [])
-            # KB options with icon
-            kb_options = [
-                FilterOption(
-                    id=k['id'],
-                    label=k['name']
-                )
-                for k in kbs_data
-            ]
 
             # App/Connector options with connectorType
             app_options = [
@@ -523,7 +471,6 @@ class KnowledgeHubService:
                 NodeType.RECORD: "File",
                 NodeType.RECORD_GROUP: "Drive/Root",
                 NodeType.APP: "Connector",
-                NodeType.KB: "Knowledge Base",
             }
 
             return AvailableFilters(
@@ -544,18 +491,17 @@ class KnowledgeHubService:
                 origins=[
                     FilterOption(
                         id=ot.value,
-                        label="Knowledge Base" if ot == OriginType.KB else "External Connector"
+                        label="Collection" if ot == OriginType.COLLECTION else "External Connector"
                     )
                     for ot in OriginType
                 ],
                 connectors=app_options,
-                kbs=kb_options,
                 indexingStatus=[
                     FilterOption(
                         id=status.value,
                         label=self._format_enum_label(status.value, {"AUTO_INDEX_OFF": "Manual Indexing"})
                     )
-                    for status in IndexingStatus
+                    for status in ProgressStatus
                 ],
                 sortBy=[
                     FilterOption(
@@ -589,7 +535,6 @@ class KnowledgeHubService:
         record_types: Optional[List[str]],
         origins: Optional[List[str]],
         connector_ids: Optional[List[str]],
-        kb_ids: Optional[List[str]],
         indexing_status: Optional[List[str]],
         created_at: Optional[Dict[str, Optional[int]]],
         updated_at: Optional[Dict[str, Optional[int]]],
@@ -618,7 +563,6 @@ class KnowledgeHubService:
             record_types: Optional list of record types to filter by
             origins: Optional list of origins to filter by
             connector_ids: Optional list of connector IDs to filter by
-            kb_ids: Optional list of KB IDs to filter by
             indexing_status: Optional list of indexing statuses to filter by
             created_at: Optional date range filter for creation date
             updated_at: Optional date range filter for update date
@@ -656,7 +600,6 @@ class KnowledgeHubService:
                 record_types=record_types,
                 origins=origins,
                 connector_ids=connector_ids,
-                kb_ids=kb_ids,
                 indexing_status=indexing_status,
                 created_at=created_at,
                 updated_at=updated_at,
@@ -743,7 +686,7 @@ class KnowledgeHubService:
             breadcrumbs_data = await self.graph_provider.get_knowledge_hub_breadcrumbs(node_id=node_id)
 
             # Convert to BreadcrumbItem objects
-            breadcrumbs = [
+            return [
                 BreadcrumbItem(
                     id=item['id'],
                     name=item['name'],
@@ -753,7 +696,6 @@ class KnowledgeHubService:
                 for item in breadcrumbs_data
             ]
 
-            return breadcrumbs
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get breadcrumbs: {str(e)}")
@@ -797,9 +739,9 @@ class KnowledgeHubService:
         # Extract ID - prefer 'id' field, fallback to '_key' or parse from '_id'
         doc_id = doc.get('id')
         if not isinstance(doc_id, str) or not doc_id.strip():
-            if '_key' in doc and doc['_key']:
+            if doc.get('_key'):
                 doc_id = doc['_key']
-            elif '_id' in doc and doc['_id']:
+            elif doc.get('_id'):
                 _id_value = doc['_id']
                 if isinstance(_id_value, str) and '/' in _id_value:
                     doc_id = _id_value.split('/', 1)[1]
@@ -815,8 +757,8 @@ class KnowledgeHubService:
             node_type = NodeType.RECORD
 
         # Get origin
-        origin_str = doc.get('origin', 'KB')
-        origin = OriginType.KB if origin_str == 'KB' else OriginType.CONNECTOR
+        origin_str = doc.get('origin', 'COLLECTION')
+        origin = OriginType.COLLECTION if origin_str == 'COLLECTION' else OriginType.CONNECTOR
 
         # Convert userRole to ItemPermission if present
         permission = None
@@ -829,7 +771,7 @@ class KnowledgeHubService:
                 permission = self._role_to_permission(user_role)
 
         # Build NodeItem
-        item = NodeItem(
+        return NodeItem(
             id=doc_id,
             name=doc.get('name', ''),
             nodeType=node_type,
@@ -851,7 +793,6 @@ class KnowledgeHubService:
             sharingStatus=doc.get('sharingStatus'),
         )
 
-        return item
 
     def _role_to_permission(self, role: str) -> ItemPermission:
         """

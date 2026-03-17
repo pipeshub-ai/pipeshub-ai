@@ -42,6 +42,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.sources.github.common.apps import GithubApp
 from app.models.blocks import (
@@ -145,7 +146,7 @@ class RecordUpdate:
             "pipeshub",
         )
     )
-    .with_sync_strategies(["SCHEDULED", "MANUAL"])
+    .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
     .with_sync_support(True)
     .with_agent_support(False)
 ).build_decorator()
@@ -399,9 +400,6 @@ class GithubConnector(BaseConnector):
             users (List[AppUser]): _description_
         """
         self.logger.info("Starting sync for issues as records.")
-        auth_res = self.data_source.get_authenticated()
-        user_login = auth_res.data.login
-        owner = user_login
         user = await self.data_entities_processor.get_app_creator_user(
             connector_id=self.connector_id
         )
@@ -418,7 +416,7 @@ class GithubConnector(BaseConnector):
             )
             return
         # NOTE: list_repos returns all repos user is owner of.
-        repos_res = self.data_source.list_user_repos(owner, type="owner")
+        repos_res = self.data_source.list_user_repos(type="owner")
         if not repos_res.success or not repos_res.data:
             self.logger.error(f"Failed to get repositories: {repos_res.error}")
             return
@@ -502,9 +500,10 @@ class GithubConnector(BaseConnector):
     async def _process_new_records(self, batch_records: List[RecordUpdate]) -> None:
         for i in range(0, len(batch_records), self.batch_size):
             batch = batch_records[i : i + self.batch_size]
-            batch_sent: List[Tuple[Record, Permission]] = []
-            for record_update in batch:
-                batch_sent.append((record_update.record, record_update.new_permissions))
+            batch_sent: List[Tuple[Record, Permission]] = [
+                (record_update.record, record_update.new_permissions)
+                for record_update in batch
+            ]
             await self.data_entities_processor.on_new_records(batch_sent)
 
     async def _build_issue_records(
@@ -572,18 +571,15 @@ class GithubConnector(BaseConnector):
             parent_record_type = None
             issue_type = "issue"
             parent_issue_ul: Dict = getattr(issue, "raw_data", {})
-            parent_issue_url = parent_issue_ul.get("parent_issue_url", None)
+            parent_issue_url = parent_issue_ul.get("parent_issue_url")
             if parent_issue_url:
                 parent_external_id = parent_issue_url
                 parent_record_type = RecordType.TICKET
                 issue_type = "sub_issue"
-            label_names: List[str] = []
-            for label in issue.labels:
-                label_names.append(label.name)
+            label_names: List[str] = [label.name for label in issue.labels]
             assignee_list = []
             if issue.assignees:
-                for assignee in issue.assignees:
-                    assignee_list.append(assignee.login)
+                assignee_list.extend(assignee.login for assignee in issue.assignees)
 
             ticket_record = TicketRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -707,8 +703,7 @@ class GithubConnector(BaseConnector):
         )
         block_groups.extend(comments_bg)
         block_group_number += len(comments_bg)
-        blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
-        return blocks_container
+        return  BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     async def _sync_records_incremental(self) -> None:
         """_summary_
@@ -871,9 +866,7 @@ class GithubConnector(BaseConnector):
             # NOTE: using url as external record id as it is unique and can be used to fetch the issue, used as sub_issue parent
             parent_external_id = None
             parent_record_type = None
-            label_names: List[str] = []
-            for label in pull_request.labels:
-                label_names.append(label.name)
+            label_names: List[str] = [label.name for label in pull_request.labels]
 
             # making pull request record
             pr_record = PullRequestRecord(
@@ -1025,7 +1018,7 @@ class GithubConnector(BaseConnector):
             f"bg and blocks of length {block_number},  for commits created for pr{pr_number}"
         )
         # block group for files changed in pr
-        files_res = self.data_source.get_pull_file_changes(owner, repo_name, pr_number)
+        files_res = self.data_source.get_pull_file_changes(owner, repo_name, pr_number,fetch_full_content=False)
         if files_res.success and files_res.data:
             files = files_res.data
             # in file data patch is present which is diff make another call for files content
@@ -1275,8 +1268,7 @@ class GithubConnector(BaseConnector):
             self.logger.error("❌Github configuration not found.")
             raise ValueError("Github credentials not found")
 
-        GITHUB_TOKEN = access_token
-        return GITHUB_TOKEN
+        return access_token
 
     async def get_img_bytes(self, image_url: str) -> Optional[bytes]:
         GITHUB_TOKEN = await self._get_api_token_()
@@ -1305,9 +1297,7 @@ class GithubConnector(BaseConnector):
         # Get the current time in UTC
         utc_now = datetime.now(timezone.utc)
         # Format the time into the ISO 8601 string format with 'Z'
-        iso_format_string = utc_now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        return iso_format_string
-
+        return utc_now.strftime("%Y-%m-%dT%H:%M:%SZ")
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """Get signed URL for record access (optional - if API supports it)."""
 

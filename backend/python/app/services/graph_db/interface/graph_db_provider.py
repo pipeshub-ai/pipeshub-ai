@@ -1572,10 +1572,9 @@ class IGraphDBProvider(ABC):
     async def delete_parent_child_edge_to_record(
         self,
         record_id: str,
-        parent_id: str,
         transaction: Optional[str] = None,
     ) -> bool:
-        """Delete PARENT_CHILD edge from parent to record."""
+        """Delete PARENT_CHILD edge(s) to a record."""
         pass
 
     @abstractmethod
@@ -2948,6 +2947,28 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def check_toolset_instance_in_use(
+        self,
+        instance_id: str,
+        transaction: Optional[str] = None
+    ) -> List[str]:
+        """
+        Check if a toolset instance is currently in use by any active agents.
+
+        This method finds all toolset nodes with the given instanceId and checks
+        if any non-deleted agents are using them.
+
+        Args:
+            instance_id (str): Toolset instance ID to check
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of agent names that are using the toolset instance.
+                      Empty list if not in use.
+        """
+        pass
+
     # ==================== Knowledge Hub Operations ====================
 
     @abstractmethod
@@ -2960,13 +2981,11 @@ class IGraphDBProvider(ABC):
         limit: int,
         sort_field: str,
         sort_dir: str,
-        include_kbs: bool,
-        include_apps: bool,
         only_containers: bool,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Get root level nodes (KBs and Apps) for Knowledge Hub.
+        Get root level nodes (Apps) for Knowledge Hub.
 
         Args:
             user_key: User's internal key
@@ -2976,8 +2995,6 @@ class IGraphDBProvider(ABC):
             limit: Maximum items to return
             sort_field: Field to sort by
             sort_dir: Sort direction (ASC/DESC)
-            include_kbs: Whether to include Knowledge Bases
-            include_apps: Whether to include Apps
             only_containers: Only return nodes with children
             transaction: Optional transaction context
 
@@ -3009,7 +3026,7 @@ class IGraphDBProvider(ABC):
 
         Args:
             parent_id: The ID of the parent node
-            parent_type: The type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'
+            parent_type: The type of parent: 'app', 'recordGroup', 'folder', 'record'
             org_id: The organization ID
             user_key: The user's key for permission filtering
             skip: Number of items to skip for pagination
@@ -3038,7 +3055,6 @@ class IGraphDBProvider(ABC):
         record_types: Optional[List[str]] = None,
         origins: Optional[List[str]] = None,
         connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
         indexing_status: Optional[List[str]] = None,
         created_at: Optional[Dict[str, Optional[int]]] = None,
         updated_at: Optional[Dict[str, Optional[int]]] = None,
@@ -3075,14 +3091,13 @@ class IGraphDBProvider(ABC):
             record_types: Optional list of record types to filter by
             origins: Optional list of origins to filter by (KB/CONNECTOR)
             connector_ids: Optional list of connector IDs to filter by
-            kb_ids: Optional list of KB IDs to filter by
             indexing_status: Optional list of indexing statuses to filter by
             created_at: Optional date range filter for creation date
             updated_at: Optional date range filter for update date
             size: Optional size range filter
             only_containers: If True, only return nodes that can have children
             parent_id: Optional parent node ID for scoped search
-            parent_type: Optional type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'
+            parent_type: Optional type of parent: 'app', 'recordGroup', 'folder', 'record'
             transaction: Optional transaction ID
 
         Returns:

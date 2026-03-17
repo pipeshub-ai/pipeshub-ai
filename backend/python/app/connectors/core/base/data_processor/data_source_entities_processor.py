@@ -8,6 +8,7 @@ from app.config.constants.arangodb import (
     EntityRelations,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
     RecordRelations,
 )
 from app.config.constants.service import config_node_constants
@@ -21,8 +22,8 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
+    Connectors,
     FileRecord,
-    IndexingStatus,
     LinkPublicStatus,
     LinkRecord,
     MailRecord,
@@ -165,6 +166,7 @@ class DataSourceEntitiesProcessor:
         # Map RecordType to appropriate Record class
         if parent_record_type == RecordType.FILE:
             file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
+
             return FileRecord(
                 **file_params,
                 is_file=False,
@@ -794,14 +796,14 @@ class DataSourceEntitiesProcessor:
             current_status = record.indexing_status
 
             # Only reset if not already QUEUED or EMPTY
-            if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+            if current_status in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
 
             # Update indexing status to QUEUED
             status_doc = {
                 "_key": record_id,
-                "indexingStatus": IndexingStatus.QUEUED.value,
+                "indexingStatus": ProgressStatus.QUEUED.value,
             }
 
             await tx_store.batch_upsert_nodes([status_doc], CollectionNames.RECORDS.value)
@@ -828,7 +830,7 @@ class DataSourceEntitiesProcessor:
             if records_to_publish:
                 for record in records_to_publish:
                     # Skip publishing indexing events for records with AUTO_INDEX_OFF status
-                    if hasattr(record, 'indexing_status') and record.indexing_status == IndexingStatus.AUTO_INDEX_OFF.value:
+                    if hasattr(record, 'indexing_status') and record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                         self.logger.debug(
                             f"Skipping automatic indexing event for record {record.id} "
                             f"with AUTO_INDEX_OFF status"
@@ -850,7 +852,7 @@ class DataSourceEntitiesProcessor:
             processed_record = await self._process_record(record, [], tx_store)
 
             # Skip publishing update events for records with AUTO_INDEX_OFF status
-            if hasattr(processed_record, 'indexing_status') and processed_record.indexing_status == IndexingStatus.AUTO_INDEX_OFF.value:
+            if hasattr(processed_record, 'indexing_status') and processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                 self.logger.debug(
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
@@ -858,7 +860,7 @@ class DataSourceEntitiesProcessor:
 
             # Reset indexing status to QUEUED before sending update event
             current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
-            if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+            if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
                 await self._reset_indexing_status_to_queued(record.id, tx_store)
 
             await self.messaging_producer.send_message(
@@ -898,7 +900,7 @@ class DataSourceEntitiesProcessor:
                 for record in records:
                     current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
                     # Only reset if not already QUEUED or EMPTY
-                    if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                    if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
                         await self._reset_indexing_status_to_queued(record.id, tx_store)
 
             # Now send the reindex events
@@ -1335,8 +1337,7 @@ class DataSourceEntitiesProcessor:
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
         async with self.data_store_provider.transaction() as tx_store:
-            record = await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
-            return record
+            return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
 
     async def on_user_group_member_removed(
         self,
@@ -1565,9 +1566,9 @@ class DataSourceEntitiesProcessor:
         """
         # If no transaction provided, create one and recursively call with it
         if tx_store is None:
-            async with self.data_store_provider.transaction() as tx_store:
+            async with self.data_store_provider.transaction() as new_tx_store:
                 return await self.migrate_group_permissions_to_user(
-                    group_id, user_email, connector_id, tx_store
+                    group_id, user_email, connector_id, new_tx_store
                 )
 
         # Get the user object
