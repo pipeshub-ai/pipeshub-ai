@@ -2,18 +2,18 @@ import base64
 import os
 import re
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from github.Issue import Issue
-from github.PullRequest import PullRequest
 from PIL import Image
 
 from app.config.configuration_service import ConfigurationService
@@ -78,6 +78,9 @@ from app.sources.client.github.github import (
 )
 from app.sources.external.github.github_ import GitHubDataSource
 
+if TYPE_CHECKING:
+    from github.PullRequest import PullRequest
+
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
 
@@ -86,16 +89,16 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
 class RecordUpdate:
     """Tracks updates to a Ticket"""
 
-    record: Optional[Record]
+    record: Record | None
     is_new: bool
     is_updated: bool
     is_deleted: bool
     metadata_changed: bool
     content_changed: bool
     permissions_changed: bool
-    old_permissions: Optional[List[Permission]] = None
-    new_permissions: Optional[List[Permission]] = None
-    external_record_id: Optional[str] = None
+    old_permissions: list[Permission] | None = None
+    new_permissions: list[Permission] | None = None
+    external_record_id: str | None = None
 
 
 @ConnectorBuilder("Github").in_group("Github").with_description(
@@ -173,8 +176,8 @@ class GithubConnector(BaseConnector):
         )
         self.connector_name = Connectors.GITHUB.value
         self.connector_id = connector_id
-        self.data_source: Optional[GitHubDataSource] = None
-        self.external_client: Optional[GitHubClient] = None
+        self.data_source: GitHubDataSource | None = None
+        self.external_client: GitHubClient | None = None
         self.batch_size = 5
         self.max_concurrent_batches = 5
         self._create_sync_points()
@@ -282,7 +285,7 @@ class GithubConnector(BaseConnector):
             }
             file_data = b""
             try:
-                async with httpx.AsyncClient(follow_redirects=True) as client:
+                async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
                     resp = await client.get(record_url, headers=headers)
                     file_data = resp.content
                     self.logger.info(f"Fetched file of size: {len(file_data)} bytes")
@@ -291,10 +294,10 @@ class GithubConnector(BaseConnector):
                     f"HTTP {e.response.status_code} fetching file content from {record_url}"
                 )
             except Exception as e:
-                self.logger.error(f"Error fetching file from {record_url}: {e}")
+                self.logger.error(f"Error fetching file from {record_url}: {str(e)}")
 
             async def stream_markdown(
-                markdown_content, chunk_size=16000
+                markdown_content:str, chunk_size:int=160000
             ) -> AsyncGenerator[bytes, None]:
                 """Stream markdown content in optimal chunks"""
                 for i in range(0, len(markdown_content), chunk_size):
@@ -335,7 +338,7 @@ class GithubConnector(BaseConnector):
             raise
 
     # ---------------------------Users Sync-----------------------------------#
-    async def _fetch_users(self) -> List[AppUser]:
+    async def _fetch_users(self) -> list[AppUser]:
         """
         Fetch all active Github users using DataSource
         """
@@ -346,7 +349,7 @@ class GithubConnector(BaseConnector):
             self.logger.error(f"Authentication failed: {auth_res.error}")
             return []
         user_login = auth_res.data.login
-        app_users: List[AppUser] = []
+        app_users: list[AppUser] = []
         user = await self.data_entities_processor.get_app_creator_user(
             connector_id=self.connector_id
         )
@@ -355,7 +358,7 @@ class GithubConnector(BaseConnector):
                 "No valid app users found, cannot proceed with syncing issues."
             )
             return []
-        user_email = user.email
+        user_email = getattr(user,"email")
         app_user = AppUser(
             app_name=self.connector_name,
             connector_id=self.connector_id,
@@ -370,7 +373,7 @@ class GithubConnector(BaseConnector):
         return app_users
 
     # ---------------------------Repo level Sync-----------------------------------#
-    async def _sync_all_repo_issue(self, full_sync: bool = False) -> None:
+    async def _sync_all_repo_issue(self) -> None:
         # TODO: sync point repo level ask plan acc.
         current_timestamp = self._get_iso_time()
         github_record_sync_key = generate_record_sync_point_key(
@@ -379,7 +382,7 @@ class GithubConnector(BaseConnector):
         github_record_sync_point = await self.record_sync_point.read_sync_point(
             github_record_sync_key
         )
-        if full_sync or not github_record_sync_point.get("timestamp"):
+        if not github_record_sync_point.get("timestamp"):
             await self._sync_issues_full()
             await self.record_sync_point.update_sync_point(
                 github_record_sync_key, {"timestamp": current_timestamp}
@@ -393,7 +396,7 @@ class GithubConnector(BaseConnector):
 
     # ---------------------------Issues Sync-----------------------------------#
 
-    async def _sync_issues_full(self, last_sync_time: Optional[str] = None) -> None:
+    async def _sync_issues_full(self, last_sync_time: str | None = None) -> None:
         """_summary_
 
         Args:
@@ -409,7 +412,7 @@ class GithubConnector(BaseConnector):
                 "No valid app users found, cannot proceed with syncing issues."
             )
             return
-        user_email = user.email
+        user_email = getattr(user,"email")
         if not user_email:
             self.logger.error(
                 "No valid user found, cannot proceed with syncing issues."
@@ -447,7 +450,7 @@ class GithubConnector(BaseConnector):
             )
 
     async def _fetch_issues_batched(
-        self, repo_name: str, last_sync_time: Optional[str] = None
+        self, repo_name: str, last_sync_time: str | None = None
     ) -> None:
         """
         received: batch of issues
@@ -471,7 +474,7 @@ class GithubConnector(BaseConnector):
         issues_res = self.data_source.list_issues(
             owner, repo_name, state="all", since=since_dt
         )
-        issues_batch: List[Issue] = []
+        issues_batch: list[Issue] = []
         if not issues_res.success:
             self.logger.error(f"Failed to get issues: {issues_res.error}")
             return []
@@ -487,7 +490,7 @@ class GithubConnector(BaseConnector):
         for i in range(0, total_issues, batch_size):
             batch_number += 1
             issues_batch = all_issues[i : i + batch_size]
-            batch_records: List[Tuple[Record, List[Permission]]] = []
+            batch_records: list[tuple[Record, list[Permission]]] = []
             self.logger.info(
                 f"📦 Processing batch {batch_number}: {len(issues_batch)} issues"
             )
@@ -496,21 +499,22 @@ class GithubConnector(BaseConnector):
             )
             # send batch results to process
             await self._process_new_records(batch_records)
+        return None
 
-    async def _process_new_records(self, batch_records: List[RecordUpdate]) -> None:
+    async def _process_new_records(self, batch_records: list[RecordUpdate]) -> None:
         for i in range(0, len(batch_records), self.batch_size):
             batch = batch_records[i : i + self.batch_size]
-            batch_sent: List[Tuple[Record, Permission]] = [
+            batch_sent: list[tuple[Record, Permission]] = [
                 (record_update.record, record_update.new_permissions)
                 for record_update in batch
             ]
             await self.data_entities_processor.on_new_records(batch_sent)
 
     async def _build_issue_records(
-        self, issue_batch: List[Issue], last_sync_time: Optional[str] = None
-    ) -> List[RecordUpdate]:
+        self, issue_batch: list[Issue], last_sync_time: str | None = None
+    ) -> list[RecordUpdate]:
         # NOTE:Github considers all Pull Requests as issues not True Vice-Versa
-        record_updates_batch: List[RecordUpdate] = []
+        record_updates_batch: list[RecordUpdate] = []
         for issue in issue_batch:
             # check and send not to be pull request
             pull_request = getattr(issue, "pull_request", None)
@@ -538,7 +542,7 @@ class GithubConnector(BaseConnector):
                         )
         return record_updates_batch
 
-    async def _process_issue_to_ticket(self, issue: Issue) -> Optional[RecordUpdate]:
+    async def _process_issue_to_ticket(self, issue: Issue) -> RecordUpdate | None:
         """_summary_
 
         Args:
@@ -570,14 +574,14 @@ class GithubConnector(BaseConnector):
             parent_external_id = None
             parent_record_type = None
             issue_type = "issue"
-            parent_issue_ul: Dict = getattr(issue, "raw_data", {})
+            parent_issue_ul: dict = getattr(issue, "raw_data", {})
             parent_issue_url = parent_issue_ul.get("parent_issue_url")
             if parent_issue_url:
                 parent_external_id = parent_issue_url
                 parent_record_type = RecordType.TICKET
                 issue_type = "sub_issue"
-            label_names: List[str] = [label.name for label in issue.labels]
-            assignee_list = []
+            label_names: list[str] = [label.name for label in issue.labels]
+            assignee_list: list[str] = []
             if issue.assignees:
                 assignee_list.extend(assignee.login for assignee in issue.assignees)
 
@@ -648,8 +652,8 @@ class GithubConnector(BaseConnector):
             )
             return BlocksContainer(blocks=[], block_groups=[])
         block_group_number = 0
-        blocks: List[Block] = []
-        block_groups: List[BlockGroup] = []
+        blocks: list[Block] = []
+        block_groups: list[BlockGroup] = []
         issue = issue_res.data
 
         # getting modi. markdown  content with images as base64
@@ -672,7 +676,7 @@ class GithubConnector(BaseConnector):
             f"Found {len(existing_attachs)} attachments linked to issue {issue.url}"
         )
         table_row_metadata: TableRowMetadata = None
-        list_child_records: List[ChildRecord] = []
+        list_child_records: list[ChildRecord] = []
         for attach_record in existing_attachs:
             child_record = ChildRecord(
                 child_type=ChildType.RECORD,
@@ -691,7 +695,7 @@ class GithubConnector(BaseConnector):
             format=DataFormat.MARKDOWN.value,
             sub_type=GroupSubType.CONTENT.value,
             source_group_id=record.weburl,
-            data=markdown_content_with_images_base64,
+            data=f"{issue.title}\n\n{markdown_content_with_images_base64}",
             source_modified_date=str(self.datetime_to_epoch_ms(issue.updated_at)),
             requires_processing=True,
             table_row_metadata=table_row_metadata,
@@ -703,7 +707,7 @@ class GithubConnector(BaseConnector):
         )
         block_groups.extend(comments_bg)
         block_group_number += len(comments_bg)
-        return  BlocksContainer(blocks=blocks, block_groups=block_groups)
+        return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     async def _sync_records_incremental(self) -> None:
         """_summary_
@@ -764,7 +768,7 @@ class GithubConnector(BaseConnector):
 
     async def _build_comment_blocks(
         self, issue_url: str, parent_index: int, record: Record
-    ) -> List[BlockGroup]:
+    ) -> list[BlockGroup]:
         """_summary_
         Args:
             issue_url (str): _description_
@@ -783,12 +787,15 @@ class GithubConnector(BaseConnector):
         comments_res = self.data_source.list_issue_comments(
             owner=username, repo=repo_name, number=int(issue_number), since=since_dt
         )
-        if not comments_res.success or not comments_res.data:
+        if not comments_res.success :
             self.logger.error(
                 f"Failed to fetch comments for issue {issue_url}: {comments_res.error}"
             )
             return []
-        block_groups: List[BlockGroup] = []
+        if not comments_res.data:
+            self.logger.info(f"No comments found for issue {issue_url}")
+            return []
+        block_groups: list[BlockGroup] = []
         block_group_number = parent_index + 1
         comments = comments_res.data
         for comment in comments:
@@ -822,7 +829,7 @@ class GithubConnector(BaseConnector):
         return block_groups
 
     # ---------------------------Pull Requests-----------------------------------#
-    async def _process_pr_to_pull_request(self, issue: Issue) -> Optional[RecordUpdate]:
+    async def _process_pr_to_pull_request(self, issue: Issue) -> RecordUpdate | None:
 
         # make call to fetch a pull request details
         # getting issue number and details
@@ -866,7 +873,7 @@ class GithubConnector(BaseConnector):
             # NOTE: using url as external record id as it is unique and can be used to fetch the issue, used as sub_issue parent
             parent_external_id = None
             parent_record_type = None
-            label_names: List[str] = [label.name for label in pull_request.labels]
+            label_names: list[str] = [label.name for label in pull_request.labels]
 
             # making pull request record
             pr_record = PullRequestRecord(
@@ -931,14 +938,14 @@ class GithubConnector(BaseConnector):
         pull_request: PullRequest = pull_request_res.data
         block_group_number = 0
         block_number = 0
-        blocks: List[Block] = []
-        block_groups: List[BlockGroup] = []
+        blocks: list[Block] = []
+        block_groups: list[BlockGroup] = []
         markdown_content_raw: str = pull_request.body or ""
         # getting modified markdown  content with images as base64
         markdown_with_base64 = await self.embed_images_as_base64(markdown_content_raw)
         self.logger.debug(f"Processed markdown content for issue {pull_request.url}")
         # NOTE: Adding record name into Content for record name search Permanently FIX todo
-        markdown_with_base64 = f"# {pull_request.title}\n\n{markdown_with_base64}"
+        markdown_with_base64 = f"{pull_request.title}\n\n{markdown_with_base64}"
         # get linked attachments to pull request
         existing_attachs = None
         async with self.data_store_provider.transaction() as tx_store:
@@ -951,7 +958,7 @@ class GithubConnector(BaseConnector):
             f"Found {len(existing_attachs)} attachments linked to issue {pull_request.url}"
         )
         table_row_metadata: TableRowMetadata = None
-        list_child_records: List[ChildRecord] = []
+        list_child_records: list[ChildRecord] = []
         for attach_record in existing_attachs:
             child_record = ChildRecord(
                 child_type=ChildType.RECORD,
@@ -967,13 +974,13 @@ class GithubConnector(BaseConnector):
             index=block_group_number,
             name=pull_request.title,
             type=GroupType.TEXT_SECTION,
-            data=markdown_with_base64,
+            data=f"{pull_request.title}\n\n{markdown_with_base64}",
             format=DataFormat.MARKDOWN,
             weburl=pull_request.html_url,
             sub_type=GroupSubType.CONTENT.value,
             requires_processing=True,
             table_row_metadata=table_row_metadata,
-            source_modified_date= datetime.fromisoformat(pull_request.updated_at.replace("Z", "+00:00")),
+            source_modified_date= str(self.datetime_to_epoch_ms(pull_request.updated_at)),
         )
         self.logger.info(f"bg for title and desc created for pr{pr_number}")
         block_groups.append(bg_0)
@@ -1025,7 +1032,7 @@ class GithubConnector(BaseConnector):
             review_comments_res = self.data_source.get_pull_review_comments(
                 owner, repo_name, pr_number
             )
-            review_comments_map: Dict[str, List[BlockComment]] = {}
+            review_comments_map: dict[str, list[BlockComment]] = {}
             if review_comments_res.success and review_comments_res.data:
                 review_comments = review_comments_res.data
                 for r_comment in review_comments:
@@ -1119,25 +1126,29 @@ class GithubConnector(BaseConnector):
             try:
                 image_bytes = await self.get_img_bytes(attachment_url)
                 if image_bytes:
-                    # to get image format as in attachment data just an image
-                    img = Image.open(BytesIO(image_bytes))
-                    fmt = img.format.lower() if img.format else "png"
+                    start = image_bytes.lstrip()
+                    if start.startswith((b"<?xml", b"<svg")):
+                        fmt = "svg+xml"
+                    else:
+                        # to get image format as in attachment data just an image
+                        img = Image.open(BytesIO(image_bytes))
+                        fmt = img.format.lower() if img.format else "png"
                     base64_data = base64.b64encode(image_bytes).decode("utf-8")
                     md_image_data = f"![Image](data:image/{fmt};base64,{base64_data})"
                     markdown_content_clean += f"{md_image_data}"
             except Exception as e:
-                self.logger.error(f"Error embedding image from {attachment_url}: {e}")
+                self.logger.error(f"Error embedding image from {attachment_url}: {str(e)}")
                 continue
         return markdown_content_clean
 
     async def process_other_attachments_blocks(
         self, raw_markdown_content: str, record: Record
-    ) -> List[ChildRecord]:
+    ) -> list[ChildRecord]:
         cleaned_content, attachments = await self.clean_github_content(
             raw_markdown_content
         )
-        child_records: List[ChildRecord] = []
-        record_updates: List[RecordUpdate] = []
+        child_records: list[ChildRecord] = []
+        record_updates: list[RecordUpdate] = []
         record_updates = await self.make_file_records_from_list(attachments, record)
         await self._process_new_records(record_updates)
         for record_update in record_updates:
@@ -1151,12 +1162,12 @@ class GithubConnector(BaseConnector):
 
     async def process_other_attachments_block_comment(
         self, raw_markdown_content: str, record: Record
-    ) -> List[CommentAttachment]:
+    ) -> list[CommentAttachment]:
         cleaned_content, attachments = await self.clean_github_content(
             raw_markdown_content
         )
-        comment_attachments: List[CommentAttachment] = []
-        record_updates: List[RecordUpdate] = []
+        comment_attachments: list[CommentAttachment] = []
+        record_updates: list[RecordUpdate] = []
         record_updates = await self.make_file_records_from_list(attachments, record)
         await self._process_new_records(record_updates)
         for record_update in record_updates:
@@ -1168,10 +1179,10 @@ class GithubConnector(BaseConnector):
         return comment_attachments
 
     async def make_file_records_from_list(
-        self, attachments: List[Dict[str, Any]], record: Record
-    ) -> List[RecordUpdate]:
+        self, attachments: list[dict[str, Any]], record: Record
+    ) -> list[RecordUpdate]:
         """Building file records from list of attachment links."""
-        list_records_new: List[RecordUpdate] = []
+        list_records_new: list[RecordUpdate] = []
         for attach in attachments:
             if attach.get("type") == "image":
                 continue
@@ -1238,7 +1249,7 @@ class GithubConnector(BaseConnector):
         return list_records_new
 
     # ---------------------------insitu functions-----------------------------------#
-    def datetime_to_epoch_ms(self, dt) -> int:
+    def datetime_to_epoch_ms(self, dt:datetime) -> int:
         # make sure it's timezone-aware (assume UTC if missing)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -1270,15 +1281,15 @@ class GithubConnector(BaseConnector):
 
         return access_token
 
-    async def get_img_bytes(self, image_url: str) -> Optional[bytes]:
+    async def get_img_bytes(self, image_url: str) -> bytes | None:
         GITHUB_TOKEN = await self._get_api_token_()
         self.logger.info(f"Fetching image from URL: {image_url}")
         headers = {
             "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "application/vnd.github+json",
+            "Accept": "*/*",
         }
         try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
                 resp = await client.get(image_url, headers=headers)
                 resp.raise_for_status()
                 img_data = resp.content
@@ -1290,7 +1301,7 @@ class GithubConnector(BaseConnector):
             )
             return None
         except Exception as e:
-            self.logger.error(f"Error fetching image from {image_url}: {e}")
+            self.logger.error(f"Error fetching image from {image_url}: {str(e)}")
             return None
 
     def _get_iso_time(self) -> str:
@@ -1298,7 +1309,7 @@ class GithubConnector(BaseConnector):
         utc_now = datetime.now(timezone.utc)
         # Format the time into the ISO 8601 string format with 'Z'
         return utc_now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> str | None:
         """Get signed URL for record access (optional - if API supports it)."""
 
         return None
@@ -1337,7 +1348,7 @@ class GithubConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Rate Limit {label}: failed to read ({e})")
 
-    async def clean_github_content(self, text: str) -> Tuple[str, List[Dict[str, Any]]]:
+    async def clean_github_content(self, text: str) -> tuple[str, list[dict[str, Any]]]:
         """
         Removes all attachments (images, files) from GitHub markdown/HTML content
         and extracts their metadata.
@@ -1347,7 +1358,7 @@ class GithubConnector(BaseConnector):
         """
         attachments = []
 
-        def get_file_type(url, filename=None) -> str:
+        def get_file_type(url:str, filename:str="") -> str:
             """Determine file type from URL or filename"""
             # Try to get extension from filename first (more reliable)
             if filename:
@@ -1386,7 +1397,7 @@ class GithubConnector(BaseConnector):
             except Exception:
                 return False
 
-        def html_img_handler(match) -> str:
+        def html_img_handler(match:re.Match[str]) -> str:
             url = match.group(1)
             if not _is_allowed_github_image(url):
                 return match.group(0)  # Keep original if not valid
@@ -1411,7 +1422,7 @@ class GithubConnector(BaseConnector):
         # --- 2. MARKDOWN IMAGES: ![alt](url) ---
         md_image_pattern = r"!\[(.*?)\]\((.*?)\)"
 
-        def md_image_handler(match) -> str:
+        def md_image_handler(match:re.Match[str]) -> str:
             alt_text = match.group(1)
             url = match.group(2)
             if not _is_allowed_github_image(url):
@@ -1445,7 +1456,7 @@ class GithubConnector(BaseConnector):
             except Exception:
                 return False
 
-        def md_link_handler(match) -> str:
+        def md_link_handler(match:re.Match[str]) -> str:
             link_text = match.group(1)
             url = match.group(2)
 
