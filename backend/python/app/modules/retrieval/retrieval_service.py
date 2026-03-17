@@ -332,7 +332,7 @@ class RetrievalService:
                     fetched_records, returned_virtual_record_ids
                 )
             except Exception as e:
-                self.logger.error(f"Error in _create_virtual_to_record_mapping: {e}\n{traceback.format_exc()}")
+                self.logger.error("Error in _create_virtual_to_record_mapping: %s", e, exc_info=True)
                 raise
 
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
@@ -572,7 +572,7 @@ class RetrievalService:
         )
 
     async def _get_accessible_virtual_ids_task(
-        self, user_id: str, org_id: str, filters: dict, graph_provider: IGraphDBProvider
+        self, user_id: str, org_id: str, filters: dict[str, list[str]], graph_provider: IGraphDBProvider
     ) -> list[str]:
         """
         Separate task for getting accessible virtualRecordIds (optimized version).

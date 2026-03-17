@@ -16642,7 +16642,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_id: str,
         org_id: str,
         connector_id: str,
-        metadata_filters: Optional[dict] = None
+        metadata_filters: dict[str, list[str]] | None = None
     ) -> list[str]:
         """
         Get virtualRecordIds for a specific connector covering all permission paths.
@@ -16866,8 +16866,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         user_id: str,
         org_id: str,
-        kb_ids: Optional[list[str]] = None,
-        metadata_filters: Optional[dict] = None
+        kb_ids: list[str] | None = None,
+        metadata_filters: dict[str, list[str]] | None = None
     ) -> list[str]:
         """
         Get virtualRecordIds from Knowledge Bases (RecordGroups).
@@ -17022,14 +17022,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return virtual_ids
 
         except Exception as e:
-            self.logger.error(f"Failed to get KB virtual IDs: {e}\n{traceback.format_exc()}")
+            self.logger.error(f"Failed to get KB virtual IDs: {e}", exc_info=True)
             return []
 
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
         org_id: str,
-        filters: Optional[dict[str, list[str]]] = None
+        filters: dict[str, list[str]] | None = None
     ) -> list[str]:
         """
         Get virtualRecordIds of all records accessible to a user.
@@ -17138,7 +17138,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return unique_virtual_ids
 
         except Exception as e:
-            self.logger.error(f"Get accessible virtual record IDs failed: {e}\n{traceback.format_exc()}")
+            self.logger.error(f"Get accessible virtual record IDs failed: {e}", exc_info=True)
             return []
 
     async def get_records_by_virtual_record_ids(
@@ -17185,7 +17185,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_records_by_virtual_record_id(
         self,
         virtual_record_id: str,
-        accessible_record_ids: Optional[list[str]] = None,
+        accessible_record_ids: list[str] | None = None,
         transaction: Optional[str] = None
     ) -> list[str]:
         """

@@ -2057,7 +2057,7 @@ class IGraphDBProvider(ABC):
         self,
         user_id: str,
         org_id: str,
-        filters: Optional[dict[str, list[str]]] = None
+        filters: dict[str, list[str]] | None = None
     ) -> list[str]:
         """
         Get virtualRecordIds of all records accessible to a user (optimized version).

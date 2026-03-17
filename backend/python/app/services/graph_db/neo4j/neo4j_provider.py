@@ -6,6 +6,7 @@ Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, pro
 """
 
 import asyncio
+import traceback
 import hashlib
 import json
 import os
@@ -640,7 +641,6 @@ class Neo4jProvider(IGraphDBProvider):
                 await self._initialize_departments()
             except Exception as e:
                 self.logger.error(f"❌ Error initializing departments: {str(e)}")
-                import traceback
                 self.logger.error(f"Traceback: {traceback.format_exc()}")
 
             self.logger.info("✅ Neo4j schema ensured")
@@ -3797,7 +3797,6 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get accessible records failed: {str(e)}")
-            import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return []
 
@@ -3806,7 +3805,7 @@ class Neo4jProvider(IGraphDBProvider):
         user_id: str,
         org_id: str,
         connector_id: str,
-        metadata_filters: dict = None
+        metadata_filters: dict[str, list[str]] | None = None
     ) -> list[str]:
         """
         Get virtualRecordIds for a specific connector with all permission paths.
@@ -4027,7 +4026,6 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get virtual IDs for connector {connector_id}: {str(e)}")
-            import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return []
 
@@ -4035,8 +4033,8 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         user_id: str,
         org_id: str,
-        kb_ids: Optional[list[str]] = None,
-        metadata_filters: dict = None
+        kb_ids: list[str] | None = None,
+        metadata_filters: dict[str, list[str]] | None = None
     ) -> list[str]:
         """
         Get virtualRecordIds from Knowledge Bases (RecordGroups).
@@ -4201,12 +4199,14 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get KB virtual IDs: {str(e)}")
-            import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return []
 
     async def get_accessible_virtual_record_ids(
-        self, user_id: str, org_id: str, filters: dict = None
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None = None
     ) -> list[str]:
         """
         Get all virtual record ids accessible to a user based on their permissions and apply filters.
@@ -4220,7 +4220,7 @@ class Neo4jProvider(IGraphDBProvider):
         Args:
             user_id (str): The userId field value in users collection
             org_id (str): The org_id to filter anyone collection
-            filters (dict): Optional filters for departments, categories, languages, topics etc.
+            filters (dict[str, list[str]]): Optional filters for departments, categories, languages, topics etc.
                 Format: {
                     'departments': [dept_ids],
                     'categories': [cat_ids],
@@ -4382,7 +4382,6 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get accessible virtual record IDs failed: {str(e)}")
-            import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return []
 
@@ -4437,7 +4436,6 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch records by virtualRecordIds: {str(e)}")
-            import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return []
 
@@ -10492,7 +10490,6 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete KB {kb_id}: {str(e)}")
-            import traceback
             self.logger.error(traceback.format_exc())
             return {"success": False, "reason": str(e)}
 
@@ -12689,7 +12686,6 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get knowledge hub root nodes failed: {str(e)}")
-            import traceback
             self.logger.error(traceback.format_exc())
             return {"nodes": [], "total": 0}
 
@@ -13265,7 +13261,6 @@ class Neo4jProvider(IGraphDBProvider):
             elapsed = time.perf_counter() - start
             self.logger.error(f"Error in get_knowledge_hub_search: {str(e)}")
             self.logger.error(f"Query execution time: {elapsed * 1000:.2f} ms")
-            import traceback
             self.logger.error(traceback.format_exc())
             return {"nodes": [], "total": 0}
 
@@ -13434,7 +13429,6 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get knowledge hub breadcrumbs failed: {str(e)}")
-            import traceback
             self.logger.error(traceback.format_exc())
             return []
 
