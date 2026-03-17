@@ -58,6 +58,11 @@ _TOOL_LOG_LIMIT = 5
 _PARAM_DESC_TRUNCATE = 60
 _REASONING_DISPLAY_LEN = 200
 
+# Orchestration status taxonomy (metadata fields on tool result dicts)
+ORCHESTRATION_STATUS_RESOLVED = "resolved"
+ORCHESTRATION_STATUS_PARTIAL = "partial_failure"
+ORCHESTRATION_STATUS_CASCADE_BROKEN = "cascade_broken"
+
 # Content detection constants
 MIN_CONTENT_LENGTH_FOR_REUSE = 500  # Minimum chars for content to be considered reusable
 MIN_PLACEHOLDER_PARTS = 2  # Minimum parts in placeholder for fuzzy matching
@@ -486,6 +491,54 @@ class ToolResultExtractor:
         return current
 
 
+def _is_semantically_empty(result: Any) -> bool:
+    """Check if a tool result succeeded but contains no meaningful data.
+
+    Used for cascading chain analysis — an empty source tool means
+    downstream tools will receive no useful input.
+    """
+    if result is None:
+        return True
+
+    data = ToolResultExtractor.extract_data_from_result(result)
+    if data is None:
+        return True
+
+    if isinstance(data, dict):
+        inner = data.get("data")
+        if isinstance(inner, dict):
+            for key in ("results", "items", "values"):
+                lst = inner.get(key)
+                if isinstance(lst, list) and len(lst) == 0:
+                    return True
+        elif isinstance(inner, list) and len(inner) == 0:
+            return True
+        for key in ("results", "items", "values", "records"):
+            if key in data and isinstance(data[key], list) and len(data[key]) == 0:
+                return True
+
+    if isinstance(data, list) and len(data) == 0:
+        return True
+
+    return False
+
+
+def _underscore_to_dotted(name: str) -> str:
+    """Convert a sanitized tool name back to its most likely dotted form.
+
+    'jira_search_users' → 'jira.search_users'
+    'confluence_get_page_content' → 'confluence.get_page_content'
+
+    Tool names follow 'app.tool_name' format.  The first underscore
+    that corresponds to the app/tool separator is replaced with a dot.
+    """
+    parts = name.split('_')
+    if len(parts) >= 2:
+        # First underscore is the app.tool separator
+        return parts[0] + '.' + '_'.join(parts[1:])
+    return name
+
+
 # ============================================================================
 # PLACEHOLDER RESOLUTION - SIMPLIFIED & RELIABLE
 # ============================================================================
@@ -752,33 +805,63 @@ class PlaceholderResolver:
         sorted_tools = sorted(results_by_tool.keys(), key=len, reverse=True)
 
         for tool_name in sorted_tools:
+            # Original exact match
             if placeholder.startswith(tool_name + '.'):
-                # Extract field path
                 remaining = placeholder[len(tool_name) + 1:]
                 field_path = parse_field_path(remaining)
-                # Don't remove .results here - let extract_field_from_data handle it
-                # It will check if results exists and only fallback if it doesn't
                 return tool_name, field_path
 
-        # Fuzzy match - find tool that matches end of placeholder
+            # Auto-resolve dotted ↔ underscore tool names.
+            # Planner generates dotted names (jira.search_users) but results
+            # may be stored under sanitized names (jira_search_users), or
+            # vice versa.  Try both forms to avoid false mismatches.
+
+            # Try dotted form if stored name uses underscores
+            # e.g., stored: "jira_search_users" → try matching "jira.search_users."
+            dotted_form = _underscore_to_dotted(tool_name)
+            if dotted_form != tool_name and placeholder.startswith(dotted_form + '.'):
+                remaining = placeholder[len(dotted_form) + 1:]
+                field_path = parse_field_path(remaining)
+                return tool_name, field_path  # Return the ACTUAL stored key
+
+            # Try underscore form if stored name uses dots
+            # e.g., stored: "jira.search_users" → try matching "jira_search_users."
+            underscore_form = tool_name.replace('.', '_')
+            if underscore_form != tool_name and placeholder.startswith(underscore_form + '.'):
+                remaining = placeholder[len(underscore_form) + 1:]
+                field_path = parse_field_path(remaining)
+                return tool_name, field_path
+
+        # Fuzzy match: try progressively longer dot-prefixes (3, 2, 1 segments)
+        # This avoids the old single-segment prefix bug where e.g. "jira" matched
+        # "jira_search_users" but leaked "search_users" into the field path.
         parts = placeholder.split('.')
         if len(parts) >= MIN_PLACEHOLDER_PARTS:
-            # Try matching the first part against tool names
-            prefix = parts[0]
-            # Reconstruct remaining path and parse it
-            remaining = '.'.join(parts[1:])
-            field_path = parse_field_path(remaining)
-            # Don't remove .results here - let extract_field_from_data handle it
+            for prefix_len in range(min(len(parts) - 1, 3), 0, -1):
+                prefix_candidate = '.'.join(parts[:prefix_len])
+                remaining = '.'.join(parts[prefix_len:])
+                field_path = parse_field_path(remaining)
 
-            for tool_name in sorted_tools:
-                # Normalize for comparison
-                normalized_tool = tool_name.lower().replace('_', '').replace('.', '')
-                normalized_prefix = prefix.lower().replace('_', '')
+                for tool_name in sorted_tools:
+                    normalized_tool = tool_name.lower().replace('_', '').replace('.', '')
+                    normalized_prefix = prefix_candidate.lower().replace('_', '').replace('.', '')
 
-                if normalized_prefix in normalized_tool or normalized_tool.endswith(normalized_prefix):
-                    return tool_name, field_path
+                    if normalized_prefix == normalized_tool:
+                        return tool_name, field_path
 
         return None, []
+
+    @classmethod
+    def _extract_source_tool_name(cls, placeholder: str) -> Optional[str]:
+        """Extract the source tool name from a placeholder string.
+
+        'jira.search_users.data.results[0].accountId' -> 'jira.search_users'
+        'jira_search_users.data.results[0].accountId' -> 'jira_search_users'
+        """
+        parts = placeholder.split(".")
+        if len(parts) >= 2:
+            return f"{parts[0]}.{parts[1]}"
+        return parts[0] if parts else None
 
 
 # ============================================================================
@@ -879,6 +962,34 @@ class ToolExecutor:
                 # that end up as None will be rejected by Pydantic validation.
                 resolved_args, stripped_placeholders = PlaceholderResolver.strip_unresolved(resolved_args)
                 log.debug(f"  Stripped {len(stripped_placeholders)} placeholder(s): {stripped_placeholders}")
+
+                # Cascading dependency check: if any stripped placeholder
+                # references a tool in this execution chain, it is NOT optional
+                # — it means the cascading chain broke.  Skip execution.
+                if stripped_placeholders:
+                    cascade_failures = []
+                    planned_tool_names = {t.get("name", "") for t in planned_tools}
+                    planned_tool_names_sanitized = {n.replace(".", "_") for n in planned_tool_names}
+                    all_known = planned_tool_names | planned_tool_names_sanitized | set(results_by_tool.keys())
+
+                    for ph in stripped_placeholders:
+                        source = PlaceholderResolver._extract_source_tool_name(ph)
+                        if source and (source in all_known or source.replace(".", "_") in all_known):
+                            cascade_failures.append(ph)
+
+                    if cascade_failures:
+                        log.error(
+                            f"CASCADE FAILURE: {actual_tool_name} depends on unresolved "
+                            f"cascading placeholders: {cascade_failures}. Skipping execution."
+                        )
+                        tool_results.append({
+                            "tool_name": actual_tool_name,
+                            "result": f"Cascade failure: dependent data not available from {cascade_failures}",
+                            "status": "cascade_error",
+                            "tool_id": f"call_{i}_{actual_tool_name}",
+                            "orchestration_status": ORCHESTRATION_STATUS_CASCADE_BROKEN,
+                        })
+                        continue  # Skip execution — result would be meaningless
 
                 # If placeholders still remain after stripping (shouldn't happen),
                 # something is structurally wrong – fail the tool call.
@@ -1003,6 +1114,10 @@ class ToolExecutor:
                     "data": {"status": "error", "message": f"Operation failed: {error_msg[:100]}"}
                 }, config)
 
+            # Set default orchestration status
+            if "orchestration_status" not in result_dict:
+                result_dict["orchestration_status"] = ORCHESTRATION_STATUS_RESOLVED
+
             # Store successful results for next placeholder resolution
             if result_dict.get("status") == "success":
                 # Extract clean data for placeholder resolution
@@ -1023,6 +1138,22 @@ class ToolExecutor:
                     storage_key = f"{actual_tool_name}_{suffix_number}"
                     results_by_tool[storage_key] = result_data
                     log.debug(f"✅ Stored result for {storage_key} (keys: {list(result_data.keys()) if isinstance(result_data, dict) else type(result_data).__name__})")
+
+                # Detect empty cascade sources: if this tool returned empty
+                # results and a downstream tool depends on its output via
+                # placeholder, mark as a broken cascade source.
+                if _is_semantically_empty(result_data):
+                    dotted_name = tool_call.get("name", "")
+                    remaining_tools = planned_tools[i + 1:]
+                    for downstream in remaining_tools:
+                        args_str = json.dumps(downstream.get("args", {}), default=str)
+                        if actual_tool_name in args_str or dotted_name in args_str:
+                            log.warning(
+                                f"SEMANTIC FAILURE: {actual_tool_name} returned empty "
+                                f"results but downstream tool depends on its output"
+                            )
+                            result_dict["orchestration_status"] = "empty_cascade_source"
+                            break
             else:
                 log.debug(f"❌ Skipped storing failed tool: {actual_tool_name}")
 
@@ -2241,12 +2372,19 @@ Examples of retrieval queries:
 - **Action requests:** "create/update/delete [resource]" → Use service tools
 - **DUAL-SOURCE:** If the query references a service that is BOTH indexed AND has live API → use BOTH retrieval + service search API in parallel
 
+**⚠️ DUAL-SOURCE TRIGGER PHRASES (use BOTH retrieval + service API when the service is indexed):**
+- "[topic] from [service]" → e.g., "holidays from confluence" → BOTH retrieval + confluence.search_content
+- "[topic] in [service]" → e.g., "docs in confluence" → BOTH retrieval + confluence.search_content
+- "find [topic] on [service]" → BOTH retrieval + matching service search tool
+- "[topic] tickets/issues/pages" (service resource noun) → BOTH retrieval + matching service search tool
+
 **⚠️ SERVICE NOUN OVERRIDE:** When the query contains a service-specific resource noun (tickets, issues, bugs, epics, stories, pages, spaces, emails, messages; or in GitHub context: repos, repositories, issue, PR, pull request), it ALWAYS triggers the matching service tool — even if the query otherwise seems ambiguous or like a general information request. The "retrieval DEFAULT" rule does NOT apply when a service noun is present.
 
 **Important:** Service data might also be indexed in the knowledge base. When it is:
 - User uses a service resource noun ("[topic] tickets", "[topic] pages") → BOTH retrieval + service search tool (parallel)
+- User mentions "[topic] from/in [service]" (service name) → BOTH retrieval + service search tool (parallel)
 - User wants current/live data with filters (status, assigned, sprint) → Service tools only
-- User wants information/explanation with no service resource noun → Retrieval only
+- User wants information/explanation with no service reference → Retrieval only
 
 ## Available Tools
 {available_tools}
@@ -2525,6 +2663,16 @@ Generate:
 {github_guidance}
 
 ## Planning Best Practices
+
+**Search Query Formulation (CRITICAL):**
+- Use concise, natural-language search queries (2-5 words)
+- DO NOT stuff multiple synonyms into one query — this reduces search relevance
+  - ❌ WRONG: "holiday holidays public holiday company holiday leave calendar"
+  - ✅ CORRECT: "holiday calendar" or "company holidays 2026"
+- For broader coverage, make MULTIPLE tool calls with DIFFERENT focused queries
+- For optional parameters you don't need: OMIT them entirely, do not pass empty strings ""
+  - ❌ WRONG: {{"space_id": ""}}
+  - ✅ CORRECT: {{}} (omit space_id)
 
 **Retrieval:**
 - Max 2-3 calls per request
@@ -5029,14 +5177,48 @@ async def reflect_node(
     # Count successes and failures
     successful = [r for r in tool_results if r.get("status") == "success"]
     failed = [r for r in tool_results if r.get("status") == "error"]
+    cascade_errors = [r for r in tool_results if r.get("status") == "cascade_error"]
 
-    log.info(f"📊 Tool results: {len(successful)} ✓, {len(failed)} ✗")
+    log.info(f"📊 Tool results: {len(successful)} ✓, {len(failed)} ✗, {len(cascade_errors)} cascade")
 
     # Log details for debugging
     for r in successful:
         log.info(f"  ✅ {r.get('tool_name')}")
     for r in failed:
         log.info(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))}")
+    for r in cascade_errors:
+        log.info(f"  🔗❌ {r.get('tool_name')}: cascade broken")
+
+    # ========================================================================
+    # PRE-CHECK: Orchestration failures override all other decisions
+    # ========================================================================
+
+    cascade_broken = [r for r in tool_results
+                      if r.get("orchestration_status") == ORCHESTRATION_STATUS_CASCADE_BROKEN]
+    empty_cascade_sources = [r for r in tool_results
+                             if r.get("orchestration_status") == "empty_cascade_source"]
+
+    if cascade_errors or cascade_broken:
+        log.info(f"🔗 ORCHESTRATION FAILURE: {len(cascade_errors)} cascade errors detected")
+        state["reflection_decision"] = "respond_error"
+        state["reflection"] = {
+            "decision": "respond_error",
+            "reasoning": (
+                f"Cascading tool chain broke: "
+                f"{[r.get('tool_name') for r in (cascade_errors or cascade_broken)]}. "
+                f"A multi-step operation failed because intermediate results were unavailable."
+            ),
+            "error_context": "cascade_broken",
+            "task_complete": False,
+        }
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log.info(f"⚡ Reflect: respond_error (cascade) - {duration_ms:.0f}ms")
+        return state
+
+    if empty_cascade_sources:
+        log.info(f"🔗 EMPTY CASCADE SOURCE: {[r.get('tool_name') for r in empty_cascade_sources]}")
+        # Don't hard-fail — mark state so downstream reflection knows
+        state["_cascade_source_empty"] = True
 
     # ========================================================================
     # DECISION 1: Partial Success (some succeeded, some failed)
@@ -5103,25 +5285,49 @@ async def reflect_node(
 
     planned_tools = state.get("planned_tool_calls", [])
     if planned_tools and len(planned_tools) > 0 and len(successful) > 0:
-        primary_tool_name = planned_tools[0].get("name", "").lower()
+        # GUARD: If this is a cascading chain, primary tool success alone
+        # does NOT mean the task is complete.  Check the LAST tool instead.
+        has_cascading = PlaceholderResolver.has_placeholders({"tools": planned_tools})
 
-        # Check if primary (first) tool succeeded
-        for result in successful:
-            tool_name = result.get("tool_name", "").lower()
-            normalized_primary = primary_tool_name.replace('.', '_')
-            normalized_tool = tool_name.replace('.', '_')
-
-            if tool_name == primary_tool_name or normalized_tool == normalized_primary:
-                log.info(f"✅ Primary action succeeded: {tool_name}")
+        if has_cascading:
+            # For cascading chains, success = last tool succeeded with meaningful data
+            last_result = tool_results[-1] if tool_results else None
+            if (last_result
+                    and last_result.get("status") == "success"
+                    and not _is_semantically_empty(last_result.get("result"))):
+                log.info("✅ Cascading chain completed: last tool has data")
                 state["reflection_decision"] = "respond_success"
                 state["reflection"] = {
                     "decision": "respond_success",
-                    "reasoning": "Primary action succeeded (dependent tools failed but task complete)",
+                    "reasoning": "Cascading chain completed — last tool returned meaningful data",
                     "task_complete": True
                 }
                 duration_ms = (time.perf_counter() - start_time) * 1000
-                log.info(f"⚡ Reflect: respond_success (primary) - {duration_ms:.0f}ms")
+                log.info(f"⚡ Reflect: respond_success (cascade complete) - {duration_ms:.0f}ms")
                 return state
+            else:
+                log.info("🔗 Cascading chain: last tool empty/failed — skipping primary-success shortcut")
+                # Fall through to error handling / LLM reflection
+        else:
+            # Non-cascading: original primary tool check
+            primary_tool_name = planned_tools[0].get("name", "").lower()
+
+            for result in successful:
+                tool_name = result.get("tool_name", "").lower()
+                normalized_primary = primary_tool_name.replace('.', '_')
+                normalized_tool = tool_name.replace('.', '_')
+
+                if tool_name == primary_tool_name or normalized_tool == normalized_primary:
+                    log.info(f"✅ Primary action succeeded: {tool_name}")
+                    state["reflection_decision"] = "respond_success"
+                    state["reflection"] = {
+                        "decision": "respond_success",
+                        "reasoning": "Primary action succeeded (dependent tools failed but task complete)",
+                        "task_complete": True
+                    }
+                    duration_ms = (time.perf_counter() - start_time) * 1000
+                    log.info(f"⚡ Reflect: respond_success (primary) - {duration_ms:.0f}ms")
+                    return state
 
     # ========================================================================
     # DECISION 4: Fast Path Error Detection

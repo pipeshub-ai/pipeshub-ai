@@ -4,6 +4,7 @@ Handles agent instances, templates, chat, and permissions using graph-based arch
 """
 
 import json
+import os
 import uuid
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -36,6 +37,16 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
 
+# Opik tracer initialization
+_opik_tracer = None
+_opik_api_key = os.getenv("OPIK_API_KEY")
+_opik_workspace = os.getenv("OPIK_WORKSPACE")
+if _opik_api_key and _opik_workspace:
+    try:
+        from opik.integrations.langchain import OpikTracer
+        _opik_tracer = OpikTracer()
+    except Exception as e:
+        pass
 # Constants
 SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
 
@@ -287,41 +298,45 @@ async def _auto_select_graph(
 
         "## Agent Types\n\n"
 
-        "**quick**: The task requires ZERO or exactly ONE tool call with no dependency resolution. "
-        "This covers anything answerable from general knowledge, simple greetings, "
-        "or a single straightforward read/write operation where the parameters are obvious "
-        "from the query itself.\n\n"
+        "**quick**: Zero or one tool call with no dependency resolution. "
+        "Covers general knowledge, greetings, or a single straightforward "
+        "read/write where all parameters are obvious from the query.\n"
+        "Examples: 'Create a Jira ticket', 'What is LangGraph?', 'Show today's meetings'\n\n"
 
-        "**verification**: The task requires MULTIPLE tool calls that form a SEQUENTIAL chain — "
-        "the output of one step feeds as input to the next. This includes multi-step workflows "
-        "even if they span different services, as long as the steps depend on each other in a "
-        "linear sequence (A → B → C). Also use this when a single tool call requires a "
-        "preceding lookup to resolve a parameter (e.g. finding an ID before using it).\n\n"
+        "**react**: Multiple tool calls that form a sequential chain — output of one step "
+        "feeds the next. Includes entity resolution (name → ID → use in next call), "
+        "search-then-act patterns, and conditional branching.\n"
+        "RULE: If the query mentions a person by name or any entity needing an ID lookup "
+        "before the main action, this is ALWAYS react, never quick.\n"
+        "Examples: 'Find tickets assigned to Vishwjeet', "
+        "'Investigate this error and fetch related logs', "
+        "'Find user → get repos → analyze activity'\n\n"
 
-        "**deep**: The task requires PARALLEL independent work streams, BULK processing of many items, "
-        "or SYNTHESIS across multiple unrelated data sources. The defining characteristic is that "
-        "the work CANNOT be serialized into one sequential chain — it needs fan-out to gather data "
-        "from independent sources, batch processing of large volumes, or aggregation/comparison "
-        "across separate result sets to produce a combined output.\n\n"
+        "**deep**: Parallel independent work streams, bulk processing, or synthesis across "
+        "multiple unrelated data sources. The defining characteristic is that the work "
+        "CANNOT be serialized — it requires fan-out, batch processing, or aggregation "
+        "across separate result sets.\n"
+        "Examples: 'Generate weekly report from Jira, Slack, and GitHub', "
+        "'Analyze team performance trends', 'Compare metrics across departments'\n\n"
 
         "## Decision Rule\n"
-        "1. Count the minimum tool calls needed and check their dependency structure.\n"
-        "2. Zero or one independent call → quick\n"
-        "3. Multiple calls where each depends on the previous result → verification\n"
-        "4. Multiple INDEPENDENT calls that must be gathered and combined → deep\n\n"
+        "1. Zero or one independent call → quick\n"
+        "2. Multiple calls where each depends on the previous result → react\n"
+        "3. Multiple INDEPENDENT calls that must be gathered and combined → deep\n\n"
 
         f"Available tool domains: {domains_str}\n"
         f"User query: {user_query}\n\n"
-        "Respond with exactly one word: quick, verification, or deep."
+        "Respond with exactly one word: quick, react, or deep."
     )
 
     try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
+        response = await llm.ainvoke([HumanMessage(content=prompt)], config=invoke_config)
         raw = response.content.strip().lower().strip(".,!\"' ")
 
         route_map = {
             "quick": agent_graph,
-            "verification": modern_agent_graph,
+            "react": modern_agent_graph,
             "deep": deep_agent_graph,
         }
 
