@@ -443,14 +443,6 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.md5Checksum)"
         )
 
-        # COMPOSITE: virtualRecordId + orgId (batch fetch after Qdrant search)
-        # Pattern: MATCH (r:Record) WHERE r.virtualRecordId IN $ids AND r.orgId = $orgId
-        # Used in: get_records_by_virtual_record_ids
-        indexes.append(
-            "CREATE INDEX record_virtual_id_org IF NOT EXISTS "
-            "FOR (n:Record) ON (n.virtualRecordId, n.orgId)"
-        )
-
         # ==================== USER INDEXES (High Priority) ====================
 
         # SINGLE: email (authentication, lookups)
@@ -3435,374 +3427,6 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get user app ids: {str(e)}")
             raise
 
-    async def get_accessible_records(
-        self, user_id: str, org_id: str, filters: dict = None
-    ) -> list:
-        """
-        Get all records accessible to a user based on their permissions and apply filters.
-
-        Args:
-            user_id (str): The userId field value in users collection
-            org_id (str): The org_id to filter anyone collection
-            filters (dict): Optional filters for departments, categories, languages, topics etc.
-                Format: {
-                    'departments': [dept_ids],
-                    'categories': [cat_ids],
-                    'subcategories1': [subcat1_ids],
-                    'subcategories2': [subcat2_ids],
-                    'subcategories3': [subcat3_ids],
-                    'languages': [language_ids],
-                    'topics': [topic_ids],
-                    'kb': [kb_ids],
-                    'apps': [connector_ids]
-                }
-        """
-        self.logger.info(
-            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
-        )
-
-        try:
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                self.logger.warning(f"User not found for userId: {user_id}")
-                return None
-
-            user_key = user.get('id') or user.get('_key')
-            # Get user's accessible app connector ids
-            user_apps_ids = await self._get_user_app_ids(user_key)
-
-            # Extract filters
-            kb_ids = filters.get("kb") if filters else None
-            connector_ids = filters.get("apps") if filters else None
-
-            # Determine filter case
-            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
-            has_app_filter = connector_ids is not None and len(connector_ids) > 0
-
-            self.logger.info(
-                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
-                f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
-            )
-
-            # Build a simplified Cypher query
-            # Collect all accessible records in one go
-            query = """
-            MATCH (userDoc:User {userId: $userId})
-
-            // Collect all accessible records from different paths
-            CALL {
-                WITH userDoc
-                // User -> Direct Records
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(r:Record)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records1
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> Group -> Records (via BELONGS_TO)
-                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(g:Group)-[:PERMISSION]->(r:Record)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records2
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> Group -> Records (via PERMISSION)
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(g:Group)-[:PERMISSION]->(r:Record)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records3
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> Organization -> Records
-                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(r:Record)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records4
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> Organization -> RecordGroup -> Records
-                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(rg:RecordGroup)
-                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..2]->(rg)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records5
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> Group/Role -> RecordGroup -> Records
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(gr)
-                WHERE gr:Group OR gr:Role
-                OPTIONAL MATCH (gr)-[:PERMISSION]->(rg:RecordGroup)
-                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records6
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> RecordGroup -> Records
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(rg:RecordGroup)
-                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records7
-            }
-
-            CALL {
-                // Anyone records
-                OPTIONAL MATCH (anyone:Anyone {organization: $orgId})
-                OPTIONAL MATCH (r:Record)
-                WHERE r.id = anyone.file_key
-                  AND (r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids))
-                RETURN collect(DISTINCT r) AS records8
-            }
-
-            WITH userDoc, records1 + records2 + records3 + records4 + records5 + records6 + records7 + records8 AS directAndGroupRecords
-            """
-
-            query_parts = [query]
-
-            # Now handle the 4 cases based on filters
-
-            # Case 1: Both KB and App filters applied
-            if has_kb_filter and has_app_filter:
-                self.logger.info("🔍 Case 1: Both KB and App filters applied")
-
-                # Get KB records with filter
-                query_parts.append("""
-                CALL {
-                    WITH userDoc
-                    // Direct user-KB permissions
-                    OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:RecordGroup)
-                    WHERE kb.id IN $kb_ids
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS directKbRecords
-                }
-
-                CALL {
-                    WITH userDoc
-                    // Team-based KB permissions
-                    OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Teams)
-                    WHERE ute.type = "USER"
-                    OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:RecordGroup)
-                    WHERE tke.type = "TEAM" AND kb.id IN $kb_ids
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS teamKbRecords
-                }
-
-                WITH directKbRecords + teamKbRecords AS kbRecords, directAndGroupRecords
-                WITH kbRecords, [r IN directAndGroupRecords WHERE r.connectorId IN $connector_ids] AS appFilteredRecords
-                WITH kbRecords + appFilteredRecords AS allAccessibleRecords
-                """)
-
-            # Case 2: Only KB filter applied
-            elif has_kb_filter and not has_app_filter:
-                self.logger.info("🔍 Case 2: Only KB filter applied")
-
-                # Get only filtered KB records
-                query_parts.append("""
-                CALL {
-                    WITH userDoc
-                    // Direct user-KB permissions with filter
-                    OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:RecordGroup)
-                    WHERE kb.id IN $kb_ids
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS directKbRecords
-                }
-
-                CALL {
-                    WITH userDoc
-                    // Team-based KB permissions with filter
-                    OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Teams)
-                    WHERE ute.type = "USER"
-                    OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:RecordGroup)
-                    WHERE tke.type = "TEAM" AND kb.id IN $kb_ids
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS teamKbRecords
-                }
-
-                WITH directKbRecords + teamKbRecords AS allAccessibleRecords
-                """)
-
-            # Case 3: Only App filter applied
-            elif not has_kb_filter and has_app_filter:
-                self.logger.info("🔍 Case 3: Only App filter applied")
-
-                # Get app-filtered records from direct, group, org, and anyone
-                query_parts.append("""
-                WITH [r IN directAndGroupRecords WHERE r.connectorId IN $connector_ids] AS allAccessibleRecords
-                """)
-
-            # Case 4: No KB or App filters - return all accessible records
-            else:
-                self.logger.info("🔍 Case 4: No KB or App filters - returning all accessible records")
-
-                # Get all KB records
-                query_parts.append("""
-                CALL {
-                    WITH userDoc
-                    // Direct user-KB permissions
-                    OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:RecordGroup)
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS directKbRecords
-                }
-
-                CALL {
-                    WITH userDoc
-                    // Team-based KB permissions
-                    OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Teams)
-                    WHERE ute.type = "USER"
-                    OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:RecordGroup)
-                    WHERE tke.type = "TEAM"
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS teamKbRecords
-                }
-
-                WITH directKbRecords + teamKbRecords + directAndGroupRecords AS allAccessibleRecords
-                """)
-
-            # Add additional filter conditions (departments, categories, etc.)
-            filter_conditions = []
-            if filters:
-                if filters.get("departments"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
-                        WHERE dept.departmentName IN $departmentNames
-                    }
-                    """)
-
-                if filters.get("categories"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(cat:Category)
-                        WHERE cat.name IN $categoryNames
-                    }
-                    """)
-
-                if filters.get("subcategories1"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
-                        WHERE subcat.name IN $subcat1Names
-                    }
-                    """)
-
-                if filters.get("subcategories2"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
-                        WHERE subcat.name IN $subcat2Names
-                    }
-                    """)
-
-                if filters.get("subcategories3"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
-                        WHERE subcat.name IN $subcat3Names
-                    }
-                    """)
-
-                if filters.get("languages"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
-                        WHERE lang.name IN $languageNames
-                    }
-                    """)
-
-                if filters.get("topics"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_TOPIC]->(topic:Topic)
-                        WHERE topic.name IN $topicNames
-                    }
-                    """)
-
-            # Apply additional filters if any
-            if filter_conditions:
-                query_parts.append("""
-                UNWIND allAccessibleRecords AS record
-                WITH record
-                WHERE record IS NOT NULL
-                  AND """ + " AND ".join(filter_conditions) + """
-                RETURN DISTINCT record
-                """)
-            else:
-                query_parts.append("""
-                UNWIND allAccessibleRecords AS record
-                WITH record
-                WHERE record IS NOT NULL
-                RETURN DISTINCT record
-                """)
-
-            # Combine all query parts
-            query = "\n".join(query_parts)
-
-            # Prepare parameters
-            parameters = {
-                "userId": user_id,
-                "orgId": org_id,
-                "user_apps_ids": user_apps_ids,
-            }
-
-            # Add conditional parameters
-            if has_kb_filter:
-                parameters["kb_ids"] = kb_ids
-
-            if has_app_filter:
-                parameters["connector_ids"] = connector_ids
-
-            # Add filter parameters
-            if filters:
-                if filters.get("departments"):
-                    parameters["departmentNames"] = filters["departments"]
-                if filters.get("categories"):
-                    parameters["categoryNames"] = filters["categories"]
-                if filters.get("subcategories1"):
-                    parameters["subcat1Names"] = filters["subcategories1"]
-                if filters.get("subcategories2"):
-                    parameters["subcat2Names"] = filters["subcategories2"]
-                if filters.get("subcategories3"):
-                    parameters["subcat3Names"] = filters["subcategories3"]
-                if filters.get("languages"):
-                    parameters["languageNames"] = filters["languages"]
-                if filters.get("topics"):
-                    parameters["topicNames"] = filters["topics"]
-
-            # Execute query
-            self.logger.debug(f"🔍 Executing query with parameters keys: {list(parameters.keys())}")
-            results = await self.client.execute_query(query, parameters=parameters)
-
-            # Process results
-            record_list = []
-            if results:
-                for r in results:
-                    if r.get("record"):
-                        record_dict = dict(r["record"])
-                        record_list.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
-
-            record_count = len(record_list)
-            self.logger.info(f"✅ Query completed - found {record_count} accessible records")
-
-            if has_kb_filter:
-                self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
-            if has_app_filter:
-                self.logger.info(f"✅ App filtering applied for {len(connector_ids)} connector IDs")
-            if not has_kb_filter and not has_app_filter:
-                self.logger.info("✅ No KB/App filters - returned all accessible records")
-
-            return record_list
-
-        except Exception as e:
-            self.logger.error(f"❌ Get accessible records failed: {str(e)}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return []
-
     async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
@@ -4394,65 +4018,11 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return {}
 
-    async def get_records_by_virtual_record_ids(
-        self,
-        virtual_record_ids: list[str],
-        org_id: str
-    ) -> list[dict]:
-        """
-        Batch fetch full record documents by their virtualRecordIds.
-
-        This is used after Qdrant search to fetch only the records that were actually returned,
-        instead of fetching all accessible records upfront.
-
-        Args:
-            virtual_record_ids: List of virtualRecordIds to fetch
-            org_id: Organization ID for additional filtering
-
-        Returns:
-            List of full record dictionaries
-        """
-        try:
-            if not virtual_record_ids:
-                return []
-
-            self.logger.debug(f"Fetching {len(virtual_record_ids)} records by virtualRecordIds")
-
-            query = """
-            MATCH (r:Record)
-            WHERE r.virtualRecordId IN $virtual_record_ids
-              AND r.orgId = $org_id
-            RETURN r
-            """
-
-            parameters = {
-                "virtual_record_ids": virtual_record_ids,
-                "org_id": org_id
-            }
-
-            results = await self.client.execute_query(query, parameters=parameters)
-
-            # Convert to Arango format
-            records = []
-            if results:
-                for result in results:
-                    if result.get("r"):
-                        record_dict = dict(result["r"])
-                        records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
-
-            self.logger.debug(f"✅ Fetched {len(records)} records")
-            return records
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to fetch records by virtualRecordIds: {str(e)}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return []
-
     async def get_records_by_record_ids(
         self,
         record_ids: list[str],
         org_id: str
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their record IDs (node id property).
 
@@ -4465,7 +4035,7 @@ class Neo4jProvider(IGraphDBProvider):
             org_id: Organization ID for additional filtering
 
         Returns:
-            List[Dict]: List of full record dictionaries
+            List[Dict[str, Any]]: List of full record dictionaries
         """
         try:
             if not record_ids:
@@ -13233,13 +12803,13 @@ class Neo4jProvider(IGraphDBProvider):
                  collect(DISTINCT kb_tp) AS kb_team_perms
 
             WITH rg_data, final_accessible_rgs, final_accessible_records, records_with_fallback, rg,
-                 CASE 
-                     WHEN rg IS NOT NULL AND rg.connectorName = 'KB' THEN 
-                         CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0) 
-                              THEN 'shared' 
-                              ELSE 'private' 
+                 CASE
+                     WHEN rg IS NOT NULL AND rg.connectorName = 'KB' THEN
+                         CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0)
+                              THEN 'shared'
+                              ELSE 'private'
                          END
-                     ELSE null 
+                     ELSE null
                  END AS sharingStatus
 
             WITH final_accessible_rgs, final_accessible_records, records_with_fallback,
@@ -14055,13 +13625,13 @@ class Neo4jProvider(IGraphDBProvider):
              collect(DISTINCT kb_tp) AS kb_team_perms
 
         WITH app, u, parent_id, is_kb_app, rg, permission_role, has_child_rgs, has_records,
-             CASE 
-                 WHEN rg.connectorName = 'KB' THEN 
-                     CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0) 
-                          THEN 'shared' 
-                          ELSE 'private' 
+             CASE
+                 WHEN rg.connectorName = 'KB' THEN
+                     CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0)
+                          THEN 'shared'
+                          ELSE 'private'
                      END
-                 ELSE null 
+                 ELSE null
              END AS sharingStatus
 
         // Build result nodes
@@ -14227,13 +13797,13 @@ class Neo4jProvider(IGraphDBProvider):
                  collect(DISTINCT kb_tp) AS kb_team_perms
 
             WITH node, parent_id, permission_role, has_child_rgs, has_records,
-                 CASE 
-                     WHEN node.connectorName = 'KB' THEN 
-                         CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0) 
-                              THEN 'shared' 
-                              ELSE 'private' 
+                 CASE
+                     WHEN node.connectorName = 'KB' THEN
+                         CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0)
+                              THEN 'shared'
+                              ELSE 'private'
                          END
-                     ELSE null 
+                     ELSE null
                  END AS sharingStatus
 
             RETURN collect({{

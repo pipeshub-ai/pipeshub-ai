@@ -2023,39 +2023,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_accessible_records(
-        self,
-        user_id: str,
-        org_id: str,
-        filters: dict[str, list[str]] | None = None,
-        transaction: str | None = None
-    ) -> list[dict]:
-        """
-        Get all records accessible to a user based on their permissions and apply filters.
-
-        Args:
-            user_id (str): The userId field value in users collection
-            org_id (str): The org_id to filter anyone collection
-            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
-                Format: {
-                    'departments': [dept_ids],
-                    'categories': [cat_ids],
-                    'subcategories1': [subcat1_ids],
-                    'subcategories2': [subcat2_ids],
-                    'subcategories3': [subcat3_ids],
-                    'languages': [language_ids],
-                    'topics': [topic_ids],
-                    'kb': [kb_ids],
-                    'apps': [connector_ids]
-                }
-            transaction (Optional[str]): Optional transaction context
-
-        Returns:
-            List[Dict]: List of accessible records
-        """
-        pass
-
-    @abstractmethod
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
@@ -2091,32 +2058,11 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_records_by_virtual_record_ids(
-        self,
-        virtual_record_ids: list[str],
-        org_id: str
-    ) -> list[dict]:
-        """
-        Batch fetch full record documents by their virtualRecordIds.
-
-        This is used after vector search to fetch only the records that were actually returned,
-        instead of fetching all accessible records upfront.
-
-        Args:
-            virtual_record_ids: List of virtualRecordIds to fetch
-            org_id: Organization ID for additional filtering
-
-        Returns:
-            List[Dict]: List of full record dictionaries
-        """
-        pass
-
-    @abstractmethod
     async def get_records_by_record_ids(
         self,
         record_ids: list[str],
         org_id: str
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their record IDs (_key in Arango / id in Neo4j).
 
@@ -2129,7 +2075,7 @@ class IGraphDBProvider(ABC):
             org_id: Organization ID for additional filtering
 
         Returns:
-            List[Dict]: List of full record dictionaries
+            List[Dict[str, Any]]: List of full record dictionaries
         """
         pass
 

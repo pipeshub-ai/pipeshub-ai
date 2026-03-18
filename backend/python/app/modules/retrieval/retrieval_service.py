@@ -77,7 +77,7 @@ class RetrievalService:
             self.sparse_embeddings = None
             raise Exception(
                 "Failed to initialize sparse embeddings: " + str(e),
-            )
+            ) from e
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
@@ -393,7 +393,7 @@ class RetrievalService:
                             continue
                         else:
                             result["metadata"]["mimeType"] = record.get("mimeType")
-                            ext =  get_extension_from_mimetype(record.get("mimeType"))
+                            ext = get_extension_from_mimetype(record.get("mimeType"))
                             if ext:
                                 result["metadata"]["extension"] = ext
 
@@ -409,14 +409,13 @@ class RetrievalService:
                         if knowledge_search:
                             meta = result.get("metadata")
                             is_block_group = meta.get("isBlockGroup")
-                            if is_block_group is not None:
-                                if virtual_id not in virtual_record_id_to_record:
-                                    await get_record(virtual_id,virtual_record_id_to_record,self.blob_store,org_id,virtual_to_record_map)
-                                    record = virtual_record_id_to_record[virtual_id]
-                                    if record is None:
-                                        continue
-                                    new_type_results.append(result)
+                            if is_block_group is not None and virtual_id not in virtual_record_id_to_record:
+                                await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
+                                record = virtual_record_id_to_record[virtual_id]
+                                if record is None:
                                     continue
+                                new_type_results.append(result)
+                                continue
 
                 final_search_results.append(result)
 
@@ -467,7 +466,7 @@ class RetrievalService:
                     continue
 
                 weburl = None
-                fallback_mimetype= None
+                fallback_mimetype = None
                 if record_type == "file" and record_id in files_map:
                     files = files_map[record_id]
                     weburl = files.get("webUrl")
@@ -486,7 +485,7 @@ class RetrievalService:
 
                 if fallback_mimetype:
                     result["metadata"]["mimeType"] = fallback_mimetype
-                    fallback_ext =  get_extension_from_mimetype(fallback_mimetype)
+                    fallback_ext = get_extension_from_mimetype(fallback_mimetype)
                     if fallback_ext:
                         result["metadata"]["extension"] = fallback_ext
 
@@ -501,11 +500,11 @@ class RetrievalService:
 
             if new_type_results:
                 is_multimodal_llm = False   #doesn't matter for retrieval service
-                flattened_results = await get_flattened_results(new_type_results,self.blob_store,org_id,is_multimodal_llm,virtual_record_id_to_record,from_retrieval_service=True)
+                flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
                 for result in flattened_results:
                     block_type = result.get("block_type")
                     if block_type == GroupType.TABLE.value:
-                        _,child_results = result.get("content")
+                        _, child_results = result.get("content")
                         for child in child_results:
                             final_search_results.append(child)
                     else:
@@ -518,7 +517,7 @@ class RetrievalService:
             )
 
             # Filter out incomplete results to prevent citation validation failures
-            required_fields = ['origin', 'recordName', 'recordId', 'mimeType',"orgId"]
+            required_fields = ['origin', 'recordName', 'recordId', 'mimeType', "orgId"]
             complete_results = []
 
             for result in final_search_results:
@@ -565,20 +564,6 @@ class RetrievalService:
             if virtual_record_ids_from_tool:
                 return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
-
-    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, graph_provider: IGraphDBProvider) -> list[dict[str, Any]]:
-        """Separate task for getting accessible records (legacy method - returns full records)"""
-        filter_groups = filter_groups or {}
-        filters = {}
-
-        if filter_groups:
-            for key, values in filter_groups.items():
-                metadata_key = key.lower()
-                filters[metadata_key] = values
-
-        return await graph_provider.get_accessible_records(
-            user_id=user_id, org_id=org_id, filters=filters
-        )
 
     async def _get_accessible_virtual_ids_task(
         self, user_id: str, org_id: str, filters: dict[str, list[str]], graph_provider: IGraphDBProvider
@@ -657,8 +642,6 @@ class RetrievalService:
             asyncio.gather(*sparse_tasks),
         )
 
-
-
         query_requests = [
             models.QueryRequest(
                 prefetch=[
@@ -691,7 +674,7 @@ class RetrievalService:
                     if point.id in seen_points:
                         continue
                     seen_points.add(point.id)
-                    metadata=point.payload.get("metadata", {})
+                    metadata = point.payload.get("metadata", {})
                     metadata.update({"point_id": point.id})
                     doc = Document(
                         page_content=point.payload.get("page_content", ""),
@@ -749,7 +732,6 @@ class RetrievalService:
                     if virtual_id not in virtual_to_records:
                         virtual_to_records[virtual_id] = []
                     virtual_to_records[virtual_id].append(record)
-
 
         # Create the final mapping using only the virtual record IDs from search results
         # Use the first record for each virtual record ID
