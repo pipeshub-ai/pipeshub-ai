@@ -13111,6 +13111,27 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (rg:RecordGroup)
             WHERE rg_data IS NOT NULL AND rg.id = rg_data.id
 
+            // Compute sharingStatus for KB recordGroups only
+            OPTIONAL MATCH (kb_user_perm:User)-[kb_up:PERMISSION {{type: 'USER'}}]->(rg)
+            WHERE rg.connectorName = 'KB'
+
+            OPTIONAL MATCH ()-[kb_tp:PERMISSION {{type: 'TEAM'}}]->(rg)
+            WHERE rg.connectorName = 'KB'
+
+            WITH rg_data, final_accessible_rgs, final_accessible_records, records_with_fallback, rg,
+                 collect(DISTINCT kb_up) AS kb_user_perms,
+                 collect(DISTINCT kb_tp) AS kb_team_perms
+
+            WITH rg_data, final_accessible_rgs, final_accessible_records, records_with_fallback, rg,
+                 CASE 
+                     WHEN rg IS NOT NULL AND rg.connectorName = 'KB' THEN 
+                         CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0) 
+                              THEN 'shared' 
+                              ELSE 'private' 
+                         END
+                     ELSE null 
+                 END AS sharingStatus
+
             WITH final_accessible_rgs, final_accessible_records, records_with_fallback,
                  collect(
                    CASE WHEN rg IS NOT NULL THEN
@@ -13133,7 +13154,8 @@ class Neo4jProvider(IGraphDBProvider):
                        extension: null,
                        webUrl: rg.webUrl,
                        hasChildren: EXISTS((rg)<-[:BELONGS_TO]-(:RecordGroup)) OR EXISTS((rg)<-[:BELONGS_TO]-(:Record)),
-                       previewRenderable: true
+                       previewRenderable: true,
+                       sharingStatus: sharingStatus
                      }
                    ELSE null END
                  ) AS rg_nodes_with_nulls
@@ -13343,7 +13365,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH node, node_type, record, rg, app, f, is_folder, parent_rec, rg_parent_from_record, head(collect(rg_parent)) AS rg_parent
 
                 // Step 2: If no parent recordGroup, check BELONGS_TO edge to app
-                // Use LIMIT 1 to ensure only one parent (KB filter applied in CASE statement)
+                // Use LIMIT 1 to ensure only one parent
                 OPTIONAL MATCH (rg)-[:BELONGS_TO]->(app_parent:App)
                 WHERE rg IS NOT NULL
                       AND rg_parent IS NULL
@@ -13357,7 +13379,7 @@ class Neo4jProvider(IGraphDBProvider):
                 //   2. If no record parent, check BELONGS_TO edge to recordGroup
                 // For RecordGroups:
                 //   1. Check BELONGS_TO edge to another recordGroup
-                //   2. If no parent recordGroup, check BELONGS_TO edge to app (exclude KB apps)
+                //   2. If no parent recordGroup, check BELONGS_TO edge to app
                 // For Apps: No parent
                 WITH node, node_type, record, rg, app,
                      CASE
@@ -13911,6 +13933,27 @@ class Neo4jProvider(IGraphDBProvider):
         WITH app, u, parent_id, is_kb_app, rg, permission_role, has_child_rgs,
              count(DISTINCT child_record) > 0 AS has_records
 
+        // Compute sharingStatus for KB recordGroups only
+        OPTIONAL MATCH (kb_user_perm:User)-[kb_up:PERMISSION {{type: 'USER'}}]->(rg)
+        WHERE rg.connectorName = 'KB'
+
+        OPTIONAL MATCH ()-[kb_tp:PERMISSION {{type: 'TEAM'}}]->(rg)
+        WHERE rg.connectorName = 'KB'
+
+        WITH app, u, parent_id, is_kb_app, rg, permission_role, has_child_rgs, has_records,
+             collect(DISTINCT kb_up) AS kb_user_perms,
+             collect(DISTINCT kb_tp) AS kb_team_perms
+
+        WITH app, u, parent_id, is_kb_app, rg, permission_role, has_child_rgs, has_records,
+             CASE 
+                 WHEN rg.connectorName = 'KB' THEN 
+                     CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0) 
+                          THEN 'shared' 
+                          ELSE 'private' 
+                     END
+                 ELSE null 
+             END AS sharingStatus
+
         // Build result nodes
         WITH collect({{
             id: rg.id,
@@ -13929,7 +13972,8 @@ class Neo4jProvider(IGraphDBProvider):
             extension: null,
             webUrl: rg.webUrl,
             hasChildren: has_child_rgs OR has_records,
-            userRole: permission_role
+            userRole: permission_role,
+            sharingStatus: sharingStatus
         }}) AS raw_children
 
         RETURN raw_children
@@ -14061,6 +14105,27 @@ class Neo4jProvider(IGraphDBProvider):
             WITH node, parent_id, permission_role, has_child_rgs,
                  count(DISTINCT child_record_check) > 0 AS has_records
 
+            // Compute sharingStatus for KB recordGroups only
+            OPTIONAL MATCH (kb_user_perm:User)-[kb_up:PERMISSION {{type: 'USER'}}]->(node)
+            WHERE node.connectorName = 'KB'
+
+            OPTIONAL MATCH ()-[kb_tp:PERMISSION {{type: 'TEAM'}}]->(node)
+            WHERE node.connectorName = 'KB'
+
+            WITH node, parent_id, permission_role, has_child_rgs, has_records,
+                 collect(DISTINCT kb_up) AS kb_user_perms,
+                 collect(DISTINCT kb_tp) AS kb_team_perms
+
+            WITH node, parent_id, permission_role, has_child_rgs, has_records,
+                 CASE 
+                     WHEN node.connectorName = 'KB' THEN 
+                         CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0) 
+                              THEN 'shared' 
+                              ELSE 'private' 
+                         END
+                     ELSE null 
+                 END AS sharingStatus
+
             RETURN collect({{
                 id: node.id,
                 name: node.groupName,
@@ -14080,7 +14145,8 @@ class Neo4jProvider(IGraphDBProvider):
                 extension: null,
                 webUrl: node.webUrl,
                 hasChildren: has_child_rgs OR has_records,
-                userRole: permission_role
+                userRole: permission_role,
+                sharingStatus: sharingStatus
             }}) AS child_rgs
         }}
 
