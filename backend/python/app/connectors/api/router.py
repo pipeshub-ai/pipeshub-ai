@@ -3,12 +3,14 @@ import base64
 import contextlib
 import io
 import json
+import logging
 import mimetypes
 import os
 import tempfile
 import time
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Union
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import jwt
@@ -24,16 +26,18 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import HttpRequest, MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AppStatus,
     CollectionNames,
     Connectors,
     MimeTypes,
+    OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
@@ -48,9 +52,10 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
+from app.core.signed_url import SignedUrlHandler
 from app.models.entities import Record
 from app.services.featureflag.config.config import CONFIG
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -93,7 +98,7 @@ def get_mime_type_from_record(record: Record) -> str:
     return "application/octet-stream"
 
 
-async def _stream_google_api_request(request, error_context: str = "download") -> AsyncGenerator[bytes, None]:
+async def _stream_google_api_request(request: HttpRequest, error_context: str = "download") -> AsyncGenerator[bytes, None]:
     """
     Helper function to stream data from a Google API request using MediaIoBaseDownload.
 
@@ -155,7 +160,7 @@ class ReindexFailedRequest(BaseModel):
 async def get_validated_connector_instance(
     connector_id: str,
     request: Request,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     FastAPI dependency to validate user authentication, retrieve connector instance,
     check beta access, and verify permissions.
@@ -243,7 +248,95 @@ async def get_kafka_service(request: Request) -> KafkaService:
     container: ConnectorAppContainer = request.app.container
     return container.kafka_service()
 
-def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
+
+_LOCK_STATUS_MESSAGES: dict[str, str] = {
+    AppStatus.FULL_SYNCING.value: "A full sync is in progress. Please wait and try again.",
+    AppStatus.SYNCING.value: "A sync is already in progress. Please wait and try again.",
+}
+
+
+def _check_connector_not_locked(instance: dict[str, Any]) -> None:
+    """Raise 409 if the connector instance is currently locked (isLocked=True).
+
+    Picks a descriptive message based on the current app status so the user
+    understands exactly what is blocking their operation.
+    """
+    if instance.get("isLocked"):
+        status = instance.get("status", "")
+        detail = _LOCK_STATUS_MESSAGES.get(
+            status,
+            "Another operation is in progress. Please wait and try again.",
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=detail,
+        )
+
+
+async def require_connector_not_locked(
+    connector_id: str,
+    request: Request,
+) -> None:
+    """FastAPI dependency that raises 409 if the connector instance is currently locked.
+
+    Fetches the connector instance using the authenticated user context (populated
+    by the global authMiddleware) and delegates to _check_connector_not_locked.
+    If the instance is not found, this dependency does nothing — the route handler
+    is responsible for its own 404 check.
+    """
+    connector_registry = request.app.state.connector_registry
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+    )
+
+    if instance:
+        _check_connector_not_locked(instance)
+
+
+async def require_connector_not_locked_for_record(
+    record_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Raise 409 if the record's connector is locked. Used by reindex record route."""
+    record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+    if not record:
+        return
+    if record.get("origin") != OriginTypes.CONNECTOR.value:
+        return
+    connector_id = record.get("connectorId")
+    if not connector_id:
+        return
+    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if app_doc:
+        _check_connector_not_locked(app_doc)
+
+
+async def require_connector_not_locked_for_record_group(
+    record_group_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Raise 409 if the record group's connector is locked. Used by reindex record group route."""
+    record_group = await graph_provider.get_document(
+        record_group_id, CollectionNames.RECORD_GROUPS.value
+    )
+    if not record_group:
+        return
+    connector_id = record_group.get("connectorId")
+    if not connector_id:
+        return
+    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if app_doc:
+        _check_connector_not_locked(app_doc)
+
+
+def _parse_comma_separated_str(value: str | None) -> list[str] | None:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
     if not value:
         return None
@@ -254,9 +347,10 @@ def _sanitize_app_name(app_name: str) -> str:
 
 
 def _trim_config_values(
-    obj: Union[str, int, float, bool, None, List[Any], Dict[str, Any]],
-    path: str = ""
-) -> Union[str, int, float, bool, None, List[Any], Dict[str, Any]]:
+    *,
+    obj: str | int | float | bool | None | list[Any] | dict[str, Any],
+    path: str = "",
+) -> str | int | float | bool | None | list[Any] | dict[str, Any]:
     """
     Recursively trims leading and trailing whitespace from string values in a configuration object.
     Skips certain fields that may contain intentional whitespace (like certificates, keys, etc.)
@@ -294,14 +388,14 @@ def _trim_config_values(
 
     # If it's a list, recursively trim each element
     if isinstance(obj, list):
-        return [_trim_config_values(item, f"{path}[{i}]") for i, item in enumerate(obj)]
+        return [_trim_config_values(obj=item, path=f"{path}[{i}]") for i, item in enumerate(obj)]
 
     # If it's a dict, recursively trim each property
     if isinstance(obj, dict):
         trimmed = {}
         for key, value in obj.items():
             new_path = f"{path}.{key}" if path else key
-            trimmed[key] = _trim_config_values(value, new_path)
+            trimmed[key] = _trim_config_values(obj=value, path=new_path)
         return trimmed
 
     # Preserve all other types as-is:
@@ -312,7 +406,7 @@ def _trim_config_values(
     return obj
 
 
-def _trim_connector_config(config: Dict[str, Any]) -> Dict[str, Any]:
+def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
     """
     Trims whitespace from connector configuration before saving.
     This ensures consistent data without leading/trailing spaces.
@@ -330,7 +424,7 @@ def _trim_connector_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
     for section in ["auth", "sync", "filters"]:
         if section in trimmed_config and isinstance(trimmed_config[section], dict):
-            trimmed_config[section] = _trim_config_values(trimmed_config[section], section)
+            trimmed_config[section] = _trim_config_values(obj=trimmed_config[section], path=section)
 
     return trimmed_config
 
@@ -341,7 +435,7 @@ async def get_signed_url(
     user_id: str,
     connector: str,
     record_id: str,
-    signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
+    signed_url_handler: SignedUrlHandler = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
 ) -> dict:
     """Get signed URL for a record"""
     try:
@@ -364,7 +458,7 @@ async def get_signed_url(
 @inject
 async def handle_record_deletion(
     record_id: str, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> Optional[dict]:
+) -> dict | None:
     try:
         response = await graph_provider.delete_records_and_relations(
             record_id, hard_delete=True
@@ -394,7 +488,7 @@ async def stream_record_internal(
     record_id: str,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Optional[dict | StreamingResponse]:
+) -> dict | StreamingResponse | None:
     """
     Stream a record to the client.
     """
@@ -510,9 +604,9 @@ async def download_file(
     record_id: str,
     connector: str,
     token: str,
-    signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
+    signed_url_handler: SignedUrlHandler = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-) -> Optional[dict | StreamingResponse]:
+) -> dict | StreamingResponse | None:
     try:
         logger.info(f"Downloading file {record_id} with connector {connector}")
         # Verify signed URL using the handler
@@ -597,7 +691,7 @@ async def stream_record(
     convertTo: str = Query(None, description="Convert file to this format"),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Optional[dict | StreamingResponse]:
+) -> dict | StreamingResponse | None:
     """
     Stream a record to the client.
     """
@@ -909,9 +1003,9 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
 
 
 async def convert_buffer_to_pdf_stream(
-    buffer: Union[StreamingResponse, Response, bytes, io.IOBase],
+    buffer: StreamingResponse | Response | bytes | io.IOBase,
     record_name: str,
-    file_extension: Optional[str] = None
+    file_extension: str | None = None
 ) -> StreamingResponse:
     """
     Convert a file buffer to PDF and return as a streaming response.
@@ -1005,18 +1099,18 @@ async def get_records(
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     limit: int = Query(20, ge=1, le=100, description="Number of items per page"),
-    search: Optional[str] = None,
-    record_types: Optional[str] = Query(None, description="Comma-separated list of record types"),
-    origins: Optional[str] = Query(None, description="Comma-separated list of origins"),
-    connectors: Optional[str] = Query(None, description="Comma-separated list of connectors"),
-    indexing_status: Optional[str] = Query(None, description="Comma-separated list of indexing statuses"),
-    permissions: Optional[str] = Query(None, description="Comma-separated list of permissions"),
-    date_from: Optional[int] = None,
-    date_to: Optional[int] = None,
+    search: str | None = None,
+    record_types: str | None = Query(None, description="Comma-separated list of record types"),
+    origins: str | None = Query(None, description="Comma-separated list of origins"),
+    connectors: str | None = Query(None, description="Comma-separated list of connectors"),
+    indexing_status: str | None = Query(None, description="Comma-separated list of indexing statuses"),
+    permissions: str | None = Query(None, description="Comma-separated list of permissions"),
+    date_from: int | None = None,
+    date_to: int | None = None,
     sort_by: str = "createdAtTimestamp",
     sort_order: str = "desc",
     source: str = "all",
-) -> Optional[Dict]:
+) -> dict | None:
     """
     List all records the user can access (from all KBs, folders, and direct connector permissions), with filters.
     """
@@ -1112,7 +1206,7 @@ async def get_record_by_id(
     record_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-) -> Optional[Dict]:
+) -> dict | None:
     """
     Check if the current user has access to a specific record
     """
@@ -1145,7 +1239,7 @@ async def delete_record(
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     kafka_service: KafkaService = Depends(get_kafka_service),
-) -> Dict:
+) -> dict:
     """
     Delete a specific record with permission validation
     """
@@ -1200,14 +1294,14 @@ async def delete_record(
             detail=f"Internal server error while deleting record: {str(e)}"
         ) from e
 
-@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked_for_record)])
 @inject
 async def reindex_single_record(
     record_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     kafka_service: KafkaService = Depends(get_kafka_service),
-) -> Dict:
+) -> dict:
     """
     Reindex a single record with permission validation.
 
@@ -1289,7 +1383,7 @@ async def get_connector_stats_endpoint(
     org_id: str,
     connector_id: str,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-)-> Dict[str, Any]:
+)-> dict[str, Any]:
     try:
         result = await graph_provider.get_connector_stats(org_id, connector_id)
         logger = request.app.container.logger()
@@ -1303,14 +1397,14 @@ async def get_connector_stats_endpoint(
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}") from e
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked_for_record_group)])
 @inject
 async def reindex_record_group(
     record_group_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     kafka_service: KafkaService = Depends(get_kafka_service),
-) -> Dict:
+) -> dict:
     """
     Reindex all records in a record group up to a specified depth
     """
@@ -1399,10 +1493,11 @@ async def reindex_record_group(
         ) from e
 
 def _validate_connector_deletion_permissions(
-    instance: Dict[str, Any],
+    instance: dict[str, Any],
     user_id: str,
+    *,
     is_admin: bool,
-    logger
+    logger: logging.Logger,
 ) -> None:
     """
     Validate that the user has permission to delete the connector instance.
@@ -1507,7 +1602,7 @@ def _encode_state_with_instance(state: str, connector_id: str) -> str:
     ).decode()
 
 
-def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
+def _decode_state_with_instance(encoded_state: str) -> dict[str, str]:
     """
     Decode OAuth state to extract original state and connector_id.
     Args:
@@ -1575,11 +1670,11 @@ async def _get_settings_base_path(graph_provider: IGraphDBProvider) -> str:
 @router.get("/api/v1/connectors/registry", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_registry(
     request: Request,
-    scope: Optional[str] = Query(None, description="personal | team"),
+    scope: str | None = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by name/group/description"),
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search by name/group/description"),
+) -> dict[str, Any]:
     """
     Get all available connector types from registry.
 
@@ -1654,11 +1749,11 @@ async def get_connector_registry(
 @router.get("/api/v1/connectors/", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instances(
     request: Request,
-    scope: Optional[str] = Query(None, description="personal | team"),
+    scope: str | None = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by instance name/type/group"),
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search by instance name/type/group"),
+) -> dict[str, Any]:
     """
     Get all configured connector instances.
 
@@ -1718,7 +1813,7 @@ async def get_connector_instances(
 
 
 @router.get("/api/v1/connectors/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
-async def get_active_connector_instances(request: Request) -> Dict[str, Any]:
+async def get_active_connector_instances(request: Request) -> dict[str, Any]:
     """
     Get all active connector instances.
 
@@ -1761,7 +1856,7 @@ async def get_active_connector_instances(request: Request) -> Dict[str, Any]:
 
 
 @router.get("/api/v1/connectors/inactive", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
-async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
+async def get_inactive_connector_instances(request: Request) -> dict[str, Any]:
     """
     Get all inactive connector instances.
 
@@ -1805,11 +1900,11 @@ async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
 @router.get("/api/v1/connectors/configured", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_configured_connector_instances(
     request: Request,
-    scope: Optional[str] = Query(None, description="personal | team"),
+    scope: str | None = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by instance name/type/group"),
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search by instance name/type/group"),
+) -> dict[str, Any]:
     """
     Get all configured connector instances.
 
@@ -1869,17 +1964,18 @@ async def get_configured_connector_instances(
 
 async def _handle_oauth_config_creation(
     connector_type: str,
-    auth_config: Dict[str, Any],
+    auth_config: dict[str, Any],
     instance_name: str,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
     config_service: ConfigurationService,
-    oauth_config_id: Optional[str],
+    oauth_config_id: str | None,
     auth_type: str,
     base_url: str,
-    logger
-) -> Optional[str]:
+    logger: logging.Logger,
+) -> str | None:
     """
     Handle OAuth config creation or update for a new connector instance.
 
@@ -1994,19 +2090,20 @@ async def _handle_oauth_config_creation(
 
 
 async def _prepare_connector_config(
-    config: Dict[str, Any],
+    config: dict[str, Any],
     connector_type: str,
     scope: str,
-    oauth_config_id: Optional[str],
-    metadata: Dict[str, Any],
+    oauth_config_id: str | None,
+    metadata: dict[str, Any],
     selected_auth_type: str,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
     config_service: ConfigurationService,
     base_url: str,
-    logger
-) -> Dict[str, Any]:
+    logger: logging.Logger,
+) -> dict[str, Any]:
     """
     Prepare connector configuration for storage in etcd.
 
@@ -2137,7 +2234,7 @@ async def _prepare_connector_config(
 async def create_connector_instance(
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Create a new connector instance.
 
@@ -2439,7 +2536,7 @@ async def create_connector_instance(
 async def get_connector_instance(
     connector_id: str,
     request: Request
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get a specific connector instance by its key.
 
@@ -2503,7 +2600,7 @@ async def get_connector_instance(
 async def get_connector_instance_config(
     connector_id: str,
     request: Request
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get configuration for a specific connector instance.
 
@@ -2620,12 +2717,12 @@ async def get_connector_instance_config(
         ) from e
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_auth_config(
     connector_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Update authentication configuration for a connector instance.
 
@@ -2941,12 +3038,12 @@ async def update_connector_instance_auth_config(
         ) from e
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/filters-sync", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/connectors/{connector_id}/config/filters-sync", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_filters_sync_config(
     connector_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Update filters and sync configuration for a connector instance.
 
@@ -3012,6 +3109,9 @@ async def update_connector_instance_filters_sync_config(
         # Only update sections that are provided in the request
         new_config = existing_config.copy() if existing_config else {}
 
+        # Snapshot old sync filters before merge
+        old_sync_filters = existing_config.get("filters", {}).get("sync", {})
+
         # Update sync section if provided
         if "sync" in body and isinstance(body["sync"], dict):
             if "sync" in new_config and isinstance(new_config["sync"], dict):
@@ -3030,29 +3130,19 @@ async def update_connector_instance_filters_sync_config(
                 if key in body["filters"]:
                     new_config["filters"][key] = body["filters"][key]
 
+        # Only delete sync points and edges when sync filters change
+        new_sync_filters = new_config.get("filters", {}).get("sync", {})
+        first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
+        sync_filters_changed = old_sync_filters != new_sync_filters
+        needs_full_resync = sync_filters_changed or first_time_sync_filters
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated filters-sync config for instance {connector_id}")
 
-        # Cancel any running sync task for this connector (safety net — normally the
-        # connector must be disabled before filters can be changed, but a task may
-        # still be winding down from a previous run)
-        await sync_task_manager.cancel_sync(connector_id)
-        logger.info(f"Cancelled any running sync task for connector {connector_id}")
-
-        # Delete all sync points so the next sync is a clean full sweep based on
-        # the updated filter configuration
-        try:
-            deleted_count, success = await graph_provider.delete_sync_points_by_connector_id(
-                connector_id=connector_id
-            )
-            if success:
-                logger.info(f"Deleted {deleted_count} sync points for connector {connector_id} after filter change")
-            else:
-                logger.warning(f"Failed to delete sync points for connector {connector_id} after filter change, continuing anyway")
-        except Exception as sp_error:
-            logger.error(f"Error deleting sync points for connector {connector_id} after filter change: {sp_error}")
-            # Non-fatal — continue with the config update response
+        if needs_full_resync:
+            logger.info(f"Sync filters changed for connector {connector_id}; frontend will trigger full resync")
+        else:
+            logger.info(f"No sync filter change for connector {connector_id}")
 
         # For filters/sync updates, keep connector status as is
         # Only update the timestamp
@@ -3078,7 +3168,8 @@ async def update_connector_instance_filters_sync_config(
         return {
             "success": True,
             "config": new_config,
-            "message": "Filters and sync configuration saved successfully."
+            "message": "Filters and sync configuration saved successfully.",
+            "syncFiltersChanged": needs_full_resync,
         }
 
     except HTTPException:
@@ -3091,11 +3182,11 @@ async def update_connector_instance_filters_sync_config(
         ) from e
 
 
-@router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_config(
     connector_id: str,
     request: Request,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Update configuration for a connector instance.
 
@@ -3127,6 +3218,7 @@ async def update_connector_instance_config(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         connector_type = instance.get("type", "")
+
         body = await request.json()
         base_url = body.get("baseUrl", "")
         oauth_config_id = body.get("oauthConfigId")  # Reference to stored OAuth config
@@ -3354,12 +3446,13 @@ async def update_connector_instance_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector configuration: {str(e)}"
         ) from e
-@router.put("/api/v1/connectors/{connector_id}/name", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+
+@router.put("/api/v1/connectors/{connector_id}/name", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_name(
     connector_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Update the display name for a connector instance.
 
@@ -3480,7 +3573,7 @@ async def update_connector_instance_name(
 # Common Helper Functions
 # ============================================================================
 
-def _get_user_context(request: Request) -> Dict[str, Any]:
+def _get_user_context(request: Request) -> dict[str, Any]:
     """
     Extract and validate user authentication context from request.
 
@@ -3510,7 +3603,7 @@ def _get_user_context(request: Request) -> Dict[str, Any]:
     }
 
 
-def _validate_admin_only(is_admin: bool, action: str = "perform this action") -> None:
+def _validate_admin_only(*, is_admin: bool, action: str = "perform this action") -> None:
     """
     Validate that user is an administrator.
 
@@ -3529,8 +3622,9 @@ def _validate_admin_only(is_admin: bool, action: str = "perform this action") ->
 
 
 def _validate_connector_permissions(
-    instance: Dict[str, Any],
+    instance: dict[str, Any],
     user_id: str,
+    *,
     is_admin: bool,
     action: str = "access"
 ) -> None:
@@ -3575,10 +3669,10 @@ def _validate_connector_permissions(
 
 async def _get_and_validate_connector_instance(
     connector_id: str,
-    user_context: Dict[str, Any],
-    connector_registry,
-    logger
-) -> Dict[str, Any]:
+    user_context: dict[str, Any],
+    connector_registry: ConnectorRegistry,
+    logger: logging.Logger,
+) -> dict[str, Any]:
     """
     Retrieve connector instance and validate access.
 
@@ -3612,11 +3706,11 @@ async def _get_and_validate_connector_instance(
 
 
 async def _find_oauth_config_in_list(
-    oauth_configs: List[Dict[str, Any]],
+    oauth_configs: list[dict[str, Any]],
     config_id: str,
     org_id: str,
-    logger
-) -> tuple[Optional[Dict[str, Any]], Optional[int]]:
+    logger: logging.Logger,
+) -> tuple[dict[str, Any] | None, int | None]:
     """
     Find OAuth config by ID in list with access control.
 
@@ -3639,10 +3733,10 @@ async def _find_oauth_config_in_list(
 
 
 def _check_oauth_name_conflict(
-    oauth_configs: List[Dict[str, Any]],
+    oauth_configs: list[dict[str, Any]],
     name: str,
     org_id: str,
-    exclude_index: Optional[int] = None
+    exclude_index: int | None = None
 ) -> None:
     """
     Check if OAuth config name conflicts with existing configs.
@@ -3669,7 +3763,7 @@ def _check_oauth_name_conflict(
 
 
 async def _update_oauth_infrastructure_fields(
-    oauth_config: Dict[str, Any],
+    oauth_config: dict[str, Any],
     connector_type: str,
     config_service: ConfigurationService,
     base_url: str
@@ -3739,12 +3833,12 @@ async def _update_oauth_infrastructure_fields(
 # ============================================================================
 
 async def _build_oauth_flow_config(
-    auth_config: Dict[str, Any],
+    auth_config: dict[str, Any],
     connector_type: str,
     org_id: str,
     config_service: ConfigurationService,
-    logger
-) -> Dict[str, Any]:
+    logger: logging.Logger,
+) -> dict[str, Any]:
     """
     Build OAuth flow configuration from either shared OAuth config or direct auth config.
 
@@ -3846,9 +3940,9 @@ async def _build_oauth_flow_config(
 async def get_oauth_authorization_url(
     connector_id: str,
     request: Request,
-    base_url: Optional[str] = Query(None),
+    base_url: str | None = Query(None),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get OAuth authorization URL for a connector instance.
 
@@ -4019,12 +4113,12 @@ async def get_oauth_authorization_url(
 @router.get("/api/v1/connectors/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def handle_oauth_callback(
     request: Request,
-    code: Optional[str] = Query(None),
-    state: Optional[str] = Query(None),
-    error: Optional[str] = Query(None),
-    base_url: Optional[str] = Query(None),
+    code: str | None = Query(None),
+    state: str | None = Query(None),
+    error: str | None = Query(None),
+    base_url: str | None = Query(None),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Handle OAuth callback and exchange code for tokens.
 
@@ -4297,10 +4391,10 @@ async def handle_oauth_callback(
 
 async def _get_connector_filter_options_from_config(
     connector_type: str,
-    connector_config: Dict[str, Any],
-    token_or_credentials: Dict[str, Any],
-    config_service: Dict[str, Any]
-) -> Dict[str, Any]:
+    connector_config: dict[str, Any],
+    token_or_credentials: dict[str, Any],
+    config_service: dict[str, Any]
+) -> dict[str, Any]:
     """
     Get filter options for a connector by calling dynamic endpoints.
 
@@ -4356,9 +4450,9 @@ async def _get_connector_filter_options_from_config(
 async def _fetch_filter_options_from_api(
     endpoint: str,
     filter_type: str,
-    token_or_credentials: Dict[str, Any],
+    token_or_credentials: dict[str, Any],
     connector_type: str
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """
     Fetch filter options from a dynamic API endpoint.
 
@@ -4403,10 +4497,10 @@ async def _fetch_filter_options_from_api(
 
 
 def _parse_filter_response(
-    data: Dict[str, Any],
+    data: dict[str, Any],
     filter_type: str,
     connector_type: str
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """
     Parse API response to extract filter options.
 
@@ -4458,7 +4552,7 @@ def _parse_filter_response(
 async def _get_static_filter_options(
     connector_type: str,
     filter_type: str
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """
     Get static filter options for connectors.
 
@@ -4491,7 +4585,7 @@ async def _get_static_filter_options(
 
 async def _get_fallback_filter_options(
     connector_type: str
-) -> Dict[str, List[Dict[str, str]]]:
+) -> dict[str, list[dict[str, str]]]:
     """
     Get hardcoded fallback filter options when dynamic fetching fails.
 
@@ -4553,7 +4647,7 @@ async def get_connector_instance_filters(
     connector_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get filter options for a connector instance.
 
@@ -4586,8 +4680,9 @@ async def get_connector_instance_filters(
 
         # Validate permissions
         _validate_connector_permissions(
-            instance, user_context["user_id"], user_context["is_admin"],
-            "get filter options for"
+            instance, user_context["user_id"],
+            is_admin=user_context["is_admin"],
+            action="get filter options for"
         )
 
         # Get connector metadata
@@ -4661,10 +4756,10 @@ async def get_filter_field_options(
     request: Request,
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
-    search: Optional[str] = Query(None, description="Search text to filter options"),
-    cursor: Optional[str] = Query(None, description="Cursor for cursor-based pagination (API-specific)"),
+    search: str | None = Query(None, description="Search text to filter options"),
+    cursor: str | None = Query(None, description="Cursor for cursor-based pagination (API-specific)"),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get dynamic options for a specific filter field with pagination support.
 
@@ -4720,8 +4815,9 @@ async def get_filter_field_options(
 
         # Validate permissions
         _validate_connector_permissions(
-            instance, user_context["user_id"], user_context["is_admin"],
-            "access filter options for"
+            instance, user_context["user_id"],
+            is_admin=user_context["is_admin"],
+            action="access filter options for"
         )
 
         # Get connector metadata
@@ -4796,7 +4892,7 @@ async def get_filter_field_options(
         ) from e
 
 
-def _get_connector_from_container(container, connector_id: str) -> Optional[BaseConnector]:
+def _get_connector_from_container(container: ConnectorAppContainer, connector_id: str) -> BaseConnector | None:
     """
     Get connector instance from app_container.
     """
@@ -4811,9 +4907,9 @@ def _get_connector_from_container(container, connector_id: str) -> Optional[Base
 
 
 def _find_filter_field_config(
-    metadata: Dict[str, Any],
+    metadata: dict[str, Any],
     filter_key: str
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Find filter field configuration in connector metadata."""
     filters_config = metadata.get("config", {}).get("filters", {})
 
@@ -4828,12 +4924,12 @@ def _find_filter_field_config(
     return None
 
 
-@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def save_connector_instance_filters(
     connector_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Save filter selections for a connector instance.
 
@@ -4875,8 +4971,9 @@ async def save_connector_instance_filters(
 
         # Validate permissions
         _validate_connector_permissions(
-            instance, user_context["user_id"], user_context["is_admin"],
-            "save filter options for"
+            instance, user_context["user_id"],
+            is_admin=user_context["is_admin"],
+            action="save filter options for"
         )
         # Get current config
         config_service = container.config_service()
@@ -4918,13 +5015,14 @@ async def _ensure_connector_initialized(
     container: ConnectorAppContainer,
     connector_id: str,
     connector_type: str,
-    connector_registry,
+    connector_registry: ConnectorRegistry,
     graph_provider: IGraphDBProvider,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
-    logger
-) -> Optional[BaseConnector]:
+    logger: logging.Logger,
+) -> BaseConnector | None:
     """
     Ensure connector is initialized in container. If not, initialize it.
 
@@ -5055,12 +5153,12 @@ async def _ensure_connector_initialized(
 # Connector Toggle Endpoint
 # ============================================================================
 
-@router.post("/api/v1/connectors/{connector_id}/toggle", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/connectors/{connector_id}/toggle", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked)])
 async def toggle_connector_instance(
     connector_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Toggle connector instance active status and trigger sync events.
 
@@ -5089,6 +5187,7 @@ async def toggle_connector_instance(
     try:
         body = await request.json()
         toggle_type = body.get("type")
+        full_sync = body.get("fullSync", False)
         if not toggle_type or toggle_type not in ["sync", "agent"]:
             logger.error(f"Toggle type is required and must be 'sync' or 'agent'. Got {toggle_type}")
             raise HTTPException(
@@ -5273,7 +5372,8 @@ async def toggle_connector_instance(
                 "apps": [connector_type.replace(" ", "").lower()],
                 "connectorId": connector_id,
                 "syncAction": "immediate",
-                "scope": instance.get("scope")
+                "scope": instance.get("scope"),
+                "fullSync": full_sync,
             }
 
             message = {
@@ -5282,9 +5382,18 @@ async def toggle_connector_instance(
                 "timestamp": get_epoch_timestamp_in_ms()
             }
 
-            # Send message to sync-events topic
-            logger.info(f"Sending message to sync-events topic: {message}")
             await producer.send_message(topic="entity-events", message=message)
+
+            # When disabling sync, remove connector from map and cleanup so re-enable does full init
+            if not target_status and hasattr(container, "connectors_map") and connector_id in container.connectors_map:
+                logger.info(f"Removing connector {connector_id} from connectors_map after toggle off")
+                existing_connector = container.connectors_map.pop(connector_id)
+                try:
+                    if hasattr(existing_connector, "cleanup"):
+                        await existing_connector.cleanup()
+                    logger.info(f"Cleaned up connector instance {connector_id}")
+                except Exception as cleanup_err:
+                    logger.error(f"Error cleaning up connector {connector_id} after toggle off: {cleanup_err}")
 
         return {
             "success": True,
@@ -5301,7 +5410,7 @@ async def toggle_connector_instance(
         ) from e
 
 
-@router.delete("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE)), Depends(require_connector_not_locked)])
 async def delete_connector_instance(
     connector_id: str,
     request: Request,
@@ -5355,7 +5464,7 @@ async def delete_connector_instance(
         await check_beta_connector_access(connector_type, request)
 
         # 3. Permission check — only creator or admin can delete
-        _validate_connector_deletion_permissions(instance, user_id, is_admin, logger)
+        _validate_connector_deletion_permissions(instance, user_id, is_admin=is_admin, logger=logger)
 
         # 4. Guard against duplicate deletion requests
         if instance.get("status") == "DELETING":
@@ -5443,7 +5552,7 @@ async def delete_connector_instance(
 # Schema Endpoint
 # ============================================================================
 
-def _clean_schema_for_response(schema: Dict[str, Any]) -> Dict[str, Any]:
+def _clean_schema_for_response(schema: dict[str, Any]) -> dict[str, Any]:
     """
     Clean schema response by removing internal/redundant fields.
 
@@ -5493,7 +5602,7 @@ def _clean_schema_for_response(schema: Dict[str, Any]) -> Dict[str, Any]:
 async def get_connector_schema(
     connector_type: str,
     request: Request
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get connector schema from registry.
 
@@ -5541,11 +5650,11 @@ async def get_connector_schema(
 @router.get("/api/v1/connectors/agents/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_active_agent_instances(
     request: Request,
-    scope: Optional[str] = Query(None, description="personal | team"),
+    scope: str | None = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by instance name/type/group")
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search by instance name/type/group")
+) -> dict[str, Any]:
     """
     Get all active agent instances for the current user.
 
@@ -5610,8 +5719,8 @@ async def get_oauth_config_registry(
     request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by name/group/description"),
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search by name/group/description"),
+) -> dict[str, Any]:
     """
     Get all available connector/toolset types that have OAuth configurations registered.
 
@@ -5667,7 +5776,7 @@ async def get_oauth_config_registry(
 async def get_oauth_config_registry_by_type(
     connector_type: str,
     request: Request,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get OAuth registry information for a specific connector type.
 
@@ -5727,9 +5836,9 @@ async def get_all_oauth_configs(
     request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by instance name/group/description"),
+    search: str | None = Query(None, description="Search by instance name/group/description"),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get all OAuth configurations across all connector types with pagination and search.
 
@@ -5782,7 +5891,7 @@ async def get_all_oauth_configs(
 
         # Fetch OAuth configs for all connector types in PARALLEL
         # This is the key optimization - all etcd calls happen concurrently
-        async def fetch_configs_for_type(connector_type: str) -> List[Dict[str, Any]]:
+        async def fetch_configs_for_type(connector_type: str) -> list[dict[str, Any]]:
             """Fetch and filter configs for a single connector type"""
             try:
                 oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
@@ -5884,7 +5993,7 @@ def _generate_oauth_config_id() -> str:
     return str(uuid.uuid4())
 
 
-def _get_oauth_field_names_from_registry(connector_type: str) -> List[str]:
+def _get_oauth_field_names_from_registry(connector_type: str) -> list[str]:
     """
     Get OAuth field names from the OAuth config registry for a connector type.
     This makes the code generic and maintainable - no hardcoded field names.
@@ -5916,16 +6025,17 @@ def _get_oauth_field_names_from_registry(connector_type: str) -> List[str]:
 
 async def _create_or_update_oauth_config(
     connector_type: str,
-    auth_config: Dict[str, Any],
+    auth_config: dict[str, Any],
     instance_name: str,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
     config_service: ConfigurationService,
     base_url: str,
-    oauth_app_id: Optional[str] = None,
-    logger = None
-) -> Optional[str]:
+    oauth_app_id: str | None = None,
+    logger: logging.Logger | None = None,
+) -> str | None:
     """
     Create or update an OAuth config based on auth_config fields.
     This is a reusable function that extracts OAuth fields dynamically from the registry.
@@ -6043,7 +6153,7 @@ async def _create_or_update_oauth_config(
 async def _get_oauth_configs_from_etcd(
     connector_type: str,
     config_service: ConfigurationService
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Get OAuth configs from etcd for a connector type.
     Optimized to use cache when available.
@@ -6061,7 +6171,7 @@ async def _get_oauth_configs_from_etcd(
     return oauth_configs if isinstance(oauth_configs, list) else []
 
 
-def _extract_essential_oauth_fields(oauth_config: Dict[str, Any], connector_type: str) -> Dict[str, Any]:
+def _extract_essential_oauth_fields(oauth_config: dict[str, Any], connector_type: str) -> dict[str, Any]:
     """
     Extract only essential, non-sensitive fields from an OAuth config.
     Returns camelCase for frontend consistency.
@@ -6087,10 +6197,10 @@ def _extract_essential_oauth_fields(oauth_config: Dict[str, Any], connector_type
 
 
 def _find_oauth_config_by_id(
-    oauth_configs: List[Dict[str, Any]],
+    oauth_configs: list[dict[str, Any]],
     config_id: str,
     org_id: str
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """
     Find an OAuth config by ID within the same organization.
 
@@ -6116,7 +6226,7 @@ async def create_oauth_config(
     connector_type: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Create a new OAuth configuration for a connector type (Admin only).
 
@@ -6141,7 +6251,7 @@ async def create_oauth_config(
     try:
         # Get and validate user context (admin only)
         user_context = _get_user_context(request)
-        _validate_admin_only(user_context["is_admin"], "create OAuth configurations")
+        _validate_admin_only(is_admin=user_context["is_admin"], action="create OAuth configurations")
 
         body = await request.json()
         oauth_instance_name = (body.get("oauthInstanceName") or "").strip()
@@ -6245,9 +6355,9 @@ async def list_oauth_configs(
     request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by instance name/group/description"),
+    search: str | None = Query(None, description="Search by instance name/group/description"),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     List all OAuth configurations for a connector type with pagination and search.
 
@@ -6322,7 +6432,7 @@ async def get_oauth_config_by_id(
     config_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get a specific OAuth configuration by ID.
 
@@ -6408,7 +6518,7 @@ async def update_oauth_config(
     config_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Update an existing OAuth configuration.
 
@@ -6434,7 +6544,7 @@ async def update_oauth_config(
     try:
         # Get and validate user context (admin only)
         user_context = _get_user_context(request)
-        _validate_admin_only(user_context["is_admin"], "update OAuth configurations")
+        _validate_admin_only(is_admin=user_context["is_admin"], action="update OAuth configurations")
 
         body = await request.json()
         new_name = body.get("oauthInstanceName")
@@ -6515,7 +6625,7 @@ async def delete_oauth_config(
     config_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Delete an OAuth configuration.
 
@@ -6537,7 +6647,7 @@ async def delete_oauth_config(
     try:
         # Get and validate user context (admin only)
         user_context = _get_user_context(request)
-        _validate_admin_only(user_context["is_admin"], "delete OAuth configurations")
+        _validate_admin_only(is_admin=user_context["is_admin"], action="delete OAuth configurations")
 
         # Get OAuth configs for this connector type
         oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)

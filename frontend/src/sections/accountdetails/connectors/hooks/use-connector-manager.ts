@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type MutableRefObject } from 'react';
 import { useParams } from 'react-router-dom';
 import { useAccountType } from 'src/hooks/use-account-type';
 import { Connector, ConnectorConfig, ConnectorToggleType } from '../types/types';
@@ -10,7 +10,8 @@ interface UseConnectorManagerReturn {
   // State
   connector: Connector | null;
   connectorConfig: ConnectorConfig | null;
-  loading: boolean;
+  initialLoading: boolean;
+  refreshing: boolean;
   error: string | null;
   success: boolean;
   successMessage: string;
@@ -20,6 +21,8 @@ interface UseConnectorManagerReturn {
   isEnablingWithFilters: boolean;
   configDialogOpen: boolean;
   renameError: string | null;
+  /** Ref ConnectorStatistics uses to register its fetch; call .current?.() when polling to fire stats API in same tick as connector API */
+  statsRefreshCallbackRef: MutableRefObject<(() => void) | null>;
 
   // Actions
   handleToggleConnector: (enabled: boolean, type: ConnectorToggleType) => Promise<void>;
@@ -44,7 +47,8 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
   // State
   const [connector, setConnector] = useState<Connector | null>(null);
   const [connectorConfig, setConnectorConfig] = useState<ConnectorConfig | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
@@ -55,9 +59,16 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
   const [renameError, setRenameError] = useState<string | null>(null);
 
-  // Track fetch state to prevent duplicate calls
+  // Stats refetch runs in same tick as connector poll when we call this ref
+  const statsRefreshCallbackRef = useRef<(() => void) | null>(null);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Track fetch state to prevent duplicate calls and whether data has loaded at least once
   const fetchInProgressRef = useRef(false);
   const lastFetchedConnectorRef = useRef<string | null>(null);
+  const hasConnectorDataRef = useRef(false);
+  const refreshingStartedAtRef = useRef<number | null>(null);
+  const minRefreshSpinnerMs = 1000; // Spinner stays visible at least this long so rotation is noticeable
 
   const { isBusiness } = useAccountType();
 
@@ -77,34 +88,40 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
   );
 
   // Fetch connector data
+  // showSkeleton=true: used for manual refresh — shows full skeleton and re-fetches config
+  // showSkeleton=false (default): used for background polling — shows only spinning icon
   const fetchConnectorData = useCallback(
-    async (forceRefresh = false) => {
+    async (forceRefresh = false, showSkeleton = false) => {
       if (!connectorId) {
         setError('Connector key is missing');
-        setLoading(false);
+        setInitialLoading(false);
         return;
       }
 
-      // Prevent duplicate concurrent calls for the same connector (unless forced)
-      if (!forceRefresh) {
-        if (fetchInProgressRef.current && lastFetchedConnectorRef.current === connectorId) {
-          return;
-        }
-        // Skip if we just fetched this connector (prevents React StrictMode double calls)
-        // This check is only for automatic calls, not manual refreshes
-        if (lastFetchedConnectorRef.current === connectorId && !fetchInProgressRef.current) {
-          return;
-        }
+      // Never run concurrent fetches — prevents polling overlap with manual refresh
+      if (fetchInProgressRef.current) return;
+
+      // Prevent duplicate initial calls for the same connector (React StrictMode protection)
+      if (!forceRefresh && lastFetchedConnectorRef.current === connectorId) {
+        return;
       }
 
       fetchInProgressRef.current = true;
       lastFetchedConnectorRef.current = connectorId;
 
       try {
-        setLoading(true);
+        // Initial load or explicit manual refresh → full skeleton
+        // Background polling → spinning icon only
+        if (!hasConnectorDataRef.current || showSkeleton) {
+          setInitialLoading(true);
+          setRefreshing(false);
+          refreshingStartedAtRef.current = null;
+        } else {
+          refreshingStartedAtRef.current = Date.now();
+          setRefreshing(true);
+        }
         setError(null);
 
-        // Fetch connector instance by connectorId
         const instance = await ConnectorApiService.getConnectorInstance(connectorId);
 
         if (!instance) {
@@ -114,22 +131,36 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
 
         setConnector(instance);
 
-        // Fetch connector configuration
-        try {
-          const config = await ConnectorApiService.getConnectorInstanceConfig(connectorId);
-          setConnectorConfig(config);
-
-          // Use simplified authentication check
-          setIsAuthenticated(isConnectorAuthenticated(instance, config));
-        } catch (configError) {
-          console.warn('Could not fetch connector config:', configError);
-          // Continue without config - connector might not be configured yet
+        // Fetch config on initial load or manual refresh; skip for background polling
+        if (!hasConnectorDataRef.current || showSkeleton) {
+          try {
+            const config = await ConnectorApiService.getConnectorInstanceConfig(connectorId);
+            setConnectorConfig(config);
+            setIsAuthenticated(isConnectorAuthenticated(instance, config));
+          } catch (configError) {
+            console.warn('Could not fetch connector config:', configError);
+          }
         }
+
+        hasConnectorDataRef.current = true;
       } catch (err: any) {
         console.error('Error fetching connector data:', err);
         setError(err.message || 'Failed to load connector information');
       } finally {
-        setLoading(false);
+        setInitialLoading(false);
+        const startedAt = refreshingStartedAtRef.current;
+        if (startedAt !== null) {
+          const elapsed = Date.now() - startedAt;
+          const remaining = Math.max(0, minRefreshSpinnerMs - elapsed);
+          refreshingStartedAtRef.current = null;
+          if (remaining > 0) {
+            setTimeout(() => setRefreshing(false), remaining);
+          } else {
+            setRefreshing(false);
+          }
+        } else {
+          setRefreshing(false);
+        }
         fetchInProgressRef.current = false;
       }
     },
@@ -237,17 +268,33 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     setTimeout(() => setSuccess(false), 4000);
   }, [connector, fetchConnectorData]);
 
-  // Handle refresh - force refresh to bypass duplicate call guards
+  // Start or restart the 10s polling interval (e.g. after manual refresh so we don't fire again immediately)
+  const startPollingInterval = useCallback(() => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    if (!connectorId) return;
+    pollingIntervalRef.current = setInterval(() => {
+      if (hasConnectorDataRef.current && !document.hidden) {
+        statsRefreshCallbackRef.current?.();
+        fetchConnectorData(true);
+      }
+    }, 10000);
+  }, [connectorId, fetchConnectorData]);
+
+  // Handle refresh - force refresh with full skeleton and config re-fetch; reset polling timer
   const handleRefresh = useCallback(() => {
-    fetchConnectorData(true);
-  }, [fetchConnectorData]);
+    fetchConnectorData(true, true);
+    startPollingInterval();
+  }, [fetchConnectorData, startPollingInterval]);
 
   // Handle authentication (only for OAuth)
   const handleAuthenticate = useCallback(async () => {
     if (!connector || !connectorId) return;
 
     try {
-      setLoading(true);
+      setRefreshing(true);
 
       // Check if it's OAuth connector
       if ((connector.authType || '').toUpperCase() === 'OAUTH') {
@@ -314,7 +361,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
       console.error('Authentication error:', authError);
       setError('Authentication failed');
     } finally {
-      setLoading(false);
+      setRefreshing(false);
     }
   }, [connector, connectorId]);
 
@@ -382,10 +429,10 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     if (!connectorId) return;
 
     try {
-      setLoading(true);
+      setRefreshing(true);
       await ConnectorApiService.deleteConnectorInstance(connectorId);
-      setLoading(false);
-      setSuccessMessage('Connector deletion started successfully');
+      setRefreshing(false);
+      setSuccessMessage('Connector instance deleted successfully');
       setSuccess(true);
 
       // Reload connector data so the status badge reflects the DELETING state
@@ -394,7 +441,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
       console.error('Error deleting connector instance:', err);
       setError('Failed to delete connector instance');
     } finally {
-      setLoading(false);
+      setRefreshing(false);
     }
   }, [connectorId, fetchConnectorData]);
 
@@ -475,6 +522,30 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     fetchConnectorData();
   }, [fetchConnectorData]);
 
+  // Auto-poll every 10s once initial data is loaded; skips when tab is hidden. Timer resets on manual refresh.
+  useEffect(() => {
+    startPollingInterval();
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+    };
+  }, [startPollingInterval]);
+
+  // When the tab becomes visible again, trigger an immediate refresh (connector + stats)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && hasConnectorDataRef.current) {
+        statsRefreshCallbackRef.current?.();
+        fetchConnectorData(true);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [fetchConnectorData]);
+
   // Handle OAuth success/error from URL parameters
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -518,7 +589,8 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     // State
     connector,
     connectorConfig,
-    loading,
+    initialLoading,
+    refreshing,
     error,
     success,
     successMessage,
@@ -528,6 +600,7 @@ export const useConnectorManager = (): UseConnectorManagerReturn => {
     isEnablingWithFilters,
     configDialogOpen,
     renameError,
+    statsRefreshCallbackRef,
 
     // Actions
     handleToggleConnector,
