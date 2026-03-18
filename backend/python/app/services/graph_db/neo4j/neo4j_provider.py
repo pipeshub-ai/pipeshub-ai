@@ -6,16 +6,15 @@ Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, pro
 """
 
 import asyncio
-import traceback
 import hashlib
 import json
 import os
 import re
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, Optional
 from typing import Any, Optional
 
 from fastapi import Request

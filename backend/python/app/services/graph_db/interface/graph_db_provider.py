@@ -9,7 +9,6 @@ All methods support optional transaction parameter for atomic operations.
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Optional
-from typing import TYPE_CHECKING, Any, Optional
 
 from app.models.entities import Person
 

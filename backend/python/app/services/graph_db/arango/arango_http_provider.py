@@ -7,6 +7,7 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 All operations are non-blocking and use aiohttp for async I/O.
 """
 import asyncio
+import contextlib
 import time
 import traceback
 import unicodedata
@@ -14,15 +15,11 @@ import uuid
 from collections import defaultdict
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional
-from typing import TYPE_CHECKING, Any, Optional
 
 from app.config.configuration_service import ConfigurationService
 
 if TYPE_CHECKING:
     from fastapi import Request
-
-
-import contextlib
 
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
