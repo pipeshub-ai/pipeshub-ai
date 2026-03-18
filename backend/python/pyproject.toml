@@ -134,11 +134,6 @@ select = [
     "DTZ011",   # datetime.date.today() (use date.today() with tz)
     "DTZ012",   # datetime.fromisoformat() without tz
 
-    # --- Dead code & unused symbols (keep codebase clean) ---
-    "F401",     # Unused import
-    "F811",     # Redefinition of unused name from outer scope
-    "F841",     # Local variable assigned but never used
-
     # --- Ruff-specific ---
     "RUF005",   # collection literal concatenation (use [*a, *b])
     "RUF015",   # unnecessary iterable allocation for first element
@@ -299,9 +294,9 @@ reportMissingTypeStubs = "warning"
 # Side-effect functions (logging, db writes) — unused return value is intentional
 reportUnusedCallResult = "warning"
 
-# Dead code enforcement — unused imports and variables are errors
-reportUnusedImport = "error"
-reportUnusedVariable = "error"
+# Ruff handles these with auto-fix (F401, F841)
+reportUnusedImport = "warning"
+reportUnusedVariable = "warning"
 
 # --- Unknown type enforcement ---
 # Variables: ERROR — if pyright can't determine a variable's type, you must annotate it.

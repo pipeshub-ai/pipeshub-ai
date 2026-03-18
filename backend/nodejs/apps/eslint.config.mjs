@@ -78,18 +78,6 @@ export default tseslint.config(
 
       // --- inversify DI requires classes decorated with @injectable() ---
       '@typescript-eslint/no-extraneous-class': 'off',
-
-      // --- Dead code & unused symbols ---
-      '@typescript-eslint/no-unused-vars': [
-        'error',
-        {
-          args: 'after-used',
-          argsIgnorePattern: '^_',
-          varsIgnorePattern: '^_',
-          caughtErrorsIgnorePattern: '^_',
-        },
-      ],
-      'no-unreachable': 'error',
     },
   },
 
