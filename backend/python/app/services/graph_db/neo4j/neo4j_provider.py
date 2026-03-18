@@ -54,6 +54,7 @@ from app.models.entities import (
     User,
     WebpageRecord,
 )
+from app.models.permission import EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.utils import build_connector_stats_response
@@ -12578,6 +12579,8 @@ class Neo4jProvider(IGraphDBProvider):
                 "sort_field": sort_field,
                 "sort_dir": sort_dir.upper(),
                 "only_containers": only_containers,
+                "user_permission_type": EntityType.USER.value,
+                "team_permission_type": EntityType.TEAM.value,
             }
 
             # Add bind variables based on parent_type
@@ -12792,10 +12795,10 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE rg_data IS NOT NULL AND rg.id = rg_data.id
 
             // Compute sharingStatus for KB recordGroups only
-            OPTIONAL MATCH (kb_user_perm:User)-[kb_up:PERMISSION {{type: 'USER'}}]->(rg)
+            OPTIONAL MATCH (kb_user_perm:User)-[kb_up:PERMISSION {type: $user_permission_type}]->(rg)
             WHERE rg.connectorName = 'KB'
 
-            OPTIONAL MATCH ()-[kb_tp:PERMISSION {{type: 'TEAM'}}]->(rg)
+            OPTIONAL MATCH ()-[kb_tp:PERMISSION {type: $team_permission_type}]->(rg)
             WHERE rg.connectorName = 'KB'
 
             WITH rg_data, final_accessible_rgs, final_accessible_records, records_with_fallback, rg,
