@@ -786,7 +786,7 @@ class Crawl4AIFetcher:
           error page. We detect this via an exact browser-generated string
           that no real web server would ever send.
         """
-        if result is None or not result.success:
+        if result is None or not result.success or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
             return False
         if not result.headers:
             return False
