@@ -1,7 +1,8 @@
 import asyncio
 import base64
+import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import uvicorn
 from docling_core.types.doc.document import DoclingDocument
@@ -25,7 +26,7 @@ class ProcessRequest(BaseModel):
 
 class ProcessResponse(BaseModel):
     success: bool
-    block_containers: Optional[dict] = None
+    block_containers: Optional[dict[str, Any]] = None
     error: Optional[str] = None
 
 
@@ -47,12 +48,12 @@ class CreateBlocksRequest(BaseModel):
 
 class CreateBlocksResponse(BaseModel):
     success: bool
-    block_containers: Optional[dict] = None
+    block_containers: Optional[dict[str, Any]] = None
     error: Optional[str] = None
 
 
 class DoclingService:
-    def __init__(self, config_service=None, logger=None) -> None:
+    def __init__(self, config_service: object | None = None, logger: logging.Logger | None = None) -> None:
         self.logger = logger or create_logger(__name__)
         self.config_service = config_service
         self.processor = None
@@ -182,7 +183,7 @@ async def startup_event() -> None:
 
 
 @app.get("/health")
-async def health_check() -> dict:
+async def health_check() -> dict[str, Any]:
     """Health check endpoint"""
     return {"status": "healthy", "service": "docling"}
 
@@ -198,7 +199,7 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Invalid base64 PDF data: {str(e)}"
-            )
+            ) from e
 
         # Ensure service is wired
         if docling_service is None:
@@ -236,7 +237,7 @@ async def process_pdf_endpoint(request: ProcessRequest) -> ProcessResponse:
             error=f"Processing failed: {str(e)}"
         )
 
-def serialize_blocks_container(blocks_container: BlocksContainer) -> dict:
+def serialize_blocks_container(blocks_container: BlocksContainer) -> dict[str, Any]:
     """Serialize BlocksContainer to dictionary for JSON response"""
     try:
         # Convert to dict using the model's dict method.
@@ -279,7 +280,7 @@ async def parse_pdf_endpoint(request: ParseRequest) -> ParseResponse:
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Invalid base64 PDF data: {str(e)}"
-            )
+            ) from e
 
         # Ensure service is wired
         if docling_service is None:
@@ -327,7 +328,7 @@ async def create_blocks_endpoint(request: CreateBlocksRequest) -> CreateBlocksRe
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=f"Invalid parse_result data: {str(e)}"
-            )
+            ) from e
 
         # Ensure service is wired
         if docling_service is None:
@@ -364,7 +365,7 @@ async def create_blocks_endpoint(request: CreateBlocksRequest) -> CreateBlocksRe
         )
 
 
-def run(host: str = "0.0.0.0", port: int = 8081, reload: bool = False) -> None:
+def run(host: str = "0.0.0.0", port: int = 8081, *, reload: bool = False) -> None:
     """Run the Docling service"""
     workers = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
     uvicorn.run(

@@ -1,13 +1,14 @@
 import asyncio
+import logging
 import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 from io import BytesIO
+from typing import TYPE_CHECKING
 
 from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 from docling.datamodel.base_models import DocumentStream, InputFormat
-from docling.datamodel.document import ConversionResult
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import (
     DocumentConverter,
@@ -16,6 +17,9 @@ from docling.document_converter import (
     WordFormatOption,
 )
 from docling_core.types.doc.document import DoclingDocument
+
+if TYPE_CHECKING:
+    from docling.datamodel.document import ConversionResult
 
 from app.models.blocks import BlocksContainer
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
@@ -68,7 +72,7 @@ def _parse_document_in_worker(doc_name: str, content: bytes) -> str:
     return conv_res.document.model_dump_json()
 
 class DoclingProcessor():
-    def __init__(self, logger, config) -> None:
+    def __init__(self, logger: logging.Logger, config: object) -> None:
         self.logger = logger
         self.config = config
         self.converter = _get_converter()
@@ -97,16 +101,15 @@ class DoclingProcessor():
 
         return conv_res.document
 
-    async def create_blocks(self, doc: DoclingDocument, page_number: int = None) -> BlocksContainer:
+    async def create_blocks(self, doc: DoclingDocument, page_number: int | None = None) -> BlocksContainer:
         """Convert parsed Docling result to BlocksContainer.
 
         This is the second phase - involves LLM calls for table processing.
         """
         doc_to_blocks_converter = DoclingDocToBlocksConverter(logger=self.logger, config=self.config)
-        block_containers = await doc_to_blocks_converter.convert(doc, page_number=page_number)
-        return block_containers
+        return await doc_to_blocks_converter.convert(doc, page_number=page_number)
 
-    async def load_document(self, doc_name: str, content: bytes, page_number: int = None) -> BlocksContainer|bool:
+    async def load_document(self, doc_name: str, content: bytes, page_number: int | None = None) -> BlocksContainer|bool:
         """Parse document and create blocks in one call (legacy method).
 
         For new code, prefer using parse_document() followed by create_blocks()

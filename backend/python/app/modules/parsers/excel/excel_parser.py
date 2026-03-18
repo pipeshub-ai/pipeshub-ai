@@ -1,16 +1,18 @@
 import asyncio
 import io
 import json
+import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from openpyxl import load_workbook
-from openpyxl.cell.cell import MergedCell
+from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -290,7 +292,7 @@ def _resolve_ambiguous_format(format_str: str) -> str:
     return python_format
 
 
-def format_excel_datetime(dt_value: Union[datetime, str, int, float, None], number_format: str) -> Union[str, int, float, None]:
+def format_excel_datetime(dt_value: datetime | str | int | float | None, number_format: str) -> str | int | float | None:
     """
     Apply Excel number format to datetime value using whitelist-based approach.
 
@@ -338,7 +340,7 @@ def format_excel_datetime(dt_value: Union[datetime, str, int, float, None], numb
 
 
 class ExcelParser:
-    def __init__(self, logger) -> None:
+    def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
         self.workbook = None
         self.file_binary = None
@@ -381,12 +383,12 @@ class ExcelParser:
                 self.workbook.close()
 
 
-    def _json_default(self, obj) -> str:
+    def _json_default(self, obj: object) -> str:
         if isinstance(obj, datetime):
             return obj.isoformat()
         return str(obj)
 
-    def _process_sheet(self, sheet) -> Dict[str, List[List[Dict[str, Any]]]]:
+    def _process_sheet(self, sheet: Worksheet) -> dict[str, list[list[dict[str, Any]]]]:
         """Process individual sheet and extract cell data"""
         try:
             self.logger.info(f"Processing sheet: {sheet.title}")
@@ -470,12 +472,12 @@ class ExcelParser:
             self.logger.error(f"Error processing sheet {sheet.title}: {e}", exc_info=True)
             raise
 
-    async def find_tables(self, sheet, llm: BaseChatModel) -> List[Dict[str, Any]]:
+    async def find_tables(self, sheet: Worksheet, llm: BaseChatModel) -> list[dict[str, Any]]:
         """Find and process all tables in a sheet with LLM-based header detection/generation"""
         try:
             self.logger.info(f"Finding tables in sheet: {sheet.title}")
             tables = []
-            visited_ranges: List[Tuple[int, int, int, int]] = []
+            visited_ranges: list[tuple[int, int, int, int]] = []
 
             # Pre-scan: build a set of non-empty cell positions and find the true sheet
             # extent. openpyxl frequently reports inflated max_row/max_col (e.g. 98k rows)
@@ -518,7 +520,7 @@ class ExcelParser:
                         return (start_row, end_row, start_col, end_col)
                 return None
 
-            async def get_table(start_row: int, start_col: int) -> Dict[str, Any]:
+            async def get_table(start_row: int, start_col: int) -> dict[str, Any]:
                 """Extract a table starting from (start_row, start_col) with intelligent header detection."""
                 self.logger.info(f"Extracting table starting at row={start_row}, col={start_col}")
                 # Step 1: Find table boundaries (max_row, max_col)
@@ -687,7 +689,7 @@ class ExcelParser:
                 while col <= effective_max_col:
                     visited_range = get_visited_range(row, col)
                     if visited_range is not None:
-                        start_row, end_row, start_col, end_col = visited_range
+                        _start_row, end_row, start_col, end_col = visited_range
                         if start_col == 1 and end_col >= effective_max_col and col == 1:
                             row = end_row + 1
                             col = 1
@@ -730,17 +732,18 @@ class ExcelParser:
             self.logger.error(f"Error finding tables in sheet {sheet.title}: {e}", exc_info=True)
             raise
 
-    def _process_cell(self, cell, header, row, col) -> Dict[str, Any]:
+    def _process_cell(self, cell: Cell | MergedCell, header: str | None, row: int, col: int) -> dict[str, Any]:
         """Process a single cell and return its data with denormalized merged cell values."""
         try:
             # Check if the cell is a merged cell
             if isinstance(cell, MergedCell):
                 # Look for the merged range that contains this cell.
                 merged_value = None
-                for merged_range in cell.parent.merged_cells.ranges:
+                worksheet = cast(Worksheet, cell.parent)
+                for merged_range in worksheet.merged_cells.ranges:
                     if cell.coordinate in merged_range:
                         # Get the top-left cell of the merged range
-                        top_left_cell = cell.parent.cell(
+                        top_left_cell = worksheet.cell(
                             row=merged_range.min_row, column=merged_range.min_col
                         )
                         merged_value = top_left_cell.value
@@ -796,13 +799,13 @@ class ExcelParser:
             self.logger.error(f"Error processing cell at ({row}, {col}): {e}", exc_info=True)
             raise
 
-    def _count_empty_values(self, row: Dict[str, Any]) -> int:
+    def _count_empty_values(self, row: dict[str, Any]) -> int:
         """Count the number of empty/None values in a row"""
         return sum(1 for value in row.values() if value is None or value == "")
 
     def _select_representative_sample_rows(
-        self, data_rows: List[List[Any]], num_sample_rows: int = NUM_SAMPLE_ROWS
-    ) -> List[Tuple[int, List[Any], int]]:
+        self, data_rows: list[list[Any]], num_sample_rows: int = NUM_SAMPLE_ROWS
+    ) -> list[tuple[int, list[Any], int]]:
         """
         Select representative sample rows from data by prioritizing rows with fewer empty values.
 
@@ -846,7 +849,7 @@ class ExcelParser:
 
         return selected_rows
 
-    def _convert_rows_to_strings(self, rows: List[List[Any]], num_rows: int = 4) -> List[List[str]]:
+    def _convert_rows_to_strings(self, rows: list[list[Any]], num_rows: int = 4) -> list[list[str]]:
         """
         Convert multiple rows to lists of strings for LLM prompts.
 
@@ -864,7 +867,7 @@ class ExcelParser:
         ]
 
     async def detect_excel_headers_with_llm(
-        self, first_rows: List[List[Any]], llm: BaseChatModel
+        self, first_rows: list[list[Any]], llm: BaseChatModel
     ) -> ExcelHeaderDetection:
         """
         Use LLM to detect if the first row(s) contain valid headers and how many rows they span.
@@ -940,8 +943,8 @@ class ExcelParser:
             )
 
     async def generate_excel_headers_with_llm(
-        self, sample_rows: List[Tuple[int, List[Any], int]], column_count: int, llm: BaseChatModel
-    ) -> List[str]:
+        self, sample_rows: list[tuple[int, list[Any], int]], column_count: int, llm: BaseChatModel
+    ) -> list[str]:
         """
         Generate descriptive headers from sample data using LLM.
 
@@ -962,7 +965,7 @@ class ExcelParser:
         try:
             # Format sample data for display
             formatted_samples = []
-            for idx, row, empty_count in sample_rows[:MAX_HEADER_GENERATION_ROWS]:
+            for _idx, row, _empty_count in sample_rows[:MAX_HEADER_GENERATION_ROWS]:
                 formatted_row = [str(v) if v is not None else "" for v in row]
                 formatted_samples.append(formatted_row)
 
@@ -1054,7 +1057,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
 
 
-    def _concatenate_multirow_headers(self, multirow_headers: List[List[Any]], column_count: int) -> List[str]:
+    def _concatenate_multirow_headers(self, multirow_headers: list[list[Any]], column_count: int) -> list[str]:
         """
         Fallback method to concatenate multi-row headers with underscores.
 
@@ -1084,10 +1087,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             seen.add(value_str)
 
             # Join with underscores or use generic name if no parts
-            if parts:
-                header = "_".join(parts)
-            else:
-                header = f"Column_{col_idx + 1}"
+            header = "_".join(parts) if parts else f"Column_{col_idx + 1}"
 
             consolidated.append(header)
 
@@ -1100,11 +1100,12 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
         ),
     )
-    async def _call_llm(self,messages) -> Union[str, dict, list]:
+    async def _call_llm(self, messages: list[Any]) -> AIMessage:
         """Wrapper for LLM calls with retry logic"""
-        return await self.llm.ainvoke(messages)
+        result = await self.llm.ainvoke(messages)
+        return result  # type: ignore[return-value]
 
-    async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> List[Dict[str, Any]]:
+    async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> list[dict[str, Any]]:
         """Get all tables in a specific sheet with LLM-based header detection/generation
 
         Note: Header detection and generation is now handled in find_tables() method,
@@ -1130,7 +1131,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             self.logger.error(f"Error getting tables in sheet {sheet_name}: {e}", exc_info=True)
             raise
 
-    async def get_table_summary(self, table: Dict[str, Any]) -> str:
+    async def get_table_summary(self, table: dict[str, Any]) -> str:
         """Get a natural language summary of a specific table"""
         self.logger.info(f"Getting summary for table with {len(table['headers'])} columns and {len(table['data'])} rows")
         try:
@@ -1162,8 +1163,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             raise
 
     async def get_rows_text(
-        self, rows: List[List[Dict[str, Any]]], table_summary: str
-    ) -> List[str]:
+        self, rows: list[list[dict[str, Any]]], table_summary: str
+    ) -> list[str]:
         """Convert multiple rows into natural language text using context from summaries in a single prompt"""
         self.logger.info(f"Converting {len(rows)} rows to natural language text")
         try:
@@ -1208,8 +1209,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             raise
 
     async def process_sheet_with_summaries(
-        self, llm, sheet_name: str, cumulative_row_count: List[int]
-    ) -> Dict[str, Any]:
+        self, llm: BaseChatModel, sheet_name: str, cumulative_row_count: list[int]
+    ) -> dict[str, Any] | None:
         """Process a sheet and generate all summaries and row texts
         Args:
             llm: Language model instance
@@ -1218,6 +1219,10 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         """
         self.logger.info(f"Processing sheet with summaries: {sheet_name}")
         self.llm = llm
+
+        if not self.workbook:
+            self.logger.warning(f"Workbook not loaded, cannot process sheet '{sheet_name}'")
+            return None
 
         if sheet_name not in self.workbook.sheetnames:
             self.logger.warning(f"Sheet '{sheet_name}' not found in workbook")
@@ -1263,9 +1268,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 # Limit parallel processing to at most 10 concurrent batches
                 semaphore = asyncio.Semaphore(10)
 
-                async def limited_get_rows_text(batch) -> List[str]:
-                    async with semaphore:
-                        return await self.get_rows_text(batch, table_summary)
+                async def limited_get_rows_text(batch: list[Any], _sem: asyncio.Semaphore = semaphore, _ts: str = table_summary) -> list[str]:
+                    async with _sem:
+                        return await self.get_rows_text(batch, _ts)
 
                 # Create throttled tasks for all batches
                 batch_tasks = []
@@ -1278,7 +1283,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 self.logger.info(f"Completed processing {len(batch_tasks)} batches with LLM")
 
                 # Combine results with their metadata and process
-                for i, (start_idx, batch, _) in enumerate(batch_tasks):
+                for i, (_start_idx, batch, _) in enumerate(batch_tasks):
                     row_texts = task_results[i]
 
                     # Add processed rows to results
@@ -1324,19 +1329,20 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         self.logger.info(f"Completed processing sheet {sheet_name} with {len(processed_tables)} tables")
         return {"sheet_name": sheet_name, "tables": processed_tables}
 
-    async def get_blocks_from_workbook(self, llm) -> BlocksContainer:
+    async def get_blocks_from_workbook(self, llm: BaseChatModel) -> BlocksContainer:
         """Build a BlocksContainer with SHEET and TABLE groups and TABLE_ROW blocks.
 
         Mirrors the CSV blocks structure, but nests tables under sheet groups.
         """
         self.logger.info("Building blocks from workbook")
-        blocks: List[Block] = []
-        block_groups: List[BlockGroup] = []
+        blocks: list[Block] = []
+        block_groups: list[BlockGroup] = []
 
         # Initialize cumulative row count for record-level threshold checking
         cumulative_row_count = [0]
 
         # Iterate sheets and build hierarchy
+        assert self.workbook is not None, "Workbook must be loaded before calling get_blocks_from_workbook"
         self.logger.info(f"Processing {len(self.workbook.sheetnames)} sheets: {self.workbook.sheetnames}")
         for sheet_idx, sheet_name in enumerate(self.workbook.sheetnames, 1):
             self.logger.info(f"Processing sheet {sheet_idx}/{len(self.workbook.sheetnames)}: {sheet_name}")

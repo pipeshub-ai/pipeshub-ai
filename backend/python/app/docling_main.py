@@ -1,9 +1,11 @@
 import asyncio
+import logging
 import os
 import signal
 import sys
+import types
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 import uvicorn
 from fastapi import FastAPI
@@ -22,8 +24,8 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 # Only for development/debugging
-def handle_sigterm(signum, frame) -> None:
-    print(f"Received signal {signum}, {frame} shutting down gracefully")
+def handle_sigterm(signum: int, frame: types.FrameType | None) -> None:
+    logging.getLogger(__name__).info("Received signal %s, %s; shutting down gracefully", signum, frame)
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, handle_sigterm)
@@ -40,7 +42,7 @@ async def get_initialized_container() -> DoclingAppContainer:
             if not hasattr(get_initialized_container, "initialized"):
                 await initialize_container(container)
                 container.wire(modules=["app.services.docling.docling_service"])
-                get_initialized_container.initialized = True
+                setattr(get_initialized_container, "initialized", True)
     return container
 
 @asynccontextmanager
@@ -48,6 +50,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
 
     # Initialize container and Docling service
+    logger = None
     try:
         app_container = await get_initialized_container()
         app.container = app_container
@@ -62,7 +65,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Wire the initialized instance into the mounted routes
         set_docling_service(app.state.docling_service)
     except Exception as e:
-        logger.error(f"❌ Failed to initialize Docling service: {str(e)}")
+        if logger is not None:
+            logger.error(f"❌ Failed to initialize Docling service: {str(e)}")
         raise
 
     yield
@@ -148,7 +152,7 @@ async def health_check() -> JSONResponse:
             },
         )
 
-def run(host: str = "0.0.0.0", port: int = 8081, reload: bool = False) -> None:
+def run(host: str = "0.0.0.0", port: int = 8081, *, reload: bool = False) -> None:
     """Run the Docling service"""
     workers = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
     uvicorn.run(

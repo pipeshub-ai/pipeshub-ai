@@ -3,9 +3,12 @@ import json
 import os
 import ssl
 import threading
+from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
-from typing import Any, AsyncGenerator, Callable, Dict, Optional, Set, Tuple
+from typing import Any, Optional
+
+from typing_extensions import override
 
 from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore
@@ -60,9 +63,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Dual semaphores for parsing and indexing phases (created in worker thread)
         self.parsing_semaphore: Optional[asyncio.Semaphore] = None
         self.indexing_semaphore: Optional[asyncio.Semaphore] = None
-        self.message_handler: Optional[Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]] = None
+        self.message_handler: Optional[Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]]] = None
         # Track active futures for proper cleanup
-        self._active_futures: Set[Future] = set()
+        self._active_futures: set[Future[Any]] = set()
         self._futures_lock = threading.Lock()
         self._message_count = 0
         self._commit_lock: Optional[asyncio.Lock] = None
@@ -71,9 +74,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._backpressure_logged = False
 
     @staticmethod
-    def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> Dict[str, Any]:
+    def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> dict[str, Any]:
         """Convert KafkaConsumerConfig dataclass to dictionary format for aiokafka consumer"""
-        config = {
+        config: dict[str, Any] = {
             'bootstrap_servers': ",".join(kafka_config.bootstrap_servers),
             'group_id': kafka_config.group_id,
             'auto_offset_reset': kafka_config.auto_offset_reset,
@@ -138,6 +141,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.worker_executor.submit(run_worker_loop)
         self.logger.info("Worker thread started")
 
+    @override
     async def initialize(self) -> None:
         """Initialize the Kafka consumer and worker thread"""
         consumer = None
@@ -233,6 +237,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         with self._futures_lock:
             return len(self._active_futures)
 
+    @override
     async def cleanup(self) -> None:
         """Stop the Kafka consumer and clean up resources"""
         try:
@@ -245,9 +250,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
 
-    async def start(
+    @override
+    async def start(  # type: ignore[override]
         self,
-        message_handler: Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]  # type: ignore
+        message_handler: Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]]
     ) -> None:
         """Start consuming messages with the provided handler
 
@@ -271,7 +277,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.error(f"Failed to start Kafka consumer: {str(e)}")
             raise
 
-    async def stop(self, message_handler: Optional[Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]] = None) -> None:  # type: ignore
+    @override
+    async def stop(self, message_handler: Optional[Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]]] = None) -> None:  # type: ignore[override]
         """Stop consuming messages gracefully.
 
         Order of operations:
@@ -303,6 +310,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             except Exception as e:
                 self.logger.error(f"Error stopping Kafka consumer: {e}")
 
+    @override
     def is_running(self) -> bool:
         """Check if consumer is running"""
         return self.running
@@ -372,7 +380,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
 
 
-    def __parse_message(self, message) -> Optional[Dict[str, Any]]:
+    def __parse_message(self, message: ConsumerRecord) -> dict[str, Any] | None:
         """Parse the Kafka message value into a dictionary.
 
         Handles bytes decoding, JSON parsing, and double-encoded JSON.
@@ -447,7 +455,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self._active_futures.add(future)
 
         # Add callback to remove future from tracking when done
-        def on_future_done(f: Future) -> None:
+        def on_future_done(f: Future[Any]) -> None:
             with self._futures_lock:
                 self._active_futures.discard(f)
 
@@ -460,7 +468,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if self.main_loop and self.running:
                 self.main_loop.call_soon_threadsafe(
                     asyncio.create_task,
-                    self.__handle_task_completion(topic_partition, message.offset, success)
+                    self.__handle_task_completion(topic_partition, message.offset, success=success)
                 )
 
         future.add_done_callback(on_future_done)
@@ -472,7 +480,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 active_count = len(self._active_futures)
             self.logger.info(f"📊 Active processing tasks: {active_count}")
 
-    async def __handle_task_completion(self, topic_partition: TopicPartition, offset: int, success: bool) -> None:
+    async def __handle_task_completion(self, topic_partition: TopicPartition, offset: int, *, success: bool) -> None:
         """Commit only contiguous successfully processed offsets."""
         if not self.consumer:
             return

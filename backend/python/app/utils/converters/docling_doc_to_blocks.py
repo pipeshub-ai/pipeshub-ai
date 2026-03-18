@@ -410,7 +410,7 @@ class DoclingDocToBlocksConverter():
         self.logger.debug(f"Processed {len(blocks)} items in order")
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
-    async def convert(self, doc: DoclingDocument, page_number: int = None) -> BlocksContainer|bool:
+    async def convert(self, doc: DoclingDocument, page_number: int | None = None) -> BlocksContainer|bool:
         block_containers = await self._process_content_in_order(doc, page_number=page_number)
         return block_containers
 

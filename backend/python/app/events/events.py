@@ -4,9 +4,10 @@ import logging
 import math
 import multiprocessing
 import os
+from collections.abc import AsyncGenerator
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
-from typing import Any, AsyncGenerator, Dict
+from typing import Any, cast
 from uuid import uuid4
 
 import fitz
@@ -19,6 +20,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     ProgressStatus,
 )
+from app.events.processor import Processor
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -72,7 +74,7 @@ def _detect_pdf_needs_ocr(file_content: bytes) -> bool:
 
 
 class EventProcessor:
-    def __init__(self, logger, processor, graph_provider: IGraphDBProvider, config_service: ConfigurationService = None) -> None:
+    def __init__(self, logger: logging.Logger, processor: Processor, graph_provider: IGraphDBProvider, config_service: ConfigurationService | None = None) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing EventProcessor")
         self.processor = processor
@@ -92,7 +94,7 @@ class EventProcessor:
 
 
 
-    async def mark_record_status(self, doc: dict, status: ProgressStatus) -> None:
+    async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
         """
         Mark the record status to IN_PROGRESS
         """
@@ -127,7 +129,7 @@ class EventProcessor:
     async def _check_duplicate_by_md5(
         self,
         content: bytes | str,
-        doc: dict,
+        doc: dict[str, Any],
     ) -> bool:
         """
         Check for duplicate records by MD5 hash and handle accordingly.
@@ -157,7 +159,7 @@ class EventProcessor:
             return False
 
         duplicate_records = await self.graph_provider.find_duplicate_records(
-            record_key=doc.get('_key'),
+            record_key=cast(str, doc.get('_key')),
             md5_checksum=md5_checksum,
             record_type=record_type,
             size_in_bytes=size_in_bytes
@@ -191,8 +193,8 @@ class EventProcessor:
             await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
             # Copy all relationships from the processed duplicate to this document
             await self.graph_provider.copy_document_relationships(
-                processed_duplicate.get("_key"),
-                doc.get("_key") or doc.get("id")
+                cast(str, processed_duplicate.get("_key")),
+                cast(str, doc.get("_key") or doc.get("id"))
             )
             return True  # Duplicate handled
 
@@ -215,7 +217,7 @@ class EventProcessor:
         self.logger.info(f"🚀 No duplicate found, proceeding with processing for {doc.get('_key')}")
         return False  # No duplicate found, proceed with processing
 
-    async def on_event(self, event_data: dict) -> AsyncGenerator[Dict[str, Any], None]:
+    async def on_event(self, event_data: dict[str, Any]) -> AsyncGenerator[dict[str, Any], None]:
         """
         Process events received from Kafka consumer, yielding phase completion events.
 
@@ -238,7 +240,11 @@ class EventProcessor:
             event_type = event_data.get(
                 "eventType", EventTypes.NEW_RECORD.value
             )  # default to create
-            event_data = event_data.get("payload")
+            payload = event_data.get("payload")
+            if payload is None:
+                self.logger.error("❌ No payload in event data")
+                return
+            event_data = payload
             record_id = event_data.get("recordId")
             org_id = event_data.get("orgId")
             virtual_record_id = event_data.get("virtualRecordId")
@@ -252,11 +258,14 @@ class EventProcessor:
                 record_id, CollectionNames.RECORDS.value
             )
 
+            if record is None:
+                self.logger.error(f"❌ Record {record_id} not found")
+                return
 
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
-            doc = dict(record)
+            doc: dict[str, Any] = dict(record)
 
             # Extract necessary data
             record_version = event_data.get("version", 0)
@@ -268,6 +277,11 @@ class EventProcessor:
 
             file_content = event_data.get("buffer")
 
+            if file_content is None:
+                self.logger.error("❌ No file content (buffer) in event data")
+                return
+
+            file_content = cast(bytes, file_content)
             self.logger.debug(f"file_content type: {type(file_content)} length: {len(file_content)}")
 
             record_type = doc.get("recordType")
@@ -581,8 +595,8 @@ class EventProcessor:
                     recordId=record_id,
                     version=record_version,
                     source=connector,
-                    orgId=org_id,
-                    mdx_content=file_content,
+                    orgId=cast(str, org_id),
+                    mdx_content=cast(str, file_content),
                     virtual_record_id=virtual_record_id
                 ):
                     yield event
