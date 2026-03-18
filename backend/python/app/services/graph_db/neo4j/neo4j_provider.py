@@ -12792,10 +12792,10 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE rg_data IS NOT NULL AND rg.id = rg_data.id
 
             // Compute sharingStatus for KB recordGroups only
-            OPTIONAL MATCH (kb_user_perm:User)-[kb_up:PERMISSION {{type: 'USER'}}]->(rg)
+            OPTIONAL MATCH (kb_user_perm:User)-[kb_up:PERMISSION {type: 'USER'}]->(rg)
             WHERE rg.connectorName = 'KB'
 
-            OPTIONAL MATCH ()-[kb_tp:PERMISSION {{type: 'TEAM'}}]->(rg)
+            OPTIONAL MATCH ()-[kb_tp:PERMISSION {type: 'TEAM'}]->(rg)
             WHERE rg.connectorName = 'KB'
 
             WITH rg_data, final_accessible_rgs, final_accessible_records, records_with_fallback, rg,
