@@ -1,19 +1,58 @@
+# Gemini Code Assist Configuration
+# Docs: https://developers.google.com/gemini-code-assist/docs/customize-gemini-behavior-github
+
+# Fun features like poems in PR summaries (keep professional)
+have_fun: false
+
+# Persistent memory — remembers context across reviews for better suggestions
+memory_config:
+  disabled: false
+
+# Code review settings
 code_review:
+  # LOW = catch everything (type issues, style, performance, security, correctness)
+  # Options: LOW, MEDIUM, HIGH, CRITICAL
   comment_severity_threshold: LOW
+  # Unlimited review comments — we want thorough reviews
   max_review_comments: -1
 
-pull_request_opened:
-  summary: true
-  code_review: true
-  include_drafts: false
+  # What happens when a PR is opened (MUST be nested under code_review)
+  pull_request_opened:
+    # Show help commands (/review, /ask, etc.)
+    help: true
+    # Generate a summary of changes
+    summary: true
+    # Auto-run code review on PR open
+    code_review: true
+    # Also review draft PRs — catch issues early before PR is marked ready
+    include_drafts: true
 
+# Files to skip during review — generated/vendored/build artifacts
 ignore_patterns:
   - "*.min.js"
+  - "*.min.css"
   - "*.generated.*"
+  - "*.pb.go"
   - "node_modules/**"
   - "venv/**"
+  - ".venv/**"
   - "__pycache__/**"
   - "*.pyc"
   - "dist/**"
   - "build/**"
   - ".git/**"
+  - "*.lock"
+  - "package-lock.json"
+  - "*.map"
+  - "coverage/**"
+  - ".next/**"
+  - "*.svg"
+  - "*.png"
+  - "*.jpg"
+  - "*.jpeg"
+  - "*.gif"
+  - "*.ico"
+  - "*.woff"
+  - "*.woff2"
+  - "*.ttf"
+  - "*.eot"

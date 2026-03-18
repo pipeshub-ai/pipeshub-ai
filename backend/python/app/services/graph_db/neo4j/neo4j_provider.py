@@ -11961,91 +11961,23 @@ class Neo4jProvider(IGraphDBProvider):
         limit: int,
         sort_field: str,
         sort_dir: str,
-        include_kbs: bool,
-        include_apps: bool,
         only_containers: bool,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Get root level nodes (KBs and Apps) for Knowledge Hub."""
+        """Get root level nodes (Apps) for Knowledge Hub."""
         try:
             query = """
-            MATCH (user_doc:User {id: $user_key})
-            WITH user_doc, user_doc.userId AS user_id
-
-            // ==================== Get Knowledge Bases ====================
-            // Get KBs only if include_kbs is true
-            OPTIONAL MATCH (kb:RecordGroup)
-            WHERE $include_kbs = true
-              AND kb.orgId = $org_id
-              AND kb.connectorName = 'KB'
-
-            // Check direct user permission
-            OPTIONAL MATCH (user_doc)-[direct_perm:PERMISSION {type: 'USER'}]->(kb)
-
-            // Check team permission
-            OPTIONAL MATCH (user_doc)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:PERMISSION {type: 'TEAM'}]->(kb)
-
-            WITH kb, user_doc, user_id,
-                 (direct_perm IS NOT NULL OR team IS NOT NULL) AS has_permission
-            WHERE kb IS NULL OR has_permission
-
-            // Check for children via BELONGS_TO edges (only records, not nested RecordGroups)
-            OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(kb)
-            WHERE record.externalParentId IS NULL
-
-            WITH kb, user_doc, user_id,
-                 count(DISTINCT record) > 0 AS has_children
-
-            // Determine sharing status - collect permissions
-            OPTIONAL MATCH (user_perm_user:User)-[user_perm:PERMISSION {type: 'USER'}]->(kb)
-
-            OPTIONAL MATCH ()-[team_perm:PERMISSION {type: 'TEAM'}]->(kb)
-
-            WITH kb, has_children, user_doc, user_id,
-                 (kb.createdBy = $user_key OR kb.createdBy = user_id) AS is_creator,
-                 collect(DISTINCT user_perm) AS user_perms,
-                 collect(DISTINCT team_perm) AS team_perms
-
-            WITH kb, has_children, user_doc, user_id, is_creator,
-                 (size(user_perms) > (CASE WHEN is_creator THEN 1 ELSE 0 END) OR size(team_perms) > 0) AS has_other_users
-
-            WITH user_doc, user_id,
-                 CASE WHEN kb IS NOT NULL
-                      THEN {
-                          id: kb.id,
-                          name: kb.groupName,
-                          nodeType: 'kb',
-                          parentId: null,
-                          origin: 'KB',
-                          connector: 'KB',
-                          createdAt: kb.createdAtTimestamp,
-                          updatedAt: kb.updatedAtTimestamp,
-                          webUrl: '/kb/' + kb.id,
-                          hasChildren: has_children,
-                          sharingStatus: CASE WHEN is_creator AND NOT has_other_users
-                                              THEN 'private' ELSE 'shared' END
-                      }
-                      ELSE null
-                 END AS kb_node
-
-            WITH collect(kb_node) AS kb_nodes_raw
-            WITH [n IN kb_nodes_raw WHERE n IS NOT NULL] AS kb_nodes
-
             // ==================== Get Apps ====================
-            // Get apps only if include_apps is true
             OPTIONAL MATCH (app:App)
-            WHERE $include_apps = true
-              AND app.id IN $user_app_ids
-              AND app.type <> 'KB'
+            WHERE app.id IN $user_app_ids
 
             // Check for children (record groups)
             OPTIONAL MATCH (rg:RecordGroup)
             WHERE rg.connectorId = app.id
 
-            WITH kb_nodes, app, count(rg) > 0 AS has_children
+            WITH app, count(rg) > 0 AS has_children
 
-            WITH kb_nodes,
-                 CASE WHEN app IS NOT NULL
+            WITH CASE WHEN app IS NOT NULL
                       THEN {
                           id: app.id,
                           name: app.name,
@@ -12062,9 +11994,8 @@ class Neo4jProvider(IGraphDBProvider):
                       ELSE null
                  END AS app_node
 
-            WITH kb_nodes, collect(app_node) AS app_nodes_raw
-            WITH kb_nodes, [n IN app_nodes_raw WHERE n IS NOT NULL] AS app_nodes
-            WITH kb_nodes + app_nodes AS all_nodes
+            WITH collect(app_node) AS app_nodes_raw
+            WITH [n IN app_nodes_raw WHERE n IS NOT NULL] AS all_nodes
 
             // Apply sorting with explicit field mapping (Neo4j doesn't support dynamic property access)
             UNWIND all_nodes AS node
@@ -12094,10 +12025,7 @@ class Neo4jProvider(IGraphDBProvider):
                 query,
                 parameters={
                     "user_key": user_key,
-                    "org_id": org_id,
                     "user_app_ids": user_app_ids,
-                    "include_kbs": include_kbs,
-                    "include_apps": include_apps,
                     "skip": skip,
                     "limit": limit,
                     "sort_field": sort_field,
@@ -12136,7 +12064,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         Args:
             parent_id: The ID of the parent node.
-            parent_type: The type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'.
+            parent_type: The type of parent: 'app', 'recordGroup', 'folder', 'record'.
             org_id: The organization ID.
             user_key: The user's key for permission filtering.
             skip: Number of items to skip for pagination.
@@ -12162,7 +12090,7 @@ class Neo4jProvider(IGraphDBProvider):
                 "only_containers": only_containers,
                 "source": "CONNECTOR",
             }
-        elif parent_type in ("kb", "recordGroup"):
+        elif parent_type == "recordGroup":
             sub_query = self._get_record_group_children_cypher(parent_type)
             params = {
                 "parent_id": parent_id,
@@ -12173,7 +12101,6 @@ class Neo4jProvider(IGraphDBProvider):
                 "sort_field": sort_field,
                 "sort_dir": sort_dir.upper(),
                 "only_containers": only_containers,
-                "source": "KB" if parent_type == "kb" else "CONNECTOR",
             }
         elif parent_type in ("folder", "record"):
             sub_query = self._get_record_children_cypher()
@@ -12201,7 +12128,7 @@ class Neo4jProvider(IGraphDBProvider):
         WITH node WHERE
             ($only_containers IN [false, 'False', 'false'] OR $only_containers = false)
             OR node.hasChildren = true
-            OR node.nodeType IN ['app', 'kb', 'recordGroup', 'folder']
+            OR node.nodeType IN ['app', 'recordGroup', 'folder']
 
         // Sort with explicit field mapping (Neo4j doesn't support dynamic property access)
         WITH node,
@@ -12250,7 +12177,6 @@ class Neo4jProvider(IGraphDBProvider):
         record_types: Optional[List[str]] = None,
         origins: Optional[List[str]] = None,
         connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
         indexing_status: Optional[List[str]] = None,
         created_at: Optional[Dict[str, Optional[int]]] = None,
         updated_at: Optional[Dict[str, Optional[int]]] = None,
@@ -12276,7 +12202,7 @@ class Neo4jProvider(IGraphDBProvider):
         start = time.perf_counter()
 
         try:
-            self.logger.info(f"🔍 Starting knowledge hub search with parent_id={parent_id}, parent_type={parent_type}, only_containers={only_containers}, search_query={search_query}, node_types={node_types}, record_types={record_types}, origins={origins}, connector_ids={connector_ids}, kb_ids={kb_ids}, indexing_status={indexing_status}, created_at={created_at}, updated_at={updated_at}, size={size}")
+            self.logger.info(f"🔍 Starting knowledge hub search with parent_id={parent_id}, parent_type={parent_type}, only_containers={only_containers}, search_query={search_query}, node_types={node_types}, record_types={record_types}, origins={origins}, connector_ids={connector_ids}, indexing_status={indexing_status}, created_at={created_at}, updated_at={updated_at}, size={size}")
             # Build filter conditions using helper
             filter_conditions, filter_params = self._build_knowledge_hub_filter_conditions(
                 search_query=search_query,
@@ -12288,7 +12214,6 @@ class Neo4jProvider(IGraphDBProvider):
                 size=size,
                 origins=origins,
                 connector_ids=connector_ids,
-                kb_ids=kb_ids,
                 only_containers=only_containers,
             )
 
@@ -12305,9 +12230,9 @@ class Neo4jProvider(IGraphDBProvider):
                     self.logger.warning(f"Failed to fetch parent record connectorId: {str(e)}")
                     parent_connector_id = None
 
-            # For children-first approach (kb/recordGroup/record/folder), skip scope filters
+            # For children-first approach (recordGroup/record/folder), skip scope filters
             # The intersection will handle scoping instead
-            if parent_id and parent_type in ("kb", "recordGroup", "record", "folder"):
+            if parent_id and parent_type in ("recordGroup", "record", "folder"):
                 # Don't apply scope filters - let children intersection handle it
                 scope_filter_rg = ""
                 scope_filter_record = ""
@@ -12332,7 +12257,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Add bind variables based on parent_type
             if parent_id:
-                if parent_type in ("kb", "recordGroup"):
+                if parent_type == "recordGroup":
                     # Children-first approach: need parent_doc_id (RecordGroup ID)
                     params["parent_doc_id"] = parent_id
                 elif parent_type in ("record", "folder"):
@@ -12547,12 +12472,11 @@ class Neo4jProvider(IGraphDBProvider):
                      {
                        id: rg.id,
                        name: rg.groupName,
-                       nodeType: CASE WHEN rg.connectorName = 'KB' OR rg.groupType = 'KB' THEN 'kb' ELSE 'recordGroup' END,
+                       nodeType: 'recordGroup',
                        parentId: null,
-                       origin: CASE WHEN rg.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+                       origin: CASE WHEN rg.connectorName = 'KB' THEN 'COLLECTION' ELSE 'CONNECTOR' END,
                        connector: rg.connectorName,
                        connectorId: CASE WHEN rg.connectorName <> 'KB' THEN rg.connectorId ELSE null END,
-                       kbId: CASE WHEN rg.connectorName = 'KB' THEN rg.id ELSE null END,
                        externalGroupId: rg.externalGroupId,
                        recordType: null,
                        recordGroupType: rg.groupType,
@@ -12592,7 +12516,7 @@ class Neo4jProvider(IGraphDBProvider):
             WITH record, rg_nodes, file_info, has_children,
                  CASE
                    WHEN record IS NULL THEN null
-                   WHEN record.connectorName = 'KB' THEN 'KB'
+                   WHEN record.connectorName = 'KB' THEN 'COLLECTION'
                    ELSE 'CONNECTOR'
                  END AS source
 
@@ -12607,7 +12531,6 @@ class Neo4jProvider(IGraphDBProvider):
            origin: source,
            connector: record.connectorName,
            connectorId: CASE WHEN source = 'CONNECTOR' THEN record.connectorId ELSE null END,
-           kbId: CASE WHEN source = 'KB' THEN record.externalGroupId ELSE null END,
            externalGroupId: record.externalGroupId,
            recordType: record.recordType,
            recordGroupType: null,
@@ -12641,7 +12564,7 @@ class Neo4jProvider(IGraphDBProvider):
             WITH node
             WHERE (toBoolean($only_containers) = false)
                OR node.hasChildren = true
-               OR node.nodeType IN ['app', 'kb', 'recordGroup', 'folder']
+               OR node.nodeType IN ['app', 'recordGroup', 'folder']
 
             // Deduplicate by node.id
             WITH node.id AS node_id, collect(node)[0] AS node
@@ -12746,7 +12669,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WITH record, rg, app, f, is_folder,
                      CASE
                          WHEN record IS NOT NULL THEN CASE WHEN is_folder THEN 'folder' ELSE 'record' END
-                         WHEN rg IS NOT NULL THEN CASE WHEN rg.connectorName = 'KB' THEN 'kb' ELSE 'recordGroup' END
+                         WHEN rg IS NOT NULL THEN 'recordGroup'
                          WHEN app IS NOT NULL THEN 'app'
                          ELSE null
                      END AS node_type,
@@ -12807,7 +12730,7 @@ class Neo4jProvider(IGraphDBProvider):
                          // RecordGroups: Step 1 - Check BELONGS_TO to recordGroup, Step 2 - Check BELONGS_TO to app
                         WHEN rg IS NOT NULL THEN CASE
                             WHEN rg_parent IS NOT NULL THEN rg_parent.id
-                            WHEN app_parent IS NOT NULL AND app_parent.type <> 'KB' THEN app_parent.id
+                            WHEN app_parent IS NOT NULL THEN app_parent.id
                             ELSE null
                         END
 
@@ -12817,7 +12740,7 @@ class Neo4jProvider(IGraphDBProvider):
                      CASE
                          WHEN record IS NOT NULL THEN record.recordType
                          WHEN rg IS NOT NULL THEN CASE
-                             WHEN rg.connectorName = 'KB' THEN 'KB'
+                             WHEN rg.connectorName = 'KB' THEN 'COLLECTION'
                              ELSE coalesce(rg.groupType, rg.connectorName)
                          END
                          WHEN app IS NOT NULL THEN app.type
@@ -12934,7 +12857,7 @@ class Neo4jProvider(IGraphDBProvider):
                     user_var="u"
                 )
                 rg_permission_call = self._get_permission_role_cypher(
-                    node_type="kb",  # Works for both KB and RecordGroup
+                    node_type="recordGroup",
                     node_var="rg",
                     user_var="u"
                 )
@@ -13063,12 +12986,9 @@ class Neo4jProvider(IGraphDBProvider):
                 WHEN rg IS NOT NULL THEN {
                     id: rg.id,
                     name: rg.groupName,
-                    nodeType: CASE
-                        WHEN rg.connectorName = 'KB' THEN 'kb'
-                        ELSE 'recordGroup'
-                    END,
+                    nodeType: 'recordGroup',
                     subType: CASE
-                        WHEN rg.connectorName = 'KB' THEN 'KB'
+                        WHEN rg.connectorName = 'KB' THEN 'COLLECTION'
                         ELSE coalesce(rg.groupType, rg.connectorName)
                     END
                 }
@@ -13191,12 +13111,11 @@ class Neo4jProvider(IGraphDBProvider):
                     // KB record groups: use BELONGS_TO edge result
                     WHEN rg.connectorName = 'KB' THEN CASE
                         WHEN rg_parent IS NULL THEN null
-                        WHEN rg_parent.type = 'KB' THEN null  // KB app shouldn't be shown
                         WHEN rg_parent:RecordGroup AND rg_parent.id IS NOT NULL AND rg_parent.groupName IS NOT NULL THEN {
                             id: rg_parent.id,
                             name: rg_parent.groupName,
-                            nodeType: CASE WHEN rg_parent.connectorName = 'KB' THEN 'kb' ELSE 'recordGroup' END,
-                            subType: CASE WHEN rg_parent.connectorName = 'KB' THEN 'KB' ELSE coalesce(rg_parent.groupType, rg_parent.connectorName) END
+                            nodeType: 'recordGroup',
+                            subType: CASE WHEN rg_parent.connectorName = 'KB' THEN 'COLLECTION' ELSE coalesce(rg_parent.groupType, rg_parent.connectorName) END
                         }
                         WHEN rg_parent:App AND rg_parent.id IS NOT NULL AND rg_parent.name IS NOT NULL THEN {
                             id: rg_parent.id,
@@ -13236,12 +13155,9 @@ class Neo4jProvider(IGraphDBProvider):
                     WHEN final_parent_rg IS NOT NULL AND final_parent_rg.id IS NOT NULL AND final_parent_rg.groupName IS NOT NULL THEN {
                         id: final_parent_rg.id,
                         name: final_parent_rg.groupName,
-                        nodeType: CASE
-                            WHEN final_parent_rg.connectorName = 'KB' THEN 'kb'
-                            ELSE 'recordGroup'
-                        END,
+                        nodeType: 'recordGroup',
                         subType: CASE
-                            WHEN final_parent_rg.connectorName = 'KB' THEN 'KB'
+                            WHEN final_parent_rg.connectorName = 'KB' THEN 'COLLECTION'
                             ELSE coalesce(final_parent_rg.groupType, final_parent_rg.connectorName)
                         END
                     }
@@ -13270,59 +13186,38 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: Optional[str] = None
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Get available filter options (KBs and Apps) for a user.
-        Returns only KBs and Connectors that the user has access to.
+        Get available filter options (Apps) for a user.
+        Returns connector apps the user has access to. Excludes the Collection app (type='KB').
         """
         try:
             query = """
-            // Get KBs the user has access to via direct, team, or group permissions
             MATCH (u:User {id: $user_key})
 
-            // Direct KB permissions
-            OPTIONAL MATCH (u)-[perm:PERMISSION {type: 'USER'}]->(kb:RecordGroup)
-            WHERE kb.groupType = 'KB' AND kb.connectorName = 'KB'
-                  AND kb.orgId = $org_id AND NOT coalesce(kb.isDeleted, false)
-
-            // Team-based KB permissions
-            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:PERMISSION {type: 'TEAM'}]->(kb_team:RecordGroup)
-            WHERE kb_team.groupType = 'KB' AND kb_team.connectorName = 'KB'
-                  AND kb_team.orgId = $org_id AND NOT coalesce(kb_team.isDeleted, false)
-
-            // Group-based KB permissions
-            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp:Group)-[:PERMISSION {type: 'GROUP'}]->(kb_group:RecordGroup)
-            WHERE kb_group.groupType = 'KB' AND kb_group.connectorName = 'KB'
-                  AND kb_group.orgId = $org_id AND NOT coalesce(kb_group.isDeleted, false)
-
-            // Collect and combine all KBs (nulls automatically excluded by DISTINCT on node)
-            WITH u, collect(DISTINCT kb) + collect(DISTINCT kb_team) + collect(DISTINCT kb_group) AS all_kbs_raw
-
-            // Get apps via USER_APP_RELATION
+            // Get apps via USER_APP_RELATION (exclude Collection app so it is not in connector filter)
             OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(app:App)
+            WHERE app.type <> 'KB'
 
-            WITH all_kbs_raw, collect(DISTINCT app) AS all_apps_raw
+            WITH collect(DISTINCT app) AS all_apps_raw
 
-            // Filter nulls and transform using list comprehensions (avoids UNWIND empty list issue)
+            // Filter nulls and transform using list comprehensions
             WITH
-                [kb IN all_kbs_raw WHERE kb IS NOT NULL AND kb.id IS NOT NULL AND kb.groupName IS NOT NULL |
-                    {id: kb.id, name: kb.groupName}
-                ] AS kbs,
                 [app IN all_apps_raw WHERE app IS NOT NULL AND app.id IS NOT NULL |
                     {id: app.id, name: app.name, type: app.type}
                 ] AS apps
 
-            RETURN {kbs: kbs, apps: apps} AS result
+            RETURN {apps: apps} AS result
             """
             results = await self.client.execute_query(
                 query,
-                parameters={"user_key": user_key, "org_id": org_id},
+                parameters={"user_key": user_key},
                 txn_id=transaction
             )
             if results and results[0].get("result"):
                 return results[0]["result"]
-            return {"kbs": [], "apps": []}
+            return {"apps": []}
         except Exception as e:
             self.logger.error(f"❌ Get knowledge hub filter options failed: {str(e)}")
-            return {"kbs": [], "apps": []}
+            return {"apps": []}
 
     def _get_app_children_cypher(self) -> str:
         """Generate Cypher sub-query to fetch RecordGroups for an App.
@@ -13379,7 +13274,7 @@ class Neo4jProvider(IGraphDBProvider):
             name: rg.groupName,
             nodeType: 'recordGroup',
             parentId: 'apps/' + parent_id,
-            origin: CASE WHEN rg.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+            origin: CASE WHEN rg.connectorName = 'KB' THEN 'COLLECTION' ELSE 'CONNECTOR' END,
             connector: rg.connectorName,
             recordType: null,
             recordGroupType: rg.groupType,
@@ -13463,10 +13358,9 @@ class Neo4jProvider(IGraphDBProvider):
                 name: record.recordName,
                 nodeType: CASE WHEN is_folder THEN 'folder' ELSE 'record' END,
                 parentId: 'recordGroups/' + parent_id,
-                origin: CASE WHEN record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+                origin: CASE WHEN record.connectorName = 'KB' THEN 'COLLECTION' ELSE 'CONNECTOR' END,
                 connector: record.connectorName,
                 connectorId: CASE WHEN record.connectorName <> 'KB' THEN record.connectorId ELSE null END,
-                kbId: CASE WHEN record.connectorName = 'KB' THEN record.externalGroupId ELSE null END,
                 externalGroupId: record.externalGroupId,
                 recordType: record.recordType,
                 recordGroupType: null,
@@ -13529,10 +13423,9 @@ class Neo4jProvider(IGraphDBProvider):
                 name: node.groupName,
                 nodeType: 'recordGroup',
                 parentId: 'recordGroups/' + parent_id,
-                origin: CASE WHEN node.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+                origin: CASE WHEN node.connectorName = 'KB' THEN 'COLLECTION' ELSE 'CONNECTOR' END,
                 connector: node.connectorName,
                 connectorId: CASE WHEN node.connectorName <> 'KB' THEN node.connectorId ELSE null END,
-                kbId: CASE WHEN node.connectorName = 'KB' THEN parent_id ELSE null END,
                 externalGroupId: node.externalGroupId,
                 recordType: null,
                 recordGroupType: node.groupType,
@@ -13596,10 +13489,9 @@ class Neo4jProvider(IGraphDBProvider):
                 name: record.recordName,
                 nodeType: CASE WHEN is_folder THEN 'folder' ELSE 'record' END,
                 parentId: 'recordGroups/' + parent_id,
-                origin: CASE WHEN record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+                origin: CASE WHEN record.connectorName = 'KB' THEN 'COLLECTION' ELSE 'CONNECTOR' END,
                 connector: record.connectorName,
                 connectorId: CASE WHEN record.connectorName <> 'KB' THEN record.connectorId ELSE null END,
-                kbId: CASE WHEN record.connectorName = 'KB' THEN record.externalGroupId ELSE null END,
                 externalGroupId: record.externalGroupId,
                 recordType: record.recordType,
                 recordGroupType: null,
@@ -13684,10 +13576,9 @@ class Neo4jProvider(IGraphDBProvider):
             name: record.recordName,
             nodeType: CASE WHEN is_folder THEN 'folder' ELSE 'record' END,
             parentId: 'records/' + parent_id,
-            origin: CASE WHEN record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+            origin: CASE WHEN record.connectorName = 'KB' THEN 'COLLECTION' ELSE 'CONNECTOR' END,
             connector: record.connectorName,
             connectorId: CASE WHEN record.connectorName <> 'KB' THEN record.connectorId ELSE null END,
-            kbId: CASE WHEN record.connectorName = 'KB' THEN record.externalGroupId ELSE null END,
             externalGroupId: record.externalGroupId,
             recordType: record.recordType,
             recordGroupType: null,
@@ -13717,7 +13608,6 @@ class Neo4jProvider(IGraphDBProvider):
         size: Optional[Dict[str, Optional[int]]] = None,
         origins: Optional[List[str]] = None,
         connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
         only_containers: bool = False,
     ) -> tuple[List[str], Dict[str, Any]]:
         """
@@ -13745,8 +13635,6 @@ class Neo4jProvider(IGraphDBProvider):
                     type_conditions.append("node.nodeType = 'recordGroup'")
                 elif nt == "app":
                     type_conditions.append("node.nodeType = 'app'")
-                elif nt == "kb":
-                    type_conditions.append("node.nodeType = 'kb'")
             if type_conditions:
                 filter_conditions.append(f"({' OR '.join(type_conditions)})")
 
@@ -13787,19 +13675,9 @@ class Neo4jProvider(IGraphDBProvider):
             filter_params["origins"] = origins
             filter_conditions.append("node.origin IN $origins")
 
-        if connector_ids and kb_ids:
-            filter_params["connector_ids"] = connector_ids
-            filter_params["kb_ids"] = kb_ids
-            filter_conditions.append(
-                "((node.nodeType = 'app' AND node.id IN $connector_ids) OR (node.connectorId IN $connector_ids) OR "
-                "(node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.kbId IN $kb_ids))"
-            )
-        elif connector_ids:
+        if connector_ids:
             filter_params["connector_ids"] = connector_ids
             filter_conditions.append("((node.nodeType = 'app' AND node.id IN $connector_ids) OR (node.connectorId IN $connector_ids))")
-        elif kb_ids:
-            filter_params["kb_ids"] = kb_ids
-            filter_conditions.append("((node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.kbId IN $kb_ids))")
 
         # Add search condition to filter conditions if present
         if search_query:
@@ -14196,7 +14074,7 @@ class Neo4jProvider(IGraphDBProvider):
         """
         Generate Cypher subquery for children-first traversal and intersection.
 
-        When parent_type is kb/recordGroup/record/folder, this generates Cypher that:
+        When parent_type is recordGroup/record/folder, this generates Cypher that:
         1. Traverses children from the parent node
         2. Intersects found children with accessible nodes
         3. Returns final_accessible_rgs and final_accessible_records
@@ -14205,12 +14083,12 @@ class Neo4jProvider(IGraphDBProvider):
 
         Args:
             parent_id: Optional parent node ID
-            parent_type: Optional type of parent ('kb', 'recordGroup', 'record', 'folder')
+            parent_type: Optional type of parent ('recordGroup', 'record', 'folder')
 
         Returns:
             Cypher string to insert into the main query
         """
-        if not parent_id or parent_type not in ("kb", "recordGroup", "record", "folder"):
+        if not parent_id or parent_type not in ("recordGroup", "record", "folder"):
             # No children intersection needed - use accessible nodes as-is
             return """
             // No children intersection - use accessible nodes directly
@@ -14218,7 +14096,7 @@ class Neo4jProvider(IGraphDBProvider):
                  accessible_records AS final_accessible_records
             """
 
-        if parent_type in ("kb", "recordGroup"):
+        if parent_type == "recordGroup":
             # For KB/RecordGroup: traverse INHERIT_PERMISSIONS to find all children
             return """
             // ========== CHILDREN TRAVERSAL & INTERSECTION (kb/recordGroup parent) ==========

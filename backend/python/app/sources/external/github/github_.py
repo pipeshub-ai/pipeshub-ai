@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import base64
 import datetime
+import difflib
 from collections.abc import Sequence
 from typing import List, Optional
-import base64
-import difflib
+
 from github import (
     Github,  # type: ignore
 )
@@ -113,14 +114,15 @@ class GitHubDataSource:
 
     def list_user_repos(
         self,
-        user: str,
+        user: Optional[str]=None,
         type: str = "owner",
         per_page: Optional[int] = None,
         page: Optional[int] = None,
     ) -> GitHubResponse[list[Repository]]:
         """List repositories for a given user. When both per_page and page are omitted, returns all repos. When either is passed, returns one page (default 10 per page, max 50). Pass the login from get_owner(owner='me') result; do not pass 'me' here."""
         try:
-            u = self._sdk.get_user(user)
+            # passing user name changes base url fetches only public repos although authenticated
+            u = self._sdk.get_user(user) if user else self._sdk.get_user()
             paginated = u.get_repos(type=type)
             if per_page is None and page is None:
                 repos = list(paginated)
@@ -412,7 +414,7 @@ class GitHubDataSource:
     ) -> GitHubResponse[list[File]]:
         """
         Get file changes of a PR with complete diffs and safety limits.
-        
+
         Args:
             owner: Repository owner
             repo: Repository name
@@ -425,11 +427,11 @@ class GitHubDataSource:
                         to prevent context overflow on massive refactors.
             context_lines: Number of context lines around each change (default 3,
                         standard GitHub format).
-        
+
         Returns:
             GitHubResponse containing list of File objects with complete diffs,
             respecting safety limits to prevent context overflow.
-        
+
         Safety Features:
             - Skips files with >max_changes_per_file total changes
             - Truncates diffs longer than max_diff_lines
@@ -440,26 +442,26 @@ class GitHubDataSource:
             r = self._repo(owner, repo)
             pr = r.get_pull(number)
             files = list(pr.get_files())
-            
+
             # Fast path: return as-is if full content fetching disabled
             if not fetch_full_content:
                 return GitHubResponse(success=True, data=files)
-            
+
             # Process each file with safety checks
             enhanced_files = []
             skipped_count = 0
             truncated_count = 0
-            
+
             for file_obj in files:
                 raw_data = file_obj.raw_data if hasattr(file_obj, 'raw_data') else {}
-                
+
                 filename = raw_data.get("filename", "")
                 status = raw_data.get("status", "")
                 patch = raw_data.get("patch", "")
                 additions = raw_data.get("additions", 0)
                 deletions = raw_data.get("deletions", 0)
                 total_changes = additions + deletions
-                
+
                 # SAFETY CHECK 1: Skip files with excessive changes
                 if total_changes > max_changes_per_file:
                     import logging
@@ -468,7 +470,7 @@ class GitHubDataSource:
                         f"(exceeds limit of {max_changes_per_file}). "
                         f"Likely a full rewrite or generated file."
                     )
-                    
+
                     # Add explanatory note in the patch
                     enhanced_raw_data = dict(raw_data)
                     enhanced_raw_data["patch"] = (
@@ -479,19 +481,19 @@ class GitHubDataSource:
                     )
                     enhanced_raw_data["_skipped_large_file"] = True
                     enhanced_raw_data["_skip_reason"] = "excessive_changes"
-                    
+
                     if hasattr(file_obj, '_rawData'):
                         file_obj._rawData = enhanced_raw_data
                     elif hasattr(file_obj, 'raw_data'):
                         object.__setattr__(file_obj, '_raw_data', enhanced_raw_data)
-                    
+
                     enhanced_files.append(file_obj)
                     skipped_count += 1
                     continue
-                
+
                 # Detect truncated patches
                 is_truncated = False
-                
+
                 if total_changes > 0 and not patch:
                     is_truncated = True
                 elif patch and any(marker in patch.lower() for marker in [
@@ -500,12 +502,12 @@ class GitHubDataSource:
                     is_truncated = True
                 elif total_changes > 1000 and len(patch) < 500:
                     is_truncated = True
-                
+
                 # Skip fetching for removed/renamed files
                 if not is_truncated or status in ("removed", "renamed"):
                     enhanced_files.append(file_obj)
                     continue
-                
+
                 # Fetch full diff with safety limits
                 try:
                     full_diff = self._generate_full_diff_for_file(
@@ -517,32 +519,32 @@ class GitHubDataSource:
                         max_diff_lines=max_diff_lines,
                         context_lines=context_lines,
                     )
-                    
+
                     if full_diff:
                         # Check if diff was truncated
                         was_truncated = "[TRUNCATED]" in full_diff
                         if was_truncated:
                             truncated_count += 1
-                        
+
                         # Replace the truncated patch
                         enhanced_raw_data = dict(raw_data)
                         enhanced_raw_data["patch"] = full_diff
                         enhanced_raw_data["_full_content_fetched"] = True
                         if was_truncated:
                             enhanced_raw_data["_diff_truncated"] = True
-                        
+
                         if hasattr(file_obj, '_rawData'):
                             file_obj._rawData = enhanced_raw_data
                         elif hasattr(file_obj, 'raw_data'):
                             object.__setattr__(file_obj, '_raw_data', enhanced_raw_data)
-                    
+
                     enhanced_files.append(file_obj)
-                    
+
                 except Exception as e:
                     import logging
                     logging.warning(f"Failed to fetch full content for {filename}: {e}")
                     enhanced_files.append(file_obj)
-            
+
             # Log summary
             if skipped_count > 0 or truncated_count > 0:
                 import logging
@@ -552,9 +554,9 @@ class GitHubDataSource:
                     f"{skipped_count} skipped (excessive changes), "
                     f"{truncated_count} truncated (exceeded max_diff_lines)"
                 )
-            
+
             return GitHubResponse(success=True, data=enhanced_files)
-            
+
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
@@ -571,7 +573,7 @@ class GitHubDataSource:
     ) -> Optional[str]:
         """
         Generate a complete unified diff with safety limits.
-        
+
         Args:
             owner: Repository owner
             repo: Repository name
@@ -580,7 +582,7 @@ class GitHubDataSource:
             status: File status (added, modified, removed)
             max_diff_lines: Maximum lines in the diff (default 5000)
             context_lines: Number of context lines (default 3)
-        
+
         Returns:
             Complete unified diff as string, truncated if exceeds max_diff_lines,
             or None if generation fails.
@@ -588,27 +590,27 @@ class GitHubDataSource:
         try:
             base_sha = pr.base.sha
             head_sha = pr.head.sha
-            
+
             if not base_sha or not head_sha:
                 return None
-            
+
             # Fetch file content from base and head commits
             base_content = ""
             if status != "added":
                 base_content = self._fetch_file_content_at_ref(
                     owner, repo, filename, base_sha
                 )
-            
+
             head_content = ""
             if status != "removed":
                 head_content = self._fetch_file_content_at_ref(
                     owner, repo, filename, head_sha
                 )
-            
+
             # Generate unified diff
             base_lines = base_content.splitlines(keepends=True) if base_content else []
             head_lines = head_content.splitlines(keepends=True) if head_content else []
-            
+
             diff_iterator = difflib.unified_diff(
                 base_lines,
                 head_lines,
@@ -617,7 +619,7 @@ class GitHubDataSource:
                 lineterm="",
                 n=context_lines,  # Configurable context
             )
-            
+
             # Collect diff lines with limit
             diff_lines = []
             for i, line in enumerate(diff_iterator):
@@ -636,9 +638,9 @@ class GitHubDataSource:
                     )
                     break
                 diff_lines.append(line)
-            
+
             return "".join(diff_lines)
-            
+
         except Exception as e:
             import logging
             logging.debug(f"Error generating full diff for {filename}: {e}")
@@ -654,33 +656,33 @@ class GitHubDataSource:
     ) -> str:
         """
         Fetch file content from a specific commit/ref.
-        
+
         Args:
             owner: Repository owner
             repo: Repository name
             path: File path in the repository
             ref: Git reference (commit SHA, branch, tag)
-        
+
         Returns:
             File content as string, or empty string if file doesn't exist or is binary.
         """
         try:
             r = self._repo(owner, repo)
             content = r.get_contents(path, ref=ref)
-            
+
             # Handle directory response
             if isinstance(content, list):
                 return ""
-            
+
             # Decode content
             if hasattr(content, 'decoded_content'):
                 return content.decoded_content.decode("utf-8", errors="replace")
             elif hasattr(content, 'content'):
                 decoded_bytes = base64.b64decode(content.content)
                 return decoded_bytes.decode("utf-8", errors="replace")
-            
+
             return ""
-            
+
         except Exception as e:
             import logging
             logging.debug(f"Could not fetch {path} at {ref}: {e}")
