@@ -443,14 +443,6 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.md5Checksum)"
         )
 
-        # COMPOSITE: virtualRecordId + orgId (batch fetch after Qdrant search)
-        # Pattern: MATCH (r:Record) WHERE r.virtualRecordId IN $ids AND r.orgId = $orgId
-        # Used in: get_records_by_virtual_record_ids
-        indexes.append(
-            "CREATE INDEX record_virtual_id_org IF NOT EXISTS "
-            "FOR (n:Record) ON (n.virtualRecordId, n.orgId)"
-        )
-
         # ==================== USER INDEXES (High Priority) ====================
 
         # SINGLE: email (authentication, lookups)
@@ -3435,383 +3427,15 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get user app ids: {str(e)}")
             raise
 
-    async def get_accessible_records(
-        self, user_id: str, org_id: str, filters: dict = None
-    ) -> list:
-        """
-        Get all records accessible to a user based on their permissions and apply filters.
-
-        Args:
-            user_id (str): The userId field value in users collection
-            org_id (str): The org_id to filter anyone collection
-            filters (dict): Optional filters for departments, categories, languages, topics etc.
-                Format: {
-                    'departments': [dept_ids],
-                    'categories': [cat_ids],
-                    'subcategories1': [subcat1_ids],
-                    'subcategories2': [subcat2_ids],
-                    'subcategories3': [subcat3_ids],
-                    'languages': [language_ids],
-                    'topics': [topic_ids],
-                    'kb': [kb_ids],
-                    'apps': [connector_ids]
-                }
-        """
-        self.logger.info(
-            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
-        )
-
-        try:
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                self.logger.warning(f"User not found for userId: {user_id}")
-                return None
-
-            user_key = user.get('id') or user.get('_key')
-            # Get user's accessible app connector ids
-            user_apps_ids = await self._get_user_app_ids(user_key)
-
-            # Extract filters
-            kb_ids = filters.get("kb") if filters else None
-            connector_ids = filters.get("apps") if filters else None
-
-            # Determine filter case
-            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
-            has_app_filter = connector_ids is not None and len(connector_ids) > 0
-
-            self.logger.info(
-                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
-                f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
-            )
-
-            # Build a simplified Cypher query
-            # Collect all accessible records in one go
-            query = """
-            MATCH (userDoc:User {userId: $userId})
-
-            // Collect all accessible records from different paths
-            CALL {
-                WITH userDoc
-                // User -> Direct Records
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(r:Record)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records1
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> Group -> Records (via BELONGS_TO)
-                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(g:Group)-[:PERMISSION]->(r:Record)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records2
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> Group -> Records (via PERMISSION)
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(g:Group)-[:PERMISSION]->(r:Record)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records3
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> Organization -> Records
-                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(r:Record)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records4
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> Organization -> RecordGroup -> Records
-                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(rg:RecordGroup)
-                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..2]->(rg)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records5
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> Group/Role -> RecordGroup -> Records
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(gr)
-                WHERE gr:Group OR gr:Role
-                OPTIONAL MATCH (gr)-[:PERMISSION]->(rg:RecordGroup)
-                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records6
-            }
-
-            CALL {
-                WITH userDoc
-                // User -> RecordGroup -> Records
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(rg:RecordGroup)
-                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
-                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
-                RETURN collect(DISTINCT r) AS records7
-            }
-
-            CALL {
-                // Anyone records
-                OPTIONAL MATCH (anyone:Anyone {organization: $orgId})
-                OPTIONAL MATCH (r:Record)
-                WHERE r.id = anyone.file_key
-                  AND (r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids))
-                RETURN collect(DISTINCT r) AS records8
-            }
-
-            WITH userDoc, records1 + records2 + records3 + records4 + records5 + records6 + records7 + records8 AS directAndGroupRecords
-            """
-
-            query_parts = [query]
-
-            # Now handle the 4 cases based on filters
-
-            # Case 1: Both KB and App filters applied
-            if has_kb_filter and has_app_filter:
-                self.logger.info("🔍 Case 1: Both KB and App filters applied")
-
-                # Get KB records with filter
-                query_parts.append("""
-                CALL {
-                    WITH userDoc
-                    // Direct user-KB permissions
-                    OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:RecordGroup)
-                    WHERE kb.id IN $kb_ids
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS directKbRecords
-                }
-
-                CALL {
-                    WITH userDoc
-                    // Team-based KB permissions
-                    OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Teams)
-                    WHERE ute.type = "USER"
-                    OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:RecordGroup)
-                    WHERE tke.type = "TEAM" AND kb.id IN $kb_ids
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS teamKbRecords
-                }
-
-                WITH directKbRecords + teamKbRecords AS kbRecords, directAndGroupRecords
-                WITH kbRecords, [r IN directAndGroupRecords WHERE r.connectorId IN $connector_ids] AS appFilteredRecords
-                WITH kbRecords + appFilteredRecords AS allAccessibleRecords
-                """)
-
-            # Case 2: Only KB filter applied
-            elif has_kb_filter and not has_app_filter:
-                self.logger.info("🔍 Case 2: Only KB filter applied")
-
-                # Get only filtered KB records
-                query_parts.append("""
-                CALL {
-                    WITH userDoc
-                    // Direct user-KB permissions with filter
-                    OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:RecordGroup)
-                    WHERE kb.id IN $kb_ids
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS directKbRecords
-                }
-
-                CALL {
-                    WITH userDoc
-                    // Team-based KB permissions with filter
-                    OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Teams)
-                    WHERE ute.type = "USER"
-                    OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:RecordGroup)
-                    WHERE tke.type = "TEAM" AND kb.id IN $kb_ids
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS teamKbRecords
-                }
-
-                WITH directKbRecords + teamKbRecords AS allAccessibleRecords
-                """)
-
-            # Case 3: Only App filter applied
-            elif not has_kb_filter and has_app_filter:
-                self.logger.info("🔍 Case 3: Only App filter applied")
-
-                # Get app-filtered records from direct, group, org, and anyone
-                query_parts.append("""
-                WITH [r IN directAndGroupRecords WHERE r.connectorId IN $connector_ids] AS allAccessibleRecords
-                """)
-
-            # Case 4: No KB or App filters - return all accessible records
-            else:
-                self.logger.info("🔍 Case 4: No KB or App filters - returning all accessible records")
-
-                # Get all KB records
-                query_parts.append("""
-                CALL {
-                    WITH userDoc
-                    // Direct user-KB permissions
-                    OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:RecordGroup)
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS directKbRecords
-                }
-
-                CALL {
-                    WITH userDoc
-                    // Team-based KB permissions
-                    OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Teams)
-                    WHERE ute.type = "USER"
-                    OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:RecordGroup)
-                    WHERE tke.type = "TEAM"
-                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                    RETURN collect(DISTINCT r) AS teamKbRecords
-                }
-
-                WITH directKbRecords + teamKbRecords + directAndGroupRecords AS allAccessibleRecords
-                """)
-
-            # Add additional filter conditions (departments, categories, etc.)
-            filter_conditions = []
-            if filters:
-                if filters.get("departments"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
-                        WHERE dept.departmentName IN $departmentNames
-                    }
-                    """)
-
-                if filters.get("categories"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(cat:Category)
-                        WHERE cat.name IN $categoryNames
-                    }
-                    """)
-
-                if filters.get("subcategories1"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
-                        WHERE subcat.name IN $subcat1Names
-                    }
-                    """)
-
-                if filters.get("subcategories2"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
-                        WHERE subcat.name IN $subcat2Names
-                    }
-                    """)
-
-                if filters.get("subcategories3"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
-                        WHERE subcat.name IN $subcat3Names
-                    }
-                    """)
-
-                if filters.get("languages"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
-                        WHERE lang.name IN $languageNames
-                    }
-                    """)
-
-                if filters.get("topics"):
-                    filter_conditions.append("""
-                    EXISTS {
-                        MATCH (record)-[:BELONGS_TO_TOPIC]->(topic:Topic)
-                        WHERE topic.name IN $topicNames
-                    }
-                    """)
-
-            # Apply additional filters if any
-            if filter_conditions:
-                query_parts.append("""
-                UNWIND allAccessibleRecords AS record
-                WITH record
-                WHERE record IS NOT NULL
-                  AND """ + " AND ".join(filter_conditions) + """
-                RETURN DISTINCT record
-                """)
-            else:
-                query_parts.append("""
-                UNWIND allAccessibleRecords AS record
-                WITH record
-                WHERE record IS NOT NULL
-                RETURN DISTINCT record
-                """)
-
-            # Combine all query parts
-            query = "\n".join(query_parts)
-
-            # Prepare parameters
-            parameters = {
-                "userId": user_id,
-                "orgId": org_id,
-                "user_apps_ids": user_apps_ids,
-            }
-
-            # Add conditional parameters
-            if has_kb_filter:
-                parameters["kb_ids"] = kb_ids
-
-            if has_app_filter:
-                parameters["connector_ids"] = connector_ids
-
-            # Add filter parameters
-            if filters:
-                if filters.get("departments"):
-                    parameters["departmentNames"] = filters["departments"]
-                if filters.get("categories"):
-                    parameters["categoryNames"] = filters["categories"]
-                if filters.get("subcategories1"):
-                    parameters["subcat1Names"] = filters["subcategories1"]
-                if filters.get("subcategories2"):
-                    parameters["subcat2Names"] = filters["subcategories2"]
-                if filters.get("subcategories3"):
-                    parameters["subcat3Names"] = filters["subcategories3"]
-                if filters.get("languages"):
-                    parameters["languageNames"] = filters["languages"]
-                if filters.get("topics"):
-                    parameters["topicNames"] = filters["topics"]
-
-            # Execute query
-            self.logger.debug(f"🔍 Executing query with parameters keys: {list(parameters.keys())}")
-            results = await self.client.execute_query(query, parameters=parameters)
-
-            # Process results
-            record_list = []
-            if results:
-                for r in results:
-                    if r.get("record"):
-                        record_dict = dict(r["record"])
-                        record_list.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
-
-            record_count = len(record_list)
-            self.logger.info(f"✅ Query completed - found {record_count} accessible records")
-
-            if has_kb_filter:
-                self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
-            if has_app_filter:
-                self.logger.info(f"✅ App filtering applied for {len(connector_ids)} connector IDs")
-            if not has_kb_filter and not has_app_filter:
-                self.logger.info("✅ No KB/App filters - returned all accessible records")
-
-            return record_list
-
-        except Exception as e:
-            self.logger.error(f"❌ Get accessible records failed: {str(e)}")
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return []
-
     async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
         org_id: str,
         connector_id: str,
         metadata_filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds for a specific connector with all permission paths.
+        Get a mapping of virtualRecordId -> recordId for a specific connector with all permission paths.
 
         Args:
             user_id: The userId field value
@@ -3820,7 +3444,7 @@ class Neo4jProvider(IGraphDBProvider):
             metadata_filters: Optional metadata filters (departments, categories, etc.)
 
         Returns:
-            List of virtualRecordIds accessible for this connector
+            Dict mapping virtualRecordId -> recordId for accessible records in this connector
         """
         start_time = time.time()
         try:
@@ -3900,7 +3524,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records1
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records1
             }}
 
             CALL {{
@@ -3910,7 +3534,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records2
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records2
             }}
 
             CALL {{
@@ -3920,7 +3544,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records3
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records3
             }}
 
             CALL {{
@@ -3930,7 +3554,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records4
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records4
             }}
 
             CALL {{
@@ -3942,7 +3566,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records5
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records5
             }}
 
             CALL {{
@@ -3956,7 +3580,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records6
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records6
             }}
 
             CALL {{
@@ -3968,7 +3592,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records7
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records7
             }}
 
             CALL {{
@@ -3979,15 +3603,15 @@ class Neo4jProvider(IGraphDBProvider):
                   AND r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records8
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records8
             }}
 
-            // Union all virtualRecordIds and filter out nulls
-            WITH records1 + records2 + records3 + records4 + records5 + records6 + records7 + records8 AS allVirtualIds
-            UNWIND allVirtualIds AS virtualId
-            WITH virtualId
-            WHERE virtualId IS NOT NULL
-            RETURN DISTINCT virtualId
+            // Union all pairs and filter out nulls
+            WITH records1 + records2 + records3 + records4 + records5 + records6 + records7 + records8 AS allPairs
+            UNWIND allPairs AS pair
+            WITH pair
+            WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
+            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId
             """
 
             # Prepare parameters
@@ -4018,19 +3642,24 @@ class Neo4jProvider(IGraphDBProvider):
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
 
-            # Extract virtualRecordIds
-            virtual_ids = [r["virtualId"] for r in results if r.get("virtualId")]
+            # Build virtualRecordId -> recordId map (first seen wins for dedup)
+            virtual_id_to_record_id: dict[str, str] = {}
+            for r in results:
+                vid = r.get("virtualId")
+                rid = r.get("recordId")
+                if vid and rid and vid not in virtual_id_to_record_id:
+                    virtual_id_to_record_id[vid] = rid
 
             elapsed_time = time.time() - start_time
             self.logger.info(
-                f"✅ Connector {connector_id}: Found {len(virtual_ids)} virtualRecordIds in {elapsed_time:.3f}s"
+                f"✅ Connector {connector_id}: Found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed_time:.3f}s"
             )
-            return virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get virtual IDs for connector {connector_id}: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return []
+            return {}
 
     async def _get_kb_virtual_ids(
         self,
@@ -4038,9 +3667,9 @@ class Neo4jProvider(IGraphDBProvider):
         org_id: str,
         kb_ids: list[str] | None = None,
         metadata_filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds from Knowledge Bases (RecordGroups).
+        Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
 
         Args:
             user_id: The userId field value
@@ -4049,7 +3678,7 @@ class Neo4jProvider(IGraphDBProvider):
             metadata_filters: Optional metadata filters
 
         Returns:
-            List of virtualRecordIds from KBs
+            Dict mapping virtualRecordId -> recordId for accessible KB records
         """
         start_time = time.time()
         try:
@@ -4135,7 +3764,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.indexingStatus = $completedStatus
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS directKbRecords
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS directKbRecords
             }}
 
             CALL {{
@@ -4149,15 +3778,15 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.indexingStatus = $completedStatus
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS teamKbRecords
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS teamKbRecords
             }}
 
-            // Union all virtualRecordIds and filter out nulls
-            WITH directKbRecords + teamKbRecords AS allVirtualIds
-            UNWIND allVirtualIds AS virtualId
-            WITH virtualId
-            WHERE virtualId IS NOT NULL
-            RETURN DISTINCT virtualId
+            // Union all pairs and filter out nulls
+            WITH directKbRecords + teamKbRecords AS allPairs
+            UNWIND allPairs AS pair
+            WITH pair
+            WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
+            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId
             """
 
             # Prepare parameters
@@ -4190,35 +3819,37 @@ class Neo4jProvider(IGraphDBProvider):
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
 
-            # Extract virtualRecordIds
-            virtual_ids = [r["virtualId"] for r in results if r.get("virtualId")]
+            # Build virtualRecordId -> recordId map (first seen wins for dedup)
+            virtual_id_to_record_id: dict[str, str] = {}
+            for r in results:
+                vid = r.get("virtualId")
+                rid = r.get("recordId")
+                if vid and rid and vid not in virtual_id_to_record_id:
+                    virtual_id_to_record_id[vid] = rid
 
             elapsed_time = time.time() - start_time
             kb_filter_info = f" (filtered: {len(kb_ids)} KBs)" if kb_ids else " (all KBs)"
             self.logger.info(
-                f"✅ KB query{kb_filter_info}: Found {len(virtual_ids)} virtualRecordIds in {elapsed_time:.3f}s"
+                f"✅ KB query{kb_filter_info}: Found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed_time:.3f}s"
             )
-            return virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get KB virtual IDs: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return []
+            return {}
 
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
         org_id: str,
         filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get all virtual record ids accessible to a user based on their permissions and apply filters.
+        Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
 
-        OPTIMIZED VERSION:
-        - Returns only virtualRecordIds (not full records)
-        - Filters by indexingStatus = COMPLETED
-        - Applies KB/app filters during traversal (not post-filter)
-        - Parallelizes per-connector queries
+        Each virtualRecordId maps to the specific recordId that the user has permission to access.
+        This prevents cross-connector leakage where multiple connectors share the same virtualRecordId.
 
         Args:
             user_id (str): The userId field value in users collection
@@ -4237,7 +3868,7 @@ class Neo4jProvider(IGraphDBProvider):
                 }
 
         Returns:
-            List[str]: List of virtualRecordIds
+            Dict[str, str]: Mapping of virtualRecordId -> recordId
         """
         start_time = time.time()
         self.logger.info(
@@ -4357,76 +3988,75 @@ class Neo4jProvider(IGraphDBProvider):
             # Step 5: Execute all tasks in parallel
             if not tasks:
                 self.logger.warning("No tasks to execute")
-                return []
+                return {}
 
             self.logger.info(f"Executing {len(tasks)} parallel queries...")
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Step 6: Union and deduplicate virtualRecordIds
-            all_virtual_ids = []
+            # Step 6: Merge all virtualRecordId -> recordId dicts (first seen wins)
+            virtual_id_to_record_id: dict[str, str] = {}
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     self.logger.error(f"Task {i} failed: {str(result)}")
                     continue
                 if result:
-                    all_virtual_ids.extend(result)
-
-            # Deduplicate
-            unique_virtual_ids = list(set(all_virtual_ids))
+                    for vid, rid in result.items():
+                        if vid not in virtual_id_to_record_id:
+                            virtual_id_to_record_id[vid] = rid
 
             total_time = time.time() - start_time
 
             self.logger.info(
-                f"✅ Found {len(unique_virtual_ids)} unique virtualRecordIds "
-                f"from {len(all_virtual_ids)} total results in {total_time:.3f}s"
+                f"✅ Found {len(virtual_id_to_record_id)} unique virtualRecordIds "
+                f"in {total_time:.3f}s"
             )
 
-            return unique_virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(f"❌ Get accessible virtual record IDs failed: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return []
+            return {}
 
-    async def get_records_by_virtual_record_ids(
+    async def get_records_by_record_ids(
         self,
-        virtual_record_ids: list[str],
+        record_ids: list[str],
         org_id: str
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
-        Batch fetch full record documents by their virtualRecordIds.
+        Batch fetch full record documents by their record IDs (node id property).
 
-        This is used after Qdrant search to fetch only the records that were actually returned,
-        instead of fetching all accessible records upfront.
+        This is used after Qdrant search to fetch the specific records that the user
+        has permission to access, using the permission-verified record IDs from the
+        accessible virtual ID map.
 
         Args:
-            virtual_record_ids: List of virtualRecordIds to fetch
+            record_ids: List of record id values to fetch
             org_id: Organization ID for additional filtering
 
         Returns:
-            List of full record dictionaries
+            List[Dict[str, Any]]: List of full record dictionaries
         """
         try:
-            if not virtual_record_ids:
+            if not record_ids:
                 return []
 
-            self.logger.debug(f"Fetching {len(virtual_record_ids)} records by virtualRecordIds")
+            self.logger.debug(f"Fetching {len(record_ids)} records by record IDs")
 
             query = """
             MATCH (r:Record)
-            WHERE r.virtualRecordId IN $virtual_record_ids
+            WHERE r.id IN $record_ids
               AND r.orgId = $org_id
             RETURN r
             """
 
             parameters = {
-                "virtual_record_ids": virtual_record_ids,
+                "record_ids": record_ids,
                 "org_id": org_id
             }
 
             results = await self.client.execute_query(query, parameters=parameters)
 
-            # Convert to Arango format
             records = []
             if results:
                 for result in results:
@@ -4434,11 +4064,11 @@ class Neo4jProvider(IGraphDBProvider):
                         record_dict = dict(result["r"])
                         records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
 
-            self.logger.debug(f"✅ Fetched {len(records)} records")
+            self.logger.debug(f"✅ Fetched {len(records)} records by record IDs")
             return records
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to fetch records by virtualRecordIds: {str(e)}")
+            self.logger.error(f"❌ Failed to fetch records by record IDs: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return []
 
@@ -13173,13 +12803,13 @@ class Neo4jProvider(IGraphDBProvider):
                  collect(DISTINCT kb_tp) AS kb_team_perms
 
             WITH rg_data, final_accessible_rgs, final_accessible_records, records_with_fallback, rg,
-                 CASE 
-                     WHEN rg IS NOT NULL AND rg.connectorName = 'KB' THEN 
-                         CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0) 
-                              THEN 'shared' 
-                              ELSE 'private' 
+                 CASE
+                     WHEN rg IS NOT NULL AND rg.connectorName = 'KB' THEN
+                         CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0)
+                              THEN 'shared'
+                              ELSE 'private'
                          END
-                     ELSE null 
+                     ELSE null
                  END AS sharingStatus
 
             WITH final_accessible_rgs, final_accessible_records, records_with_fallback,
@@ -13995,13 +13625,13 @@ class Neo4jProvider(IGraphDBProvider):
              collect(DISTINCT kb_tp) AS kb_team_perms
 
         WITH app, u, parent_id, is_kb_app, rg, permission_role, has_child_rgs, has_records,
-             CASE 
-                 WHEN rg.connectorName = 'KB' THEN 
-                     CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0) 
-                          THEN 'shared' 
-                          ELSE 'private' 
+             CASE
+                 WHEN rg.connectorName = 'KB' THEN
+                     CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0)
+                          THEN 'shared'
+                          ELSE 'private'
                      END
-                 ELSE null 
+                 ELSE null
              END AS sharingStatus
 
         // Build result nodes
@@ -14167,13 +13797,13 @@ class Neo4jProvider(IGraphDBProvider):
                  collect(DISTINCT kb_tp) AS kb_team_perms
 
             WITH node, parent_id, permission_role, has_child_rgs, has_records,
-                 CASE 
-                     WHEN node.connectorName = 'KB' THEN 
-                         CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0) 
-                              THEN 'shared' 
-                              ELSE 'private' 
+                 CASE
+                     WHEN node.connectorName = 'KB' THEN
+                         CASE WHEN (size(kb_user_perms) > 1 OR size(kb_team_perms) > 0)
+                              THEN 'shared'
+                              ELSE 'private'
                          END
-                     ELSE null 
+                     ELSE null
                  END AS sharingStatus
 
             RETURN collect({{

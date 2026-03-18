@@ -2023,53 +2023,18 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_accessible_records(
-        self,
-        user_id: str,
-        org_id: str,
-        filters: dict[str, list[str]] | None = None,
-        transaction: str | None = None
-    ) -> list[dict]:
-        """
-        Get all records accessible to a user based on their permissions and apply filters.
-
-        Args:
-            user_id (str): The userId field value in users collection
-            org_id (str): The org_id to filter anyone collection
-            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
-                Format: {
-                    'departments': [dept_ids],
-                    'categories': [cat_ids],
-                    'subcategories1': [subcat1_ids],
-                    'subcategories2': [subcat2_ids],
-                    'subcategories3': [subcat3_ids],
-                    'languages': [language_ids],
-                    'topics': [topic_ids],
-                    'kb': [kb_ids],
-                    'apps': [connector_ids]
-                }
-            transaction (Optional[str]): Optional transaction context
-
-        Returns:
-            List[Dict]: List of accessible records
-        """
-        pass
-
-    @abstractmethod
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
         org_id: str,
         filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds of all records accessible to a user (optimized version).
+        Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
 
-        This is an optimized version that:
-        - Returns only virtualRecordIds (not full records)
-        - Filters by indexingStatus = COMPLETED
-        - Applies KB/app filters during traversal (not post-filter)
-        - Parallelizes per-connector queries
+        Each virtualRecordId maps to the specific recordId (the record's key/id) that the user
+        has permission to access. This prevents cross-connector leakage where multiple connectors
+        share the same virtualRecordId but only one is accessible to the user.
 
         Args:
             user_id (str): The userId field value in users collection
@@ -2088,28 +2053,29 @@ class IGraphDBProvider(ABC):
                 }
 
         Returns:
-            List[str]: List of virtualRecordIds
+            Dict[str, str]: Mapping of virtualRecordId -> recordId
         """
         pass
 
     @abstractmethod
-    async def get_records_by_virtual_record_ids(
+    async def get_records_by_record_ids(
         self,
-        virtual_record_ids: list[str],
+        record_ids: list[str],
         org_id: str
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
-        Batch fetch full record documents by their virtualRecordIds.
+        Batch fetch full record documents by their record IDs (_key in Arango / id in Neo4j).
 
-        This is used after vector search to fetch only the records that were actually returned,
-        instead of fetching all accessible records upfront.
+        This is used after Qdrant search to fetch the specific permission-verified records
+        using the recordIds from the accessible virtual ID map, preventing cross-connector
+        leakage.
 
         Args:
-            virtual_record_ids: List of virtualRecordIds to fetch
+            record_ids: List of record key/id values to fetch
             org_id: Organization ID for additional filtering
 
         Returns:
-            List[Dict]: List of full record dictionaries
+            List[Dict[str, Any]]: List of full record dictionaries
         """
         pass
 

@@ -473,7 +473,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.info("Knowledge graph already exists, skipping creation")
 
             # 3. Ensure persistent indexes for frequent query patterns
-            await self._ensure_indexes()
+            # await self._ensure_indexes()
 
             # 4. Seed departments collection with predefined department types
             await self._ensure_departments_seed()
@@ -16371,470 +16371,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return False
 
-    async def get_accessible_records(
-        self,
-        user_id: str,
-        org_id: str,
-        filters: dict[str, list[str]] | None = None,
-        transaction: str | None = None
-    ) -> list[dict]:
-        """
-        Get all records accessible to a user based on their permissions and apply filters.
-
-        Args:
-            user_id (str): The userId field value in users collection
-            org_id (str): The org_id to filter anyone collection
-            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
-            transaction (Optional[str]): Optional transaction context
-
-        Returns:
-            List[Dict]: List of accessible records
-        """
-        self.logger.info(
-            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
-        )
-
-        try:
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                self.logger.warning(f"User not found for userId: {user_id}")
-                return []
-
-            # Get user's accessible app connector ids (function expects external userId, not user_key)
-            user_apps_ids = await self._get_user_app_ids(user_id)
-
-            # Extract filters
-            filters = filters or {}
-            kb_ids = filters.get("kb") if filters else None
-            connector_ids = filters.get("apps") if filters else None
-
-            # Determine filter case
-            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
-            has_app_filter = connector_ids is not None and len(connector_ids) > 0
-
-            self.logger.info(
-                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
-                f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
-            )
-
-            # App filter condition - only filter connector records by user's accessible apps
-            app_filter_condition = '''
-                FILTER (
-                    record.origin == "UPLOAD" OR
-                    (record.origin == "CONNECTOR" AND record.connectorId IN @user_apps_ids)
-                )
-            '''
-
-            # Build base query with common parts
-            query = f"""
-            LET userDoc = FIRST(
-                FOR user IN @@users
-                FILTER user.userId == @userId
-                RETURN user
-            )
-
-
-            // User -> Direct Records (via permission edges)
-            LET directRecords = (
-                FOR record IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                    {app_filter_condition}
-                    RETURN DISTINCT record
-            )
-
-            // User -> Group -> Records (via belongs_to edges)
-            LET groupRecords = (
-                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                    {app_filter_condition}
-                    RETURN DISTINCT record
-            )
-
-            // User -> Group -> Records (via permission edges)
-            LET groupRecordsPermissionEdge = (
-                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                    {app_filter_condition}
-                    RETURN DISTINCT record
-            )
-
-            // User -> Organization -> Records (direct)
-            LET orgRecords = (
-                FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                    {app_filter_condition}
-                    RETURN DISTINCT record
-            )
-
-            // User -> Organization -> RecordGroup -> Records (direct and inherited)
-            LET orgRecordGroupRecords = (
-                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-
-                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-
-                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                            FILTER IS_SAME_COLLECTION("records", record)
-                            {app_filter_condition}
-                            RETURN DISTINCT record
-            )
-
-            // User -> Group/Role -> RecordGroup -> Record
-            LET recordGroupRecords = (
-
-                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-
-                FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-
-                // Support nested RecordGroups (0..5 levels)
-                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                FILTER IS_SAME_COLLECTION("records", record)
-                {app_filter_condition}
-                RETURN DISTINCT record
-            )
-
-            // User -> Group/Role -> RecordGroup -> Records (inherited)
-            LET inheritedRecordGroupRecords = (
-                FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-
-                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                FILTER IS_SAME_COLLECTION("records", record)
-                {app_filter_condition}
-                RETURN DISTINCT record
-            )
-
-            LET directAndGroupRecords = UNION_DISTINCT(
-                directRecords,
-                groupRecords,
-                orgRecords,
-                groupRecordsPermissionEdge,
-                recordGroupRecords,
-                inheritedRecordGroupRecords,
-                orgRecordGroupRecords
-            )
-
-            LET anyoneRecords = (
-                FOR records IN @@anyone
-                    FILTER records.organization == @orgId
-                    FOR record IN @@records
-                        FILTER record != null AND record._key == records.file_key
-                        {app_filter_condition}
-                        RETURN record
-            )
-            """
-
-            unions = []
-
-            # Case 1: Both KB and App filters applied
-            if has_kb_filter and has_app_filter:
-                self.logger.info("🔍 Case 1: Both KB and App filters applied")
-
-                # Get KB records with filter
-                query += f"""
-                // Direct user-KB permissions
-                LET directKbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER kb._key IN @kb_ids
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                // Team-based KB permissions: User -> Team -> KB -> Records
-                LET teamKbRecords = (
-                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("teams", team)
-                        FILTER userTeamEdge.type == "USER"
-                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER teamKbEdge.type == "TEAM"
-                        FILTER kb._key IN @kb_ids
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-                """
-                unions.append("kbRecords")
-
-                # Get app-filtered records from direct, group, org, and anyone
-                query += """
-                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
-                LET appFilteredRecords = (
-                    FOR record IN baseAccessible
-                        FILTER record.connectorId IN @connector_ids
-                        RETURN DISTINCT record
-                )
-                """
-                unions.append("appFilteredRecords")
-
-            # Case 2: Only KB filter applied
-            elif has_kb_filter and not has_app_filter:
-                self.logger.info("🔍 Case 2: Only KB filter applied")
-
-                # Get only filtered KB records
-                query += f"""
-                // Direct user-KB permissions with filter
-                LET directKbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER kb._key IN @kb_ids
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                // Team-based KB permissions with filter: User -> Team -> KB -> Records
-                LET teamKbRecords = (
-                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("teams", team)
-                        FILTER userTeamEdge.type == "USER"
-                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER teamKbEdge.type == "TEAM"
-                        FILTER kb._key IN @kb_ids
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-                """
-                unions.append("kbRecords")
-
-            # Case 3: Only App filter applied
-            elif not has_kb_filter and has_app_filter:
-                self.logger.info("🔍 Case 3: Only App filter applied")
-
-                # Get app-filtered records from direct, group, org, and anyone
-                query += """
-                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
-                LET appFilteredRecords = (
-                    FOR record IN baseAccessible
-                        FILTER record.connectorId IN @connector_ids
-                        RETURN DISTINCT record
-                )
-                """
-                unions.append("appFilteredRecords")
-
-            # Case 4: No KB or App filters - return all accessible records
-            else:
-                self.logger.info("🔍 Case 4: No KB or App filters - returning all accessible records")
-
-                # Get all KB records
-                query += f"""
-                // Direct user-KB permissions
-                LET directKbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                // Team-based KB permissions: User -> Team -> KB -> Records
-                LET teamKbRecords = (
-                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("teams", team)
-                        FILTER userTeamEdge.type == "USER"
-                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER teamKbEdge.type == "TEAM"
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-
-                """
-                unions.append("kbRecords")
-                unions.append("directAndGroupRecords")
-                unions.append("anyoneRecords")
-
-            # Combine all unions
-            if len(unions) == 1:
-                query += f"""
-                LET allAccessibleRecords = {unions[0]}
-                """
-            else:
-                query += f"""
-                LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
-                """
-
-            # Add additional filter conditions (departments, categories, etc.)
-            filter_conditions = []
-            if filters:
-                if filters.get("departments"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
-                        FILTER dept.departmentName IN @departmentNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("categories"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER cat.name IN @categoryNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("subcategories1"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER subcat.name IN @subcat1Names
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("subcategories2"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER subcat.name IN @subcat2Names
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("subcategories3"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER subcat.name IN @subcat3Names
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("languages"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
-                        FILTER lang.name IN @languageNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("topics"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
-                        FILTER topic.name IN @topicNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-            # Apply additional filters if any
-            if filter_conditions:
-                query += (
-                    """
-                FOR record IN allAccessibleRecords
-                    FILTER """
-                    + " AND ".join(filter_conditions)
-                    + """
-                    RETURN DISTINCT record
-                """
-                )
-            else:
-                query += """
-                RETURN allAccessibleRecords
-                """
-
-            # Prepare bind variables
-            bind_vars = {
-                "userId": user_id,
-                "orgId": org_id,
-                "user_apps_ids": user_apps_ids,
-                "@users": CollectionNames.USERS.value,
-                "@records": CollectionNames.RECORDS.value,
-                "@anyone": CollectionNames.ANYONE.value,
-            }
-
-            # Add conditional bind variables
-            if has_kb_filter:
-                bind_vars["kb_ids"] = kb_ids
-
-            if has_app_filter:
-                bind_vars["connector_ids"] = connector_ids
-
-            # Add filter bind variables
-            if filters:
-                if filters.get("departments"):
-                    bind_vars["departmentNames"] = filters["departments"]
-                if filters.get("categories"):
-                    bind_vars["categoryNames"] = filters["categories"]
-                if filters.get("subcategories1"):
-                    bind_vars["subcat1Names"] = filters["subcategories1"]
-                if filters.get("subcategories2"):
-                    bind_vars["subcat2Names"] = filters["subcategories2"]
-                if filters.get("subcategories3"):
-                    bind_vars["subcat3Names"] = filters["subcategories3"]
-                if filters.get("languages"):
-                    bind_vars["languageNames"] = filters["languages"]
-                if filters.get("topics"):
-                    bind_vars["topicNames"] = filters["topics"]
-
-            # Execute query
-            self.logger.debug(f"🔍 Executing query with bind_vars keys: {list(bind_vars.keys())}")
-            result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-
-            # Log results
-            record_count = 0
-            if result:
-                if isinstance(result[0], list):
-                    record_count = len(result[0])
-                    result = result[0]
-                else:
-                    record_count = len(result)
-
-            self.logger.info(f"✅ Query completed - found {record_count} accessible records")
-
-            if has_kb_filter:
-                self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
-            if has_app_filter:
-                self.logger.info(
-                    f"✅ App filtering applied for {len(connector_ids)} connector IDs"
-                )
-            if not has_kb_filter and not has_app_filter:
-                self.logger.info("✅ No KB/App filters - returned all accessible records")
-
-            return result if result else []
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get accessible records: {str(e)}")
-            raise
-
     async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
         org_id: str,
         connector_id: str,
         metadata_filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds for a specific connector covering all permission paths.
+        Get a mapping of virtualRecordId -> recordId for a specific connector covering all permission paths.
 
         Args:
             user_id: The userId field value
@@ -16843,7 +16388,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             metadata_filters: Optional metadata filters (departments, categories, etc.)
 
         Returns:
-            List of virtualRecordIds accessible for this connector
+            Dict mapping virtualRecordId -> recordId for accessible records in this connector
         """
         try:
             metadata_filter_lines = []
@@ -16920,7 +16465,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record.connectorId == @connectorId
                     FILTER record.indexingStatus == @completedStatus
                     {metadata_filter_clause}
-                    RETURN DISTINCT record.virtualRecordId
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET groupRecords = (
@@ -16930,7 +16475,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
                         {metadata_filter_clause}
-                        RETURN DISTINCT record.virtualRecordId
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET groupRecordsPermissionEdge = (
@@ -16940,7 +16485,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
                         {metadata_filter_clause}
-                        RETURN DISTINCT record.virtualRecordId
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET orgRecords = (
@@ -16950,7 +16495,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
                         {metadata_filter_clause}
-                        RETURN DISTINCT record.virtualRecordId
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET orgRecordGroupRecords = (
@@ -16962,7 +16507,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER record.connectorId == @connectorId
                             FILTER record.indexingStatus == @completedStatus
                             {metadata_filter_clause}
-                            RETURN DISTINCT record.virtualRecordId
+                            RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET recordGroupRecords = (
@@ -16974,7 +16519,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER record.connectorId == @connectorId
                             FILTER record.indexingStatus == @completedStatus
                             {metadata_filter_clause}
-                            RETURN DISTINCT record.virtualRecordId
+                            RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET inheritedRecordGroupRecords = (
@@ -16985,7 +16530,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
                         {metadata_filter_clause}
-                        RETURN DISTINCT record.virtualRecordId
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET anyoneRecords = (
@@ -16996,17 +16541,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
                         {metadata_filter_clause}
-                        RETURN DISTINCT record.virtualRecordId
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            LET allIds = UNION_DISTINCT(
+            LET allPairs = UNION(
                 directRecords, groupRecords, groupRecordsPermissionEdge,
                 orgRecords, orgRecordGroupRecords, recordGroupRecords,
                 inheritedRecordGroupRecords, anyoneRecords
             )
-            FOR id IN allIds
-                FILTER id != null
-                RETURN DISTINCT id
+            FOR pair IN allPairs
+                FILTER pair != null AND pair.virtualRecordId != null AND pair.recordId != null
+                COLLECT virtualRecordId = pair.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).pair.recordId
+                FILTER recordId != null
+                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
             """
 
             bind_vars = {
@@ -17038,18 +16586,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query_start = time.time()
             results = await self.execute_query(query, bind_vars=bind_vars)
             elapsed = time.time() - query_start
-            virtual_ids = [r for r in results if r] if results else []
+            virtual_id_to_record_id = {
+                r["virtualRecordId"]: r["recordId"]
+                for r in results
+                if r and r.get("virtualRecordId") and r.get("recordId")
+            } if results else {}
 
             self.logger.info(
-                f"Connector {connector_id}: found {len(virtual_ids)} virtualRecordIds in {elapsed:.3f}s"
+                f"Connector {connector_id}: found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed:.3f}s"
             )
-            return virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(
                 f"Failed to get virtual IDs for connector {connector_id}: {e}\n{traceback.format_exc()}"
             )
-            return []
+            return {}
 
     async def _get_kb_virtual_ids(
         self,
@@ -17057,9 +16609,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         kb_ids: list[str] | None = None,
         metadata_filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds from Knowledge Bases (RecordGroups).
+        Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
 
         Args:
             user_id: The userId field value
@@ -17068,7 +16620,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             metadata_filters: Optional metadata filters
 
         Returns:
-            List of virtualRecordIds from KBs
+            Dict mapping virtualRecordId -> recordId for accessible KB records
         """
         try:
             kb_filter_clause = "FILTER kb._key IN @kb_ids" if kb_ids else ""
@@ -17149,7 +16701,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record.origin == "UPLOAD"
                     FILTER record.indexingStatus == @completedStatus
                     {metadata_filter_clause}
-                    RETURN DISTINCT record.virtualRecordId
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET teamKbRecords = (
@@ -17165,13 +16717,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record.origin == "UPLOAD"
                     FILTER record.indexingStatus == @completedStatus
                     {metadata_filter_clause}
-                    RETURN DISTINCT record.virtualRecordId
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            LET allKbIds = UNION_DISTINCT(directKbRecords, teamKbRecords)
-            FOR id IN allKbIds
-                FILTER id != null
-                RETURN DISTINCT id
+            LET allKbPairs = UNION(directKbRecords, teamKbRecords)
+            FOR pair IN allKbPairs
+                FILTER pair != null AND pair.virtualRecordId != null AND pair.recordId != null
+                COLLECT virtualRecordId = pair.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).pair.recordId
+                FILTER recordId != null
+                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
             """
 
             bind_vars = {
@@ -17203,25 +16758,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
             results = await self.execute_query(query, bind_vars=bind_vars)
             elapsed = time.time() - query_start
             kb_filter_info = f"filtered: {len(kb_ids)} KBs" if kb_ids else "all KBs"
-            virtual_ids = [r for r in results if r] if results else []
+            virtual_id_to_record_id = {
+                r["virtualRecordId"]: r["recordId"]
+                for r in results
+                if r and r.get("virtualRecordId") and r.get("recordId")
+            } if results else {}
 
             self.logger.info(
-                f"KB query ({kb_filter_info}): found {len(virtual_ids)} virtualRecordIds in {elapsed:.3f}s"
+                f"KB query ({kb_filter_info}): found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed:.3f}s"
             )
-            return virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(f"Failed to get KB virtual IDs: {e}", exc_info=True)
-            return []
+            return {}
 
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
         org_id: str,
         filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds of all records accessible to a user.
+        Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
+
+        Each virtualRecordId maps to the specific recordId (the _key of the record document)
+        that the user has permission to access. This prevents cross-connector leakage where
+        multiple connectors share the same virtualRecordId but only one is accessible.
 
         Args:
             user_id (str): The userId field value in users collection
@@ -17240,7 +16803,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
 
         Returns:
-            List[str]: List of virtualRecordIds
+            Dict[str, str]: Mapping of virtualRecordId -> recordId
         """
         start_time = time.time()
 
@@ -17308,59 +16871,63 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            all_virtual_ids = []
+            virtual_id_to_record_id: dict[str, str] = {}
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     self.logger.error(f"Task {i} failed: {str(result)}")
                     continue
                 if result:
-                    all_virtual_ids.extend(result)
-
-            unique_virtual_ids = list(set(all_virtual_ids))
+                    for vid, rid in result.items():
+                        if vid not in virtual_id_to_record_id:
+                            virtual_id_to_record_id[vid] = rid
 
             total_time = time.time() - start_time
             self.logger.info(
-                f"Found {len(unique_virtual_ids)} unique virtualRecordIds "
-                f"({len(all_virtual_ids)} total before dedup) in {total_time:.3f}s"
+                f"Found {len(virtual_id_to_record_id)} unique virtualRecordIds "
+                f"in {total_time:.3f}s"
             )
 
-            return unique_virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(f"Get accessible virtual record IDs failed: {e}", exc_info=True)
-            return []
+            return {}
 
-    async def get_records_by_virtual_record_ids(
+    async def get_records_by_record_ids(
         self,
-        virtual_record_ids: list[str],
+        record_ids: list[str],
         org_id: str
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
-        Batch fetch full record documents by their virtualRecordIds.
+        Batch fetch full record documents by their _key (record IDs).
+
+        This is used after Qdrant search to fetch the specific records that the user
+        has permission to access, using the permission-verified record IDs from the
+        accessible virtual ID map.
 
         Args:
-            virtual_record_ids: List of virtualRecordIds to fetch
+            record_ids: List of record _key values to fetch
             org_id: Organization ID for additional filtering
 
         Returns:
-            List[Dict]: List of full record dictionaries
+            List[Dict[str, Any]]: List of full record dictionaries
         """
         try:
-            if not virtual_record_ids:
+            if not record_ids:
                 return []
 
-            self.logger.debug(f"Fetching {len(virtual_record_ids)} records by virtualRecordIds")
+            self.logger.debug(f"Fetching {len(record_ids)} records by record IDs")
 
             query = """
             FOR record IN @@records
-                FILTER record.virtualRecordId IN @virtual_record_ids
+                FILTER record._key IN @record_ids
                   AND record.orgId == @orgId
                 RETURN record
             """
 
             bind_vars = {
                 "@records": CollectionNames.RECORDS.value,
-                "virtual_record_ids": virtual_record_ids,
+                "record_ids": record_ids,
                 "orgId": org_id,
             }
 
@@ -17368,7 +16935,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return [r for r in results if r] if results else []
 
         except Exception as e:
-            self.logger.error(f"Failed to fetch records by virtualRecordIds: {e}\n{traceback.format_exc()}")
+            self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
             return []
 
     async def get_records_by_virtual_record_id(
