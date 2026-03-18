@@ -1027,10 +1027,14 @@ class WebConnector(BaseConnector):
                 )
 
             if result is None:
+                self.logger.debug("⚠️ Fetch returned None for %s", url)
                 return None
 
             if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
-                # Already logged inside fetch_url_with_fallback
+                self.logger.debug(
+                    "⚠️ Skipping %s: HTTP status %s >= %s",
+                    url, result.status_code, HttpStatusCode.BAD_REQUEST.value,
+                )
                 return None
 
             is_new = False
