@@ -1,12 +1,13 @@
 """Figma client implementation.
 
 This module provides clients for interacting with the Figma API using either:
-1. OAuth 2.0 access token authentication
-2. Personal Access Token (PAT) authentication (Bearer token)
+1. OAuth 2.0 access token authentication (Authorization: Bearer <token>)
+2. Personal Access Token (PAT) authentication (X-Figma-Token header)
 
-Figma API Base URL: https://api.figma.com/v1
+Figma API Base URL: https://api.figma.com
 OAuth Authorization: https://www.figma.com/oauth
-OAuth Token Exchange: https://www.figma.com/api/oauth/token
+OAuth Token Exchange: https://api.figma.com/v1/oauth/token
+OAuth Token Refresh: https://api.figma.com/v1/oauth/refresh
 
 Authentication Reference: https://www.figma.com/developers/api#authentication
 API Reference: https://www.figma.com/developers/api
@@ -109,7 +110,7 @@ class FigmaRESTClientViaOAuth(HTTPClient):
         client_secret: str | None = None,
     ) -> None:
         super().__init__(access_token, "Bearer")
-        self.base_url = "https://api.figma.com/v1"
+        self.base_url = "https://api.figma.com"
         self.access_token = access_token
         self.client_id = client_id
         self.client_secret = client_secret
@@ -123,16 +124,19 @@ class FigmaRESTClientViaOAuth(HTTPClient):
 class FigmaRESTClientViaToken(HTTPClient):
     """Figma REST client via Personal Access Token (PAT).
 
-    Personal access tokens are passed as Bearer tokens in the
-    Authorization header.
+    Personal access tokens are passed via the X-Figma-Token header.
 
     Args:
         token: The personal access token
     """
 
     def __init__(self, token: str) -> None:
-        super().__init__(token, "Bearer")
-        self.base_url = "https://api.figma.com/v1"
+        # Pass empty token to HTTPClient so it doesn't set Authorization header
+        super().__init__("", "")
+        self.base_url = "https://api.figma.com"
+        # Remove the default empty Authorization header and use X-Figma-Token
+        _ = self.headers.pop("Authorization", None)
+        self.headers["X-Figma-Token"] = token
         self.headers["Content-Type"] = "application/json"
 
     def get_base_url(self) -> str:
@@ -230,8 +234,8 @@ class FigmaClient(IClient):
     """Builder class for Figma clients with different authentication methods.
 
     Supports:
-    - Personal Access Token (PAT) authentication
-    - OAuth 2.0 access token authentication
+    - Personal Access Token (PAT) authentication (X-Figma-Token header)
+    - OAuth 2.0 access token authentication (Authorization: Bearer header)
     """
 
     def __init__(
