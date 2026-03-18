@@ -10,7 +10,11 @@ Generates CodaDataSource class covering Coda API v1:
 - Page operations
 - Formula and Control access
 - Permission management
+- Folder management
+- Analytics
 - Category listing
+- Workspace management
+- Pack management
 
 The generated DataSource accepts a CodaClient and uses the client's
 base URL (https://coda.io/apis/v1) to construct request URLs.
@@ -21,6 +25,7 @@ All methods have explicit parameter signatures with no **kwargs usage.
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
+
 
 # ================================================================================
 # Coda API Endpoints - organized by resource
@@ -86,6 +91,17 @@ CODA_API_ENDPOINTS = {
         },
         "required": [],
     },
+    "update_doc": {
+        "method": "PATCH",
+        "path": "/docs/{doc_id}",
+        "description": "Update a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "title": {"type": "Optional[str]", "location": "body", "description": "New title for the doc"},
+            "icon_name": {"type": "Optional[str]", "location": "body", "description": "New icon for the doc"},
+        },
+        "required": ["doc_id"],
+    },
     "delete_doc": {
         "method": "DELETE",
         "path": "/docs/{doc_id}",
@@ -94,6 +110,58 @@ CODA_API_ENDPOINTS = {
             "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc to delete"},
         },
         "required": ["doc_id"],
+    },
+
+    # ================================================================================
+    # FOLDERS
+    # ================================================================================
+    "list_folders": {
+        "method": "GET",
+        "path": "/folders",
+        "description": "List folders",
+        "parameters": {
+            "limit": {"type": "Optional[int]", "location": "query", "description": "Maximum number of results to return"},
+            "page_token": {"type": "Optional[str]", "location": "query", "description": "An opaque token for pagination"},
+        },
+        "required": [],
+    },
+    "get_folder": {
+        "method": "GET",
+        "path": "/folders/{folder_id}",
+        "description": "Get info about a specific folder",
+        "parameters": {
+            "folder_id": {"type": "str", "location": "path", "description": "The ID of the folder"},
+        },
+        "required": ["folder_id"],
+    },
+    "create_folder": {
+        "method": "POST",
+        "path": "/folders",
+        "description": "Create a new folder",
+        "parameters": {
+            "name": {"type": "str", "location": "body", "description": "Name of the folder"},
+            "parent_folder_id": {"type": "Optional[str]", "location": "body", "description": "Parent folder ID"},
+        },
+        "required": ["name"],
+    },
+    "update_folder": {
+        "method": "PATCH",
+        "path": "/folders/{folder_id}",
+        "description": "Update a folder",
+        "parameters": {
+            "folder_id": {"type": "str", "location": "path", "description": "The ID of the folder"},
+            "name": {"type": "Optional[str]", "location": "body", "description": "New name for the folder"},
+        },
+        "required": ["folder_id"],
+    },
+    "delete_folder": {
+        "method": "DELETE",
+        "path": "/folders/{folder_id}",
+        "description": "Delete a folder",
+        "parameters": {
+            "folder_id": {"type": "str", "location": "path", "description": "The ID of the folder to delete"},
+        },
+        "required": ["folder_id"],
     },
 
     # ================================================================================
@@ -156,7 +224,7 @@ CODA_API_ENDPOINTS = {
         },
         "required": ["doc_id", "table_id_or_name", "row_id_or_name"],
     },
-    "insert_rows": {
+    "upsert_rows": {
         "method": "POST",
         "path": "/docs/{doc_id}/tables/{table_id_or_name}/rows",
         "description": "Insert or upsert rows in a table",
@@ -190,6 +258,29 @@ CODA_API_ENDPOINTS = {
             "row_id_or_name": {"type": "str", "location": "path", "description": "The ID or name of the row to delete"},
         },
         "required": ["doc_id", "table_id_or_name", "row_id_or_name"],
+    },
+    "delete_rows": {
+        "method": "DELETE",
+        "path": "/docs/{doc_id}/tables/{table_id_or_name}/rows",
+        "description": "Delete multiple rows from a table",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "table_id_or_name": {"type": "str", "location": "path", "description": "The ID or name of the table"},
+            "row_ids": {"type": "list[str]", "location": "body", "description": "Array of row IDs to delete"},
+        },
+        "required": ["doc_id", "table_id_or_name", "row_ids"],
+    },
+    "push_button": {
+        "method": "POST",
+        "path": "/docs/{doc_id}/tables/{table_id_or_name}/rows/{row_id_or_name}/buttons/{column_id_or_name}",
+        "description": "Push a button on a row in a table",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "table_id_or_name": {"type": "str", "location": "path", "description": "The ID or name of the table"},
+            "row_id_or_name": {"type": "str", "location": "path", "description": "The ID or name of the row"},
+            "column_id_or_name": {"type": "str", "location": "path", "description": "The ID or name of the column (button)"},
+        },
+        "required": ["doc_id", "table_id_or_name", "row_id_or_name", "column_id_or_name"],
     },
 
     # ================================================================================
@@ -244,6 +335,21 @@ CODA_API_ENDPOINTS = {
         },
         "required": ["doc_id", "page_id_or_name"],
     },
+    "create_page": {
+        "method": "POST",
+        "path": "/docs/{doc_id}/pages",
+        "description": "Create a new page in a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "name": {"type": "str", "location": "body", "description": "Name of the new page"},
+            "subtitle": {"type": "Optional[str]", "location": "body", "description": "Subtitle for the page"},
+            "icon_name": {"type": "Optional[str]", "location": "body", "description": "Name of the icon for the page"},
+            "image_url": {"type": "Optional[str]", "location": "body", "description": "URL of the cover image for the page"},
+            "parent_page_id": {"type": "Optional[str]", "location": "body", "description": "ID of the parent page"},
+            "page_content": {"type": "Optional[dict[str, Any]]", "location": "body", "description": "Content for the page"},
+        },
+        "required": ["doc_id", "name"],
+    },
     "update_page": {
         "method": "PUT",
         "path": "/docs/{doc_id}/pages/{page_id_or_name}",
@@ -257,6 +363,48 @@ CODA_API_ENDPOINTS = {
             "image_url": {"type": "Optional[str]", "location": "body", "description": "URL of the cover image for the page"},
         },
         "required": ["doc_id", "page_id_or_name"],
+    },
+    "delete_page": {
+        "method": "DELETE",
+        "path": "/docs/{doc_id}/pages/{page_id_or_name}",
+        "description": "Delete a page from a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "page_id_or_name": {"type": "str", "location": "path", "description": "The ID or name of the page"},
+        },
+        "required": ["doc_id", "page_id_or_name"],
+    },
+    "list_page_content": {
+        "method": "GET",
+        "path": "/docs/{doc_id}/pages/{page_id_or_name}/content",
+        "description": "List content on a page",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "page_id_or_name": {"type": "str", "location": "path", "description": "The ID or name of the page"},
+        },
+        "required": ["doc_id", "page_id_or_name"],
+    },
+    "begin_page_content_export": {
+        "method": "POST",
+        "path": "/docs/{doc_id}/pages/{page_id_or_name}/export",
+        "description": "Begin exporting page content",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "page_id_or_name": {"type": "str", "location": "path", "description": "The ID or name of the page"},
+            "output_format": {"type": "str", "location": "body", "description": "Output format for export (html or markdown)"},
+        },
+        "required": ["doc_id", "page_id_or_name", "output_format"],
+    },
+    "get_page_content_export_status": {
+        "method": "GET",
+        "path": "/docs/{doc_id}/pages/{page_id_or_name}/export/{request_id}",
+        "description": "Get the status of a page content export",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "page_id_or_name": {"type": "str", "location": "path", "description": "The ID or name of the page"},
+            "request_id": {"type": "str", "location": "path", "description": "The ID of the export request"},
+        },
+        "required": ["doc_id", "page_id_or_name", "request_id"],
     },
 
     # ================================================================================
@@ -314,14 +462,207 @@ CODA_API_ENDPOINTS = {
     # ================================================================================
     # PERMISSIONS
     # ================================================================================
+    "get_sharing_metadata": {
+        "method": "GET",
+        "path": "/docs/{doc_id}/acl/metadata",
+        "description": "Get sharing metadata for a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+        },
+        "required": ["doc_id"],
+    },
     "list_permissions": {
         "method": "GET",
         "path": "/docs/{doc_id}/acl/permissions",
         "description": "List permissions for a doc",
         "parameters": {
             "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "limit": {"type": "Optional[int]", "location": "query", "description": "Maximum number of results to return"},
+            "page_token": {"type": "Optional[str]", "location": "query", "description": "An opaque token for pagination"},
         },
         "required": ["doc_id"],
+    },
+    "add_permission": {
+        "method": "POST",
+        "path": "/docs/{doc_id}/acl/permissions",
+        "description": "Add a permission to a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "access": {"type": "str", "location": "body", "description": "Type of access (readonly, write, comment, none)"},
+            "principal": {"type": "dict[str, Any]", "location": "body", "description": "Principal to grant access to (email or type)"},
+            "suppress_notification": {"type": "Optional[bool]", "location": "body", "description": "Whether to suppress notification email"},
+        },
+        "required": ["doc_id", "access", "principal"],
+    },
+    "delete_permission": {
+        "method": "DELETE",
+        "path": "/docs/{doc_id}/acl/permissions/{permission_id}",
+        "description": "Delete a permission from a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "permission_id": {"type": "str", "location": "path", "description": "The ID of the permission"},
+        },
+        "required": ["doc_id", "permission_id"],
+    },
+    "search_principals": {
+        "method": "GET",
+        "path": "/docs/{doc_id}/acl/principals/search",
+        "description": "Search principals for a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "query": {"type": "Optional[str]", "location": "query", "description": "Search query"},
+        },
+        "required": ["doc_id"],
+    },
+    "get_acl_settings": {
+        "method": "GET",
+        "path": "/docs/{doc_id}/acl/settings",
+        "description": "Get ACL settings for a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+        },
+        "required": ["doc_id"],
+    },
+    "update_acl_settings": {
+        "method": "PATCH",
+        "path": "/docs/{doc_id}/acl/settings",
+        "description": "Update ACL settings for a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "allow_editors_to_change_permissions": {"type": "Optional[bool]", "location": "body", "description": "Whether editors can change permissions"},
+            "allow_copying": {"type": "Optional[bool]", "location": "body", "description": "Whether copying is allowed"},
+            "allow_view_all_pages": {"type": "Optional[bool]", "location": "body", "description": "Whether viewing all pages is allowed"},
+        },
+        "required": ["doc_id"],
+    },
+
+    # ================================================================================
+    # PUBLISHING
+    # ================================================================================
+    "publish_doc": {
+        "method": "PUT",
+        "path": "/docs/{doc_id}/publish",
+        "description": "Publish a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "slug": {"type": "Optional[str]", "location": "body", "description": "URL slug for the published doc"},
+            "discover_ability": {"type": "Optional[str]", "location": "body", "description": "Discoverability setting"},
+            "earn_credit": {"type": "Optional[bool]", "location": "body", "description": "Whether to show Coda credit"},
+            "category_names": {"type": "Optional[list[str]]", "location": "body", "description": "Category names for the doc"},
+            "mode": {"type": "Optional[str]", "location": "body", "description": "Publishing mode"},
+        },
+        "required": ["doc_id"],
+    },
+    "unpublish_doc": {
+        "method": "DELETE",
+        "path": "/docs/{doc_id}/publish",
+        "description": "Unpublish a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+        },
+        "required": ["doc_id"],
+    },
+
+    # ================================================================================
+    # AUTOMATIONS
+    # ================================================================================
+    "trigger_automation": {
+        "method": "POST",
+        "path": "/docs/{doc_id}/hooks/automation/{rule_id}",
+        "description": "Trigger a webhook automation",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "rule_id": {"type": "str", "location": "path", "description": "The ID of the automation rule"},
+            "payload": {"type": "Optional[dict[str, Any]]", "location": "body", "description": "Optional payload for the automation"},
+        },
+        "required": ["doc_id", "rule_id"],
+    },
+
+    # ================================================================================
+    # ANALYTICS
+    # ================================================================================
+    "list_doc_analytics": {
+        "method": "GET",
+        "path": "/analytics/docs",
+        "description": "List doc analytics",
+        "parameters": {
+            "doc_ids": {"type": "Optional[str]", "location": "query", "description": "Comma-separated list of doc IDs"},
+            "workspace_id": {"type": "Optional[str]", "location": "query", "description": "Workspace ID to filter"},
+            "query": {"type": "Optional[str]", "location": "query", "description": "Search query"},
+            "is_published": {"type": "Optional[bool]", "location": "query", "description": "Filter by publish status"},
+            "since_date": {"type": "Optional[str]", "location": "query", "description": "Start date (ISO 8601)"},
+            "until_date": {"type": "Optional[str]", "location": "query", "description": "End date (ISO 8601)"},
+            "scale": {"type": "Optional[str]", "location": "query", "description": "Time scale (daily or cumulative)"},
+            "limit": {"type": "Optional[int]", "location": "query", "description": "Maximum number of results to return"},
+            "page_token": {"type": "Optional[str]", "location": "query", "description": "An opaque token for pagination"},
+            "order_by": {"type": "Optional[str]", "location": "query", "description": "Sort order"},
+        },
+        "required": [],
+    },
+    "list_page_analytics": {
+        "method": "GET",
+        "path": "/analytics/docs/{doc_id}/pages",
+        "description": "List page analytics for a doc",
+        "parameters": {
+            "doc_id": {"type": "str", "location": "path", "description": "The ID of the doc"},
+            "since_date": {"type": "Optional[str]", "location": "query", "description": "Start date (ISO 8601)"},
+            "until_date": {"type": "Optional[str]", "location": "query", "description": "End date (ISO 8601)"},
+            "scale": {"type": "Optional[str]", "location": "query", "description": "Time scale (daily or cumulative)"},
+            "limit": {"type": "Optional[int]", "location": "query", "description": "Maximum number of results to return"},
+            "page_token": {"type": "Optional[str]", "location": "query", "description": "An opaque token for pagination"},
+            "order_by": {"type": "Optional[str]", "location": "query", "description": "Sort order"},
+        },
+        "required": ["doc_id"],
+    },
+
+    # ================================================================================
+    # WORKSPACES
+    # ================================================================================
+    "list_workspace_members": {
+        "method": "GET",
+        "path": "/workspaces/{workspace_id}/users",
+        "description": "List workspace members",
+        "parameters": {
+            "workspace_id": {"type": "str", "location": "path", "description": "The ID of the workspace"},
+            "included_roles": {"type": "Optional[str]", "location": "query", "description": "Filter by roles"},
+            "limit": {"type": "Optional[int]", "location": "query", "description": "Maximum number of results to return"},
+            "page_token": {"type": "Optional[str]", "location": "query", "description": "An opaque token for pagination"},
+        },
+        "required": ["workspace_id"],
+    },
+    "change_user_role": {
+        "method": "POST",
+        "path": "/workspaces/{workspace_id}/users/role",
+        "description": "Change a user role in a workspace",
+        "parameters": {
+            "workspace_id": {"type": "str", "location": "path", "description": "The ID of the workspace"},
+            "email": {"type": "str", "location": "body", "description": "Email of the user"},
+            "new_role": {"type": "str", "location": "body", "description": "New role for the user"},
+        },
+        "required": ["workspace_id", "email", "new_role"],
+    },
+
+    # ================================================================================
+    # MISCELLANEOUS
+    # ================================================================================
+    "resolve_browser_link": {
+        "method": "GET",
+        "path": "/resolveBrowserLink",
+        "description": "Resolve a browser link to a Coda resource",
+        "parameters": {
+            "link_url": {"type": "str", "location": "query", "description": "The URL to resolve", "api_name": "url"},
+            "degrade_gracefully": {"type": "Optional[bool]", "location": "query", "description": "Whether to degrade gracefully on errors"},
+        },
+        "required": ["link_url"],
+    },
+    "get_mutation_status": {
+        "method": "GET",
+        "path": "/mutationStatus/{request_id}",
+        "description": "Get the status of a mutation",
+        "parameters": {
+            "request_id": {"type": "str", "location": "path", "description": "The ID of the mutation request"},
+        },
+        "required": ["request_id"],
     },
 
     # ================================================================================
@@ -358,30 +699,42 @@ class CodaDataSourceGenerator:
     def _build_query_params(self, endpoint_info: Dict) -> List[str]:
         """Build query parameter handling code."""
         lines = ["        query_params: dict[str, Any] = {}"]
+        required_set = set(endpoint_info.get("required", []))
 
         for param_name, param_info in endpoint_info["parameters"].items():
             if param_info["location"] == "query":
                 sanitized_name = self._sanitize_parameter_name(param_name)
+                api_name = param_info.get("api_name", param_name)
+                is_required = param_name in required_set
 
-                if "Optional[bool]" in param_info["type"]:
+                if is_required:
+                    if "bool" in param_info["type"]:
+                        lines.append(
+                            f"        query_params['{api_name}'] = str({sanitized_name}).lower()"
+                        )
+                    else:
+                        lines.append(
+                            f"        query_params['{api_name}'] = {sanitized_name}"
+                        )
+                elif "Optional[bool]" in param_info["type"]:
                     lines.extend([
                         f"        if {sanitized_name} is not None:",
-                        f"            query_params['{param_name}'] = str({sanitized_name}).lower()",
+                        f"            query_params['{api_name}'] = str({sanitized_name}).lower()",
                     ])
                 elif "Optional[int]" in param_info["type"]:
                     lines.extend([
                         f"        if {sanitized_name} is not None:",
-                        f"            query_params['{param_name}'] = str({sanitized_name})",
+                        f"            query_params['{api_name}'] = str({sanitized_name})",
                     ])
                 elif "List[" in param_info["type"]:
                     lines.extend([
                         f"        if {sanitized_name} is not None:",
-                        f"            query_params['{param_name}[]'] = {sanitized_name}",
+                        f"            query_params['{api_name}[]'] = {sanitized_name}",
                     ])
                 else:
                     lines.extend([
                         f"        if {sanitized_name} is not None:",
-                        f"            query_params['{param_name}'] = {sanitized_name}",
+                        f"            query_params['{api_name}'] = {sanitized_name}",
                     ])
 
         return lines
@@ -634,11 +987,16 @@ class CodaDataSourceGenerator:
             "    Provides async wrapper methods for Coda REST API operations:",
             "    - User / Account information",
             "    - Doc CRUD and management",
+            "    - Folder management",
             "    - Table and Row operations",
             "    - Column management",
             "    - Page operations",
             "    - Formula and Control access",
             "    - Permission management",
+            "    - Publishing",
+            "    - Automations",
+            "    - Analytics",
+            "    - Workspace management",
             "    - Category listing",
             "",
             "    The base URL is determined by the CodaClient's configured base URL",
@@ -699,6 +1057,7 @@ class CodaDataSourceGenerator:
         resource_categories = {
             "User/Account": 0,
             "Doc": 0,
+            "Folder": 0,
             "Table": 0,
             "Row": 0,
             "Column": 0,
@@ -706,31 +1065,48 @@ class CodaDataSourceGenerator:
             "Formula": 0,
             "Control": 0,
             "Permission": 0,
+            "Publishing": 0,
+            "Automation": 0,
+            "Analytics": 0,
+            "Workspace": 0,
             "Category": 0,
+            "Misc": 0,
         }
 
         for method in self.generated_methods:
             name = method["name"]
             if "whoami" in name:
                 resource_categories["User/Account"] += 1
-            elif "doc" in name:
+            elif "folder" in name:
+                resource_categories["Folder"] += 1
+            elif "doc" in name and "analytics" not in name:
                 resource_categories["Doc"] += 1
             elif "table" in name:
                 resource_categories["Table"] += 1
-            elif "row" in name:
+            elif "row" in name or "push_button" in name:
                 resource_categories["Row"] += 1
             elif "column" in name:
                 resource_categories["Column"] += 1
-            elif "page" in name:
+            elif "page" in name and "analytics" not in name:
                 resource_categories["Page"] += 1
             elif "formula" in name:
                 resource_categories["Formula"] += 1
             elif "control" in name:
                 resource_categories["Control"] += 1
-            elif "permission" in name:
+            elif "permission" in name or "sharing" in name or "acl" in name or "principal" in name:
                 resource_categories["Permission"] += 1
+            elif "publish" in name:
+                resource_categories["Publishing"] += 1
+            elif "automation" in name or "trigger" in name:
+                resource_categories["Automation"] += 1
+            elif "analytics" in name:
+                resource_categories["Analytics"] += 1
+            elif "workspace" in name or "user_role" in name:
+                resource_categories["Workspace"] += 1
             elif "categor" in name:
                 resource_categories["Category"] += 1
+            else:
+                resource_categories["Misc"] += 1
 
         print(f"\nMethods by Resource:")
         for category, count in resource_categories.items():

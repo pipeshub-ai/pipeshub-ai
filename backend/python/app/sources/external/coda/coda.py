@@ -23,11 +23,16 @@ class CodaDataSource:
     Provides async wrapper methods for Coda REST API operations:
     - User / Account information
     - Doc CRUD and management
+    - Folder management
     - Table and Row operations
     - Column management
     - Page operations
     - Formula and Control access
     - Permission management
+    - Publishing
+    - Automations
+    - Analytics
+    - Workspace management
     - Category listing
 
     The base URL is determined by the CodaClient's configured base URL
@@ -228,6 +233,47 @@ class CodaDataSource:
         except Exception as e:
             return CodaResponse(success=False, error=str(e), message="Failed to execute create_doc")
 
+    async def update_doc(
+        self,
+        doc_id: str,
+        title: str | None = None,
+        icon_name: str | None = None
+    ) -> CodaResponse:
+        """Update a doc
+
+        Args:
+            doc_id: The ID of the doc
+            title: New title for the doc
+            icon_name: New icon for the doc
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}".format(doc_id=doc_id)
+
+        body: dict[str, Any] = {}
+        if title is not None:
+            body['title'] = title
+        if icon_name is not None:
+            body['icon_name'] = icon_name
+
+        try:
+            request = HTTPRequest(
+                method="PATCH",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed update_doc" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute update_doc")
+
     async def delete_doc(
         self,
         doc_id: str
@@ -257,6 +303,180 @@ class CodaDataSource:
             )
         except Exception as e:
             return CodaResponse(success=False, error=str(e), message="Failed to execute delete_doc")
+
+    async def list_folders(
+        self,
+        limit: int | None = None,
+        page_token: str | None = None
+    ) -> CodaResponse:
+        """List folders
+
+        Args:
+            limit: Maximum number of results to return
+            page_token: An opaque token for pagination
+
+        Returns:
+            CodaResponse with operation result
+        """
+        query_params: dict[str, Any] = {}
+        if limit is not None:
+            query_params['limit'] = str(limit)
+        if page_token is not None:
+            query_params['page_token'] = page_token
+
+        url = self.base_url + "/folders"
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query=query_params,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed list_folders" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute list_folders")
+
+    async def get_folder(
+        self,
+        folder_id: str
+    ) -> CodaResponse:
+        """Get info about a specific folder
+
+        Args:
+            folder_id: The ID of the folder
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/folders/{folder_id}".format(folder_id=folder_id)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed get_folder" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute get_folder")
+
+    async def create_folder(
+        self,
+        name: str,
+        parent_folder_id: str | None = None
+    ) -> CodaResponse:
+        """Create a new folder
+
+        Args:
+            name: Name of the folder
+            parent_folder_id: Parent folder ID
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/folders"
+
+        body: dict[str, Any] = {}
+        body['name'] = name
+        if parent_folder_id is not None:
+            body['parent_folder_id'] = parent_folder_id
+
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed create_folder" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute create_folder")
+
+    async def update_folder(
+        self,
+        folder_id: str,
+        name: str | None = None
+    ) -> CodaResponse:
+        """Update a folder
+
+        Args:
+            folder_id: The ID of the folder
+            name: New name for the folder
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/folders/{folder_id}".format(folder_id=folder_id)
+
+        body: dict[str, Any] = {}
+        if name is not None:
+            body['name'] = name
+
+        try:
+            request = HTTPRequest(
+                method="PATCH",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed update_folder" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute update_folder")
+
+    async def delete_folder(
+        self,
+        folder_id: str
+    ) -> CodaResponse:
+        """Delete a folder
+
+        Args:
+            folder_id: The ID of the folder to delete
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/folders/{folder_id}".format(folder_id=folder_id)
+
+        try:
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed delete_folder" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute delete_folder")
 
     async def list_tables(
         self,
@@ -449,7 +669,7 @@ class CodaDataSource:
         except Exception as e:
             return CodaResponse(success=False, error=str(e), message="Failed to execute get_row")
 
-    async def insert_rows(
+    async def upsert_rows(
         self,
         doc_id: str,
         table_id_or_name: str,
@@ -486,10 +706,10 @@ class CodaDataSource:
             return CodaResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed insert_rows" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message="Successfully executed upsert_rows" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
-            return CodaResponse(success=False, error=str(e), message="Failed to execute insert_rows")
+            return CodaResponse(success=False, error=str(e), message="Failed to execute upsert_rows")
 
     async def update_row(
         self,
@@ -564,6 +784,80 @@ class CodaDataSource:
             )
         except Exception as e:
             return CodaResponse(success=False, error=str(e), message="Failed to execute delete_row")
+
+    async def delete_rows(
+        self,
+        doc_id: str,
+        table_id_or_name: str,
+        row_ids: list[str]
+    ) -> CodaResponse:
+        """Delete multiple rows from a table
+
+        Args:
+            doc_id: The ID of the doc
+            table_id_or_name: The ID or name of the table
+            row_ids: Array of row IDs to delete
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/tables/{table_id_or_name}/rows".format(doc_id=doc_id, table_id_or_name=table_id_or_name)
+
+        body: dict[str, Any] = {}
+        body['row_ids'] = row_ids
+
+        try:
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed delete_rows" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute delete_rows")
+
+    async def push_button(
+        self,
+        doc_id: str,
+        table_id_or_name: str,
+        row_id_or_name: str,
+        column_id_or_name: str
+    ) -> CodaResponse:
+        """Push a button on a row in a table
+
+        Args:
+            doc_id: The ID of the doc
+            table_id_or_name: The ID or name of the table
+            row_id_or_name: The ID or name of the row
+            column_id_or_name: The ID or name of the column (button)
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/tables/{table_id_or_name}/rows/{row_id_or_name}/buttons/{column_id_or_name}".format(doc_id=doc_id, table_id_or_name=table_id_or_name, row_id_or_name=row_id_or_name, column_id_or_name=column_id_or_name)
+
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed push_button" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute push_button")
 
     async def list_columns(
         self,
@@ -720,6 +1014,62 @@ class CodaDataSource:
         except Exception as e:
             return CodaResponse(success=False, error=str(e), message="Failed to execute get_page")
 
+    async def create_page(
+        self,
+        doc_id: str,
+        name: str,
+        subtitle: str | None = None,
+        icon_name: str | None = None,
+        image_url: str | None = None,
+        parent_page_id: str | None = None,
+        page_content: dict[str, Any] | None = None
+    ) -> CodaResponse:
+        """Create a new page in a doc
+
+        Args:
+            doc_id: The ID of the doc
+            name: Name of the new page
+            subtitle: Subtitle for the page
+            icon_name: Name of the icon for the page
+            image_url: URL of the cover image for the page
+            parent_page_id: ID of the parent page
+            page_content: Content for the page
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/pages".format(doc_id=doc_id)
+
+        body: dict[str, Any] = {}
+        body['name'] = name
+        if subtitle is not None:
+            body['subtitle'] = subtitle
+        if icon_name is not None:
+            body['icon_name'] = icon_name
+        if image_url is not None:
+            body['image_url'] = image_url
+        if parent_page_id is not None:
+            body['parent_page_id'] = parent_page_id
+        if page_content is not None:
+            body['page_content'] = page_content
+
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed create_page" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute create_page")
+
     async def update_page(
         self,
         doc_id: str,
@@ -770,6 +1120,142 @@ class CodaDataSource:
             )
         except Exception as e:
             return CodaResponse(success=False, error=str(e), message="Failed to execute update_page")
+
+    async def delete_page(
+        self,
+        doc_id: str,
+        page_id_or_name: str
+    ) -> CodaResponse:
+        """Delete a page from a doc
+
+        Args:
+            doc_id: The ID of the doc
+            page_id_or_name: The ID or name of the page
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/pages/{page_id_or_name}".format(doc_id=doc_id, page_id_or_name=page_id_or_name)
+
+        try:
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed delete_page" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute delete_page")
+
+    async def list_page_content(
+        self,
+        doc_id: str,
+        page_id_or_name: str
+    ) -> CodaResponse:
+        """List content on a page
+
+        Args:
+            doc_id: The ID of the doc
+            page_id_or_name: The ID or name of the page
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/pages/{page_id_or_name}/content".format(doc_id=doc_id, page_id_or_name=page_id_or_name)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed list_page_content" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute list_page_content")
+
+    async def begin_page_content_export(
+        self,
+        doc_id: str,
+        page_id_or_name: str,
+        output_format: str
+    ) -> CodaResponse:
+        """Begin exporting page content
+
+        Args:
+            doc_id: The ID of the doc
+            page_id_or_name: The ID or name of the page
+            output_format: Output format for export (html or markdown)
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/pages/{page_id_or_name}/export".format(doc_id=doc_id, page_id_or_name=page_id_or_name)
+
+        body: dict[str, Any] = {}
+        body['output_format'] = output_format
+
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed begin_page_content_export" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute begin_page_content_export")
+
+    async def get_page_content_export_status(
+        self,
+        doc_id: str,
+        page_id_or_name: str,
+        request_id: str
+    ) -> CodaResponse:
+        """Get the status of a page content export
+
+        Args:
+            doc_id: The ID of the doc
+            page_id_or_name: The ID or name of the page
+            request_id: The ID of the export request
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/pages/{page_id_or_name}/export/{request_id}".format(doc_id=doc_id, page_id_or_name=page_id_or_name, request_id=request_id)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed get_page_content_export_status" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute get_page_content_export_status")
 
     async def list_formulas(
         self,
@@ -925,11 +1411,11 @@ class CodaDataSource:
         except Exception as e:
             return CodaResponse(success=False, error=str(e), message="Failed to execute get_control")
 
-    async def list_permissions(
+    async def get_sharing_metadata(
         self,
         doc_id: str
     ) -> CodaResponse:
-        """List permissions for a doc
+        """Get sharing metadata for a doc
 
         Args:
             doc_id: The ID of the doc
@@ -937,7 +1423,7 @@ class CodaDataSource:
         Returns:
             CodaResponse with operation result
         """
-        url = self.base_url + "/docs/{doc_id}/acl/permissions".format(doc_id=doc_id)
+        url = self.base_url + "/docs/{doc_id}/acl/metadata".format(doc_id=doc_id)
 
         try:
             request = HTTPRequest(
@@ -950,10 +1436,645 @@ class CodaDataSource:
             return CodaResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
+                message="Successfully executed get_sharing_metadata" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute get_sharing_metadata")
+
+    async def list_permissions(
+        self,
+        doc_id: str,
+        limit: int | None = None,
+        page_token: str | None = None
+    ) -> CodaResponse:
+        """List permissions for a doc
+
+        Args:
+            doc_id: The ID of the doc
+            limit: Maximum number of results to return
+            page_token: An opaque token for pagination
+
+        Returns:
+            CodaResponse with operation result
+        """
+        query_params: dict[str, Any] = {}
+        if limit is not None:
+            query_params['limit'] = str(limit)
+        if page_token is not None:
+            query_params['page_token'] = page_token
+
+        url = self.base_url + "/docs/{doc_id}/acl/permissions".format(doc_id=doc_id)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query=query_params,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
                 message="Successfully executed list_permissions" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return CodaResponse(success=False, error=str(e), message="Failed to execute list_permissions")
+
+    async def add_permission(
+        self,
+        doc_id: str,
+        access: str,
+        principal: dict[str, Any],
+        *,
+        suppress_notification: bool | None = None
+    ) -> CodaResponse:
+        """Add a permission to a doc
+
+        Args:
+            doc_id: The ID of the doc
+            access: Type of access (readonly, write, comment, none)
+            principal: Principal to grant access to (email or type)
+            suppress_notification: Whether to suppress notification email
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/acl/permissions".format(doc_id=doc_id)
+
+        body: dict[str, Any] = {}
+        body['access'] = access
+        body['principal'] = principal
+        if suppress_notification is not None:
+            body['suppress_notification'] = suppress_notification
+
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed add_permission" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute add_permission")
+
+    async def delete_permission(
+        self,
+        doc_id: str,
+        permission_id: str
+    ) -> CodaResponse:
+        """Delete a permission from a doc
+
+        Args:
+            doc_id: The ID of the doc
+            permission_id: The ID of the permission
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/acl/permissions/{permission_id}".format(doc_id=doc_id, permission_id=permission_id)
+
+        try:
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed delete_permission" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute delete_permission")
+
+    async def search_principals(
+        self,
+        doc_id: str,
+        query: str | None = None
+    ) -> CodaResponse:
+        """Search principals for a doc
+
+        Args:
+            doc_id: The ID of the doc
+            query: Search query
+
+        Returns:
+            CodaResponse with operation result
+        """
+        query_params: dict[str, Any] = {}
+        if query is not None:
+            query_params['query'] = query
+
+        url = self.base_url + "/docs/{doc_id}/acl/principals/search".format(doc_id=doc_id)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query=query_params,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed search_principals" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute search_principals")
+
+    async def get_acl_settings(
+        self,
+        doc_id: str
+    ) -> CodaResponse:
+        """Get ACL settings for a doc
+
+        Args:
+            doc_id: The ID of the doc
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/acl/settings".format(doc_id=doc_id)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed get_acl_settings" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute get_acl_settings")
+
+    async def update_acl_settings(
+        self,
+        doc_id: str,
+        *,
+        allow_editors_to_change_permissions: bool | None = None,
+        allow_copying: bool | None = None,
+        allow_view_all_pages: bool | None = None
+    ) -> CodaResponse:
+        """Update ACL settings for a doc
+
+        Args:
+            doc_id: The ID of the doc
+            allow_editors_to_change_permissions: Whether editors can change permissions
+            allow_copying: Whether copying is allowed
+            allow_view_all_pages: Whether viewing all pages is allowed
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/acl/settings".format(doc_id=doc_id)
+
+        body: dict[str, Any] = {}
+        if allow_editors_to_change_permissions is not None:
+            body['allow_editors_to_change_permissions'] = allow_editors_to_change_permissions
+        if allow_copying is not None:
+            body['allow_copying'] = allow_copying
+        if allow_view_all_pages is not None:
+            body['allow_view_all_pages'] = allow_view_all_pages
+
+        try:
+            request = HTTPRequest(
+                method="PATCH",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed update_acl_settings" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute update_acl_settings")
+
+    async def publish_doc(
+        self,
+        doc_id: str,
+        *,
+        slug: str | None = None,
+        discover_ability: str | None = None,
+        earn_credit: bool | None = None,
+        category_names: list[str] | None = None,
+        mode: str | None = None
+    ) -> CodaResponse:
+        """Publish a doc
+
+        Args:
+            doc_id: The ID of the doc
+            slug: URL slug for the published doc
+            discover_ability: Discoverability setting
+            earn_credit: Whether to show Coda credit
+            category_names: Category names for the doc
+            mode: Publishing mode
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/publish".format(doc_id=doc_id)
+
+        body: dict[str, Any] = {}
+        if slug is not None:
+            body['slug'] = slug
+        if discover_ability is not None:
+            body['discover_ability'] = discover_ability
+        if earn_credit is not None:
+            body['earn_credit'] = earn_credit
+        if category_names is not None:
+            body['category_names'] = category_names
+        if mode is not None:
+            body['mode'] = mode
+
+        try:
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed publish_doc" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute publish_doc")
+
+    async def unpublish_doc(
+        self,
+        doc_id: str
+    ) -> CodaResponse:
+        """Unpublish a doc
+
+        Args:
+            doc_id: The ID of the doc
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/publish".format(doc_id=doc_id)
+
+        try:
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed unpublish_doc" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute unpublish_doc")
+
+    async def trigger_automation(
+        self,
+        doc_id: str,
+        rule_id: str,
+        payload: dict[str, Any] | None = None
+    ) -> CodaResponse:
+        """Trigger a webhook automation
+
+        Args:
+            doc_id: The ID of the doc
+            rule_id: The ID of the automation rule
+            payload: Optional payload for the automation
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/docs/{doc_id}/hooks/automation/{rule_id}".format(doc_id=doc_id, rule_id=rule_id)
+
+        body: dict[str, Any] = {}
+        if payload is not None:
+            body['payload'] = payload
+
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed trigger_automation" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute trigger_automation")
+
+    async def list_doc_analytics(
+        self,
+        *,
+        doc_ids: str | None = None,
+        workspace_id: str | None = None,
+        query: str | None = None,
+        is_published: bool | None = None,
+        since_date: str | None = None,
+        until_date: str | None = None,
+        scale: str | None = None,
+        limit: int | None = None,
+        page_token: str | None = None,
+        order_by: str | None = None
+    ) -> CodaResponse:
+        """List doc analytics
+
+        Args:
+            doc_ids: Comma-separated list of doc IDs
+            workspace_id: Workspace ID to filter
+            query: Search query
+            is_published: Filter by publish status
+            since_date: Start date (ISO 8601)
+            until_date: End date (ISO 8601)
+            scale: Time scale (daily or cumulative)
+            limit: Maximum number of results to return
+            page_token: An opaque token for pagination
+            order_by: Sort order
+
+        Returns:
+            CodaResponse with operation result
+        """
+        query_params: dict[str, Any] = {}
+        if doc_ids is not None:
+            query_params['doc_ids'] = doc_ids
+        if workspace_id is not None:
+            query_params['workspace_id'] = workspace_id
+        if query is not None:
+            query_params['query'] = query
+        if is_published is not None:
+            query_params['is_published'] = str(is_published).lower()
+        if since_date is not None:
+            query_params['since_date'] = since_date
+        if until_date is not None:
+            query_params['until_date'] = until_date
+        if scale is not None:
+            query_params['scale'] = scale
+        if limit is not None:
+            query_params['limit'] = str(limit)
+        if page_token is not None:
+            query_params['page_token'] = page_token
+        if order_by is not None:
+            query_params['order_by'] = order_by
+
+        url = self.base_url + "/analytics/docs"
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query=query_params,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed list_doc_analytics" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute list_doc_analytics")
+
+    async def list_page_analytics(
+        self,
+        doc_id: str,
+        since_date: str | None = None,
+        until_date: str | None = None,
+        scale: str | None = None,
+        limit: int | None = None,
+        page_token: str | None = None,
+        order_by: str | None = None
+    ) -> CodaResponse:
+        """List page analytics for a doc
+
+        Args:
+            doc_id: The ID of the doc
+            since_date: Start date (ISO 8601)
+            until_date: End date (ISO 8601)
+            scale: Time scale (daily or cumulative)
+            limit: Maximum number of results to return
+            page_token: An opaque token for pagination
+            order_by: Sort order
+
+        Returns:
+            CodaResponse with operation result
+        """
+        query_params: dict[str, Any] = {}
+        if since_date is not None:
+            query_params['since_date'] = since_date
+        if until_date is not None:
+            query_params['until_date'] = until_date
+        if scale is not None:
+            query_params['scale'] = scale
+        if limit is not None:
+            query_params['limit'] = str(limit)
+        if page_token is not None:
+            query_params['page_token'] = page_token
+        if order_by is not None:
+            query_params['order_by'] = order_by
+
+        url = self.base_url + "/analytics/docs/{doc_id}/pages".format(doc_id=doc_id)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query=query_params,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed list_page_analytics" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute list_page_analytics")
+
+    async def list_workspace_members(
+        self,
+        workspace_id: str,
+        included_roles: str | None = None,
+        limit: int | None = None,
+        page_token: str | None = None
+    ) -> CodaResponse:
+        """List workspace members
+
+        Args:
+            workspace_id: The ID of the workspace
+            included_roles: Filter by roles
+            limit: Maximum number of results to return
+            page_token: An opaque token for pagination
+
+        Returns:
+            CodaResponse with operation result
+        """
+        query_params: dict[str, Any] = {}
+        if included_roles is not None:
+            query_params['included_roles'] = included_roles
+        if limit is not None:
+            query_params['limit'] = str(limit)
+        if page_token is not None:
+            query_params['page_token'] = page_token
+
+        url = self.base_url + "/workspaces/{workspace_id}/users".format(workspace_id=workspace_id)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query=query_params,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed list_workspace_members" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute list_workspace_members")
+
+    async def change_user_role(
+        self,
+        workspace_id: str,
+        email: str,
+        new_role: str
+    ) -> CodaResponse:
+        """Change a user role in a workspace
+
+        Args:
+            workspace_id: The ID of the workspace
+            email: Email of the user
+            new_role: New role for the user
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/workspaces/{workspace_id}/users/role".format(workspace_id=workspace_id)
+
+        body: dict[str, Any] = {}
+        body['email'] = email
+        body['new_role'] = new_role
+
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed change_user_role" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute change_user_role")
+
+    async def resolve_browser_link(
+        self,
+        link_url: str,
+        *,
+        degrade_gracefully: bool | None = None
+    ) -> CodaResponse:
+        """Resolve a browser link to a Coda resource
+
+        Args:
+            link_url: The URL to resolve
+            degrade_gracefully: Whether to degrade gracefully on errors
+
+        Returns:
+            CodaResponse with operation result
+        """
+        query_params: dict[str, Any] = {}
+        query_params['url'] = link_url
+        if degrade_gracefully is not None:
+            query_params['degrade_gracefully'] = str(degrade_gracefully).lower()
+
+        url = self.base_url + "/resolveBrowserLink"
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query=query_params,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed resolve_browser_link" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute resolve_browser_link")
+
+    async def get_mutation_status(
+        self,
+        request_id: str
+    ) -> CodaResponse:
+        """Get the status of a mutation
+
+        Args:
+            request_id: The ID of the mutation request
+
+        Returns:
+            CodaResponse with operation result
+        """
+        url = self.base_url + "/mutationStatus/{request_id}".format(request_id=request_id)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return CodaResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed get_mutation_status" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return CodaResponse(success=False, error=str(e), message="Failed to execute get_mutation_status")
 
     async def list_categories(
         self

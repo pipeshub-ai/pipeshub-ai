@@ -6,11 +6,20 @@ Generates AhaDataSource class covering Aha! API v1:
 - User profile and management
 - Product management
 - Feature CRUD operations
-- Idea management
+- Idea management and portals
 - Release management
-- Goal operations
+- Goal and initiative operations
 - Epic management
+- Requirement management
+- Task management
+- Comment operations
+- Page/note management
+- Workflow management
 - Integration listing
+- Custom fields
+- Team management
+- Strategy operations
+- Audit and deletion tracking
 
 The generated DataSource accepts an AhaClient and uses the client's
 configured subdomain-based base URL. Methods are generated for all
@@ -93,10 +102,53 @@ AHA_API_ENDPOINTS = {
         "required": ["product_id"],
         "version": "v1",
     },
+    "list_product_users": {
+        "method": "GET",
+        "path": "/products/{product_id}/users",
+        "description": "List all users for a product",
+        "parameters": {
+            "product_id": {"type": "str", "location": "path", "description": "The product ID"},
+        },
+        "required": ["product_id"],
+        "version": "v1",
+    },
+    "list_product_workflows": {
+        "method": "GET",
+        "path": "/products/{product_id}/workflows",
+        "description": "List all workflows for a product",
+        "parameters": {
+            "product_id": {"type": "str", "location": "path", "description": "The product ID"},
+        },
+        "required": ["product_id"],
+        "version": "v1",
+    },
+    "list_product_teams": {
+        "method": "GET",
+        "path": "/products/{product_id}/teams",
+        "description": "List all teams for a product",
+        "parameters": {
+            "product_id": {"type": "str", "location": "path", "description": "The product ID"},
+        },
+        "required": ["product_id"],
+        "version": "v1",
+    },
 
     # ================================================================================
     # FEATURES
     # ================================================================================
+    "list_features": {
+        "method": "GET",
+        "path": "/features",
+        "description": "List all features across all products",
+        "parameters": {
+            "page": {"type": "Optional[int]", "location": "query", "description": "Page number for pagination"},
+            "per_page": {"type": "Optional[int]", "location": "query", "description": "Number of results per page"},
+            "q": {"type": "Optional[str]", "location": "query", "description": "Search query string"},
+            "assigned_to_user": {"type": "Optional[str]", "location": "query", "description": "Filter by assigned user"},
+        },
+        "required": [],
+        "version": "v1",
+    },
     "list_product_features": {
         "method": "GET",
         "path": "/products/{product_id}/features",
@@ -157,10 +209,61 @@ AHA_API_ENDPOINTS = {
         "required": ["feature_id"],
         "version": "v1",
     },
+    "list_feature_comments": {
+        "method": "GET",
+        "path": "/features/{feature_id}/comments",
+        "description": "List comments on a feature",
+        "parameters": {
+            "feature_id": {"type": "str", "location": "path", "description": "The feature ID"},
+        },
+        "required": ["feature_id"],
+        "version": "v1",
+    },
+    "list_feature_tasks": {
+        "method": "GET",
+        "path": "/features/{feature_id}/tasks",
+        "description": "List tasks for a feature",
+        "parameters": {
+            "feature_id": {"type": "str", "location": "path", "description": "The feature ID"},
+        },
+        "required": ["feature_id"],
+        "version": "v1",
+    },
+    "list_feature_requirements": {
+        "method": "GET",
+        "path": "/features/{feature_id}/requirements",
+        "description": "List requirements for a feature",
+        "parameters": {
+            "feature_id": {"type": "str", "location": "path", "description": "The feature ID"},
+        },
+        "required": ["feature_id"],
+        "version": "v1",
+    },
+    "convert_feature_to_epic": {
+        "method": "POST",
+        "path": "/features/{feature_id}/convert_to_epic",
+        "description": "Convert a feature to an epic",
+        "parameters": {
+            "feature_id": {"type": "str", "location": "path", "description": "The feature ID to convert"},
+        },
+        "required": ["feature_id"],
+        "version": "v1",
+    },
 
     # ================================================================================
     # IDEAS
     # ================================================================================
+    "list_ideas": {
+        "method": "GET",
+        "path": "/ideas",
+        "description": "List all ideas across all products",
+        "parameters": {
+            "page": {"type": "Optional[int]", "location": "query", "description": "Page number for pagination"},
+            "per_page": {"type": "Optional[int]", "location": "query", "description": "Number of results per page"},
+        },
+        "required": [],
+        "version": "v1",
+    },
     "list_product_ideas": {
         "method": "GET",
         "path": "/products/{product_id}/ideas",
@@ -181,6 +284,64 @@ AHA_API_ENDPOINTS = {
             "idea_id": {"type": "str", "location": "path", "description": "The idea ID"},
         },
         "required": ["idea_id"],
+        "version": "v1",
+    },
+    "list_idea_comments": {
+        "method": "GET",
+        "path": "/ideas/{idea_id}/comments",
+        "description": "List comments on an idea",
+        "parameters": {
+            "idea_id": {"type": "str", "location": "path", "description": "The idea ID"},
+        },
+        "required": ["idea_id"],
+        "version": "v1",
+    },
+    "list_idea_endorsements": {
+        "method": "GET",
+        "path": "/ideas/{idea_id}/endorsements",
+        "description": "List endorsements for an idea",
+        "parameters": {
+            "idea_id": {"type": "str", "location": "path", "description": "The idea ID"},
+        },
+        "required": ["idea_id"],
+        "version": "v1",
+    },
+    "list_idea_tasks": {
+        "method": "GET",
+        "path": "/ideas/{idea_id}/tasks",
+        "description": "List tasks for an idea",
+        "parameters": {
+            "idea_id": {"type": "str", "location": "path", "description": "The idea ID"},
+        },
+        "required": ["idea_id"],
+        "version": "v1",
+    },
+    "list_idea_portals": {
+        "method": "GET",
+        "path": "/idea_portals",
+        "description": "List all idea portals",
+        "parameters": {},
+        "required": [],
+        "version": "v1",
+    },
+    "list_product_idea_portals": {
+        "method": "GET",
+        "path": "/products/{product_id}/idea_portals",
+        "description": "List idea portals for a product",
+        "parameters": {
+            "product_id": {"type": "str", "location": "path", "description": "The product ID"},
+        },
+        "required": ["product_id"],
+        "version": "v1",
+    },
+    "list_idea_categories": {
+        "method": "GET",
+        "path": "/products/{product_id}/idea_categories",
+        "description": "List idea categories for a product",
+        "parameters": {
+            "product_id": {"type": "str", "location": "path", "description": "The product ID"},
+        },
+        "required": ["product_id"],
         "version": "v1",
     },
 
@@ -209,10 +370,79 @@ AHA_API_ENDPOINTS = {
         "required": ["release_id"],
         "version": "v1",
     },
+    "list_release_features": {
+        "method": "GET",
+        "path": "/releases/{release_id}/features",
+        "description": "List features in a release",
+        "parameters": {
+            "release_id": {"type": "str", "location": "path", "description": "The release ID"},
+        },
+        "required": ["release_id"],
+        "version": "v1",
+    },
+    "list_release_epics": {
+        "method": "GET",
+        "path": "/releases/{release_id}/epics",
+        "description": "List epics in a release",
+        "parameters": {
+            "release_id": {"type": "str", "location": "path", "description": "The release ID"},
+        },
+        "required": ["release_id"],
+        "version": "v1",
+    },
+    "list_release_comments": {
+        "method": "GET",
+        "path": "/releases/{release_id}/comments",
+        "description": "List comments on a release",
+        "parameters": {
+            "release_id": {"type": "str", "location": "path", "description": "The release ID"},
+        },
+        "required": ["release_id"],
+        "version": "v1",
+    },
+    "list_release_tasks": {
+        "method": "GET",
+        "path": "/releases/{release_id}/tasks",
+        "description": "List tasks for a release",
+        "parameters": {
+            "release_id": {"type": "str", "location": "path", "description": "The release ID"},
+        },
+        "required": ["release_id"],
+        "version": "v1",
+    },
+    "list_release_phases": {
+        "method": "GET",
+        "path": "/release_phases",
+        "description": "List all release phases",
+        "parameters": {},
+        "required": [],
+        "version": "v1",
+    },
+    "get_release_phase": {
+        "method": "GET",
+        "path": "/release_phases/{release_phase_id}",
+        "description": "Get a specific release phase by ID",
+        "parameters": {
+            "release_phase_id": {"type": "str", "location": "path", "description": "The release phase ID"},
+        },
+        "required": ["release_phase_id"],
+        "version": "v1",
+    },
 
     # ================================================================================
     # GOALS
     # ================================================================================
+    "list_goals": {
+        "method": "GET",
+        "path": "/goals",
+        "description": "List all goals across all products",
+        "parameters": {
+            "page": {"type": "Optional[int]", "location": "query", "description": "Page number for pagination"},
+            "per_page": {"type": "Optional[int]", "location": "query", "description": "Number of results per page"},
+        },
+        "required": [],
+        "version": "v1",
+    },
     "list_product_goals": {
         "method": "GET",
         "path": "/products/{product_id}/goals",
@@ -233,10 +463,116 @@ AHA_API_ENDPOINTS = {
         "required": ["goal_id"],
         "version": "v1",
     },
+    "list_goal_features": {
+        "method": "GET",
+        "path": "/goals/{goal_id}/features",
+        "description": "List features linked to a goal",
+        "parameters": {
+            "goal_id": {"type": "str", "location": "path", "description": "The goal ID"},
+        },
+        "required": ["goal_id"],
+        "version": "v1",
+    },
+    "list_goal_epics": {
+        "method": "GET",
+        "path": "/goals/{goal_id}/epics",
+        "description": "List epics linked to a goal",
+        "parameters": {
+            "goal_id": {"type": "str", "location": "path", "description": "The goal ID"},
+        },
+        "required": ["goal_id"],
+        "version": "v1",
+    },
+    "list_goal_initiatives": {
+        "method": "GET",
+        "path": "/goals/{goal_id}/initiatives",
+        "description": "List initiatives linked to a goal",
+        "parameters": {
+            "goal_id": {"type": "str", "location": "path", "description": "The goal ID"},
+        },
+        "required": ["goal_id"],
+        "version": "v1",
+    },
+    "list_goal_releases": {
+        "method": "GET",
+        "path": "/goals/{goal_id}/releases",
+        "description": "List releases linked to a goal",
+        "parameters": {
+            "goal_id": {"type": "str", "location": "path", "description": "The goal ID"},
+        },
+        "required": ["goal_id"],
+        "version": "v1",
+    },
+    "list_goal_key_results": {
+        "method": "GET",
+        "path": "/goals/{goal_id}/key_results",
+        "description": "List key results for a goal",
+        "parameters": {
+            "goal_id": {"type": "str", "location": "path", "description": "The goal ID"},
+        },
+        "required": ["goal_id"],
+        "version": "v1",
+    },
+    "list_goal_comments": {
+        "method": "GET",
+        "path": "/goals/{goal_id}/comments",
+        "description": "List comments on a goal",
+        "parameters": {
+            "goal_id": {"type": "str", "location": "path", "description": "The goal ID"},
+        },
+        "required": ["goal_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # INITIATIVES
+    # ================================================================================
+    "list_initiatives": {
+        "method": "GET",
+        "path": "/initiatives",
+        "description": "List all initiatives across all products",
+        "parameters": {
+            "page": {"type": "Optional[int]", "location": "query", "description": "Page number for pagination"},
+            "per_page": {"type": "Optional[int]", "location": "query", "description": "Number of results per page"},
+        },
+        "required": [],
+        "version": "v1",
+    },
+    "list_product_initiatives": {
+        "method": "GET",
+        "path": "/products/{product_id}/initiatives",
+        "description": "List all initiatives for a product",
+        "parameters": {
+            "product_id": {"type": "str", "location": "path", "description": "The product ID"},
+        },
+        "required": ["product_id"],
+        "version": "v1",
+    },
+    "get_initiative": {
+        "method": "GET",
+        "path": "/initiatives/{initiative_id}",
+        "description": "Get a specific initiative by ID",
+        "parameters": {
+            "initiative_id": {"type": "str", "location": "path", "description": "The initiative ID"},
+        },
+        "required": ["initiative_id"],
+        "version": "v1",
+    },
 
     # ================================================================================
     # EPICS
     # ================================================================================
+    "list_epics": {
+        "method": "GET",
+        "path": "/epics",
+        "description": "List all epics across all products",
+        "parameters": {
+            "page": {"type": "Optional[int]", "location": "query", "description": "Page number for pagination"},
+            "per_page": {"type": "Optional[int]", "location": "query", "description": "Number of results per page"},
+        },
+        "required": [],
+        "version": "v1",
+    },
     "list_product_epics": {
         "method": "GET",
         "path": "/products/{product_id}/epics",
@@ -259,6 +595,153 @@ AHA_API_ENDPOINTS = {
         "required": ["epic_id"],
         "version": "v1",
     },
+    "list_epic_features": {
+        "method": "GET",
+        "path": "/epics/{epic_id}/features",
+        "description": "List features in an epic",
+        "parameters": {
+            "epic_id": {"type": "str", "location": "path", "description": "The epic ID"},
+        },
+        "required": ["epic_id"],
+        "version": "v1",
+    },
+    "list_epic_comments": {
+        "method": "GET",
+        "path": "/epics/{epic_id}/comments",
+        "description": "List comments on an epic",
+        "parameters": {
+            "epic_id": {"type": "str", "location": "path", "description": "The epic ID"},
+        },
+        "required": ["epic_id"],
+        "version": "v1",
+    },
+    "list_epic_tasks": {
+        "method": "GET",
+        "path": "/epics/{epic_id}/tasks",
+        "description": "List tasks for an epic",
+        "parameters": {
+            "epic_id": {"type": "str", "location": "path", "description": "The epic ID"},
+        },
+        "required": ["epic_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # REQUIREMENTS
+    # ================================================================================
+    "get_requirement": {
+        "method": "GET",
+        "path": "/requirements/{requirement_id}",
+        "description": "Get a specific requirement by ID",
+        "parameters": {
+            "requirement_id": {"type": "str", "location": "path", "description": "The requirement ID"},
+        },
+        "required": ["requirement_id"],
+        "version": "v1",
+    },
+    "list_requirement_comments": {
+        "method": "GET",
+        "path": "/requirements/{requirement_id}/comments",
+        "description": "List comments on a requirement",
+        "parameters": {
+            "requirement_id": {"type": "str", "location": "path", "description": "The requirement ID"},
+        },
+        "required": ["requirement_id"],
+        "version": "v1",
+    },
+    "list_requirement_tasks": {
+        "method": "GET",
+        "path": "/requirements/{requirement_id}/tasks",
+        "description": "List tasks for a requirement",
+        "parameters": {
+            "requirement_id": {"type": "str", "location": "path", "description": "The requirement ID"},
+        },
+        "required": ["requirement_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # TASKS
+    # ================================================================================
+    "list_tasks": {
+        "method": "GET",
+        "path": "/tasks",
+        "description": "List all tasks",
+        "parameters": {
+            "page": {"type": "Optional[int]", "location": "query", "description": "Page number for pagination"},
+            "per_page": {"type": "Optional[int]", "location": "query", "description": "Number of results per page"},
+        },
+        "required": [],
+        "version": "v1",
+    },
+    "get_task": {
+        "method": "GET",
+        "path": "/tasks/{task_id}",
+        "description": "Get a specific task by ID",
+        "parameters": {
+            "task_id": {"type": "str", "location": "path", "description": "The task ID"},
+        },
+        "required": ["task_id"],
+        "version": "v1",
+    },
+    "list_product_tasks": {
+        "method": "GET",
+        "path": "/products/{product_id}/tasks",
+        "description": "List all tasks for a product",
+        "parameters": {
+            "product_id": {"type": "str", "location": "path", "description": "The product ID"},
+        },
+        "required": ["product_id"],
+        "version": "v1",
+    },
+    "list_user_tasks": {
+        "method": "GET",
+        "path": "/users/{user_id}/tasks",
+        "description": "List tasks assigned to a user",
+        "parameters": {
+            "user_id": {"type": "str", "location": "path", "description": "The user ID"},
+        },
+        "required": ["user_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # COMMENTS
+    # ================================================================================
+    "get_comment": {
+        "method": "GET",
+        "path": "/comments/{comment_id}",
+        "description": "Get a specific comment by ID",
+        "parameters": {
+            "comment_id": {"type": "str", "location": "path", "description": "The comment ID"},
+        },
+        "required": ["comment_id"],
+        "version": "v1",
+    },
+    "list_product_comments": {
+        "method": "GET",
+        "path": "/products/{project_id}/comments",
+        "description": "List comments for a product",
+        "parameters": {
+            "project_id": {"type": "str", "location": "path", "description": "The product/project ID"},
+        },
+        "required": ["project_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # PAGES / NOTES
+    # ================================================================================
+    "list_product_pages": {
+        "method": "GET",
+        "path": "/products/{product_id}/pages",
+        "description": "List all pages/notes for a product",
+        "parameters": {
+            "product_id": {"type": "str", "location": "path", "description": "The product ID"},
+        },
+        "required": ["product_id"],
+        "version": "v1",
+    },
 
     # ================================================================================
     # INTEGRATIONS
@@ -271,6 +754,232 @@ AHA_API_ENDPOINTS = {
             "product_id": {"type": "str", "location": "path", "description": "The product ID"},
         },
         "required": ["product_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # CUSTOM FIELDS
+    # ================================================================================
+    "list_custom_field_definitions": {
+        "method": "GET",
+        "path": "/custom_field_definitions",
+        "description": "List all custom field definitions",
+        "parameters": {},
+        "required": [],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # TEAMS
+    # ================================================================================
+    "list_teams": {
+        "method": "GET",
+        "path": "/teams",
+        "description": "List all teams",
+        "parameters": {},
+        "required": [],
+        "version": "v1",
+    },
+    "get_team": {
+        "method": "GET",
+        "path": "/teams/{team_id}",
+        "description": "Get a specific team by ID",
+        "parameters": {
+            "team_id": {"type": "str", "location": "path", "description": "The team ID"},
+        },
+        "required": ["team_id"],
+        "version": "v1",
+    },
+    "list_team_members": {
+        "method": "GET",
+        "path": "/team_members",
+        "description": "List all team members",
+        "parameters": {},
+        "required": [],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # WORKFLOWS
+    # ================================================================================
+    "get_workflow": {
+        "method": "GET",
+        "path": "/workflows/{workflow_id}",
+        "description": "Get a specific workflow by ID",
+        "parameters": {
+            "workflow_id": {"type": "str", "location": "path", "description": "The workflow ID"},
+        },
+        "required": ["workflow_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # AUDIT / DELETION TRACKING
+    # ================================================================================
+    "list_audits": {
+        "method": "GET",
+        "path": "/audits",
+        "description": "List audit events",
+        "parameters": {
+            "page": {"type": "Optional[int]", "location": "query", "description": "Page number for pagination"},
+            "per_page": {"type": "Optional[int]", "location": "query", "description": "Number of results per page"},
+        },
+        "required": [],
+        "version": "v1",
+    },
+    "list_deletions": {
+        "method": "GET",
+        "path": "/deletions",
+        "description": "List recently deleted records",
+        "parameters": {
+            "page": {"type": "Optional[int]", "location": "query", "description": "Page number for pagination"},
+            "per_page": {"type": "Optional[int]", "location": "query", "description": "Number of results per page"},
+        },
+        "required": [],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # STRATEGY
+    # ================================================================================
+    "list_strategy_models": {
+        "method": "GET",
+        "path": "/strategy_models",
+        "description": "List all strategy models",
+        "parameters": {},
+        "required": [],
+        "version": "v1",
+    },
+    "get_strategy_model": {
+        "method": "GET",
+        "path": "/strategy_models/{strategy_model_id}",
+        "description": "Get a specific strategy model by ID",
+        "parameters": {
+            "strategy_model_id": {"type": "str", "location": "path", "description": "The strategy model ID"},
+        },
+        "required": ["strategy_model_id"],
+        "version": "v1",
+    },
+    "list_strategy_visions": {
+        "method": "GET",
+        "path": "/strategy_visions",
+        "description": "List all strategy visions",
+        "parameters": {},
+        "required": [],
+        "version": "v1",
+    },
+    "get_strategy_vision": {
+        "method": "GET",
+        "path": "/strategy_visions/{strategy_vision_id}",
+        "description": "Get a specific strategy vision by ID",
+        "parameters": {
+            "strategy_vision_id": {"type": "str", "location": "path", "description": "The strategy vision ID"},
+        },
+        "required": ["strategy_vision_id"],
+        "version": "v1",
+    },
+    "list_strategy_positions": {
+        "method": "GET",
+        "path": "/strategy_positions",
+        "description": "List all strategy positions",
+        "parameters": {},
+        "required": [],
+        "version": "v1",
+    },
+    "get_strategy_position": {
+        "method": "GET",
+        "path": "/strategy_positions/{strategy_position_id}",
+        "description": "Get a specific strategy position by ID",
+        "parameters": {
+            "strategy_position_id": {"type": "str", "location": "path", "description": "The strategy position ID"},
+        },
+        "required": ["strategy_position_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # CREATIVE BRIEFS
+    # ================================================================================
+    "list_product_creative_briefs": {
+        "method": "GET",
+        "path": "/products/{product_id}/creative_briefs",
+        "description": "List creative briefs for a product",
+        "parameters": {
+            "product_id": {"type": "str", "location": "path", "description": "The product ID"},
+        },
+        "required": ["product_id"],
+        "version": "v1",
+    },
+    "get_creative_brief": {
+        "method": "GET",
+        "path": "/creative_briefs/{creative_brief_id}",
+        "description": "Get a specific creative brief by ID",
+        "parameters": {
+            "creative_brief_id": {"type": "str", "location": "path", "description": "The creative brief ID"},
+        },
+        "required": ["creative_brief_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # PERSONAS
+    # ================================================================================
+    "list_product_personas": {
+        "method": "GET",
+        "path": "/products/{product_id}/personas",
+        "description": "List personas for a product",
+        "parameters": {
+            "product_id": {"type": "str", "location": "path", "description": "The product ID"},
+        },
+        "required": ["product_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # COMPETITORS
+    # ================================================================================
+    "get_competitor": {
+        "method": "GET",
+        "path": "/competitors/{competitor_id}",
+        "description": "Get a specific competitor by ID",
+        "parameters": {
+            "competitor_id": {"type": "str", "location": "path", "description": "The competitor ID"},
+        },
+        "required": ["competitor_id"],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # SCHEDULES
+    # ================================================================================
+    "list_schedules": {
+        "method": "GET",
+        "path": "/schedules",
+        "description": "List all schedules",
+        "parameters": {},
+        "required": [],
+        "version": "v1",
+    },
+
+    # ================================================================================
+    # SCREEN DEFINITIONS
+    # ================================================================================
+    "list_screen_definitions": {
+        "method": "GET",
+        "path": "/screen_definitions",
+        "description": "List all screen definitions",
+        "parameters": {},
+        "required": [],
+        "version": "v1",
+    },
+    "get_screen_definition": {
+        "method": "GET",
+        "path": "/screen_definitions/{screen_definition_id}",
+        "description": "Get a specific screen definition by ID",
+        "parameters": {
+            "screen_definition_id": {"type": "str", "location": "path", "description": "The screen definition ID"},
+        },
+        "required": ["screen_definition_id"],
         "version": "v1",
     },
 }
@@ -297,30 +1006,42 @@ class AhaDataSourceGenerator:
     def _build_query_params(self, endpoint_info: Dict) -> List[str]:
         """Build query parameter handling code."""
         lines = ["        query_params: dict[str, Any] = {}"]
+        required_set = set(endpoint_info.get("required", []))
 
         for param_name, param_info in endpoint_info["parameters"].items():
             if param_info["location"] == "query":
                 sanitized_name = self._sanitize_parameter_name(param_name)
+                api_name = param_info.get("api_name", param_name)
+                is_required = param_name in required_set
 
-                if "Optional[bool]" in param_info["type"]:
+                if is_required:
+                    if "bool" in param_info["type"]:
+                        lines.append(
+                            f"        query_params['{api_name}'] = str({sanitized_name}).lower()"
+                        )
+                    else:
+                        lines.append(
+                            f"        query_params['{api_name}'] = {sanitized_name}"
+                        )
+                elif "Optional[bool]" in param_info["type"]:
                     lines.extend([
                         f"        if {sanitized_name} is not None:",
-                        f"            query_params['{param_name}'] = str({sanitized_name}).lower()",
+                        f"            query_params['{api_name}'] = str({sanitized_name}).lower()",
                     ])
                 elif "Optional[int]" in param_info["type"]:
                     lines.extend([
                         f"        if {sanitized_name} is not None:",
-                        f"            query_params['{param_name}'] = str({sanitized_name})",
+                        f"            query_params['{api_name}'] = str({sanitized_name})",
                     ])
                 elif "List[" in param_info["type"]:
                     lines.extend([
                         f"        if {sanitized_name} is not None:",
-                        f"            query_params['{param_name}[]'] = {sanitized_name}",
+                        f"            query_params['{api_name}[]'] = {sanitized_name}",
                     ])
                 else:
                     lines.extend([
                         f"        if {sanitized_name} is not None:",
-                        f"            query_params['{param_name}'] = {sanitized_name}",
+                        f"            query_params['{api_name}'] = {sanitized_name}",
                     ])
 
         return lines
@@ -420,7 +1141,6 @@ class AhaDataSourceGenerator:
         params = ["self"]
         has_any_bool = False
 
-        # Collect required params, split into non-bool and bool groups
         required_non_bool: List[str] = []
         required_bool: List[str] = []
         for param_name in endpoint_info["required"]:
@@ -435,7 +1155,6 @@ class AhaDataSourceGenerator:
                 else:
                     required_non_bool.append(param_str)
 
-        # Collect optional parameters
         optional_params: List[str] = []
         for param_name, param_info in endpoint_info["parameters"].items():
             if param_name not in endpoint_info["required"]:
@@ -447,7 +1166,6 @@ class AhaDataSourceGenerator:
                 if "bool" in param_info.get("type", ""):
                     has_any_bool = True
 
-        # Build signature: non-bool required first, then * if needed, then bool required + optional
         params.extend(required_non_bool)
         if has_any_bool and (required_bool or optional_params):
             params.append("*")
@@ -483,13 +1201,9 @@ class AhaDataSourceGenerator:
         """Generate a complete method for an API endpoint."""
         lines = []
 
-        # Method signature
         lines.append(self._generate_method_signature(method_name, endpoint_info))
-
-        # Docstring
         lines.extend(self._generate_method_docstring(endpoint_info))
 
-        # Query parameters
         has_query = any(
             info["location"] == "query"
             for info in endpoint_info["parameters"].values()
@@ -499,16 +1213,13 @@ class AhaDataSourceGenerator:
             lines.extend(query_lines)
             lines.append("")
 
-        # URL construction
         lines.append(self._build_path_formatting(endpoint_info["path"], endpoint_info))
 
-        # Request body
         body_lines = self._build_request_body(endpoint_info)
         if body_lines:
             lines.append("")
             lines.extend(body_lines)
 
-        # Request construction and execution
         lines.append("")
         lines.append("        try:")
         lines.append("            request = HTTPRequest(")
@@ -572,11 +1283,20 @@ class AhaDataSourceGenerator:
             "    - User profile and management",
             "    - Product management",
             "    - Feature CRUD operations",
-            "    - Idea management",
+            "    - Idea management and portals",
             "    - Release management",
-            "    - Goal operations",
+            "    - Goal and initiative operations",
             "    - Epic management",
+            "    - Requirement management",
+            "    - Task management",
+            "    - Comment operations",
+            "    - Page/note management",
+            "    - Workflow management",
             "    - Integration listing",
+            "    - Custom fields",
+            "    - Team management",
+            "    - Strategy operations",
+            "    - Audit and deletion tracking",
             "",
             "    The base URL is https://{subdomain}.aha.io/api/v1.",
             "",
@@ -606,7 +1326,6 @@ class AhaDataSourceGenerator:
             "",
         ]
 
-        # Generate all API methods
         for method_name, endpoint_info in AHA_API_ENDPOINTS.items():
             class_lines.append(self._generate_method(method_name, endpoint_info))
             class_lines.append("")
@@ -630,42 +1349,6 @@ class AhaDataSourceGenerator:
 
         print(f"Generated Aha! data source with {len(self.generated_methods)} methods")
         print(f"Saved to: {full_path}")
-
-        # Print summary by category
-        resource_categories = {
-            "User": 0,
-            "Product": 0,
-            "Feature": 0,
-            "Idea": 0,
-            "Release": 0,
-            "Goal": 0,
-            "Epic": 0,
-            "Integration": 0,
-        }
-
-        for method in self.generated_methods:
-            name = method["name"]
-            if "user" in name:
-                resource_categories["User"] += 1
-            elif "product" in name and "feature" not in name and "idea" not in name and "release" not in name and "goal" not in name and "epic" not in name and "integration" not in name:
-                resource_categories["Product"] += 1
-            elif "feature" in name:
-                resource_categories["Feature"] += 1
-            elif "idea" in name:
-                resource_categories["Idea"] += 1
-            elif "release" in name:
-                resource_categories["Release"] += 1
-            elif "goal" in name:
-                resource_categories["Goal"] += 1
-            elif "epic" in name:
-                resource_categories["Epic"] += 1
-            elif "integration" in name:
-                resource_categories["Integration"] += 1
-
-        print(f"\nMethods by Resource:")
-        for category, count in resource_categories.items():
-            if count > 0:
-                print(f"  - {category}: {count}")
 
 
 def main():
