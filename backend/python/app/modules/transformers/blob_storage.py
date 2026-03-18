@@ -119,7 +119,7 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Unknown record format in S3")
             raise Exception("Unknown record format")
 
-    async def _get_content_length(self, client: httpx.AsyncClient, url: str) -> int:
+    async def _get_content_length(self, client: httpx.AsyncClient, url: str) -> int|None:
         """
         Get content length of S3 object using Range GET request to fetch only headers.
 
