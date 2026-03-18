@@ -709,10 +709,10 @@ class WebConnector(BaseConnector):
         # Step 2: create record group with permissions
         await self.create_record_group(app_users)
 
-            # Reset state for new sync
-            self.visited_urls.clear()
-            self.retry_urls.clear()
-            self.processed_urls = 0
+        # Reset state for new sync
+        self.visited_urls.clear()
+        self.retry_urls.clear()
+        self.processed_urls = 0
 
         # Start crawling
         assert self.url is not None, "URL not set — init() must be called first"
@@ -1101,7 +1101,7 @@ class WebConnector(BaseConnector):
                 existing_entry = self.retry_urls.get(normalized)
                 self.retry_urls[normalized] = RetryUrl(
                     url=normalized,
-                    status=Status.PENDING,
+                    status=Status.PENDING.value,
                     # Synthetic timeout code for connection failures without an HTTP response.
                     status_code=existing_entry.status_code if existing_entry else 408,
                     retries=(existing_entry.retries + 1) if existing_entry else 0,
@@ -1150,7 +1150,7 @@ class WebConnector(BaseConnector):
                     existing_entry = self.retry_urls.get(normalized)  # O(1)
                     self.retry_urls[normalized] = RetryUrl(
                         url=normalized,
-                        status=Status.PENDING,
+                        status=Status.PENDING.value,
                         status_code=result.status_code,
                         retries=(existing_entry.retries + 1) if existing_entry else 0,
                         last_attempted=get_epoch_timestamp_in_ms(),
