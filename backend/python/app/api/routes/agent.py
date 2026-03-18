@@ -5,8 +5,9 @@ Handles agent instances, templates, chat, and permissions using graph-based arch
 
 import json
 import uuid
+from collections.abc import AsyncGenerator
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -18,13 +19,11 @@ from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, config_node_constants
+from app.modules.agents.deep.graph import deep_agent_graph
+from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import agent_graph, modern_agent_graph
-from app.modules.agents.deep.graph import deep_agent_graph
-from app.modules.agents.deep.state import build_deep_agent_state
-
-
 from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
     check_memory_health,
@@ -46,19 +45,19 @@ SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" sep
 
 class ChatQuery(BaseModel):
     query: str
-    limit: Optional[int] = 50
-    previousConversations: List[Dict] = []
+    limit: int | None = 50
+    previousConversations: list[dict] = []
     quickMode: bool = False
-    filters: Optional[Dict[str, Any]] = None
-    retrievalMode: Optional[str] = "HYBRID"
-    systemPrompt: Optional[str] = None
-    instructions: Optional[str] = None
-    tools: Optional[List[str]] = None
-    chatMode: Optional[str] = "auto"
-    modelKey: Optional[str] = None
-    modelName: Optional[str] = None
-    timezone: Optional[str] = None
-    currentTime: Optional[str] = None
+    filters: dict[str, Any] | None = None
+    retrievalMode: str | None = "HYBRID"
+    systemPrompt: str | None = None
+    instructions: str | None = None
+    tools: list[str] | None = None
+    chatMode: str | None = "auto"
+    modelKey: str | None = None
+    modelName: str | None = None
+    timezone: str | None = None
+    currentTime: str | None = None
 
 
 # ============================================================================
@@ -120,7 +119,7 @@ class LLMInitializationError(AgentError):
 # Helper Functions
 # ============================================================================
 
-async def get_services(request: Request) -> Dict[str, Any]:
+async def get_services(request: Request) -> dict[str, Any]:
     """Get all required services from container"""
     container = request.app.container
 
@@ -147,7 +146,7 @@ async def get_services(request: Request) -> Dict[str, Any]:
     }
 
 
-def _get_user_context(request: Request) -> Dict[str, Any]:
+def _get_user_context(request: Request) -> dict[str, Any]:
     """Extract user context from request"""
     user = getattr(request.state, "user", {})
     user_id = user.get("userId")
@@ -166,11 +165,11 @@ def _get_user_context(request: Request) -> Dict[str, Any]:
     }
 
 
-def _extract_tool_names_for_routing(query_info: Dict[str, Any]) -> List[str]:
+def _extract_tool_names_for_routing(query_info: dict[str, Any]) -> list[str]:
     """Extract flattened tool names from query payload (tools or toolsets)."""
-    names: List[str] = []
+    names: list[str] = []
 
-    def _normalize_tool_name(tool_obj: Any) -> Optional[str]:
+    def _normalize_tool_name(tool_obj: Any) -> str | None:
         """Return canonical tool name in `app.tool` format when possible."""
         if isinstance(tool_obj, str):
             return tool_obj
@@ -219,7 +218,7 @@ def _extract_tool_names_for_routing(query_info: Dict[str, Any]) -> List[str]:
 
     # De-duplicate while preserving order
     seen = set()
-    deduped: List[str] = []
+    deduped: list[str] = []
     for n in names:
         if n and n not in seen:
             deduped.append(n)
@@ -228,10 +227,10 @@ def _extract_tool_names_for_routing(query_info: Dict[str, Any]) -> List[str]:
 
 
 async def _select_agent_graph_for_query(
-    query_info: Dict[str, Any],
+    query_info: dict[str, Any],
     logger: Logger,
     llm: BaseChatModel,
-    agent: Dict[str, Any] = None,
+    agent: dict[str, Any] = None,
 ):
     """
     Graph selection based on chatMode from the chat input:
@@ -261,7 +260,7 @@ async def _select_agent_graph_for_query(
 
 
 async def _auto_select_graph(
-    query_info: Dict[str, Any],
+    query_info: dict[str, Any],
     logger: Logger,
     llm: BaseChatModel,
 ):
@@ -348,7 +347,7 @@ async def _auto_select_graph(
         return modern_agent_graph
 
 
-async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> Dict[str, Any]:
+async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get user document with validation"""
     try:
         user = await graph_provider.get_user_by_user_id(user_id)
@@ -367,7 +366,7 @@ async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, log
         raise HTTPException(status_code=500, detail="Failed to retrieve user information")
 
 
-async def _get_org_info(user_info: Dict[str, Any], graph_provider: IGraphDBProvider, logger: Logger) -> Dict[str, Any]:
+async def _get_org_info(user_info: dict[str, Any], graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get organization information with validation"""
     try:
         org_doc = await graph_provider.get_document(user_info["orgId"], CollectionNames.ORGS.value)
@@ -390,7 +389,7 @@ async def _get_org_info(user_info: Dict[str, Any], graph_provider: IGraphDBProvi
         raise HTTPException(status_code=500, detail="Failed to retrieve organization information")
 
 
-async def _enrich_user_info(user_info: Dict[str, Any], user_doc: Dict[str, Any]) -> Dict[str, Any]:
+async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any]) -> dict[str, Any]:
     """Enrich user info with document data"""
     enriched = user_info.copy()
     enriched["userEmail"] = user_doc.get("email", "").strip()
@@ -404,14 +403,14 @@ async def _enrich_user_info(user_info: Dict[str, Any], user_doc: Dict[str, Any])
     return enriched
 
 
-def _validate_required_fields(data: Dict[str, Any], required_fields: List[str]) -> None:
+def _validate_required_fields(data: dict[str, Any], required_fields: list[str]) -> None:
     """Validate required fields in request data"""
     for field in required_fields:
         if not data.get(field) or not str(data.get(field)).strip():
             raise InvalidRequestError(f"'{field}' is required")
 
 
-def _parse_models(raw_models: List[Any], logger: Logger) -> tuple[List[str], bool]:
+def _parse_models(raw_models: list[Any], logger: Logger) -> tuple[list[str], bool]:
     """Parse and validate model entries"""
     model_entries = []
     has_reasoning_model = False
@@ -436,7 +435,7 @@ def _parse_models(raw_models: List[Any], logger: Logger) -> tuple[List[str], boo
     return model_entries, has_reasoning_model
 
 
-def _parse_toolsets(raw_toolsets: List[Any], logger: Logger) -> Dict[str, Dict[str, Any]]:
+def _parse_toolsets(raw_toolsets: list[Any], logger: Logger) -> dict[str, dict[str, Any]]:
     """Parse toolsets with their tools.
 
     The key of the returned dict is the toolset name (lowercase).
@@ -488,7 +487,7 @@ def _parse_toolsets(raw_toolsets: List[Any], logger: Logger) -> Dict[str, Dict[s
     return toolsets_with_tools
 
 
-def _parse_knowledge_sources(raw_knowledge: List[Any], logger: Logger) -> Dict[str, Dict[str, Any]]:
+def _parse_knowledge_sources(raw_knowledge: list[Any], logger: Logger) -> dict[str, dict[str, Any]]:
     """Parse knowledge sources"""
     knowledge_sources = {}
 
@@ -520,12 +519,12 @@ def _parse_knowledge_sources(raw_knowledge: List[Any], logger: Logger) -> Dict[s
 
 async def _create_toolset_edges(
     agent_key: str,
-    toolsets_with_tools: Dict[str, Dict[str, Any]],
-    user_info: Dict[str, Any],
+    toolsets_with_tools: dict[str, dict[str, Any]],
+    user_info: dict[str, Any],
     user_key: str,
     graph_provider: IGraphDBProvider,
     logger: Logger
-) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Create toolset nodes and edges for agent using batch operations"""
     from app.agents.constants.toolset_constants import normalize_app_name
 
@@ -676,11 +675,11 @@ async def _create_toolset_edges(
 
 async def _create_knowledge_edges(
     agent_key: str,
-    knowledge_sources: Dict[str, Dict[str, Any]],
+    knowledge_sources: dict[str, dict[str, Any]],
     user_key: str,
     graph_provider: IGraphDBProvider,
     logger: Logger
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Create knowledge nodes and edges for agent using batch operations"""
     created_knowledge = []
     time = get_epoch_timestamp_in_ms()
@@ -751,7 +750,7 @@ async def _create_knowledge_edges(
     return created_knowledge
 
 
-async def _enrich_agent_models(agent: Dict[str, Any], config_service: ConfigurationService, logger: Logger) -> None:
+async def _enrich_agent_models(agent: dict[str, Any], config_service: ConfigurationService, logger: Logger) -> None:
     """Enrich agent models with full configurations from etcd"""
     model_entries = agent.get("models", [])
 
@@ -817,7 +816,7 @@ async def _enrich_agent_models(agent: Dict[str, Any], config_service: Configurat
         logger.warning(f"Failed to enrich models: {e}")
 
 
-def _parse_request_body(body: bytes) -> Dict[str, Any]:
+def _parse_request_body(body: bytes) -> dict[str, Any]:
     """Parse and validate JSON request body"""
     if not body:
         raise InvalidRequestError("Request body is required")
@@ -947,16 +946,16 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
 
 
 async def stream_response(
-    query_info: Dict[str, Any],
-    user_info: Dict[str, Any],
+    query_info: dict[str, Any],
+    user_info: dict[str, Any],
     llm: BaseChatModel,
     logger: Logger,
     retrieval_service: RetrievalService,
     graph_provider,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
-    org_info: Dict[str, Any] = None,
-    agent: Dict[str, Any] = None,
+    org_info: dict[str, Any] = None,
+    agent: dict[str, Any] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
     try:
