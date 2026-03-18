@@ -1,7 +1,8 @@
 import asyncio
 import time
 import traceback
-from typing import Any, Optional
+from logging import Logger
+from typing import Any
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -47,7 +48,7 @@ MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 class RetrievalService:
     def __init__(
         self,
-        logger,
+        logger: Logger,
         config_service: ConfigurationService,
         collection_name: str,
         vector_db_service: IVectorDBService,
@@ -77,7 +78,7 @@ class RetrievalService:
             self.sparse_embeddings = None
             raise Exception(
                 "Failed to initialize sparse embeddings: " + str(e),
-            )
+            ) from e
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
@@ -85,12 +86,11 @@ class RetrievalService:
         self.embedding_size = None
         self.embedding_model_instance = None
 
-    async def get_llm_instance(self, use_cache: bool = True) -> Optional[BaseChatModel]:
+    async def get_llm_instance(self, use_cache: bool = FALSE) -> BaseChatModel | None:
         try:
             self.logger.info("Getting LLM")
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value,
-                use_cache=use_cache
             )
             llm_configs = ai_models["llm"]
 
@@ -122,7 +122,7 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    async def get_embedding_model_instance(self, use_cache: bool = True) -> Optional[Embeddings]:
+    async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
         try:
             embedding_model = await self.get_current_embedding_model_name(use_cache)
             if self.embedding_model == embedding_model:
@@ -171,13 +171,12 @@ class RetrievalService:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
 
-    async def get_current_embedding_model_name(self, use_cache: bool = True) -> Optional[str]:
+    async def get_current_embedding_model_name(self, use_cache: bool = False) -> str | None:
         """Get the current embedding model name from configuration or instance."""
         try:
             # First try to get from AI_MODELS config
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value,
-                use_cache=use_cache
             )
             if ai_models and "embedding" in ai_models and ai_models["embedding"]:
                 for config in ai_models["embedding"]:
@@ -191,7 +190,7 @@ class RetrievalService:
             self.logger.error(f"Error getting current embedding model name: {str(e)}")
             return DEFAULT_EMBEDDING_MODEL
 
-    def get_embedding_model_name(self, dense_embeddings: Embeddings) -> Optional[str]:
+    def get_embedding_model_name(self, dense_embeddings: Embeddings) -> str | None:
         if hasattr(dense_embeddings, "model_name"):
             return dense_embeddings.model_name
         elif hasattr(dense_embeddings, "model"):
@@ -239,10 +238,10 @@ class RetrievalService:
         queries: list[str],
         user_id: str,
         org_id: str,
-        filter_groups: Optional[dict[str, list[str]]] = None,
+        filter_groups: dict[str, list[str]] | None = None,
         limit: int = 20,
-        virtual_record_ids_from_tool: Optional[list[str]] = None,
-        graph_provider: Optional[IGraphDBProvider] = None,
+        virtual_record_ids_from_tool: list[str] | None = None,
+        graph_provider: IGraphDBProvider | None = None,
         knowledge_search:bool = False,
         is_agent:bool = False,
     ) -> dict[str, Any]:
@@ -557,7 +556,7 @@ class RetrievalService:
                 return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
-    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, graph_provider: IGraphDBProvider) -> list[dict[str, Any]]:
+    async def _get_accessible_records_task(self, user_id: str, org_id: str, filter_groups: dict[str, Any], graph_provider: IGraphDBProvider) -> list[dict[str, Any]]:
         """Separate task for getting accessible records (legacy method - returns full records)"""
         filter_groups = filter_groups or {}
         filters = {}
@@ -583,7 +582,7 @@ class RetrievalService:
             user_id=user_id, org_id=org_id, filters=filters
         )
 
-    async def _get_user_cached(self, user_id: str) -> Optional[dict[str, Any]]:
+    async def _get_user_cached(self, user_id: str) -> dict[str, Any] | None:
         """
         OPTIMIZATION: Get user data with caching to avoid repeated DB calls.
         Cache expires after USER_CACHE_TTL seconds (default 5 minutes).
