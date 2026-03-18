@@ -1,10 +1,11 @@
 import base64
 import html
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
+from typing import NoReturn
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -236,18 +237,18 @@ class OutlookConnector(BaseConnector):
             connector_id
         )
         self.rate_limiter = AsyncLimiter(50, 1)
-        self.external_outlook_client: Optional[OutlookCalendarContactsDataSource] = None
-        self.external_users_client: Optional[UsersGroupsDataSource] = None
-        self.credentials: Optional[OutlookCredentials] = None
+        self.external_outlook_client: OutlookCalendarContactsDataSource | None = None
+        self.external_users_client: UsersGroupsDataSource | None = None
+        self.credentials: OutlookCredentials | None = None
         self.connector_id = connector_id
 
         # User cache for performance optimization
-        self._user_cache: Dict[str, str] = {}  # email -> source_user_id mapping
-        self._user_cache_timestamp: Optional[int] = None
+        self._user_cache: dict[str, str] = {}  # email -> source_user_id mapping
+        self._user_cache_timestamp: int | None = None
         self._user_cache_ttl: int = 3600  # 1 hour TTL in seconds
 
         # Group cache for web URL construction
-        self._group_cache: Dict[str, Dict[str, str]] = {}  # group_id -> {'mail': ..., 'mailNickname': ...}
+        self._group_cache: dict[str, dict[str, str]] = {}  # group_id -> {'mail': ..., 'mailNickname': ...}
 
         self.email_delta_sync_point = SyncPoint(
             connector_id=self.connector_id,
@@ -385,7 +386,7 @@ class OutlookConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Failed to populate user cache: {e}")
 
-    async def _get_user_id_from_email(self, email: str) -> Optional[str]:
+    async def _get_user_id_from_email(self, email: str) -> str | None:
         """Get user ID from email using cache."""
         try:
             # Ensure cache is populated
@@ -426,7 +427,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error during Outlook sync: {e}")
             raise
 
-    async def _sync_users(self) -> List[AppUser]:
+    async def _sync_users(self) -> list[AppUser]:
         """Sync organization users and return active users to process."""
         try:
             self.logger.info("Syncing organization users...")
@@ -465,7 +466,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error syncing users: {e}")
             raise
 
-    async def _get_all_users_external(self) -> List[AppUser]:
+    async def _get_all_users_external(self) -> list[AppUser]:
         """Get all users using external Users Groups API with pagination."""
         try:
             if not self.external_users_client:
@@ -518,7 +519,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting users from external API: {e}")
             return []
 
-    async def _sync_user_groups(self) -> List[AppUserGroup]:
+    async def _sync_user_groups(self) -> list[AppUserGroup]:
         """Sync Microsoft 365 groups and their memberships (full sync)."""
         try:
             self.logger.info("Starting Microsoft 365 groups synchronization...")
@@ -536,9 +537,9 @@ class OutlookConnector(BaseConnector):
             self.logger.info(f"Found {len(groups)} Microsoft 365 groups to process")
 
             # Process groups in batches
-            user_groups_batch: List[Tuple[AppUserGroup, List[AppUser]]] = []
-            group_record_groups_batch: List[Tuple[RecordGroup, List]] = []
-            all_synced_user_groups: List[AppUserGroup] = []
+            user_groups_batch: list[tuple[AppUserGroup, list[AppUser]]] = []
+            group_record_groups_batch: list[tuple[RecordGroup, list]] = []
+            all_synced_user_groups: list[AppUserGroup] = []
             batch_size = 10
 
             for group in groups:
@@ -655,7 +656,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error syncing user groups: {e}", exc_info=True)
             raise
 
-    async def _get_all_microsoft_365_groups(self) -> List[Dict]:
+    async def _get_all_microsoft_365_groups(self) -> list[dict]:
         """Get all Microsoft 365 groups with pagination."""
         try:
             if not self.external_users_client:
@@ -668,7 +669,7 @@ class OutlookConnector(BaseConnector):
             while True:
                 response = await self.external_users_client.groups_list_groups(
                     next_url=next_url,
-                    select=['id', 'displayName', 'description', 'mail', 'mailNickname', 'groupTypes', 'createdDateTime']
+                    select=['id', 'displayName', 'description', 'mail', 'mailNickname', 'groupTypes', 'createdDateTime', 'mailEnabled']
                 )
 
                 if not response.success:
@@ -685,20 +686,21 @@ class OutlookConnector(BaseConnector):
 
                 page_num += 1
 
-            # Filter for Microsoft 365 groups (Unified groups) client-side
+            # Filter: Microsoft 365 (Unified) groups with a mailbox (SDK: mail_enabled; dict: mailEnabled)
             microsoft_365_groups = [
                 group for group in all_groups
                 if self._safe_get_attr(group, 'group_types', []) and 'Unified' in self._safe_get_attr(group, 'group_types', [])
+                and (self._safe_get_attr(group, 'mail_enabled') or self._safe_get_attr(group, 'mailEnabled')) is True
             ]
 
-            self.logger.info(f"Retrieved {len(all_groups)} total groups across {page_num} page(s), filtered to {len(microsoft_365_groups)} Microsoft 365 groups")
+            self.logger.info(f"Retrieved {len(all_groups)} total groups across {page_num} page(s), filtered to {len(microsoft_365_groups)} Microsoft 365 groups with mailbox")
             return microsoft_365_groups
 
         except Exception as e:
             self.logger.error(f"Error getting Microsoft 365 groups: {e}", exc_info=True)
             return []
 
-    async def _get_group_members(self, group_id: str) -> List[Dict]:
+    async def _get_group_members(self, group_id: str) -> list[dict]:
         """Get members of a specific group with pagination."""
         try:
             if not self.external_users_client:
@@ -735,7 +737,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting group members for {group_id}: {e}")
             return []
 
-    async def _get_user_groups(self, user_id: str) -> List[Dict]:
+    async def _get_user_groups(self, user_id: str) -> list[dict]:
         """Get groups that a user is a member of (cached for performance)."""
         try:
             if not self.external_users_client:
@@ -763,7 +765,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting user groups for {user_id}: {e}")
             return []
 
-    def _transform_group_to_record_group(self, group: Dict) -> Optional[RecordGroup]:
+    def _transform_group_to_record_group(self, group: dict) -> RecordGroup | None:
         """
         Transform Microsoft 365 group to RecordGroup entity for group mailbox.
 
@@ -792,7 +794,7 @@ class OutlookConnector(BaseConnector):
             # Get timestamps if available
             created_at = self._parse_datetime(self._safe_get_attr(group, 'created_date_time'))
 
-            record_group = RecordGroup(
+            return RecordGroup(
                 org_id=self.data_entities_processor.org_id,
                 name=group_name,
                 short_name=group_name,
@@ -807,13 +809,12 @@ class OutlookConnector(BaseConnector):
                 source_updated_at=created_at,
             )
 
-            return record_group
 
         except Exception as e:
             self.logger.error(f"Error transforming group to RecordGroup: {e}")
             return None
 
-    async def _sync_group_conversations(self, user_groups: List[AppUserGroup]) -> None:
+    async def _sync_group_conversations(self, user_groups: list[AppUserGroup]) -> None:
         """Sync conversations from all Microsoft 365 group mailboxes."""
         try:
             self.logger.info("Starting group conversations synchronization...")
@@ -908,7 +909,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error syncing conversations for group {group.name}: {e}")
             return 0
 
-    async def _get_group_threads(self, group_id: str, last_sync_timestamp: Optional[str] = None) -> List[Dict]:
+    async def _get_group_threads(self, group_id: str, last_sync_timestamp: str | None = None) -> list[dict]:
         """Get threads for a group, filtered by last sync timestamp if provided."""
         try:
             if not self.external_outlook_client:
@@ -943,7 +944,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting threads for group {group_id}: {e}")
             return []
 
-    async def _process_group_thread(self, org_id: str, group: AppUserGroup, thread: Dict, last_sync_timestamp: Optional[str] = None) -> int:
+    async def _process_group_thread(self, org_id: str, group: AppUserGroup, thread: dict, last_sync_timestamp: str | None = None) -> int:
         """Process a single thread and its posts with client-side post filtering."""
         try:
             group_id = group.source_user_group_id
@@ -1026,7 +1027,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error processing thread: {e}")
             return 0
 
-    async def _get_thread_posts(self, group_id: str, thread_id: str) -> List[Dict]:
+    async def _get_thread_posts(self, group_id: str, thread_id: str) -> list[dict]:
         """Get all posts in a thread."""
         try:
             if not self.external_outlook_client:
@@ -1058,9 +1059,9 @@ class OutlookConnector(BaseConnector):
         self,
         org_id: str,
         group: AppUserGroup,
-        thread: Dict,
-        post: Dict
-    ) -> Optional[RecordUpdate]:
+        thread: dict,
+        post: dict
+    ) -> RecordUpdate | None:
         """Process a single group post as a MailRecord."""
         try:
             post_id = self._safe_get_attr(post, 'id')
@@ -1157,10 +1158,10 @@ class OutlookConnector(BaseConnector):
         self,
         org_id: str,
         group: AppUserGroup,
-        thread: Dict,
-        post: Dict,
-        post_permissions: List[Permission]
-    ) -> List[Tuple[Record, List[Permission]]]:
+        thread: dict,
+        post: dict,
+        post_permissions: list[Permission]
+    ) -> list[tuple[Record, list[Permission]]]:
         """Process attachments for a group post."""
         try:
             group_id = group.source_user_group_id
@@ -1233,7 +1234,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error processing attachments for post: {e}")
             return []
 
-    async def _get_group_post_attachments(self, group_id: str, thread_id: str, post_id: str) -> List[Dict]:
+    async def _get_group_post_attachments(self, group_id: str, thread_id: str, post_id: str) -> list[dict]:
         """Get attachments for a group post."""
         try:
             if not self.external_outlook_client:
@@ -1286,7 +1287,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error downloading group post attachment: {e}")
             return b''
 
-    async def _process_users(self, org_id: str, users: List[AppUser]) -> AsyncGenerator[str, None]:
+    async def _process_users(self, org_id: str, users: list[AppUser]) -> AsyncGenerator[str, None]:
         """Process users sequentially."""
         for i, user in enumerate(users):
             self.logger.info(f"Processing user {i+1}/{len(users)}: {user.email}")
@@ -1337,7 +1338,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error processing all folders for user {user.email}: {e}")
             return f"Failed to process folders for {user.email}: {str(e)}"
 
-    async def _find_parent_by_conversation_index_from_db(self, conversation_index: str, thread_id: str, org_id: str, user: AppUser) -> Optional[str]:
+    async def _find_parent_by_conversation_index_from_db(self, conversation_index: str, thread_id: str, org_id: str, user: AppUser) -> str | None:
         """Find parent message ID using conversation index by searching ArangoDB."""
         if not conversation_index:
             self.logger.debug(f"No conversation_index provided for thread {thread_id}")
@@ -1375,7 +1376,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error finding parent by conversation index from DB for thread {thread_id}: {e}")
             return None
 
-    async def _create_all_thread_edges_for_user(self, org_id: str, user: AppUser, user_mail_records: List[Record]) -> int:
+    async def _create_all_thread_edges_for_user(self, org_id: str, user: AppUser, user_mail_records: list[Record]) -> int:
         """Create thread edges for all email messages of a user by searching ArangoDB for parents."""
         try:
             if not user_mail_records:
@@ -1424,7 +1425,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error creating all thread edges for user {user.email}: {e}")
             return 0
 
-    def _determine_folder_filter_strategy(self) -> Tuple[Optional[List[str]], Optional[str]]:
+    def _determine_folder_filter_strategy(self) -> tuple[list[str] | None, str | None]:
         """Determine the folder filtering strategy based on user's filter selections.
 
         Retrieves filter settings and determines the appropriate filtering strategy:
@@ -1495,8 +1496,8 @@ class OutlookConnector(BaseConnector):
     async def _get_child_folders_recursive(
         self,
         user_id: str,
-        parent_folder: Dict
-    ) -> List[Dict]:
+        parent_folder: dict
+    ) -> list[dict]:
         """Recursively get all child folders of a parent folder.
 
         Args:
@@ -1562,9 +1563,9 @@ class OutlookConnector(BaseConnector):
     async def _get_all_folders_for_user(
         self,
         user_id: str,
-        folder_names: Optional[List[str]] = None,
-        folder_filter_mode: Optional[str] = None
-    ) -> List[Dict]:
+        folder_names: list[str] | None = None,
+        folder_filter_mode: str | None = None
+    ) -> list[dict]:
         """Get all folders for a user with optional filtering and nested folder support.
 
         Args:
@@ -1622,9 +1623,9 @@ class OutlookConnector(BaseConnector):
 
     def _transform_folder_to_record_group(
         self,
-        folder: Dict,
+        folder: dict,
         user: AppUser
-    ) -> Optional[RecordGroup]:
+    ) -> RecordGroup | None:
         """
         Transform Outlook mail folder to RecordGroup entity.
 
@@ -1669,7 +1670,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error transforming folder to RecordGroup: {e}")
             return None
 
-    async def _sync_user_folders(self, user: AppUser) -> List[Dict]:
+    async def _sync_user_folders(self, user: AppUser) -> list[dict]:
         """
         Sync mail folders for a user as RecordGroup entities and return folder data.
 
@@ -1726,7 +1727,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error syncing folders for user {user.email}: {e}")
             return []
 
-    async def _process_single_folder_messages(self, org_id: str, user: AppUser, folder: Dict) -> tuple[int, List[Record]]:
+    async def _process_single_folder_messages(self, org_id: str, user: AppUser, folder: dict) -> tuple[int, list[Record]]:
         """Process messages using batch processing with automatic pagination."""
         try:
             user_id = user.source_user_id
@@ -1805,7 +1806,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error processing messages in folder '{folder_name}' for user {user.email}: {e}")
             return 0, []
 
-    async def _get_all_messages_delta_external(self, user_id: str, folder_id: str, delta_link: Optional[str] = None) -> Dict:
+    async def _get_all_messages_delta_external(self, user_id: str, folder_id: str, delta_link: str | None = None) -> dict:
         """Get folder messages using delta sync with automatic pagination from external Outlook API.
 
         This method handles both initial sync and incremental sync:
@@ -1836,7 +1837,7 @@ class OutlookConnector(BaseConnector):
             # receivedDateTime filter only supports 'ge' (greater than or equal)
             # For 'le' (IS_BEFORE), we apply client-side filtering after fetching
             filter_string = None
-            received_before_dt: Optional[datetime] = None  # For client-side filtering
+            received_before_dt: datetime | None = None  # For client-side filtering
 
             received_date_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
             if received_date_filter and not received_date_filter.is_empty():
@@ -1921,7 +1922,9 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting messages delta for folder {folder_id}: {e}", exc_info=True)
             return {'messages': [], 'delta_link': None, 'next_link': None}
 
-    async def _process_single_message(self, org_id: str, user: AppUser, message, folder_id: str, folder_name: str) -> List[RecordUpdate]:
+    async def _process_single_message(
+        self, org_id: str, user: AppUser, message: dict[str, object], folder_id: str, folder_name: str
+    ) -> list[RecordUpdate]:
         """Process one message and its attachments together."""
         updates = []
 
@@ -1961,9 +1964,14 @@ class OutlookConnector(BaseConnector):
         return updates
 
     async def _process_single_email_with_folder(
-        self, org_id: str, user_email: str, message, folder_id: str, folder_name: str,
-        existing_record: Optional[Record] = None
-    ) -> Optional[RecordUpdate]:
+        self,
+        org_id: str,
+        user_email: str,
+        message: dict[str, object],
+        folder_id: str,
+        folder_name: str,
+        existing_record: Record | None = None,
+    ) -> RecordUpdate | None:
         """Process a single email with folder information.
 
         Args:
@@ -2048,7 +2056,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error processing email {self._safe_get_attr(message, 'id', 'unknown')}: {str(e)}")
             return None
 
-    async def _extract_email_permissions(self, message: Dict, record_id: Optional[str], inbox_owner_email: str) -> List[Permission]:
+    async def _extract_email_permissions(self, message: dict, record_id: str | None, inbox_owner_email: str) -> list[Permission]:
         """Extract permissions from email recipients.
 
         Note: This method is for PERSONAL mailbox emails only.
@@ -2115,11 +2123,11 @@ class OutlookConnector(BaseConnector):
     async def _create_attachment_record(
         self,
         org_id: str,
-        attachment: Dict,
+        attachment: dict,
         message_id: str,
         folder_id: str,
-        existing_record: Optional[Record] = None,
-        parent_weburl: Optional[str] = None,
+        existing_record: Record | None = None,
+        parent_weburl: str | None = None,
     ) -> FileRecord:
         """Helper method to create a FileRecord from an attachment.
 
@@ -2186,8 +2194,8 @@ class OutlookConnector(BaseConnector):
 
         return attachment_record
 
-    async def _process_email_attachments_with_folder(self, org_id: str, user: AppUser, message: Dict,
-                                                  email_permissions: List[Permission], folder_id: str, folder_name: str) -> List[RecordUpdate]:
+    async def _process_email_attachments_with_folder(self, org_id: str, user: AppUser, message: dict,
+                                                  email_permissions: list[Permission], folder_id: str, folder_name: str) -> list[RecordUpdate]:
         """Process email attachments with folder information."""
         attachment_updates = []
 
@@ -2245,7 +2253,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error processing attachments for email {self._safe_get_attr(message, 'id', 'unknown')}: {e}")
             return []
 
-    async def _get_message_attachments_external(self, user_id: str, message_id: str) -> List[Dict]:
+    async def _get_message_attachments_external(self, user_id: str, message_id: str) -> list[dict]:
         """Get message attachments using external Outlook API."""
         try:
             if not self.external_outlook_client:
@@ -2268,15 +2276,14 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting attachments for message {message_id}: {e}")
             return []
 
-    async def _get_existing_record(self, org_id: str, external_record_id: str) -> Optional[Record]:
+    async def _get_existing_record(self, org_id: str, external_record_id: str) -> Record | None:
         """Get existing record from data store."""
         try:
             async with self.data_store_provider.transaction() as tx_store:
-                existing_record = await tx_store.get_record_by_external_id(
+                return await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id,
                     external_id=external_record_id
                 )
-                return existing_record
         except Exception as e:
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
@@ -2440,9 +2447,9 @@ class OutlookConnector(BaseConnector):
                 raise HTTPException(status_code=400, detail="Unsupported record type for streaming")
 
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to stream record: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to stream record: {str(e)}") from e
 
-    async def _get_message_by_id_external(self, user_id: str, message_id: str) -> Dict:
+    async def _get_message_by_id_external(self, user_id: str, message_id: str) -> dict:
         """Get a specific message by ID using external Outlook API."""
         try:
             if not self.external_outlook_client:
@@ -2494,12 +2501,12 @@ class OutlookConnector(BaseConnector):
             return b''
 
 
-    def get_signed_url(self, record: Record) -> Optional[str]:
+    def get_signed_url(self, record: Record) -> str | None:
         """Get signed URL for record access. Not supported for Outlook."""
         return None
 
 
-    async def handle_webhook_notification(self, org_id: str, notification: Dict) -> bool:
+    async def handle_webhook_notification(self, org_id: str, notification: dict) -> bool:
         """Handle webhook notifications from Microsoft Graph."""
         try:
             return True
@@ -2537,7 +2544,7 @@ class OutlookConnector(BaseConnector):
         # Delegate to full sync - incremental is handled by delta links
         await self.run_sync()
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         """Reindex a list of Outlook records.
 
         This method:
@@ -2617,15 +2624,15 @@ class OutlookConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> NoReturn:
         """Outlook connector does not support dynamic filter options."""
         raise NotImplementedError("Outlook connector does not support dynamic filter options")
 
     async def _reindex_user_mailbox_records(
-        self, records: List[Record]
-    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[Record]]:
+        self, records: list[Record]
+    ) -> tuple[list[tuple[Record, list[Permission]]], list[Record]]:
         """Reindex user mailbox records. Checks source for updates.
 
         Returns:
@@ -2635,7 +2642,7 @@ class OutlookConnector(BaseConnector):
             return ([], [])
 
         # Group records by owner email for efficient processing
-        records_by_user: Dict[str, List[Record]] = {}
+        records_by_user: dict[str, list[Record]] = {}
         for record in records:
             try:
                 # Get owner email from permissions
@@ -2654,8 +2661,8 @@ class OutlookConnector(BaseConnector):
                 continue
 
         # Collect updated and non-updated records across all users
-        all_updated_records_with_permissions: List[Tuple[Record, List[Permission]]] = []
-        all_non_updated_records: List[Record] = []
+        all_updated_records_with_permissions: list[tuple[Record, list[Permission]]] = []
+        all_non_updated_records: list[Record] = []
 
         # Process records by user - check for source updates
         for user_email, user_records in records_by_user.items():
@@ -2669,15 +2676,15 @@ class OutlookConnector(BaseConnector):
         return (all_updated_records_with_permissions, all_non_updated_records)
 
     async def _reindex_single_user_records(
-        self, user_email: str, records: List[Record]
-    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[Record]]:
+        self, user_email: str, records: list[Record]
+    ) -> tuple[list[tuple[Record, list[Permission]]], list[Record]]:
         """Reindex records for a specific user. Checks source for updates.
 
         Returns:
             Tuple of (updated_records_with_permissions, non_updated_records)
         """
-        updated_records_with_permissions: List[Tuple[Record, List[Permission]]] = []
-        non_updated_records: List[Record] = []
+        updated_records_with_permissions: list[tuple[Record, list[Permission]]] = []
+        non_updated_records: list[Record] = []
 
         try:
             user_id = await self._get_user_id_from_email(user_email)
@@ -2712,15 +2719,15 @@ class OutlookConnector(BaseConnector):
         return (updated_records_with_permissions, non_updated_records)
 
     async def _reindex_group_mailbox_records(
-        self, records: List[Record]
-    ) -> Tuple[List[Tuple[Record, List[Permission]]], List[Record]]:
+        self, records: list[Record]
+    ) -> tuple[list[tuple[Record, list[Permission]]], list[Record]]:
         """Reindex GROUP_MAIL records (no user_id needed).
 
         Returns:
             Tuple of (updated_records_with_permissions, non_updated_records)
         """
-        updated_records_with_permissions: List[Tuple[Record, List[Permission]]] = []
-        non_updated_records: List[Record] = []
+        updated_records_with_permissions: list[tuple[Record, list[Permission]]] = []
+        non_updated_records: list[Record] = []
 
         if not records:
             return ([], [])
@@ -2752,7 +2759,7 @@ class OutlookConnector(BaseConnector):
 
     async def _check_and_fetch_updated_group_mail_record(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch GROUP_MAIL record from source (mirrors stream_record logic).
 
         Args:
@@ -2781,7 +2788,7 @@ class OutlookConnector(BaseConnector):
 
     async def _check_and_fetch_updated_group_post(
         self, org_id: str, record: MailRecord
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch group post from source and check for updates."""
         try:
             group_id = record.external_record_group_id
@@ -2861,7 +2868,7 @@ class OutlookConnector(BaseConnector):
 
     async def _check_and_fetch_updated_group_post_attachment(
         self, org_id: str, record: FileRecord
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch group post attachment from source and check for updates."""
         try:
             attachment_id = record.external_record_id
@@ -2979,7 +2986,7 @@ class OutlookConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, user_id: str, user_email: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch record from source and return data for reindexing.
 
         Args:
@@ -3006,7 +3013,7 @@ class OutlookConnector(BaseConnector):
 
     async def _check_and_fetch_updated_email(
         self, org_id: str, user_id: str, user_email: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch email from source for reindexing."""
         try:
             message_id = record.external_record_id
@@ -3039,7 +3046,7 @@ class OutlookConnector(BaseConnector):
 
     async def _check_and_fetch_updated_attachment(
         self, org_id: str, user_id: str, user_email: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch attachment from source for reindexing."""
         try:
             attachment_id = record.external_record_id
@@ -3095,7 +3102,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")
             return None
 
-    def _extract_email_from_recipient(self, recipient) -> str:
+    def _extract_email_from_recipient(self, recipient: object) -> str:
         """Extract email address from a Recipient object."""
         if not recipient:
             return ''
@@ -3108,7 +3115,7 @@ class OutlookConnector(BaseConnector):
         # Fallback to string representation
         return str(recipient) if recipient else ''
 
-    def _safe_get_attr(self, obj, attr_name: str, default=None) -> Optional[object]:
+    def _safe_get_attr(self, obj: object, attr_name: str, default: object | None = None) -> object | None:
         """Safely get attribute from object that could be a class instance or dictionary."""
         if hasattr(obj, attr_name):
             return getattr(obj, attr_name, default)
@@ -3136,7 +3143,7 @@ class OutlookConnector(BaseConnector):
 
         return mime_type_map.get(content_type_lower, MimeTypes.BIN)
 
-    def _parse_datetime(self, dt_obj) -> Optional[int]:
+    def _parse_datetime(self, dt_obj: datetime | str | None) -> int | None:
         """Parse datetime object or string to epoch timestamp in milliseconds."""
         if not dt_obj:
             return None
@@ -3149,7 +3156,7 @@ class OutlookConnector(BaseConnector):
         except Exception:
             return None
 
-    def _format_datetime_string(self, dt_obj) -> str:
+    def _format_datetime_string(self, dt_obj: datetime | str | None) -> str:
         """Format datetime object to ISO string."""
         if not dt_obj:
             return ""
@@ -3161,7 +3168,7 @@ class OutlookConnector(BaseConnector):
         except Exception:
             return ""
 
-    async def _construct_group_mail_weburl(self, group_id: str) -> Optional[str]:
+    async def _construct_group_mail_weburl(self, group_id: str) -> str | None:
         """
         Construct web URL for group mail from cached group data or by fetching from API.
         Format: https://outlook.office365.com/groups/{domain}/{mailNickname}/mail

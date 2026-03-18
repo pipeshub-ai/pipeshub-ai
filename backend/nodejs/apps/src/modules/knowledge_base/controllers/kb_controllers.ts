@@ -6,6 +6,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { RecordRelationService } from '../services/kb.relation.service';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -148,6 +149,39 @@ interface ConnectorInfo {
 interface ActiveConnectorsResponse {
   connectors: ConnectorInfo[];
 }
+
+const LOCK_MESSAGES: Record<string, string> = {
+  FULL_SYNCING: 'A full sync is in progress. Please wait and try again.',
+  SYNCING: 'A sync is already in progress. Please wait and try again.',
+};
+
+interface ConnectorInstanceLock {
+  connector?: { isLocked?: boolean; status?: string };
+}
+
+const validateConnectorNotLocked = async (
+  connectorId: string,
+  appConfig: AppConfig,
+  headers: Record<string, string>,
+): Promise<void> => {
+  const response = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+    HttpMethod.GET,
+    headers,
+  );
+
+  const data = response.data as ConnectorInstanceLock | undefined;
+  if (response.statusCode !== 200 || !data?.connector) {
+    return;
+  }
+
+  const connector = data.connector;
+  if (connector.isLocked) {
+    const status = connector.status ?? '';
+    const message = LOCK_MESSAGES[status] ?? 'Another operation is in progress. Please wait and try again.';
+    throw new ConflictError(message);
+  }
+};
 
 const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
@@ -2812,6 +2846,12 @@ export const reindexFailedRecords =
         req.headers as Record<string, string>,
       );
 
+      await validateConnectorNotLocked(
+        connectorId,
+        appConfig,
+        req.headers as Record<string, string>,
+      );
+
       const reindexPayload = {
         userId,
         orgId,
@@ -2851,6 +2891,12 @@ export const resyncConnectorRecords =
       }
 
       await validateActiveConnector(
+        connectorId,
+        appConfig,
+        req.headers as Record<string, string>,
+      );
+
+      await validateConnectorNotLocked(
         connectorId,
         appConfig,
         req.headers as Record<string, string>,

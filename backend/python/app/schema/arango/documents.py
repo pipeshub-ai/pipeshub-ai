@@ -149,6 +149,7 @@ app_schema = {
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "status": {"type": ["string", "null"]},
+            "isLocked": {"type": ["boolean", "null"]},
         },
         "required": [
             "name",

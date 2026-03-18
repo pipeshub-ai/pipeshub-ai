@@ -15550,6 +15550,12 @@ paths:
                     type: boolean
                   config:
                     $ref: '#/components/schemas/ConnectorConfig'
+                  message:
+                    type: string
+                    description: Success message
+                  syncFiltersChanged:
+                    type: boolean
+                    description: Indicates whether sync filters changed, requiring a full resync
         '401':
           description: Unauthorized
         '404':
