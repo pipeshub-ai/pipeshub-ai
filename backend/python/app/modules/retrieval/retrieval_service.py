@@ -271,13 +271,13 @@ class RetrievalService:
                 self._get_user_cached(user_id)  # Get user info in parallel with caching
             ]
 
-            accessible_virtual_record_ids, user = await asyncio.gather(*init_tasks)
+            accessible_virtual_id_to_record_id, user = await asyncio.gather(*init_tasks)
 
-            if not accessible_virtual_record_ids:
+            if not accessible_virtual_id_to_record_id:
                 self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
-            self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_record_ids)}")
+            self.logger.debug(f"Accessible virtual record ids count: {len(accessible_virtual_id_to_record_id)}")
 
             if virtual_record_ids_from_tool:
                 filter  = await self.vector_db_service.filter_collection(
@@ -286,7 +286,7 @@ class RetrievalService:
             else:
                 filter = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id},
-                        should={"virtualRecordId": accessible_virtual_record_ids}  # Pass as should condition
+                        should={"virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
                     )
             search_results = await self._execute_parallel_searches(queries, filter, limit)
 
@@ -311,13 +311,22 @@ class RetrievalService:
             if not returned_virtual_record_ids:
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
-            self.logger.debug(f"Fetching {len(returned_virtual_record_ids)} records by virtualRecordIds")
-            fetched_records = await self.graph_provider.get_records_by_virtual_record_ids(
-                returned_virtual_record_ids, org_id
+            # Resolve only the permission-verified recordIds for the returned virtual IDs.
+            # This prevents cross-connector leakage: if multiple connectors share the same
+            # virtualRecordId, we only fetch the specific record the user has access to.
+            record_ids_to_fetch = list({
+                accessible_virtual_id_to_record_id[vid]
+                for vid in returned_virtual_record_ids
+                if vid in accessible_virtual_id_to_record_id
+            })
+
+            self.logger.debug(f"Fetching {len(record_ids_to_fetch)} records by permission-verified record IDs")
+            fetched_records = await self.graph_provider.get_records_by_record_ids(
+                record_ids_to_fetch, org_id
             )
 
             if not fetched_records:
-                self.logger.error("Failed to fetch records by virtualRecordIds")
+                self.logger.error("Failed to fetch records by record IDs")
                 return self._create_empty_response("No accessible documents found. Please check your permissions or try different search criteria.", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             record_id_to_record_map = {}
@@ -573,11 +582,12 @@ class RetrievalService:
 
     async def _get_accessible_virtual_ids_task(
         self, user_id: str, org_id: str, filters: dict[str, list[str]], graph_provider: IGraphDBProvider
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Separate task for getting accessible virtualRecordIds (optimized version).
+        Separate task for getting accessible virtualRecordId -> recordId mapping (optimized version).
 
-        This is the optimized version that returns only virtualRecordIds instead of full records.
+        Returns a dict mapping each accessible virtualRecordId to the specific recordId that the
+        user has permission to access, preventing cross-connector leakage.
         """
         return await graph_provider.get_accessible_virtual_record_ids(
             user_id=user_id, org_id=org_id, filters=filters

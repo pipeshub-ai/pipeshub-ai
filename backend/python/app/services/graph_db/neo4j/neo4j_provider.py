@@ -6,12 +6,12 @@ Maps ArangoDB concepts (collections, _key, edges) to Neo4j concepts (labels, pro
 """
 
 import asyncio
-import traceback
 import hashlib
 import json
 import os
 import re
 import time
+import traceback
 import uuid
 from datetime import datetime
 from logging import Logger
@@ -3806,9 +3806,9 @@ class Neo4jProvider(IGraphDBProvider):
         org_id: str,
         connector_id: str,
         metadata_filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds for a specific connector with all permission paths.
+        Get a mapping of virtualRecordId -> recordId for a specific connector with all permission paths.
 
         Args:
             user_id: The userId field value
@@ -3817,7 +3817,7 @@ class Neo4jProvider(IGraphDBProvider):
             metadata_filters: Optional metadata filters (departments, categories, etc.)
 
         Returns:
-            List of virtualRecordIds accessible for this connector
+            Dict mapping virtualRecordId -> recordId for accessible records in this connector
         """
         start_time = time.time()
         try:
@@ -3897,7 +3897,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records1
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records1
             }}
 
             CALL {{
@@ -3907,7 +3907,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records2
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records2
             }}
 
             CALL {{
@@ -3917,7 +3917,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records3
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records3
             }}
 
             CALL {{
@@ -3927,7 +3927,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records4
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records4
             }}
 
             CALL {{
@@ -3939,7 +3939,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records5
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records5
             }}
 
             CALL {{
@@ -3953,7 +3953,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records6
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records6
             }}
 
             CALL {{
@@ -3965,7 +3965,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records7
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records7
             }}
 
             CALL {{
@@ -3976,15 +3976,15 @@ class Neo4jProvider(IGraphDBProvider):
                   AND r.connectorId = $connectorId
                   AND r.indexingStatus = $completedStatus
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS records8
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records8
             }}
 
-            // Union all virtualRecordIds and filter out nulls
-            WITH records1 + records2 + records3 + records4 + records5 + records6 + records7 + records8 AS allVirtualIds
-            UNWIND allVirtualIds AS virtualId
-            WITH virtualId
-            WHERE virtualId IS NOT NULL
-            RETURN DISTINCT virtualId
+            // Union all pairs and filter out nulls
+            WITH records1 + records2 + records3 + records4 + records5 + records6 + records7 + records8 AS allPairs
+            UNWIND allPairs AS pair
+            WITH pair
+            WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
+            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId
             """
 
             # Prepare parameters
@@ -4015,19 +4015,24 @@ class Neo4jProvider(IGraphDBProvider):
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
 
-            # Extract virtualRecordIds
-            virtual_ids = [r["virtualId"] for r in results if r.get("virtualId")]
+            # Build virtualRecordId -> recordId map (first seen wins for dedup)
+            virtual_id_to_record_id: dict[str, str] = {}
+            for r in results:
+                vid = r.get("virtualId")
+                rid = r.get("recordId")
+                if vid and rid and vid not in virtual_id_to_record_id:
+                    virtual_id_to_record_id[vid] = rid
 
             elapsed_time = time.time() - start_time
             self.logger.info(
-                f"✅ Connector {connector_id}: Found {len(virtual_ids)} virtualRecordIds in {elapsed_time:.3f}s"
+                f"✅ Connector {connector_id}: Found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed_time:.3f}s"
             )
-            return virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get virtual IDs for connector {connector_id}: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return []
+            return {}
 
     async def _get_kb_virtual_ids(
         self,
@@ -4035,9 +4040,9 @@ class Neo4jProvider(IGraphDBProvider):
         org_id: str,
         kb_ids: list[str] | None = None,
         metadata_filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds from Knowledge Bases (RecordGroups).
+        Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
 
         Args:
             user_id: The userId field value
@@ -4046,7 +4051,7 @@ class Neo4jProvider(IGraphDBProvider):
             metadata_filters: Optional metadata filters
 
         Returns:
-            List of virtualRecordIds from KBs
+            Dict mapping virtualRecordId -> recordId for accessible KB records
         """
         start_time = time.time()
         try:
@@ -4132,7 +4137,7 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.indexingStatus = $completedStatus
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS directKbRecords
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS directKbRecords
             }}
 
             CALL {{
@@ -4146,15 +4151,15 @@ class Neo4jProvider(IGraphDBProvider):
                 WHERE r.indexingStatus = $completedStatus
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}
-                RETURN collect(DISTINCT r.virtualRecordId) AS teamKbRecords
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS teamKbRecords
             }}
 
-            // Union all virtualRecordIds and filter out nulls
-            WITH directKbRecords + teamKbRecords AS allVirtualIds
-            UNWIND allVirtualIds AS virtualId
-            WITH virtualId
-            WHERE virtualId IS NOT NULL
-            RETURN DISTINCT virtualId
+            // Union all pairs and filter out nulls
+            WITH directKbRecords + teamKbRecords AS allPairs
+            UNWIND allPairs AS pair
+            WITH pair
+            WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
+            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId
             """
 
             # Prepare parameters
@@ -4187,35 +4192,37 @@ class Neo4jProvider(IGraphDBProvider):
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
 
-            # Extract virtualRecordIds
-            virtual_ids = [r["virtualId"] for r in results if r.get("virtualId")]
+            # Build virtualRecordId -> recordId map (first seen wins for dedup)
+            virtual_id_to_record_id: dict[str, str] = {}
+            for r in results:
+                vid = r.get("virtualId")
+                rid = r.get("recordId")
+                if vid and rid and vid not in virtual_id_to_record_id:
+                    virtual_id_to_record_id[vid] = rid
 
             elapsed_time = time.time() - start_time
             kb_filter_info = f" (filtered: {len(kb_ids)} KBs)" if kb_ids else " (all KBs)"
             self.logger.info(
-                f"✅ KB query{kb_filter_info}: Found {len(virtual_ids)} virtualRecordIds in {elapsed_time:.3f}s"
+                f"✅ KB query{kb_filter_info}: Found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed_time:.3f}s"
             )
-            return virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get KB virtual IDs: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return []
+            return {}
 
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
         org_id: str,
         filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get all virtual record ids accessible to a user based on their permissions and apply filters.
+        Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
 
-        OPTIMIZED VERSION:
-        - Returns only virtualRecordIds (not full records)
-        - Filters by indexingStatus = COMPLETED
-        - Applies KB/app filters during traversal (not post-filter)
-        - Parallelizes per-connector queries
+        Each virtualRecordId maps to the specific recordId that the user has permission to access.
+        This prevents cross-connector leakage where multiple connectors share the same virtualRecordId.
 
         Args:
             user_id (str): The userId field value in users collection
@@ -4234,7 +4241,7 @@ class Neo4jProvider(IGraphDBProvider):
                 }
 
         Returns:
-            List[str]: List of virtualRecordIds
+            Dict[str, str]: Mapping of virtualRecordId -> recordId
         """
         start_time = time.time()
         self.logger.info(
@@ -4354,36 +4361,35 @@ class Neo4jProvider(IGraphDBProvider):
             # Step 5: Execute all tasks in parallel
             if not tasks:
                 self.logger.warning("No tasks to execute")
-                return []
+                return {}
 
             self.logger.info(f"Executing {len(tasks)} parallel queries...")
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Step 6: Union and deduplicate virtualRecordIds
-            all_virtual_ids = []
+            # Step 6: Merge all virtualRecordId -> recordId dicts (first seen wins)
+            virtual_id_to_record_id: dict[str, str] = {}
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     self.logger.error(f"Task {i} failed: {str(result)}")
                     continue
                 if result:
-                    all_virtual_ids.extend(result)
-
-            # Deduplicate
-            unique_virtual_ids = list(set(all_virtual_ids))
+                    for vid, rid in result.items():
+                        if vid not in virtual_id_to_record_id:
+                            virtual_id_to_record_id[vid] = rid
 
             total_time = time.time() - start_time
 
             self.logger.info(
-                f"✅ Found {len(unique_virtual_ids)} unique virtualRecordIds "
-                f"from {len(all_virtual_ids)} total results in {total_time:.3f}s"
+                f"✅ Found {len(virtual_id_to_record_id)} unique virtualRecordIds "
+                f"in {total_time:.3f}s"
             )
 
-            return unique_virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(f"❌ Get accessible virtual record IDs failed: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return []
+            return {}
 
     async def get_records_by_virtual_record_ids(
         self,
@@ -4436,6 +4442,60 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch records by virtualRecordIds: {str(e)}")
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
+
+    async def get_records_by_record_ids(
+        self,
+        record_ids: list[str],
+        org_id: str
+    ) -> list[dict]:
+        """
+        Batch fetch full record documents by their record IDs (node id property).
+
+        This is used after Qdrant search to fetch the specific records that the user
+        has permission to access, using the permission-verified record IDs from the
+        accessible virtual ID map.
+
+        Args:
+            record_ids: List of record id values to fetch
+            org_id: Organization ID for additional filtering
+
+        Returns:
+            List[Dict]: List of full record dictionaries
+        """
+        try:
+            if not record_ids:
+                return []
+
+            self.logger.debug(f"Fetching {len(record_ids)} records by record IDs")
+
+            query = """
+            MATCH (r:Record)
+            WHERE r.id IN $record_ids
+              AND r.orgId = $org_id
+            RETURN r
+            """
+
+            parameters = {
+                "record_ids": record_ids,
+                "org_id": org_id
+            }
+
+            results = await self.client.execute_query(query, parameters=parameters)
+
+            records = []
+            if results:
+                for result in results:
+                    if result.get("r"):
+                        record_dict = dict(result["r"])
+                        records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
+
+            self.logger.debug(f"✅ Fetched {len(records)} records by record IDs")
+            return records
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch records by record IDs: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
             return []
 

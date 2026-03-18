@@ -16643,9 +16643,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         connector_id: str,
         metadata_filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds for a specific connector covering all permission paths.
+        Get a mapping of virtualRecordId -> recordId for a specific connector covering all permission paths.
 
         Args:
             user_id: The userId field value
@@ -16654,7 +16654,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             metadata_filters: Optional metadata filters (departments, categories, etc.)
 
         Returns:
-            List of virtualRecordIds accessible for this connector
+            Dict mapping virtualRecordId -> recordId for accessible records in this connector
         """
         try:
             metadata_filter_lines = []
@@ -16731,7 +16731,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record.connectorId == @connectorId
                     FILTER record.indexingStatus == @completedStatus
                     {metadata_filter_clause}
-                    RETURN DISTINCT record.virtualRecordId
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET groupRecords = (
@@ -16741,7 +16741,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
                         {metadata_filter_clause}
-                        RETURN DISTINCT record.virtualRecordId
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET groupRecordsPermissionEdge = (
@@ -16751,7 +16751,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
                         {metadata_filter_clause}
-                        RETURN DISTINCT record.virtualRecordId
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET orgRecords = (
@@ -16761,7 +16761,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
                         {metadata_filter_clause}
-                        RETURN DISTINCT record.virtualRecordId
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET orgRecordGroupRecords = (
@@ -16773,7 +16773,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER record.connectorId == @connectorId
                             FILTER record.indexingStatus == @completedStatus
                             {metadata_filter_clause}
-                            RETURN DISTINCT record.virtualRecordId
+                            RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET recordGroupRecords = (
@@ -16785,7 +16785,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER record.connectorId == @connectorId
                             FILTER record.indexingStatus == @completedStatus
                             {metadata_filter_clause}
-                            RETURN DISTINCT record.virtualRecordId
+                            RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET inheritedRecordGroupRecords = (
@@ -16796,7 +16796,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
                         {metadata_filter_clause}
-                        RETURN DISTINCT record.virtualRecordId
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET anyoneRecords = (
@@ -16807,17 +16807,20 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record.connectorId == @connectorId
                         FILTER record.indexingStatus == @completedStatus
                         {metadata_filter_clause}
-                        RETURN DISTINCT record.virtualRecordId
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            LET allIds = UNION_DISTINCT(
+            LET allPairs = UNION(
                 directRecords, groupRecords, groupRecordsPermissionEdge,
                 orgRecords, orgRecordGroupRecords, recordGroupRecords,
                 inheritedRecordGroupRecords, anyoneRecords
             )
-            FOR id IN allIds
-                FILTER id != null
-                RETURN DISTINCT id
+            FOR pair IN allPairs
+                FILTER pair != null AND pair.virtualRecordId != null AND pair.recordId != null
+                COLLECT virtualRecordId = pair.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).pair.recordId
+                FILTER recordId != null
+                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
             """
 
             bind_vars = {
@@ -16849,18 +16852,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
             query_start = time.time()
             results = await self.execute_query(query, bind_vars=bind_vars)
             elapsed = time.time() - query_start
-            virtual_ids = [r for r in results if r] if results else []
+            virtual_id_to_record_id = {
+                r["virtualRecordId"]: r["recordId"]
+                for r in results
+                if r and r.get("virtualRecordId") and r.get("recordId")
+            } if results else {}
 
             self.logger.info(
-                f"Connector {connector_id}: found {len(virtual_ids)} virtualRecordIds in {elapsed:.3f}s"
+                f"Connector {connector_id}: found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed:.3f}s"
             )
-            return virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(
                 f"Failed to get virtual IDs for connector {connector_id}: {e}\n{traceback.format_exc()}"
             )
-            return []
+            return {}
 
     async def _get_kb_virtual_ids(
         self,
@@ -16868,9 +16875,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         kb_ids: list[str] | None = None,
         metadata_filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds from Knowledge Bases (RecordGroups).
+        Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
 
         Args:
             user_id: The userId field value
@@ -16879,7 +16886,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             metadata_filters: Optional metadata filters
 
         Returns:
-            List of virtualRecordIds from KBs
+            Dict mapping virtualRecordId -> recordId for accessible KB records
         """
         try:
             kb_filter_clause = "FILTER kb._key IN @kb_ids" if kb_ids else ""
@@ -16960,7 +16967,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record.origin == "UPLOAD"
                     FILTER record.indexingStatus == @completedStatus
                     {metadata_filter_clause}
-                    RETURN DISTINCT record.virtualRecordId
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET teamKbRecords = (
@@ -16976,13 +16983,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record.origin == "UPLOAD"
                     FILTER record.indexingStatus == @completedStatus
                     {metadata_filter_clause}
-                    RETURN DISTINCT record.virtualRecordId
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            LET allKbIds = UNION_DISTINCT(directKbRecords, teamKbRecords)
-            FOR id IN allKbIds
-                FILTER id != null
-                RETURN DISTINCT id
+            LET allKbPairs = UNION(directKbRecords, teamKbRecords)
+            FOR pair IN allKbPairs
+                FILTER pair != null AND pair.virtualRecordId != null AND pair.recordId != null
+                COLLECT virtualRecordId = pair.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).pair.recordId
+                FILTER recordId != null
+                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
             """
 
             bind_vars = {
@@ -17014,25 +17024,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
             results = await self.execute_query(query, bind_vars=bind_vars)
             elapsed = time.time() - query_start
             kb_filter_info = f"filtered: {len(kb_ids)} KBs" if kb_ids else "all KBs"
-            virtual_ids = [r for r in results if r] if results else []
+            virtual_id_to_record_id = {
+                r["virtualRecordId"]: r["recordId"]
+                for r in results
+                if r and r.get("virtualRecordId") and r.get("recordId")
+            } if results else {}
 
             self.logger.info(
-                f"KB query ({kb_filter_info}): found {len(virtual_ids)} virtualRecordIds in {elapsed:.3f}s"
+                f"KB query ({kb_filter_info}): found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed:.3f}s"
             )
-            return virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(f"Failed to get KB virtual IDs: {e}", exc_info=True)
-            return []
+            return {}
 
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,
         org_id: str,
         filters: dict[str, list[str]] | None = None
-    ) -> list[str]:
+    ) -> dict[str, str]:
         """
-        Get virtualRecordIds of all records accessible to a user.
+        Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
+
+        Each virtualRecordId maps to the specific recordId (the _key of the record document)
+        that the user has permission to access. This prevents cross-connector leakage where
+        multiple connectors share the same virtualRecordId but only one is accessible.
 
         Args:
             user_id (str): The userId field value in users collection
@@ -17051,7 +17069,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
 
         Returns:
-            List[str]: List of virtualRecordIds
+            Dict[str, str]: Mapping of virtualRecordId -> recordId
         """
         start_time = time.time()
 
@@ -17119,27 +17137,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            all_virtual_ids = []
+            virtual_id_to_record_id: dict[str, str] = {}
             for i, result in enumerate(results):
                 if isinstance(result, Exception):
                     self.logger.error(f"Task {i} failed: {str(result)}")
                     continue
                 if result:
-                    all_virtual_ids.extend(result)
-
-            unique_virtual_ids = list(set(all_virtual_ids))
+                    for vid, rid in result.items():
+                        if vid not in virtual_id_to_record_id:
+                            virtual_id_to_record_id[vid] = rid
 
             total_time = time.time() - start_time
             self.logger.info(
-                f"Found {len(unique_virtual_ids)} unique virtualRecordIds "
-                f"({len(all_virtual_ids)} total before dedup) in {total_time:.3f}s"
+                f"Found {len(virtual_id_to_record_id)} unique virtualRecordIds "
+                f"in {total_time:.3f}s"
             )
 
-            return unique_virtual_ids
+            return virtual_id_to_record_id
 
         except Exception as e:
             self.logger.error(f"Get accessible virtual record IDs failed: {e}", exc_info=True)
-            return []
+            return {}
 
     async def get_records_by_virtual_record_ids(
         self,
@@ -17180,6 +17198,51 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"Failed to fetch records by virtualRecordIds: {e}\n{traceback.format_exc()}")
+            return []
+
+    async def get_records_by_record_ids(
+        self,
+        record_ids: list[str],
+        org_id: str
+    ) -> list[dict]:
+        """
+        Batch fetch full record documents by their _key (record IDs).
+
+        This is used after Qdrant search to fetch the specific records that the user
+        has permission to access, using the permission-verified record IDs from the
+        accessible virtual ID map.
+
+        Args:
+            record_ids: List of record _key values to fetch
+            org_id: Organization ID for additional filtering
+
+        Returns:
+            List[Dict]: List of full record dictionaries
+        """
+        try:
+            if not record_ids:
+                return []
+
+            self.logger.debug(f"Fetching {len(record_ids)} records by record IDs")
+
+            query = """
+            FOR record IN @@records
+                FILTER record._key IN @record_ids
+                  AND record.orgId == @orgId
+                RETURN record
+            """
+
+            bind_vars = {
+                "@records": CollectionNames.RECORDS.value,
+                "record_ids": record_ids,
+                "orgId": org_id,
+            }
+
+            results = await self.execute_query(query, bind_vars=bind_vars)
+            return [r for r in results if r] if results else []
+
+        except Exception as e:
+            self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
             return []
 
     async def get_records_by_virtual_record_id(
