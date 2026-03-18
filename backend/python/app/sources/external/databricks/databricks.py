@@ -12539,6 +12539,22 @@ class DatabricksDataSource:
             )
 
     # ============================================================================
+    # REDASH CONFIG (RedashConfigAPI) — 1 methods
+    # ============================================================================
+
+    async def redash_config_get_config(self) -> DatabricksResponse:
+        """Read workspace configuration for Redash-v2."""
+        kwargs: Dict[str, Any] = {}
+        try:
+            result = self._ws.redash_config.get_config(**kwargs)
+            data = _serialize(result)
+            return DatabricksResponse(success=True, data=data)
+        except Exception as e:
+            return DatabricksResponse(
+                success=False, error=type(e).__name__, message=str(e)
+            )
+
+    # ============================================================================
     # REGISTERED MODELS (RegisteredModelsAPI) — 7 methods
     # ============================================================================
 
