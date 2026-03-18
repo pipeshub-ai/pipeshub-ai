@@ -55,6 +55,9 @@ class GitHubClientViaToken:
 
     def get_base_url(self) -> Optional[str]:
         return self.base_url
+    
+    def get_token(self) ->str:
+        return self.token
 
 
 class GitHubConfig(BaseModel):
@@ -84,6 +87,9 @@ class GitHubClient(IClient):
 
     def get_sdk(self) -> Github:
         return self.client.get_sdk()
+    
+    def get_token(self) -> str:
+        return self.client.get_token()
 
     @classmethod
     def build_with_config(

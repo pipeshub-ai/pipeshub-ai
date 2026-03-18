@@ -10,7 +10,6 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from github.Issue import Issue
@@ -210,7 +209,7 @@ class GithubConnector(BaseConnector):
             )
             # for data source
             self.data_source = GitHubDataSource(self.external_client)
-            self.logger.info("Github connector initialized successfully.")
+            self.logger.info("✅✅ Github connector initialized successfully.")
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize Github client: {e}", exc_info=True)
@@ -277,25 +276,10 @@ class GithubConnector(BaseConnector):
         elif record.record_type == RecordType.FILE:
             self.logger.info("🟣🟣🟣 STREAM-FILE-MARKER 🟣🟣🟣")
             record_url = record.weburl
-            GITHUB_TOKEN = await self._get_api_token_()
-            self.logger.info(f"Fetching file from URL: {record_url}")
-            headers = {
-                "Authorization": f"Bearer {GITHUB_TOKEN}",
-                "Accept": "application/vnd.github+json",
-            }
-            file_data = b""
-            try:
-                async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
-                    resp = await client.get(record_url, headers=headers)
-                    file_data = resp.content
-                    self.logger.info(f"Fetched file of size: {len(file_data)} bytes")
-            except httpx.HTTPStatusError as e:
-                self.logger.error(
-                    f"HTTP {e.response.status_code} fetching file content from {record_url}"
-                )
-            except Exception as e:
-                self.logger.error(f"Error fetching file from {record_url}: {str(e)}")
-
+            file_data_res = await self.data_source.get_attachment_files_content(record_url)
+            if not file_data_res.success or not file_data_res.data:
+                raise Exception(f"Failed to fetch file from {record_url}: {file_data_res.error}")
+            file_data = file_data_res.data
             async def stream_markdown(
                 markdown_content:str, chunk_size:int=160000
             ) -> AsyncGenerator[bytes, None]:
@@ -1115,6 +1099,7 @@ class GithubConnector(BaseConnector):
         markdown_content_clean, attachments = await self.clean_github_content(
             body_content
         )
+
         if not attachments:
             return markdown_content_clean
 
@@ -1124,7 +1109,11 @@ class GithubConnector(BaseConnector):
             attachment_url = attach.get("href")
             self.logger.debug(f"Fetching image from URL: {attachment_url}")
             try:
-                image_bytes = await self.get_img_bytes(attachment_url)
+                image_bytes_res = await self.data_source.get_img_bytes(attachment_url)
+                if not image_bytes_res.success or not image_bytes_res.data:
+                    self.logger.error(f"Failed to fetch image from {attachment_url}: {image_bytes_res.error}")
+                    continue
+                image_bytes = image_bytes_res.data
                 if image_bytes:
                     start = image_bytes.lstrip()
                     if start.startswith((b"<?xml", b"<svg")):
@@ -1280,29 +1269,6 @@ class GithubConnector(BaseConnector):
             raise ValueError("Github credentials not found")
 
         return access_token
-
-    async def get_img_bytes(self, image_url: str) -> bytes | None:
-        GITHUB_TOKEN = await self._get_api_token_()
-        self.logger.info(f"Fetching image from URL: {image_url}")
-        headers = {
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Accept": "*/*",
-        }
-        try:
-            async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
-                resp = await client.get(image_url, headers=headers)
-                resp.raise_for_status()
-                img_data = resp.content
-                self.logger.info(f"Fetched image of size: {len(img_data)} bytes")
-                return img_data
-        except httpx.HTTPStatusError as e:
-            self.logger.error(
-                f"HTTP {e.response.status_code} fetching image from {image_url}"
-            )
-            return None
-        except Exception as e:
-            self.logger.error(f"Error fetching image from {image_url}: {str(e)}")
-            return None
 
     def _get_iso_time(self) -> str:
         # Get the current time in UTC
