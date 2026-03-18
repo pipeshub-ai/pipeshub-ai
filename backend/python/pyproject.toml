@@ -154,6 +154,7 @@ ignore = [
 "app/sources/external/**/example*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401", "T201", "T203"]
 "app/**/migrations/*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401"]
 "tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "FBT001", "FBT002", "T201", "T203"]
+"app/sources/client/**/[!i]*.py" = ["ANN401"]  # SDK client wrappers use Any for untyped third-party SDKs
 
 
 [project]

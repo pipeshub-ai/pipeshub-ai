@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
 """Benchling client implementation.
 
 This module provides clients for interacting with the Benchling API using the
@@ -15,8 +14,10 @@ import json
 import logging
 from typing import Any, cast
 
-from benchling_sdk.auth.api_key_auth import ApiKeyAuth
-from benchling_sdk.benchling import Benchling
+from benchling_sdk.auth.api_key_auth import (  # type: ignore[reportMissingImports]
+    ApiKeyAuth,  # type: ignore[reportUnknownVariableType]
+)
+from benchling_sdk.benchling import Benchling  # type: ignore[reportMissingImports]
 from pydantic import BaseModel, Field  # type: ignore
 from typing_extensions import override
 
@@ -88,19 +89,20 @@ class BenchlingClientViaApiKey:
     """
 
     def __init__(self, tenant_url: str, api_key: str) -> None:
+        super().__init__()
         self.tenant_url = tenant_url.rstrip("/")
         self.api_key = api_key
-        self._sdk: Benchling | None = None
+        self._sdk: Any = None  # Benchling
 
-    def create_client(self) -> Benchling:
+    def create_client(self) -> Any:  # Benchling
         """Create and return the SDK client."""
-        self._sdk = Benchling(
+        self._sdk = Benchling(  # type: ignore[reportUnknownVariableType]
             url=self.tenant_url,
-            auth_method=ApiKeyAuth(self.api_key),
+            auth_method=ApiKeyAuth(self.api_key),  # type: ignore[reportUnknownVariableType]
         )
-        return self._sdk
+        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-    def get_sdk(self) -> Benchling:
+    def get_sdk(self) -> Any:  # Benchling
         """Return the SDK client, creating it lazily if needed."""
         if self._sdk is None:
             return self.create_client()
@@ -182,7 +184,7 @@ class BenchlingClient(IClient):
         """Return the Benchling SDK wrapper."""
         return self.client
 
-    def get_sdk(self) -> Benchling:
+    def get_sdk(self) -> Any:  # Benchling
         """Return the underlying Benchling SDK instance."""
         return self.client.get_sdk()
 

@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportMissingImports=false
 """Okta client implementation using the official ``okta`` SDK.
 
 This module provides clients for interacting with the Okta API using either:
@@ -16,7 +15,7 @@ import logging
 from enum import Enum
 from typing import Any, cast
 
-from okta.client import Client as OktaSDKClient
+from okta.client import Client as OktaSDKClient  # type: ignore[reportMissingImports]
 from pydantic import BaseModel, Field  # type: ignore
 from typing_extensions import override
 
@@ -77,23 +76,24 @@ class OktaClientViaApiToken:
     """
 
     def __init__(self, domain: str, api_token: str) -> None:
+        super().__init__()
         # Normalise: make sure domain is a full URL
         if not domain.startswith("http"):
             domain = f"https://{domain}.okta.com"
         self.domain = domain.rstrip("/")
         self.api_token = api_token
 
-        self._sdk: OktaSDKClient | None = None
+        self._sdk: Any = None  # OktaSDKClient
 
-    def create_client(self) -> OktaSDKClient:
+    def create_client(self) -> Any:  # OktaSDKClient
         config = {
             "orgUrl": self.domain,
             "token": self.api_token,
         }
-        self._sdk = OktaSDKClient(config)
-        return self._sdk
+        self._sdk = OktaSDKClient(config)  # type: ignore[reportUnknownVariableType]
+        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-    def get_sdk(self) -> OktaSDKClient:
+    def get_sdk(self) -> Any:  # OktaSDKClient
         if self._sdk is None:
             return self.create_client()
         return self._sdk
@@ -217,7 +217,7 @@ class OktaClient(IClient):
     def get_client(self) -> OktaClientViaApiToken:
         return self.client
 
-    def get_sdk(self) -> OktaSDKClient:
+    def get_sdk(self) -> Any:  # OktaSDKClient
         return self.client.get_sdk()
 
     def get_base_url(self) -> str:
@@ -233,7 +233,7 @@ class OktaClient(IClient):
         config: OktaOAuthConfig | OktaApiTokenConfig,
     ) -> "OktaClient":
         client = config.create_client()
-        _ = client.get_sdk()
+        client.get_sdk()
         return cls(client)
 
     @classmethod

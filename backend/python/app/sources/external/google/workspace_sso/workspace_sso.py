@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnnecessaryComparison=false
 from typing import Any, Optional
 
 from app.sources.client.google.google import GoogleClient
@@ -21,6 +20,7 @@ class GoogleWorkspaceSSODataSource:
         Args:
             client: Google Admin SDK Directory API client from build('admin', 'directory_v1', credentials=credentials)
         """
+        super().__init__()
         self.client = client
 
     # ==================== Domains ====================
@@ -40,11 +40,10 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
+        kwargs['customer'] = customer
 
         request = self.client.domains().list(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def domains_get(
         self,
@@ -63,13 +62,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
-        if domainName is not None:
-            kwargs['domainName'] = domainName
+        kwargs['customer'] = customer
+        kwargs['domainName'] = domainName
 
         request = self.client.domains().get(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def domains_insert(
         self,
@@ -86,16 +83,15 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
+        kwargs['customer'] = customer
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.domains().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.domains().insert(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def domains_delete(
         self,
@@ -114,13 +110,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
-        if domainName is not None:
-            kwargs['domainName'] = domainName
+        kwargs['customer'] = customer
+        kwargs['domainName'] = domainName
 
         request = self.client.domains().delete(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     # ==================== Domain Aliases ====================
 
@@ -141,13 +135,12 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
+        kwargs['customer'] = customer
         if parentDomainName is not None:
             kwargs['parentDomainName'] = parentDomainName
 
         request = self.client.domainAliases().list(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def domain_aliases_get(
         self,
@@ -166,13 +159,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
-        if domainAliasName is not None:
-            kwargs['domainAliasName'] = domainAliasName
+        kwargs['customer'] = customer
+        kwargs['domainAliasName'] = domainAliasName
 
         request = self.client.domainAliases().get(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def domain_aliases_insert(
         self,
@@ -189,16 +180,15 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
+        kwargs['customer'] = customer
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.domainAliases().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.domainAliases().insert(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def domain_aliases_delete(
         self,
@@ -217,13 +207,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
-        if domainAliasName is not None:
-            kwargs['domainAliasName'] = domainAliasName
+        kwargs['customer'] = customer
+        kwargs['domainAliasName'] = domainAliasName
 
         request = self.client.domainAliases().delete(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     # ==================== Roles ====================
 
@@ -246,15 +234,14 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
+        kwargs['customer'] = customer
         if maxResults is not None:
             kwargs['maxResults'] = maxResults
         if pageToken is not None:
             kwargs['pageToken'] = pageToken
 
         request = self.client.roles().list(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def roles_get(
         self,
@@ -273,13 +260,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
-        if roleId is not None:
-            kwargs['roleId'] = roleId
+        kwargs['customer'] = customer
+        kwargs['roleId'] = roleId
 
         request = self.client.roles().get(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def roles_insert(
         self,
@@ -296,16 +281,15 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
+        kwargs['customer'] = customer
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.roles().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roles().insert(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def roles_update(
         self,
@@ -324,18 +308,16 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
-        if roleId is not None:
-            kwargs['roleId'] = roleId
+        kwargs['customer'] = customer
+        kwargs['roleId'] = roleId
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.roles().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roles().update(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def roles_patch(
         self,
@@ -354,18 +336,16 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
-        if roleId is not None:
-            kwargs['roleId'] = roleId
+        kwargs['customer'] = customer
+        kwargs['roleId'] = roleId
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.roles().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roles().patch(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def roles_delete(
         self,
@@ -384,13 +364,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
-        if roleId is not None:
-            kwargs['roleId'] = roleId
+        kwargs['customer'] = customer
+        kwargs['roleId'] = roleId
 
         request = self.client.roles().delete(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     # ==================== Role Assignments ====================
 
@@ -419,8 +397,7 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
+        kwargs['customer'] = customer
         if maxResults is not None:
             kwargs['maxResults'] = maxResults
         if pageToken is not None:
@@ -433,7 +410,7 @@ class GoogleWorkspaceSSODataSource:
             kwargs['includeIndirectRoleAssignments'] = includeIndirectRoleAssignments
 
         request = self.client.roleAssignments().list(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def role_assignments_get(
         self,
@@ -452,13 +429,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
-        if roleAssignmentId is not None:
-            kwargs['roleAssignmentId'] = roleAssignmentId
+        kwargs['customer'] = customer
+        kwargs['roleAssignmentId'] = roleAssignmentId
 
         request = self.client.roleAssignments().get(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def role_assignments_insert(
         self,
@@ -475,16 +450,15 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
+        kwargs['customer'] = customer
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.roleAssignments().insert(**kwargs, body=body) # type: ignore
         else:
             request = self.client.roleAssignments().insert(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def role_assignments_delete(
         self,
@@ -503,13 +477,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
-        if roleAssignmentId is not None:
-            kwargs['roleAssignmentId'] = roleAssignmentId
+        kwargs['customer'] = customer
+        kwargs['roleAssignmentId'] = roleAssignmentId
 
         request = self.client.roleAssignments().delete(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     # ==================== Privileges ====================
 
@@ -528,11 +500,10 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customer is not None:
-            kwargs['customer'] = customer
+        kwargs['customer'] = customer
 
         request = self.client.privileges().list(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     # ==================== Tokens / OAuth ====================
 
@@ -551,11 +522,10 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if userKey is not None:
-            kwargs['userKey'] = userKey
+        kwargs['userKey'] = userKey
 
         request = self.client.tokens().list(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def tokens_get(
         self,
@@ -574,13 +544,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if userKey is not None:
-            kwargs['userKey'] = userKey
-        if clientId is not None:
-            kwargs['clientId'] = clientId
+        kwargs['userKey'] = userKey
+        kwargs['clientId'] = clientId
 
         request = self.client.tokens().get(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def tokens_delete(
         self,
@@ -599,13 +567,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if userKey is not None:
-            kwargs['userKey'] = userKey
-        if clientId is not None:
-            kwargs['clientId'] = clientId
+        kwargs['userKey'] = userKey
+        kwargs['clientId'] = clientId
 
         request = self.client.tokens().delete(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     # ==================== Verification Codes ====================
 
@@ -624,11 +590,10 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if userKey is not None:
-            kwargs['userKey'] = userKey
+        kwargs['userKey'] = userKey
 
         request = self.client.verificationCodes().list(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def verification_codes_generate(
         self,
@@ -645,16 +610,15 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if userKey is not None:
-            kwargs['userKey'] = userKey
+        kwargs['userKey'] = userKey
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.verificationCodes().generate(**kwargs, body=body) # type: ignore
         else:
             request = self.client.verificationCodes().generate(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def verification_codes_invalidate(
         self,
@@ -671,16 +635,15 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if userKey is not None:
-            kwargs['userKey'] = userKey
+        kwargs['userKey'] = userKey
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.verificationCodes().invalidate(**kwargs, body=body) # type: ignore
         else:
             request = self.client.verificationCodes().invalidate(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     # ==================== 2-Step Verification ====================
 
@@ -699,16 +662,15 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if userKey is not None:
-            kwargs['userKey'] = userKey
+        kwargs['userKey'] = userKey
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.twoStepVerification().turnOff(**kwargs, body=body) # type: ignore
         else:
             request = self.client.twoStepVerification().turnOff(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     # ==================== ASPs (Application-Specific Passwords) ====================
 
@@ -727,11 +689,10 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if userKey is not None:
-            kwargs['userKey'] = userKey
+        kwargs['userKey'] = userKey
 
         request = self.client.asps().list(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def asps_get(
         self,
@@ -750,13 +711,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if userKey is not None:
-            kwargs['userKey'] = userKey
-        if codeId is not None:
-            kwargs['codeId'] = codeId
+        kwargs['userKey'] = userKey
+        kwargs['codeId'] = codeId
 
         request = self.client.asps().get(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def asps_delete(
         self,
@@ -775,13 +734,11 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if userKey is not None:
-            kwargs['userKey'] = userKey
-        if codeId is not None:
-            kwargs['codeId'] = codeId
+        kwargs['userKey'] = userKey
+        kwargs['codeId'] = codeId
 
         request = self.client.asps().delete(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     # ==================== Customers ====================
 
@@ -800,11 +757,10 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customerKey is not None:
-            kwargs['customerKey'] = customerKey
+        kwargs['customerKey'] = customerKey
 
         request = self.client.customers().get(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def customers_update(
         self,
@@ -821,16 +777,15 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customerKey is not None:
-            kwargs['customerKey'] = customerKey
+        kwargs['customerKey'] = customerKey
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.customers().update(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers().update(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def customers_patch(
         self,
@@ -847,16 +802,15 @@ class GoogleWorkspaceSSODataSource:
             Dict[str, Any]: API response
         """
         kwargs = {}
-        if customerKey is not None:
-            kwargs['customerKey'] = customerKey
+        kwargs['customerKey'] = customerKey
 
         # Handle request body if needed
         if 'body' in kwargs:
-            body = kwargs.pop('body')
+            body: Any = kwargs.pop('body')  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
             request = self.client.customers().patch(**kwargs, body=body) # type: ignore
         else:
             request = self.client.customers().patch(**kwargs) # type: ignore
-        return request.execute()
+        return request.execute()  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
 
     async def get_client(self) -> object:
         """Get the underlying Google API client."""

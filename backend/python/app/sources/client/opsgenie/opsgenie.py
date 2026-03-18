@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportMissingImports=false, reportOptionalMemberAccess=false
 """Opsgenie client implementation using the official ``opsgenie-sdk`` package.
 
 This module provides a client for interacting with the Opsgenie API using
@@ -11,7 +10,7 @@ API Reference: https://docs.opsgenie.com/docs/api-overview
 import logging
 from typing import Any
 
-import opsgenie_sdk
+import opsgenie_sdk  # type: ignore[reportMissingImports]
 from pydantic import BaseModel, Field, field_validator  # type: ignore
 from typing_extensions import override
 
@@ -66,18 +65,19 @@ class OpsgenieClientViaApiKey:
     """
 
     def __init__(self, api_key: str) -> None:
+        super().__init__()
         self.api_key = api_key
-        self._sdk: opsgenie_sdk.ApiClient | None = None
-        self._configuration: opsgenie_sdk.Configuration | None = None
+        self._sdk: Any = None  # opsgenie_sdk.ApiClient
+        self._configuration: Any = None  # opsgenie_sdk.Configuration
 
-    def create_client(self) -> opsgenie_sdk.ApiClient:
-        self._configuration = opsgenie_sdk.Configuration()
-        self._configuration.api_key["Authorization"] = self.api_key
-        self._configuration.api_key_prefix["Authorization"] = "GenieKey"
-        self._sdk = opsgenie_sdk.ApiClient(self._configuration)
-        return self._sdk
+    def create_client(self) -> Any:  # opsgenie_sdk.ApiClient
+        self._configuration = opsgenie_sdk.Configuration()  # type: ignore[reportUnknownMemberType]
+        self._configuration.api_key["Authorization"] = self.api_key  # type: ignore[reportUnknownMemberType]
+        self._configuration.api_key_prefix["Authorization"] = "GenieKey"  # type: ignore[reportUnknownMemberType]
+        self._sdk = opsgenie_sdk.ApiClient(self._configuration)  # type: ignore[reportUnknownMemberType]
+        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-    def get_sdk(self) -> opsgenie_sdk.ApiClient:
+    def get_sdk(self) -> Any:  # opsgenie_sdk.ApiClient
         if self._sdk is None:
             return self.create_client()
         return self._sdk
@@ -130,7 +130,7 @@ class OpsgenieClient(IClient):
     def get_client(self) -> OpsgenieClientViaApiKey:
         return self.client
 
-    def get_sdk(self) -> opsgenie_sdk.ApiClient:
+    def get_sdk(self) -> Any:  # opsgenie_sdk.ApiClient
         return self.client.get_sdk()
 
     def get_base_url(self) -> str:
@@ -142,7 +142,7 @@ class OpsgenieClient(IClient):
         config: OpsgenieApiKeyConfig,
     ) -> "OpsgenieClient":
         client = config.create_client()
-        _ = client.get_sdk()
+        client.get_sdk()
         return cls(client)
 
     @classmethod

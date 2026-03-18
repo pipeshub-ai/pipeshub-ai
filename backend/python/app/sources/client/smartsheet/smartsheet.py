@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
 """Smartsheet client implementation using the official smartsheet-python-sdk.
 
 This module provides clients for interacting with the Smartsheet API using either:
@@ -10,7 +9,7 @@ API Reference: https://smartsheet.redoc.ly/
 """
 
 import logging
-from typing import cast
+from typing import Any, cast
 
 import smartsheet as smartsheet_sdk  # type: ignore[reportMissingTypeStubs]
 from pydantic import BaseModel, Field  # type: ignore
@@ -70,22 +69,23 @@ class SmartsheetClientViaOAuth:
         client_id: str | None = None,
         client_secret: str | None = None,
     ) -> None:
+        super().__init__()
         self.access_token = access_token
         self.client_id = client_id
         self.client_secret = client_secret
-        self._sdk: smartsheet_sdk.Smartsheet | None = None  # type: ignore[reportUnknownMemberType]
+        self._sdk: Any = None  # smartsheet_sdk.Smartsheet
 
-    def create_client(self) -> "smartsheet_sdk.Smartsheet":  # type: ignore[reportUnknownMemberType]
+    def create_client(self) -> Any:  # smartsheet_sdk.Smartsheet
         """Create and return the SDK client."""
         self._sdk = smartsheet_sdk.Smartsheet(self.access_token)  # type: ignore[reportUnknownMemberType]
         self._sdk.errors_as_exceptions(True)  # type: ignore[reportUnknownMemberType]
-        return self._sdk  # type: ignore[reportReturnType]
+        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-    def get_sdk(self) -> "smartsheet_sdk.Smartsheet":  # type: ignore[reportUnknownMemberType]
+    def get_sdk(self) -> Any:  # smartsheet_sdk.Smartsheet
         """Get the SDK client, creating it if necessary."""
         if self._sdk is None:
-            return self.create_client()
-        return self._sdk  # type: ignore[reportReturnType]
+            return self.create_client()  # type: ignore[reportUnknownVariableType]
+        return self._sdk  # type: ignore[reportUnknownVariableType]
 
 
 class SmartsheetClientViaToken:
@@ -96,20 +96,21 @@ class SmartsheetClientViaToken:
     """
 
     def __init__(self, token: str) -> None:
+        super().__init__()
         self.token = token
-        self._sdk: smartsheet_sdk.Smartsheet | None = None  # type: ignore[reportUnknownMemberType]
+        self._sdk: Any = None  # smartsheet_sdk.Smartsheet
 
-    def create_client(self) -> "smartsheet_sdk.Smartsheet":  # type: ignore[reportUnknownMemberType]
+    def create_client(self) -> Any:  # smartsheet_sdk.Smartsheet
         """Create and return the SDK client."""
         self._sdk = smartsheet_sdk.Smartsheet(self.token)  # type: ignore[reportUnknownMemberType]
         self._sdk.errors_as_exceptions(True)  # type: ignore[reportUnknownMemberType]
-        return self._sdk  # type: ignore[reportReturnType]
+        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-    def get_sdk(self) -> "smartsheet_sdk.Smartsheet":  # type: ignore[reportUnknownMemberType]
+    def get_sdk(self) -> Any:  # smartsheet_sdk.Smartsheet
         """Get the SDK client, creating it if necessary."""
         if self._sdk is None:
-            return self.create_client()
-        return self._sdk  # type: ignore[reportReturnType]
+            return self.create_client()  # type: ignore[reportUnknownVariableType]
+        return self._sdk  # type: ignore[reportUnknownVariableType]
 
 
 # ---------------------------------------------------------------------------
@@ -267,9 +268,9 @@ class SmartsheetClient(IClient):
         """Return the Smartsheet client wrapper."""
         return self.client
 
-    def get_sdk(self) -> "smartsheet_sdk.Smartsheet":  # type: ignore[reportUnknownMemberType]
+    def get_sdk(self) -> Any:  # smartsheet_sdk.Smartsheet
         """Return the underlying smartsheet SDK instance."""
-        return self.client.get_sdk()  # type: ignore[reportReturnType]
+        return self.client.get_sdk()
 
     @classmethod
     def build_with_config(
@@ -285,7 +286,7 @@ class SmartsheetClient(IClient):
             SmartsheetClient instance
         """
         client = config.create_client()
-        client.get_sdk()  # eagerly initialize the SDK
+        client.get_sdk()  # type: ignore[reportUnknownMemberType]  # eagerly initialize the SDK
         return cls(client)
 
     @classmethod
@@ -352,7 +353,7 @@ class SmartsheetClient(IClient):
                     client_secret=client_secret,
                 )
                 wrapper = oauth_cfg.create_client()
-                wrapper.get_sdk()
+                wrapper.get_sdk()  # type: ignore[reportUnknownMemberType]
                 return cls(wrapper)
 
             if connector_config.auth.authType == "TOKEN":
@@ -368,7 +369,7 @@ class SmartsheetClient(IClient):
 
                 token_config = SmartsheetTokenConfig(token=token)
                 wrapper = token_config.create_client()
-                wrapper.get_sdk()
+                wrapper.get_sdk()  # type: ignore[reportUnknownMemberType]
                 return cls(wrapper)
 
             raise ValueError(

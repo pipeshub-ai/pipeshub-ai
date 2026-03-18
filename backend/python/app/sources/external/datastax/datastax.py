@@ -1,5 +1,4 @@
 # ruff: noqa
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
 """
 DataStax Astra DB SDK DataSource - Auto-generated SDK wrapper
 
@@ -10,9 +9,9 @@ All methods have explicit parameter signatures.
 
 from __future__ import annotations
 
-from typing import Union, cast
+from typing import Any, Union, cast
 
-from astrapy import DataAPIClient
+from astrapy import DataAPIClient  # type: ignore[reportMissingImports]
 
 from app.sources.client.datastax.datastax import DataStaxClient, DataStaxResponse
 
@@ -28,7 +27,7 @@ class DataStaxDataSource:
     All methods return DataStaxResponse objects.
     """
 
-    def __init__(self, client_or_sdk: Union[DataStaxClient, DataAPIClient, object]) -> None:
+    def __init__(self, client_or_sdk: Union[DataStaxClient, DataAPIClient, object]) -> None:  # type: ignore[reportUnknownParameterType]
         """Initialize with DataStaxClient, raw SDK, or any wrapper with ``get_sdk()``.
 
         The ``api_endpoint`` must be provided either via the DataStaxClient wrapper
@@ -37,16 +36,17 @@ class DataStaxDataSource:
         Args:
             client_or_sdk: DataStaxClient, DataAPIClient instance, or wrapper
         """
+        super().__init__()
         if isinstance(client_or_sdk, DataStaxClient):
-            self._sdk: DataAPIClient = client_or_sdk.get_sdk()
+            self._sdk: DataAPIClient = client_or_sdk.get_sdk()  # type: ignore[reportUnknownMemberType]
             self._api_endpoint: str = client_or_sdk.get_api_endpoint()
-        elif isinstance(client_or_sdk, DataAPIClient):
-            self._sdk = client_or_sdk
+        elif isinstance(client_or_sdk, DataAPIClient):  # type: ignore[reportUnknownMemberType]
+            self._sdk = client_or_sdk  # type: ignore[reportUnknownMemberType]
             self._api_endpoint = ""
-        elif hasattr(client_or_sdk, "get_sdk"):
-            self._sdk = cast(DataAPIClient, getattr(client_or_sdk, "get_sdk")())
-            if hasattr(client_or_sdk, "get_api_endpoint"):
-                self._api_endpoint = str(getattr(client_or_sdk, "get_api_endpoint")())
+        elif hasattr(client_or_sdk, "get_sdk"):  # type: ignore[reportUnknownArgumentType]
+            self._sdk = cast(DataAPIClient, getattr(client_or_sdk, "get_sdk")())  # type: ignore[reportUnknownArgumentType]
+            if hasattr(client_or_sdk, "get_api_endpoint"):  # type: ignore[reportUnknownArgumentType]
+                self._api_endpoint = str(getattr(client_or_sdk, "get_api_endpoint")())  # type: ignore[reportUnknownArgumentType]
             else:
                 self._api_endpoint = ""
         else:
@@ -54,7 +54,7 @@ class DataStaxDataSource:
             self._api_endpoint = ""
 
         # Lazily connect to the database
-        self._database = self._sdk.get_database(api_endpoint=self._api_endpoint) if self._api_endpoint else None
+        self._database: Any = self._sdk.get_database(api_endpoint=self._api_endpoint) if self._api_endpoint else None  # type: ignore[reportUnknownMemberType]
 
     def set_api_endpoint(self, api_endpoint: str) -> None:
         """Set the API endpoint and connect to the database.
@@ -63,7 +63,7 @@ class DataStaxDataSource:
             api_endpoint: The database API endpoint URL
         """
         self._api_endpoint = api_endpoint
-        self._database = self._sdk.get_database(api_endpoint=api_endpoint)
+        self._database = self._sdk.get_database(api_endpoint=api_endpoint)  # type: ignore[reportUnknownMemberType]
 
     def _ensure_database(self) -> None:
         """Ensure a database connection is established."""
@@ -85,10 +85,10 @@ class DataStaxDataSource:
             DataStaxResponse with operation result
         """
         try:
-            admin = self._sdk.get_admin()
-            dbs = list(admin.list_databases())
-            result = [str(db) for db in dbs]
-            return DataStaxResponse(success=True, data=result)
+            admin = self._sdk.get_admin()  # type: ignore[reportUnknownMemberType]
+            dbs = list(admin.list_databases())  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            result = [str(db) for db in dbs]  # type: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute list_databases"
@@ -107,8 +107,8 @@ class DataStaxDataSource:
             DataStaxResponse with operation result
         """
         try:
-            result = self._database.list_collection_names()
-            return DataStaxResponse(success=True, data=result)
+            result: Any = self._database.list_collection_names()
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute list_collections"
@@ -131,7 +131,7 @@ class DataStaxDataSource:
             names = self._database.list_collection_names()
             found = collection_name in names
             result = {"name": collection_name, "exists": found}
-            return DataStaxResponse(success=True, data=result)
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute get_collection_info"
@@ -163,8 +163,8 @@ class DataStaxDataSource:
             collection = self._database.get_collection(collection_name)
             filter_dict = filter or {}
             cursor = collection.find(filter_dict, limit=limit or 20)
-            result = list(cursor)
-            return DataStaxResponse(success=True, data=result)
+            result: Any = list(cursor)
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute find_documents"
@@ -189,8 +189,8 @@ class DataStaxDataSource:
         try:
             collection = self._database.get_collection(collection_name)
             filter_dict = filter or {}
-            result = collection.find_one(filter_dict)
-            return DataStaxResponse(success=True, data=result)
+            result: Any = collection.find_one(filter_dict)
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute find_one"
@@ -213,8 +213,8 @@ class DataStaxDataSource:
         """
         try:
             collection = self._database.get_collection(collection_name)
-            result = collection.find_one({"_id": document_id})
-            return DataStaxResponse(success=True, data=result)
+            result: Any = collection.find_one({"_id": document_id})
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute find_by_id"
@@ -237,9 +237,8 @@ class DataStaxDataSource:
         """
         try:
             collection = self._database.get_collection(collection_name)
-            insert_result = collection.insert_one(document)
-            result = insert_result
-            return DataStaxResponse(success=True, data=result)
+            result: Any = collection.insert_one(document)
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute insert_one"
@@ -262,9 +261,8 @@ class DataStaxDataSource:
         """
         try:
             collection = self._database.get_collection(collection_name)
-            insert_result = collection.insert_many(documents)
-            result = insert_result
-            return DataStaxResponse(success=True, data=result)
+            result: Any = collection.insert_many(documents)
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute insert_many"
@@ -289,9 +287,8 @@ class DataStaxDataSource:
         """
         try:
             collection = self._database.get_collection(collection_name)
-            update_result = collection.update_one(filter, update)
-            result = update_result
-            return DataStaxResponse(success=True, data=result)
+            result: Any = collection.update_one(filter, update)
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute update_one"
@@ -314,9 +311,8 @@ class DataStaxDataSource:
         """
         try:
             collection = self._database.get_collection(collection_name)
-            delete_result = collection.delete_one(filter)
-            result = delete_result
-            return DataStaxResponse(success=True, data=result)
+            result: Any = collection.delete_one(filter)
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute delete_one"
@@ -343,8 +339,8 @@ class DataStaxDataSource:
         try:
             collection = self._database.get_collection(collection_name)
             filter_dict = filter or {}
-            result = collection.count_documents(filter_dict, upper_bound=upper_bound or 1000)
-            return DataStaxResponse(success=True, data=result)
+            result: Any = collection.count_documents(filter_dict, upper_bound=upper_bound or 1000)
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute count_documents"
@@ -368,9 +364,9 @@ class DataStaxDataSource:
             DataStaxResponse with operation result
         """
         try:
-            collection = self._database.create_collection(collection_name)
+            self._database.create_collection(collection_name)
             result = {"name": collection_name, "created": True}
-            return DataStaxResponse(success=True, data=result)
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute create_collection"
@@ -392,9 +388,8 @@ class DataStaxDataSource:
         try:
             self._database.drop_collection(collection_name)
             result = {"name": collection_name, "dropped": True}
-            return DataStaxResponse(success=True, data=result)
+            return DataStaxResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DataStaxResponse(
                 success=False, error=str(e), message="Failed to execute drop_collection"
             )
-

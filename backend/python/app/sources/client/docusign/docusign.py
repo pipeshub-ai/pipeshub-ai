@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
 """DocuSign client implementation.
 
 Uses the official docusign-esign SDK for eSignature API, and HTTP client
@@ -84,26 +83,27 @@ class DocuSignClientViaOAuth:
         account_id: str,
         base_path: str = "https://demo.docusign.net/restapi",
     ) -> None:
+        super().__init__()
         self.access_token = access_token
         self.account_id = account_id
         self.base_path = base_path
 
-        self._sdk: docusign_esign.ApiClient | None = None
+        self._sdk: Any = None  # docusign_esign.ApiClient
         self._http_clients: dict[str, HTTPClient] = {}
 
-    def create_client(self) -> docusign_esign.ApiClient:
+    def create_client(self) -> Any:  # docusign_esign.ApiClient
         """Create and configure the SDK ApiClient."""
-        self._sdk = docusign_esign.ApiClient(base_path=self.base_path)
+        self._sdk = docusign_esign.ApiClient(base_path=self.base_path)  # type: ignore[reportUnknownMemberType]
         self._sdk.set_default_header(  # type: ignore[reportUnknownMemberType]
             "Authorization", f"Bearer {self.access_token}"
         )
-        return self._sdk
+        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-    def get_sdk(self) -> docusign_esign.ApiClient:
+    def get_sdk(self) -> Any:  # docusign_esign.ApiClient
         """Return the SDK ApiClient, lazily creating it if needed."""
         if self._sdk is None:
-            return self.create_client()
-        return self._sdk
+            return self.create_client()  # type: ignore[reportUnknownVariableType]
+        return self._sdk  # type: ignore[reportUnknownVariableType]
 
     def get_http_client(self, base_url: str) -> HTTPClient:
         """Return an HTTPClient configured for the given base URL.
@@ -151,26 +151,27 @@ class DocuSignClientViaToken:
         account_id: str,
         base_path: str = "https://demo.docusign.net/restapi",
     ) -> None:
+        super().__init__()
         self.token = token
         self.account_id = account_id
         self.base_path = base_path
 
-        self._sdk: docusign_esign.ApiClient | None = None
+        self._sdk: Any = None  # docusign_esign.ApiClient
         self._http_clients: dict[str, HTTPClient] = {}
 
-    def create_client(self) -> docusign_esign.ApiClient:
+    def create_client(self) -> Any:  # docusign_esign.ApiClient
         """Create and configure the SDK ApiClient."""
-        self._sdk = docusign_esign.ApiClient(base_path=self.base_path)
+        self._sdk = docusign_esign.ApiClient(base_path=self.base_path)  # type: ignore[reportUnknownMemberType]
         self._sdk.set_default_header(  # type: ignore[reportUnknownMemberType]
             "Authorization", f"Bearer {self.token}"
         )
-        return self._sdk
+        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-    def get_sdk(self) -> docusign_esign.ApiClient:
+    def get_sdk(self) -> Any:  # docusign_esign.ApiClient
         """Return the SDK ApiClient, lazily creating it if needed."""
         if self._sdk is None:
-            return self.create_client()
-        return self._sdk
+            return self.create_client()  # type: ignore[reportUnknownVariableType]
+        return self._sdk  # type: ignore[reportUnknownVariableType]
 
     def get_http_client(self, base_url: str) -> HTTPClient:
         """Return an HTTPClient configured for the given base URL.
@@ -358,7 +359,7 @@ class DocuSignClient(IClient):
         """Return the DocuSign client wrapper."""
         return self.client
 
-    def get_sdk(self) -> docusign_esign.ApiClient:
+    def get_sdk(self) -> Any:  # docusign_esign.ApiClient
         """Return the underlying SDK ApiClient."""
         return self.client.get_sdk()
 

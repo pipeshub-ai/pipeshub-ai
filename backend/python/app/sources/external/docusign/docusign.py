@@ -1,5 +1,4 @@
 # ruff: noqa
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false, reportArgumentType=false
 """
 DocuSign Unified DataSource - Auto-generated API wrapper
 
@@ -12,7 +11,7 @@ All eSign methods are synchronous (SDK). All HTTP methods are async.
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 import docusign_esign  # type: ignore[reportMissingImports]
 from docusign_esign import ApiClient  # type: ignore[reportMissingImports]
@@ -52,6 +51,7 @@ class DocuSignDataSource:
         Args:
             client: DocuSignClient instance with configured authentication
         """
+        super().__init__()
         self._client = client
         # eSign SDK
         self._sdk: ApiClient = cast(ApiClient, client.get_client().get_sdk())
@@ -64,11 +64,11 @@ class DocuSignDataSource:
         self._webforms_http: HTTPClient | None = None
 
         # Lazy SDK API instances
-        self._envelopes_api: docusign_esign.EnvelopesApi | None = None
-        self._templates_api: docusign_esign.TemplatesApi | None = None
-        self._users_api: docusign_esign.UsersApi | None = None
-        self._folders_api: docusign_esign.FoldersApi | None = None
-        self._accounts_api: docusign_esign.AccountsApi | None = None
+        self._envelopes_api: Any = None
+        self._templates_api: Any = None
+        self._users_api: Any = None
+        self._folders_api: Any = None
+        self._accounts_api: Any = None
 
     # ---- lazy HTTP client accessors ----
 
@@ -100,34 +100,34 @@ class DocuSignDataSource:
     # ---- lazy SDK API accessors ----
 
     @property
-    def envelopes_api(self) -> docusign_esign.EnvelopesApi:
+    def envelopes_api(self) -> Any:
         if self._envelopes_api is None:
-            self._envelopes_api = docusign_esign.EnvelopesApi(self._sdk)
-        return self._envelopes_api
+            self._envelopes_api = docusign_esign.EnvelopesApi(self._sdk)  # type: ignore[reportUnknownMemberType]
+        return self._envelopes_api  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
 
     @property
-    def templates_api(self) -> docusign_esign.TemplatesApi:
+    def templates_api(self) -> Any:
         if self._templates_api is None:
-            self._templates_api = docusign_esign.TemplatesApi(self._sdk)
-        return self._templates_api
+            self._templates_api = docusign_esign.TemplatesApi(self._sdk)  # type: ignore[reportUnknownMemberType]
+        return self._templates_api  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
 
     @property
-    def users_api(self) -> docusign_esign.UsersApi:
+    def users_api(self) -> Any:
         if self._users_api is None:
-            self._users_api = docusign_esign.UsersApi(self._sdk)
-        return self._users_api
+            self._users_api = docusign_esign.UsersApi(self._sdk)  # type: ignore[reportUnknownMemberType]
+        return self._users_api  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
 
     @property
-    def folders_api(self) -> docusign_esign.FoldersApi:
+    def folders_api(self) -> Any:
         if self._folders_api is None:
-            self._folders_api = docusign_esign.FoldersApi(self._sdk)
-        return self._folders_api
+            self._folders_api = docusign_esign.FoldersApi(self._sdk)  # type: ignore[reportUnknownMemberType]
+        return self._folders_api  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
 
     @property
-    def accounts_api(self) -> docusign_esign.AccountsApi:
+    def accounts_api(self) -> Any:
         if self._accounts_api is None:
-            self._accounts_api = docusign_esign.AccountsApi(self._sdk)
-        return self._accounts_api
+            self._accounts_api = docusign_esign.AccountsApi(self._sdk)  # type: ignore[reportUnknownMemberType]
+        return self._accounts_api  # type: ignore[reportUnknownVariableType, reportUnknownMemberType]
 
     # ---- helpers ----
 
@@ -146,7 +146,7 @@ class DocuSignDataSource:
         for k, v in kwargs.items():
             if v is None:
                 continue
-            if isinstance(v, (list, dict)) and len(v) == 0:
+            if isinstance(v, (list, dict)) and len(v) == 0:  # type: ignore[reportUnknownArgumentType]
                 continue
             out[k] = v
         return out
@@ -157,66 +157,66 @@ class DocuSignDataSource:
         """List envelopes for the account. from_date is required by the API.  [eSign]"""
         try:
             params = self._params(from_date=from_date, to_date=to_date, status=status, search_text=search_text, count=count, start_position=start_position, order=order, order_by=order_by, folder_ids=folder_ids)
-            result = self.envelopes_api.list_status_changes(account_id=self._account_id, **params)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.envelopes_api.list_status_changes(account_id=self._account_id, **params)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def get_envelope(self, envelope_id: str) -> DocuSignResponse:
         """Get details for a specific envelope.  [eSign]"""
         try:
-            result = self.envelopes_api.get_envelope(account_id=self._account_id, envelope_id=envelope_id)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.envelopes_api.get_envelope(account_id=self._account_id, envelope_id=envelope_id)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def create_envelope(self, envelope_definition: dict[str, object]) -> DocuSignResponse:
         """Create and optionally send a new envelope from an envelope definition dict.  [eSign]"""
         try:
-            body = docusign_esign.EnvelopeDefinition(**envelope_definition)
-            result = self.envelopes_api.create_envelope(account_id=self._account_id, envelope_definition=body)
-            return DocuSignResponse(success=True, data=result)
+            body: Any = docusign_esign.EnvelopeDefinition(**envelope_definition)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            result: Any = self.envelopes_api.create_envelope(account_id=self._account_id, envelope_definition=body)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def update_envelope(self, envelope_id: str, envelope: dict[str, object]) -> DocuSignResponse:
         """Update an existing envelope (e.g. change status to sent or voided).  [eSign]"""
         try:
-            body = docusign_esign.Envelope(**envelope)
-            result = self.envelopes_api.update(account_id=self._account_id, envelope_id=envelope_id, envelope=body)
-            return DocuSignResponse(success=True, data=result)
+            body: Any = docusign_esign.Envelope(**envelope)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            result: Any = self.envelopes_api.update(account_id=self._account_id, envelope_id=envelope_id, envelope=body)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def list_envelope_documents(self, envelope_id: str) -> DocuSignResponse:
         """List documents in an envelope.  [eSign]"""
         try:
-            result = self.envelopes_api.list_documents(account_id=self._account_id, envelope_id=envelope_id)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.envelopes_api.list_documents(account_id=self._account_id, envelope_id=envelope_id)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def get_envelope_document(self, envelope_id: str, document_id: str) -> DocuSignResponse:
         """Download a specific document from an envelope.  [eSign]"""
         try:
-            result = self.envelopes_api.get_document(account_id=self._account_id, envelope_id=envelope_id, document_id=document_id)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.envelopes_api.get_document(account_id=self._account_id, envelope_id=envelope_id, document_id=document_id)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def list_envelope_recipients(self, envelope_id: str) -> DocuSignResponse:
         """List recipients for an envelope.  [eSign]"""
         try:
-            result = self.envelopes_api.list_recipients(account_id=self._account_id, envelope_id=envelope_id)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.envelopes_api.list_recipients(account_id=self._account_id, envelope_id=envelope_id)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def get_envelope_audit_events(self, envelope_id: str) -> DocuSignResponse:
         """Get audit trail events for an envelope.  [eSign]"""
         try:
-            result = self.envelopes_api.list_audit_events(account_id=self._account_id, envelope_id=envelope_id)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.envelopes_api.list_audit_events(account_id=self._account_id, envelope_id=envelope_id)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
@@ -224,16 +224,16 @@ class DocuSignDataSource:
         """List templates for the account.  [eSign]"""
         try:
             params = self._params(count=count, start_position=start_position, search_text=search_text, folder=folder, order=order, order_by=order_by)
-            result = self.templates_api.list_templates(account_id=self._account_id, **params)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.templates_api.list_templates(account_id=self._account_id, **params)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def get_template(self, template_id: str) -> DocuSignResponse:
         """Get details for a specific template.  [eSign]"""
         try:
-            result = self.templates_api.get(account_id=self._account_id, template_id=template_id)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.templates_api.get(account_id=self._account_id, template_id=template_id)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
@@ -241,24 +241,24 @@ class DocuSignDataSource:
         """List users in the account.  [eSign]"""
         try:
             params = self._params(count=count, start_position=start_position, status=status, email=email)
-            result = self.users_api.list(account_id=self._account_id, **params)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.users_api.list(account_id=self._account_id, **params)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def get_user(self, user_id: str) -> DocuSignResponse:
         """Get details for a specific user.  [eSign]"""
         try:
-            result = self.users_api.get_information(account_id=self._account_id, user_id=user_id)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.users_api.get_information(account_id=self._account_id, user_id=user_id)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def list_folders(self) -> DocuSignResponse:
         """List folders in the account.  [eSign]"""
         try:
-            result = self.folders_api.list(account_id=self._account_id)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.folders_api.list(account_id=self._account_id)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
@@ -266,24 +266,24 @@ class DocuSignDataSource:
         """List items (envelopes) in a specific folder.  [eSign]"""
         try:
             params = self._params(from_date=from_date, to_date=to_date, status=status, search_text=search_text, count=count, start_position=start_position)
-            result = self.folders_api.list_items(account_id=self._account_id, folder_id=folder_id, **params)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.folders_api.list_items(account_id=self._account_id, folder_id=folder_id, **params)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def list_brands(self) -> DocuSignResponse:
         """List brands for the account.  [eSign]"""
         try:
-            result = self.accounts_api.list_brands(account_id=self._account_id)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.accounts_api.list_brands(account_id=self._account_id)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
     def list_custom_fields(self) -> DocuSignResponse:
         """List custom fields for the account.  [eSign]"""
         try:
-            result = self.accounts_api.list_custom_fields(account_id=self._account_id)
-            return DocuSignResponse(success=True, data=result)
+            result: Any = self.accounts_api.list_custom_fields(account_id=self._account_id)
+            return DocuSignResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return DocuSignResponse(success=False, error=str(e), message="SDK call failed")
 
@@ -354,7 +354,7 @@ class DocuSignDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query=query_params,
+                query=query_params,  # type: ignore[reportArgumentType]
             )
             response = await self._get_admin_http().execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
@@ -392,7 +392,7 @@ class DocuSignDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query=query_params,
+                query=query_params,  # type: ignore[reportArgumentType]
             )
             response = await self._get_admin_http().execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
@@ -504,7 +504,7 @@ class DocuSignDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query=query_params,
+                query=query_params,  # type: ignore[reportArgumentType]
             )
             response = await self._get_rooms_http().execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
@@ -689,7 +689,7 @@ class DocuSignDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query=query_params,
+                query=query_params,  # type: ignore[reportArgumentType]
             )
             response = await self._get_rooms_http().execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
@@ -1058,7 +1058,7 @@ class DocuSignDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query=query_params,
+                query=query_params,  # type: ignore[reportArgumentType]
             )
             response = await self._get_monitor_http().execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
@@ -1104,7 +1104,7 @@ class DocuSignDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query=query_params,
+                query=query_params,  # type: ignore[reportArgumentType]
             )
             response = await self._get_webforms_http().execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None

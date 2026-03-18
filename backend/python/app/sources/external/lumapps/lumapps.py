@@ -1,5 +1,4 @@
 # ruff: noqa
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
 """
 LumApps SDK DataSource - Auto-generated SDK wrapper
 
@@ -10,9 +9,9 @@ All methods have explicit parameter signatures.
 
 from __future__ import annotations
 
-from typing import Union, cast
+from typing import Any, Union, cast
 
-from lumapps.api import BaseClient
+from lumapps.api import BaseClient  # type: ignore[reportMissingImports]
 
 from app.sources.client.lumapps.lumapps import LumAppsClient, LumAppsResponse
 
@@ -32,16 +31,17 @@ class LumAppsDataSource:
     All methods return LumAppsResponse objects.
     """
 
-    def __init__(self, client_or_sdk: Union[LumAppsClient, BaseClient, object]) -> None:
+    def __init__(self, client_or_sdk: Union[LumAppsClient, BaseClient, object]) -> None:  # type: ignore[reportUnknownParameterType]
         """Initialize with LumAppsClient, raw SDK, or any wrapper with ``get_sdk()``.
 
         Args:
             client_or_sdk: LumAppsClient, BaseClient instance, or wrapper
         """
-        if isinstance(client_or_sdk, BaseClient):
-            self._sdk: BaseClient = client_or_sdk
-        elif hasattr(client_or_sdk, "get_sdk"):
-            sdk_obj = getattr(client_or_sdk, "get_sdk")()
+        super().__init__()
+        if isinstance(client_or_sdk, BaseClient):  # type: ignore[reportUnknownMemberType]
+            self._sdk: BaseClient = client_or_sdk  # type: ignore[reportUnknownMemberType]
+        elif hasattr(client_or_sdk, "get_sdk"):  # type: ignore[reportUnknownArgumentType]
+            sdk_obj = getattr(client_or_sdk, "get_sdk")()  # type: ignore[reportUnknownArgumentType]
             self._sdk = cast(BaseClient, sdk_obj)
         else:
             self._sdk = cast(BaseClient, client_or_sdk)
@@ -58,8 +58,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("user/list")
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("user/list")  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute list_users"
@@ -79,8 +79,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("user/get", email=email)
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("user/get", email=email)  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute get_user"
@@ -100,8 +100,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("user/get", uid=user_id)
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("user/get", uid=user_id)  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute get_user_by_id"
@@ -120,8 +120,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("community/list")
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("community/list")  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute list_communities"
@@ -141,8 +141,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("community/get", uid=community_id)
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("community/get", uid=community_id)  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute get_community"
@@ -161,8 +161,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("content/list")
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("content/list")  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute list_content"
@@ -182,8 +182,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("content/get", uid=content_id)
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("content/get", uid=content_id)  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute get_content"
@@ -202,8 +202,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("feed/list")
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("feed/list")  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute list_feeds"
@@ -223,8 +223,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("feed/get", uid=feed_id)
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("feed/get", uid=feed_id)  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute get_feed"
@@ -258,8 +258,8 @@ class LumAppsDataSource:
                 body["contentTypes"] = content_types
             if limit is not None:
                 body["limit"] = limit
-            result = self._sdk.get_call("search", body=body)
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("search", body=body)  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute search"
@@ -278,8 +278,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("directory/list")
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("directory/list")  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute list_directories"
@@ -299,8 +299,8 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("directory/get", uid=directory_id)
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("directory/get", uid=directory_id)  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute get_directory"
@@ -319,10 +319,9 @@ class LumAppsDataSource:
             LumAppsResponse with operation result
         """
         try:
-            result = self._sdk.get_call("space/list")
-            return LumAppsResponse(success=True, data=result)
+            result: Any = self._sdk.get_call("space/list")  # type: ignore[reportUnknownMemberType]
+            return LumAppsResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return LumAppsResponse(
                 success=False, error=str(e), message="Failed to execute list_spaces"
             )
-

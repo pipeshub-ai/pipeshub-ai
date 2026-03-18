@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
 """Datadog client implementation using the official datadog-api-client SDK.
 
 This module provides a client for interacting with the Datadog API using
@@ -18,8 +17,8 @@ import logging
 from typing import Any, cast
 
 from datadog_api_client import (  # type: ignore[reportMissingImports]
-    ApiClient,
-    Configuration,
+    ApiClient,  # type: ignore[reportUnknownVariableType]
+    Configuration,  # type: ignore[reportUnknownVariableType]
 )
 from pydantic import BaseModel, Field  # type: ignore
 from typing_extensions import override
@@ -73,16 +72,17 @@ class DatadogClientViaApiKey:
         app_key: str,
         site: str = "datadoghq.com",
     ) -> None:
+        super().__init__()
         self.api_key = api_key
         self.app_key = app_key
         self.site = site
 
-        self._configuration = Configuration()
+        self._configuration: Any = Configuration()  # type: ignore[reportUnknownVariableType]
         self._configuration.api_key["apiKeyAuth"] = api_key  # type: ignore[reportUnknownMemberType]
         self._configuration.api_key["appKeyAuth"] = app_key  # type: ignore[reportUnknownMemberType]
         self._configuration.server_variables["site"] = site  # type: ignore[reportUnknownMemberType]
 
-    def get_sdk(self) -> Configuration:
+    def get_sdk(self) -> Any:  # Configuration
         """Return the SDK ``Configuration`` object.
 
         Callers should use it with ``ApiClient(configuration)`` as a
@@ -92,15 +92,15 @@ class DatadogClientViaApiKey:
                 api = DashboardsApi(api_client)
                 dashboards = api.list_dashboards()
         """
-        return self._configuration
+        return self._configuration  # type: ignore[reportUnknownVariableType]
 
-    def get_api_client(self) -> ApiClient:
+    def get_api_client(self) -> Any:  # ApiClient
         """Return a new ``ApiClient`` instance.
 
         The caller is responsible for closing it (or using it as a
         context manager).
         """
-        return ApiClient(self._configuration)
+        return ApiClient(self._configuration)  # type: ignore[reportUnknownVariableType]
 
 
 # ---------------------------------------------------------------------------
@@ -190,9 +190,9 @@ class DatadogClient(IClient):
         """Return the Datadog SDK client wrapper."""
         return self.client
 
-    def get_sdk(self) -> Configuration:
+    def get_sdk(self) -> Any:  # Configuration
         """Convenience: return the SDK Configuration."""
-        return self.client.get_sdk()
+        return self.client.get_sdk()  # type: ignore[reportUnknownVariableType,reportUnknownMemberType]
 
     @classmethod
     def build_with_config(

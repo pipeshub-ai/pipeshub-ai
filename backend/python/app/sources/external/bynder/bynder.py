@@ -1,5 +1,4 @@
 # ruff: noqa
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
 """
 Bynder SDK DataSource - Auto-generated SDK wrapper
 
@@ -10,9 +9,9 @@ All methods have explicit parameter signatures.
 
 from __future__ import annotations
 
-from typing import Union, cast
+from typing import Any, Union, cast
 
-from bynder_sdk import BynderClient as BynderSDKClient
+from bynder_sdk import BynderClient as BynderSDKClient  # type: ignore[reportMissingImports]
 
 from app.sources.client.bynder.bynder import BynderClient, BynderResponse
 
@@ -32,22 +31,23 @@ class BynderDataSource:
     All methods return BynderResponse objects.
     """
 
-    def __init__(self, client_or_sdk: Union[BynderClient, BynderSDKClient, object]) -> None:
+    def __init__(self, client_or_sdk: Union[BynderClient, BynderSDKClient, object]) -> None:  # type: ignore[reportUnknownParameterType]
         """Initialize with BynderClient, raw SDK, or any wrapper with ``get_sdk()``.
 
         Args:
             client_or_sdk: BynderClient, BynderSDKClient instance, or wrapper
         """
-        if isinstance(client_or_sdk, BynderSDKClient):
-            self._sdk: BynderSDKClient = client_or_sdk
-        elif hasattr(client_or_sdk, "get_sdk"):
-            sdk_obj = getattr(client_or_sdk, "get_sdk")()
+        super().__init__()
+        if isinstance(client_or_sdk, BynderSDKClient):  # type: ignore[reportUnknownMemberType]
+            self._sdk: BynderSDKClient = client_or_sdk  # type: ignore[reportUnknownMemberType]
+        elif hasattr(client_or_sdk, "get_sdk"):  # type: ignore[reportUnknownArgumentType]
+            sdk_obj = getattr(client_or_sdk, "get_sdk")()  # type: ignore[reportUnknownArgumentType]
             self._sdk = cast(BynderSDKClient, sdk_obj)
         else:
             self._sdk = cast(BynderSDKClient, client_or_sdk)
 
-        self._asset_bank = self._sdk.asset_bank_client
-        self._collection_client = self._sdk.collection_client
+        self._asset_bank: Any = self._sdk.asset_bank_client  # type: ignore[reportUnknownMemberType]
+        self._collection_client: Any = self._sdk.collection_client  # type: ignore[reportUnknownMemberType]
 
     # -----------------------------------------------------------------------
     # Media
@@ -83,7 +83,7 @@ class BynderDataSource:
             if type is not None:
                 query['type'] = type
             result = self._asset_bank.media_list(query)
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_media_list"
@@ -104,7 +104,7 @@ class BynderDataSource:
         """
         try:
             result = self._asset_bank.media_info(media_id)
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_media"
@@ -125,7 +125,7 @@ class BynderDataSource:
         """
         try:
             result = self._asset_bank.media_download_url(media_id)
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_media_download_url"
@@ -158,7 +158,7 @@ class BynderDataSource:
             if page is not None:
                 query['page'] = page
             result = self._collection_client.collections(query)
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_collections"
@@ -179,7 +179,7 @@ class BynderDataSource:
         """
         try:
             result = self._collection_client.collection_info(collection_id)
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_collection"
@@ -199,7 +199,7 @@ class BynderDataSource:
         """
         try:
             result = self._asset_bank.tags()
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_tags"
@@ -219,7 +219,7 @@ class BynderDataSource:
         """
         try:
             result = self._asset_bank.meta_properties()
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_metaproperties"
@@ -240,7 +240,7 @@ class BynderDataSource:
         """
         try:
             result = self._asset_bank.meta_property_info(metaproperty_id)
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_metaproperty"
@@ -260,7 +260,7 @@ class BynderDataSource:
         """
         try:
             result = self._asset_bank.brands()
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_brands"
@@ -280,7 +280,7 @@ class BynderDataSource:
         """
         try:
             result = self._asset_bank.users()
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_account_users"
@@ -300,7 +300,7 @@ class BynderDataSource:
         """
         try:
             result = self._asset_bank.smartfilters()
-            return BynderResponse(success=True, data=result)
+            return BynderResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BynderResponse(
                 success=False, error=str(e), message="Failed to execute get_smartfilters"

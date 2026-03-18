@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
 """Miro client implementation.
 
 This module provides clients for interacting with the Miro API using the
@@ -94,14 +93,15 @@ class MiroClientViaOAuth:
         client_id: str | None = None,
         client_secret: str | None = None,
     ) -> None:
+        super().__init__()
         self.access_token = access_token
         self.client_id = client_id
         self.client_secret = client_secret
-        self._sdk: MiroApi = MiroApi(access_token)  # type: ignore[reportInvalidTypeForm]
+        self._sdk: Any = MiroApi(access_token)  # type: ignore[reportUnknownVariableType]
 
-    def get_sdk(self) -> MiroApi:  # type: ignore[reportInvalidTypeForm]
+    def get_sdk(self) -> Any:  # MiroApi
         """Return the underlying ``MiroApi`` instance."""
-        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        return self._sdk
 
 
 class MiroClientViaToken:
@@ -112,12 +112,13 @@ class MiroClientViaToken:
     """
 
     def __init__(self, token: str) -> None:
+        super().__init__()
         self.token = token
-        self._sdk: MiroApi = MiroApi(token)  # type: ignore[reportInvalidTypeForm]
+        self._sdk: Any = MiroApi(token)  # type: ignore[reportUnknownVariableType]
 
-    def get_sdk(self) -> MiroApi:  # type: ignore[reportInvalidTypeForm]
+    def get_sdk(self) -> Any:  # MiroApi
         """Return the underlying ``MiroApi`` instance."""
-        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        return self._sdk
 
 
 # ---------------------------------------------------------------------------
@@ -273,9 +274,9 @@ class MiroClient(IClient):
         """Return the Miro SDK wrapper."""
         return self.client
 
-    def get_sdk(self) -> MiroApi:  # type: ignore[reportInvalidTypeForm]
+    def get_sdk(self) -> Any:  # MiroApi
         """Return the underlying ``MiroApi`` SDK instance."""
-        return self.client.get_sdk()  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        return self.client.get_sdk()
 
     @classmethod
     def build_with_config(

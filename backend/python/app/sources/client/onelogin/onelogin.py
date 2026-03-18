@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportAttributeAccessIssue=false, reportOptionalMemberAccess=false
 """OneLogin client implementation using the official ``onelogin`` SDK.
 
 This module provides a client for interacting with the OneLogin API using
@@ -12,7 +11,7 @@ import logging
 from enum import Enum
 from typing import Any, cast
 
-import onelogin
+import onelogin  # type: ignore[reportMissingTypeStubs]
 from pydantic import BaseModel, Field  # type: ignore
 from typing_extensions import override
 
@@ -78,32 +77,34 @@ class OneLoginClientViaClientCredentials:
         client_id: str,
         client_secret: str,
     ) -> None:
+        super().__init__()
         self.region = region
         self.client_id = client_id
         self.client_secret = client_secret
 
-        self._sdk: onelogin.ApiClient | None = None
-        self._configuration: onelogin.Configuration | None = None
+        self._sdk: Any = None  # onelogin.ApiClient
+        self._configuration: Any = None  # onelogin.Configuration
 
-    def create_client(self) -> onelogin.ApiClient:
+    def create_client(self) -> Any:  # onelogin.ApiClient
         host = f"https://api.{self.region}.onelogin.com"
-        self._configuration = onelogin.Configuration(
+        self._configuration = onelogin.Configuration(  # type: ignore[reportAttributeAccessIssue]
             host=host,
             username=self.client_id,
             password=self.client_secret,
         )
-        self._sdk = onelogin.ApiClient(self._configuration)
+        self._sdk = onelogin.ApiClient(self._configuration)  # type: ignore[reportAttributeAccessIssue]
 
         # Auto-fetch token via client_credentials grant
-        token_api = onelogin.OAuth2Api(self._sdk)
-        response = token_api.generate_token(
-            onelogin.GenerateTokenRequest(grant_type="client_credentials")  # type: ignore[arg-type]
+        token_api = onelogin.OAuth2Api(self._sdk)  # type: ignore[reportAttributeAccessIssue]
+        response = token_api.generate_token(  # type: ignore[reportUnknownMemberType]
+            onelogin.GenerateTokenRequest(grant_type="client_credentials")  # type: ignore[reportAttributeAccessIssue,arg-type]
         )
-        self._configuration.access_token = response.access_token
+        if self._configuration is not None:  # type: ignore[reportUnknownMemberType]
+            self._configuration.access_token = response.access_token  # type: ignore[reportUnknownMemberType]
 
-        return self._sdk
+        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-    def get_sdk(self) -> onelogin.ApiClient:
+    def get_sdk(self) -> Any:  # onelogin.ApiClient
         if self._sdk is None:
             return self.create_client()
         return self._sdk
@@ -198,7 +199,7 @@ class OneLoginClient(IClient):
     def get_client(self) -> OneLoginClientViaClientCredentials:
         return self.client
 
-    def get_sdk(self) -> onelogin.ApiClient:
+    def get_sdk(self) -> Any:  # onelogin.ApiClient
         return self.client.get_sdk()
 
     def get_base_url(self) -> str:
@@ -210,7 +211,7 @@ class OneLoginClient(IClient):
         config: OneLoginClientCredentialsConfig,
     ) -> "OneLoginClient":
         client = config.create_client()
-        _ = client.get_sdk()
+        client.get_sdk()
         return cls(client)
 
     @classmethod

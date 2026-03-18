@@ -1,5 +1,4 @@
 # ruff: noqa
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
 """
 Benchling SDK DataSource - Auto-generated SDK wrapper
 
@@ -10,9 +9,9 @@ All methods have explicit parameter signatures.
 
 from __future__ import annotations
 
-from typing import Union, cast
+from typing import Any, Union, cast
 
-from benchling_sdk.benchling import Benchling
+from benchling_sdk.benchling import Benchling  # type: ignore[reportMissingImports]
 
 from app.sources.client.benchling.benchling import BenchlingClient, BenchlingResponse
 
@@ -34,16 +33,17 @@ class BenchlingDataSource:
     All methods return BenchlingResponse objects.
     """
 
-    def __init__(self, client_or_sdk: Union[BenchlingClient, Benchling, object]) -> None:
+    def __init__(self, client_or_sdk: Union[BenchlingClient, Benchling, object]) -> None:  # type: ignore[reportUnknownParameterType]
         """Initialize with BenchlingClient, raw SDK, or any wrapper with ``get_sdk()``.
 
         Args:
             client_or_sdk: BenchlingClient, Benchling SDK instance, or wrapper
         """
-        if isinstance(client_or_sdk, Benchling):
-            self._sdk: Benchling = client_or_sdk
-        elif hasattr(client_or_sdk, "get_sdk"):
-            sdk_obj = getattr(client_or_sdk, "get_sdk")()
+        super().__init__()
+        if isinstance(client_or_sdk, Benchling):  # type: ignore[reportUnknownMemberType]
+            self._sdk: Benchling = client_or_sdk  # type: ignore[reportUnknownMemberType]
+        elif hasattr(client_or_sdk, "get_sdk"):  # type: ignore[reportUnknownArgumentType]
+            sdk_obj = getattr(client_or_sdk, "get_sdk")()  # type: ignore[reportUnknownArgumentType]
             self._sdk = cast(Benchling, sdk_obj)
         else:
             self._sdk = cast(Benchling, client_or_sdk)
@@ -60,8 +60,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = list(self._sdk.entries.list())
-            return BenchlingResponse(success=True, data=result)
+            result: Any = list(self._sdk.entries.list())  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute list_entries"
@@ -81,8 +81,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = self._sdk.entries.get_by_id(entry_id)
-            return BenchlingResponse(success=True, data=result)
+            result: Any = self._sdk.entries.get_by_id(entry_id)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute get_entry"
@@ -101,8 +101,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = list(self._sdk.folders.list())
-            return BenchlingResponse(success=True, data=result)
+            result: Any = list(self._sdk.folders.list())  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute list_folders"
@@ -122,8 +122,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = self._sdk.folders.get_by_id(folder_id)
-            return BenchlingResponse(success=True, data=result)
+            result: Any = self._sdk.folders.get_by_id(folder_id)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute get_folder"
@@ -142,8 +142,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = list(self._sdk.schemas.list_entity_schemas())
-            return BenchlingResponse(success=True, data=result)
+            result: Any = list(self._sdk.schemas.list_entity_schemas())  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute list_entity_schemas"
@@ -163,8 +163,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = self._sdk.schemas.get_entity_schema_by_id(schema_id)
-            return BenchlingResponse(success=True, data=result)
+            result: Any = self._sdk.schemas.get_entity_schema_by_id(schema_id)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute get_entity_schema"
@@ -183,8 +183,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = list(self._sdk.custom_entities.list())
-            return BenchlingResponse(success=True, data=result)
+            result: Any = list(self._sdk.custom_entities.list())  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute list_custom_entities"
@@ -204,8 +204,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = self._sdk.custom_entities.get_by_id(entity_id)
-            return BenchlingResponse(success=True, data=result)
+            result: Any = self._sdk.custom_entities.get_by_id(entity_id)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute get_custom_entity"
@@ -224,8 +224,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = list(self._sdk.dna_sequences.list())
-            return BenchlingResponse(success=True, data=result)
+            result: Any = list(self._sdk.dna_sequences.list())  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute list_dna_sequences"
@@ -245,8 +245,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = self._sdk.dna_sequences.get_by_id(sequence_id)
-            return BenchlingResponse(success=True, data=result)
+            result: Any = self._sdk.dna_sequences.get_by_id(sequence_id)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute get_dna_sequence"
@@ -265,8 +265,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = list(self._sdk.aa_sequences.list())
-            return BenchlingResponse(success=True, data=result)
+            result: Any = list(self._sdk.aa_sequences.list())  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute list_aa_sequences"
@@ -286,8 +286,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = self._sdk.aa_sequences.get_by_id(sequence_id)
-            return BenchlingResponse(success=True, data=result)
+            result: Any = self._sdk.aa_sequences.get_by_id(sequence_id)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute get_aa_sequence"
@@ -306,8 +306,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = list(self._sdk.oligos.list())
-            return BenchlingResponse(success=True, data=result)
+            result: Any = list(self._sdk.oligos.list())  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute list_oligos"
@@ -327,8 +327,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = self._sdk.oligos.get_by_id(oligo_id)
-            return BenchlingResponse(success=True, data=result)
+            result: Any = self._sdk.oligos.get_by_id(oligo_id)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute get_oligo"
@@ -347,8 +347,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = list(self._sdk.users.list())
-            return BenchlingResponse(success=True, data=result)
+            result: Any = list(self._sdk.users.list())  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute list_users"
@@ -368,8 +368,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = self._sdk.users.get_by_id(user_id)
-            return BenchlingResponse(success=True, data=result)
+            result: Any = self._sdk.users.get_by_id(user_id)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute get_user"
@@ -388,8 +388,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = list(self._sdk.projects.list())
-            return BenchlingResponse(success=True, data=result)
+            result: Any = list(self._sdk.projects.list())  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute list_projects"
@@ -409,8 +409,8 @@ class BenchlingDataSource:
             BenchlingResponse with operation result
         """
         try:
-            result = self._sdk.projects.get_by_id(project_id)
-            return BenchlingResponse(success=True, data=result)
+            result: Any = self._sdk.projects.get_by_id(project_id)  # type: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            return BenchlingResponse(success=True, data=result)  # type: ignore[reportUnknownArgumentType]
         except Exception as e:
             return BenchlingResponse(
                 success=False, error=str(e), message="Failed to execute get_project"
