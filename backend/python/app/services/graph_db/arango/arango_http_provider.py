@@ -12991,6 +12991,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0
 
+                // Compute sharingStatus for KB recordGroups only
+                LET sharingStatus = rg.connectorName == "KB" ? (
+                    LET user_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == rg._id
+                            FILTER perm.type == "USER"
+                            RETURN 1
+                    )
+                    LET team_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == rg._id
+                            FILTER perm.type == "TEAM"
+                            RETURN 1
+                    )
+                    LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
+                    RETURN (has_multiple_access ? "shared" : "private")
+                )[0] : null
+
                 RETURN {{
                     id: rg._key,
                     name: rg.groupName,
@@ -13010,7 +13028,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: null,
                     webUrl: rg.webUrl,
                     hasChildren: has_children,
-                    previewRenderable: true
+                    previewRenderable: true,
+                    sharingStatus: sharingStatus
                 }}
         )
 
@@ -13192,8 +13211,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 LET app_doc = DOCUMENT(edge._to)
                                 FILTER app_doc != null
                                 FILTER PARSE_IDENTIFIER(edge._to).collection == "apps"
-                                // Exclude KB apps from breadcrumbs
-                                FILTER app_doc.type != "KB"
                                 RETURN PARSE_IDENTIFIER(edge._to).key
                         )
                     )[0]
@@ -14435,6 +14452,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0)
 
+                // Compute sharingStatus for KB recordGroups only
+                LET sharingStatus = node.connectorName == "KB" ? (
+                    LET user_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "USER"
+                            RETURN 1
+                    )
+                    LET team_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "TEAM"
+                            RETURN 1
+                    )
+                    LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
+                    RETURN (has_multiple_access ? "shared" : "private")
+                )[0] : null
+
                 RETURN MERGE(node, {{
                     id: node._key,
                     name: node.groupName,
@@ -14452,7 +14487,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: null,
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    sharingStatus: sharingStatus
                 }})
         )
         """
@@ -14580,6 +14616,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0)
 
+                // Compute sharingStatus for KB recordGroups only
+                LET sharingStatus = node.connectorName == "KB" ? (
+                    LET user_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "USER"
+                            RETURN 1
+                    )
+                    LET team_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "TEAM"
+                            RETURN 1
+                    )
+                    LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
+                    RETURN (has_multiple_access ? "shared" : "private")
+                )[0] : null
+
                 RETURN {{
                     id: node._key,
                     name: node.groupName,
@@ -14599,7 +14653,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: null,
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    sharingStatus: sharingStatus
                 }}
         )
         RETURN child_rgs
@@ -14805,6 +14860,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0)
 
+                // Compute sharingStatus for KB recordGroups only
+                LET sharingStatus = node.connectorName == "KB" ? (
+                    LET user_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "USER"
+                            RETURN 1
+                    )
+                    LET team_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "TEAM"
+                            RETURN 1
+                    )
+                    LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
+                    RETURN (has_multiple_access ? "shared" : "private")
+                )[0] : null
+
                 RETURN {{
                     id: node._key,
                     name: node.groupName,
@@ -14824,7 +14897,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: null,
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    sharingStatus: sharingStatus
                 }}
         )
 
