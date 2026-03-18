@@ -1014,6 +1014,7 @@ class WebConnector(BaseConnector):
             if self.use_headless_browser and self.crawl4ai_fetcher:
                 result = await self.crawl4ai_fetcher.fetch(
                     url=url,
+                    max_size_mb=self.max_size_mb,
                 )
             else:
                 result = await fetch_url_with_fallback(
@@ -1270,6 +1271,7 @@ class WebConnector(BaseConnector):
                 if self.use_headless_browser and self.crawl4ai_fetcher:
                     result = await self.crawl4ai_fetcher.fetch(
                         url=file_record.weburl,
+                        max_size_mb=self.max_size_mb,
                     )
                 else:
                     result = await fetch_url_with_fallback(

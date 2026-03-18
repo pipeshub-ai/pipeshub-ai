@@ -828,6 +828,14 @@ class Crawl4AIFetcher:
         "  }"
         "})()"
     )
+    
+
+    def _check_content_size(self, content_bytes: bytes, max_size_mb: Optional[int]) -> bool:
+        if max_size_mb is not None:
+            max_size_bytes = max_size_mb * 1024 * 1024
+            if len(content_bytes) > max_size_bytes:
+                return False
+        return True
 
     async def fetch(
         self,
@@ -852,7 +860,8 @@ class Crawl4AIFetcher:
         js_code: str | list[str] | None = None,
         # --- proxy (per-request override) ---
         proxy_config=None,
-        # --- fallback ---
+        # --- size guard ---
+        max_size_mb: Optional[int] = None,
     ) -> Optional[FetchResponse]:
         """
         Fetch a URL with full CSR/SPA support, anti-bot detection, and retries.
@@ -922,6 +931,9 @@ class Crawl4AIFetcher:
             result = await self._do_fetch(url, crawler=self._crawler, **tier1_kwargs)
             if self._is_usable(result):
                 self._log_result(url, result, "tier-1", failed_tiers)
+                if not self._check_content_size(result.content_bytes, max_size_mb):
+                    self.logger.info(f"⚠️ Skipping {url}: content size exceeds limit of {max_size_mb}MB")
+                    return None
                 return result
             failed_tiers.append("tier-1")
             self.logger.warning(f"⚠️ [crawl4ai] tier-1 failed for {url}, trying tier-2")
@@ -940,6 +952,9 @@ class Crawl4AIFetcher:
                 result = await self._do_fetch(url, crawler=undetected, **fetch_kwargs)
                 if self._is_usable(result):
                     self._log_result(url, result, "tier-2", failed_tiers)
+                    if not self._check_content_size(result.content_bytes, max_size_mb):
+                        self.logger.info(f"⚠️ Skipping {url}: content size exceeds limit of {max_size_mb}MB")
+                        return None
                     return result
                 failed_tiers.append("tier-2")
                 self.logger.warning(f"⚠️ [crawl4ai] tier-2 failed for {url}, trying tier-3")
@@ -959,6 +974,9 @@ class Crawl4AIFetcher:
                 result = await self._do_fetch(url, crawler=undetected_stealth, **fetch_kwargs)
                 if self._is_usable(result):
                     self._log_result(url, result, "tier-3", failed_tiers)
+                    if not self._check_content_size(result.content_bytes, max_size_mb):
+                        self.logger.info(f"⚠️ Skipping {url}: content size exceeds limit of {max_size_mb}MB")
+                        return None
                     return result
                 failed_tiers.append("tier-3")
             else:
