@@ -8,10 +8,9 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
 from typing import Any, Optional
 
-from typing_extensions import override
-
 from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore
+from typing_extensions import override
 
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig

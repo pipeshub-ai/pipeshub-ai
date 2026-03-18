@@ -1102,8 +1102,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
     )
     async def _call_llm(self, messages: list[Any]) -> AIMessage:
         """Wrapper for LLM calls with retry logic"""
-        result = await self.llm.ainvoke(messages)
-        return result  # type: ignore[return-value]
+        return await self.llm.ainvoke(messages)  # type: ignore[return-value]
 
     async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> list[dict[str, Any]]:
         """Get all tables in a specific sheet with LLM-based header detection/generation
