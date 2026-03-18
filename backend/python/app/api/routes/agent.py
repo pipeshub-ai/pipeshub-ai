@@ -169,7 +169,7 @@ def _extract_tool_names_for_routing(query_info: dict[str, Any]) -> list[str]:
     """Extract flattened tool names from query payload (tools or toolsets)."""
     names: list[str] = []
 
-    def _normalize_tool_name(tool_obj: Any) -> str | None:
+    def _normalize_tool_name(tool_obj: str | dict[str, Any]) -> str | None:
         """Return canonical tool name in `app.tool` format when possible."""
         if isinstance(tool_obj, str):
             return tool_obj
@@ -362,7 +362,7 @@ async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, log
         raise
     except Exception as e:
         logger.error(f"Error fetching user document: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve user information")
+        raise HTTPException(status_code=500, detail="Failed to retrieve user information") from e
 
 
 async def _get_org_info(user_info: dict[str, Any], graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
@@ -385,7 +385,7 @@ async def _get_org_info(user_info: dict[str, Any], graph_provider: IGraphDBProvi
         raise
     except Exception as e:
         logger.error(f"Error fetching organization info: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve organization information")
+        raise HTTPException(status_code=500, detail="Failed to retrieve organization information") from e
 
 
 async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any]) -> dict[str, Any]:
@@ -581,7 +581,7 @@ async def _create_toolset_edges(
 
     # Prepare agent -> toolset edges
     agent_toolset_edges = []
-    for toolset_name, toolset_info in toolset_mapping.items():
+    for _, toolset_info in toolset_mapping.items():
         agent_toolset_edges.append({
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
             "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
@@ -724,7 +724,7 @@ async def _create_knowledge_edges(
 
     # Prepare agent -> knowledge edges
     agent_knowledge_edges = []
-    for connector_id, knowledge_info in knowledge_mapping.items():
+    for _, knowledge_info in knowledge_mapping.items():
         agent_knowledge_edges.append({
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
             "_to": f"{CollectionNames.AGENT_KNOWLEDGE.value}/{knowledge_info['key']}",
@@ -823,7 +823,7 @@ def _parse_request_body(body: bytes) -> dict[str, Any]:
     try:
         return json.loads(body.decode('utf-8'))
     except json.JSONDecodeError as e:
-        raise InvalidRequestError(f"Invalid JSON: {str(e)}")
+        raise InvalidRequestError(f"Invalid JSON: {str(e)}") from e
 
 
 # ============================================================================
@@ -941,7 +941,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error in askAI: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 async def stream_response(
@@ -950,7 +950,7 @@ async def stream_response(
     llm: BaseChatModel,
     logger: Logger,
     retrieval_service: RetrievalService,
-    graph_provider,
+    graph_provider: IGraphDBProvider,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: dict[str, Any] = None,
@@ -1047,7 +1047,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         raise
     except Exception as e:
         services["logger"].error(f"Error in askAIStream: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ============================================================================
@@ -1115,7 +1115,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error creating template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 @router.get("/template/list", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -1140,7 +1140,7 @@ async def get_agent_templates(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error getting templates: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -1168,7 +1168,7 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
         raise
     except Exception as e:
         services["logger"].error(f"Error getting template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/share-template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1200,7 +1200,7 @@ async def share_agent_template(request: Request, template_id: str) -> JSONRespon
         raise
     except Exception as e:
         services["logger"].error(f"Error sharing template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/template/{template_id}/clone", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1225,7 +1225,7 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
         raise
     except Exception as e:
         services["logger"].error(f"Error cloning template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.delete("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1249,7 +1249,7 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         raise
     except Exception as e:
         services["logger"].error(f"Error deleting template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.put("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1274,7 +1274,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
         raise
     except Exception as e:
         services["logger"].error(f"Error updating template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ============================================================================
@@ -1439,7 +1439,7 @@ async def create_agent(request: Request) -> JSONResponse:
 
                 # Create agent -> toolset edges
                 agent_toolset_edges = []
-                for toolset_name, toolset_info in toolset_mapping.items():
+                for _, toolset_info in toolset_mapping.items():
                     agent_toolset_edges.append({
                         "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
                         "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
@@ -1550,7 +1550,7 @@ async def create_agent(request: Request) -> JSONResponse:
 
                 # Create agent -> knowledge edges
                 agent_knowledge_edges = []
-                for connector_id, knowledge_info in knowledge_mapping.items():
+                for _connector_id, knowledge_info in knowledge_mapping.items():
                     agent_knowledge_edges.append({
                         "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
                         "_to": f"{CollectionNames.AGENT_KNOWLEDGE.value}/{knowledge_info['key']}",
@@ -1588,7 +1588,7 @@ async def create_agent(request: Request) -> JSONResponse:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to create agent: {str(e)}"
-            )
+            ) from e
 
         # Build response
         response_agent = {
@@ -1614,7 +1614,7 @@ async def create_agent(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error creating agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 @router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -1646,7 +1646,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error getting agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -1675,7 +1675,7 @@ async def get_agents(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error getting agents: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.put("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1891,7 +1891,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 raise HTTPException(
                     status_code=500,
                     detail=f"Failed to delete toolset nodes and edges: {str(e)}"
-                )
+                ) from e
 
             # Create new toolset nodes, tool nodes, and edges only if there are toolsets to create
             if toolsets_with_tools:
@@ -1913,7 +1913,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     raise HTTPException(
                         status_code=500,
                         detail=f"Failed to create toolset edges: {str(e)}"
-                    )
+                    ) from e
             else:
                 logger.info(f"All toolsets removed for agent {agent_id}")
 
@@ -2006,7 +2006,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 raise HTTPException(
                     status_code=500,
                     detail=f"Failed to delete knowledge nodes and edges: {str(e)}"
-                )
+                ) from e
 
             # Create new knowledge nodes and edges only if there are knowledge sources to create
             if knowledge_sources:
@@ -2023,7 +2023,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     raise HTTPException(
                         status_code=500,
                         detail=f"Failed to create knowledge edges: {str(e)}"
-                    )
+                    ) from e
             else:
                 logger.info(f"All knowledge sources removed for agent {agent_id}")
 
@@ -2035,7 +2035,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error updating agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 @router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -2120,7 +2120,7 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                 services["logger"].warning(f"⚠️ Failed to rollback transaction {txn_id}: {rb_err}")
         if services is not None:
             services["logger"].error(f"Error deleting agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ============================================================================
@@ -2160,7 +2160,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error sharing agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/{agent_id}/unshare", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -2196,7 +2196,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error unsharing agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/{agent_id}/permissions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -2225,7 +2225,7 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
         raise
     except Exception as e:
         services["logger"].error(f"Error getting permissions: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.put("/{agent_id}/permissions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -2258,7 +2258,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
         raise
     except Exception as e:
         services["logger"].error(f"Error updating permission: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ============================================================================
@@ -2403,7 +2403,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         raise
     except Exception as e:
         logger.error(f"Error in chat: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/{agent_id}/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
@@ -2700,4 +2700,4 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         raise
     except Exception as e:
         logger.error(f"Error in chat_stream: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e

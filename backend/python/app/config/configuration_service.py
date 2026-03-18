@@ -4,6 +4,8 @@ import hashlib
 import os
 import threading
 import time
+from logging import Logger
+from typing import Any
 
 import dotenv
 from cachetools import LRUCache
@@ -19,7 +21,7 @@ dotenv.load_dotenv()
 class ConfigurationService:
     """Service to manage configuration using etcd or Redis store with caching."""
 
-    def __init__(self, logger, key_value_store: KeyValueStore) -> None:
+    def __init__(self, logger: Logger, key_value_store: KeyValueStore) -> None:
         self.logger = logger
         self.logger.debug("🔧 Initializing ConfigurationService")
 
@@ -185,7 +187,7 @@ class ConfigurationService:
         # This key is stored as plain text, so we read it directly from Redis
         migration_flag_key = "/migrations/etcd_to_redis"
 
-        async def check_migration_flag_direct(redis_client, key_prefix: str) -> bool:
+        async def check_migration_flag_direct(redis_client: Any, key_prefix: str) -> bool:
             """Check migration flag directly from Redis without encryption.
 
             The migration flag is stored by Node.js as plain 'true' string,
@@ -398,7 +400,7 @@ class ConfigurationService:
         except Exception as e:
             self.logger.warning("Error closing ConfigurationService: %s", str(e))
 
-    def _etcd_watch_callback(self, event) -> None:
+    def _etcd_watch_callback(self, event: Any) -> None:
         """Handle etcd watch events to update cache.
 
         TODO: Remove this method when all deployments migrate to Redis KV store.

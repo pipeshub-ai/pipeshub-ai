@@ -1,6 +1,7 @@
 import asyncio
 import time
 import traceback
+from logging import Logger
 from typing import Any
 
 from langchain_core.documents import Document
@@ -47,7 +48,7 @@ MAX_USER_CACHE_SIZE = 1000  # Max number of users to keep in cache
 class RetrievalService:
     def __init__(
         self,
-        logger,
+        logger: Logger,
         config_service: ConfigurationService,
         collection_name: str,
         vector_db_service: IVectorDBService,
@@ -77,7 +78,7 @@ class RetrievalService:
             self.sparse_embeddings = None
             raise Exception(
                 "Failed to initialize sparse embeddings: " + str(e),
-            )
+            ) from e
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
@@ -85,7 +86,7 @@ class RetrievalService:
         self.embedding_size = None
         self.embedding_model_instance = None
 
-    async def get_llm_instance(self, use_cache: bool = True) -> BaseChatModel | None:
+    async def get_llm_instance(self, use_cache: bool = FALSE) -> BaseChatModel | None:
         try:
             self.logger.info("Getting LLM")
             ai_models = await self.config_service.get_config(
@@ -121,7 +122,7 @@ class RetrievalService:
             self.logger.error(f"Error getting LLM: {str(e)}")
             return None
 
-    async def get_embedding_model_instance(self, use_cache: bool = True) -> Embeddings | None:
+    async def get_embedding_model_instance(self, use_cache: bool = False) -> Embeddings | None:
         try:
             embedding_model = await self.get_current_embedding_model_name(use_cache)
             if self.embedding_model == embedding_model:
@@ -170,7 +171,7 @@ class RetrievalService:
             self.logger.error(f"Error getting embedding model: {str(e)}")
             return None
 
-    async def get_current_embedding_model_name(self, use_cache: bool = True) -> str | None:
+    async def get_current_embedding_model_name(self, use_cache: bool = False) -> str | None:
         """Get the current embedding model name from configuration or instance."""
         try:
             # First try to get from AI_MODELS config
@@ -555,7 +556,7 @@ class RetrievalService:
                 return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
-    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, graph_provider: IGraphDBProvider) -> list[dict[str, Any]]:
+    async def _get_accessible_records_task(self, user_id: str, org_id: str, filter_groups: dict[str, Any], graph_provider: IGraphDBProvider) -> list[dict[str, Any]]:
         """Separate task for getting accessible records (legacy method - returns full records)"""
         filter_groups = filter_groups or {}
         filters = {}
