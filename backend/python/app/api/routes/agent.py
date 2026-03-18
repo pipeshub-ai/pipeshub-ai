@@ -251,8 +251,7 @@ async def _select_agent_graph_for_query(
 
     if chat_mode == "auto":
         # Auto-detect: use LLM to pick the right graph
-        selected = await _auto_select_graph(query_info, logger, llm)
-        return selected
+        return await _auto_select_graph(query_info, logger, llm)
 
     # Default: "auto" → LLM router decides
     logger.info("Agent graph route: legacy | chatMode=%s", chat_mode)
