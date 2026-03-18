@@ -90,7 +90,6 @@ class RetrievalService:
             self.logger.info("Getting LLM")
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value,
-                use_cache=use_cache
             )
             llm_configs = ai_models["llm"]
 
@@ -177,7 +176,6 @@ class RetrievalService:
             # First try to get from AI_MODELS config
             ai_models = await self.config_service.get_config(
                 config_node_constants.AI_MODELS.value,
-                use_cache=use_cache
             )
             if ai_models and "embedding" in ai_models and ai_models["embedding"]:
                 for config in ai_models["embedding"]:

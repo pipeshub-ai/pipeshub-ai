@@ -57,7 +57,7 @@ class ConfigurationService:
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None, use_cache: bool = True) -> Union[str, int, float, bool, dict, list, None]:
+    async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None, use_cache: bool = False) -> Union[str, int, float, bool, dict, list, None]:
         """Get configuration value with LRU cache and environment variable fallback"""
         try:
             # Check cache first

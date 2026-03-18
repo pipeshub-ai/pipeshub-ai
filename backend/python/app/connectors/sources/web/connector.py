@@ -330,7 +330,7 @@ class WebConnector(BaseConnector):
     async def init(self) -> bool:
         """Initialize the web connector with configuration."""
         try:
-            config_values = await self._fetch_and_parse_config(use_cache=True)
+            config_values = await self._fetch_and_parse_config()
 
             self.url = config_values["url"]
             self.crawl_type = config_values["crawl_type"]
@@ -384,7 +384,7 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to initialize web connector: {e}", exc_info=True)
             return False
 
-    async def _fetch_and_parse_config(self, use_cache: bool = True) -> Dict:
+    async def _fetch_and_parse_config(self) -> Dict:
         """
         Fetch and parse connector configuration.
 
@@ -406,7 +406,6 @@ class WebConnector(BaseConnector):
         try:
             config = await self.config_service.get_config(
                 f"/services/connectors/{self.connector_id}/config",
-                use_cache=use_cache
             )
 
             if not config or not isinstance(config, dict):
@@ -599,7 +598,7 @@ class WebConnector(BaseConnector):
         """Reload the connector configuration."""
         try:
             self.logger.debug("running reload config")
-            config_values = await self._fetch_and_parse_config(use_cache=False)
+            config_values = await self._fetch_and_parse_config()
 
             config_values["url"]
             new_crawl_type = config_values["crawl_type"]
