@@ -4,7 +4,7 @@ import base64
 import datetime
 import difflib
 from collections.abc import Sequence
-from typing import List, Optional
+
 import httpx
 from github import (
     Github,  # type: ignore
@@ -39,7 +39,7 @@ from github.Workflow import Workflow  # type: ignore
 from github.WorkflowRun import WorkflowRun  # type: ignore
 
 from app.sources.client.github.github import GitHubResponse
-from app.sources.client.github.github import GitHubClient
+
 
 class GitHubDataSource:
     """Strict, typed wrapper over PyGithub for common GitHub business operations.
@@ -122,10 +122,10 @@ class GitHubDataSource:
 
     def list_user_repos(
         self,
-        user: Optional[str]=None,
+        user: str | None=None,
         type: str = "owner",
-        per_page: Optional[int] = None,
-        page: Optional[int] = None,
+        per_page: int | None = None,
+        page: int | None = None,
     ) -> GitHubResponse[list[Repository]]:
         """List repositories for a given user. When both per_page and page are omitted, returns all repos. When either is passed, returns one page (default 10 per page, max 50). Pass the login from get_owner(owner='me') result; do not pass 'me' here."""
         try:
@@ -184,8 +184,8 @@ class GitHubDataSource:
         labels: Sequence[str] | None = None,
         assignee: str | None = None,
         since: str | None = None,
-        per_page: Optional[int] = None,
-        page: Optional[int] = None,
+        per_page: int | None = None,
+        page: int | None = None,
     ) -> GitHubResponse[list[Issue]]:
         """List issues with filters. When both per_page and page are None (e.g. from connector), returns all issues. Otherwise returns one page (default 10 per page, max 50)."""
         try:
@@ -368,8 +368,8 @@ class GitHubDataSource:
         state: str = "open",
         head: str | None = None,
         base: str | None = None,
-        per_page: Optional[int] = None,
-        page: Optional[int] = None,
+        per_page: int | None = None,
+        page: int | None = None,
     ) -> GitHubResponse[list[PullRequest]]:
         """List PRs. When both per_page and page are None (e.g. from connector), returns all PRs. Otherwise returns one page (default 10 per page, max 50)."""
         try:
@@ -578,7 +578,7 @@ class GitHubDataSource:
         status: str,
         max_diff_lines: int = 5000,
         context_lines: int = 3,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Generate a complete unified diff with safety limits.
 
@@ -712,7 +712,7 @@ class GitHubDataSource:
         repo: str,
         number: int,
         event: str,
-        body: Optional[str] = None,
+        body: str | None = None,
     ) -> GitHubResponse[PullRequestReview]:
         """Submit a PR review: APPROVE, REQUEST_CHANGES, or COMMENT. Optional body for the review summary."""
         try:
@@ -1262,7 +1262,7 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-    def list_pending_invitations(self, owner: str, repo: str) -> GitHubResponse[List[Invitation]]:
+    def list_pending_invitations(self, owner: str, repo: str) -> GitHubResponse[list[Invitation]]:
         """List pending repo invitations."""
         try:
             r = self._repo(owner, repo)
@@ -1283,7 +1283,7 @@ class GitHubDataSource:
 
 
     # DependabotAlert not available in older PyGithub versions
-    def list_dependabot_alerts(self, owner: str, repo: str) -> GitHubResponse[List[object]]:
+    def list_dependabot_alerts(self, owner: str, repo: str) -> GitHubResponse[list[object]]:
         """List Dependabot alerts for a repo."""
         try:
             r = self._repo(owner, repo)
@@ -1369,8 +1369,8 @@ class GitHubDataSource:
     def search_repositories(
         self,
         query: str,
-        per_page: Optional[int] = None,
-        page: Optional[int] = None,
+        per_page: int | None = None,
+        page: int | None = None,
     ) -> GitHubResponse[list[Repository]]:
         """Search repositories. Default 10 per page, max 50."""
         try:
@@ -1394,7 +1394,7 @@ class GitHubDataSource:
             return GitHubResponse(success=True, data=limit)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
-    
+
     # ----------------Other than SDK calls------------------ #
 
     async def get_img_bytes(self, image_url: str) -> GitHubResponse[bytes]:
@@ -1414,7 +1414,7 @@ class GitHubDataSource:
             return GitHubResponse(success=False, error=f"HTTP {e.response.status_code} fetching image from {image_url}")
         except Exception as e:
             return GitHubResponse(success=False, error=f"Error fetching image from {image_url}: {str(e)}")
-        
+
     async def get_attachment_files_content(self,weburl:str) -> GitHubResponse[bytes]:
         """Getting file content from weburl for attachments."""
         GITHUB_TOKEN = self.token
