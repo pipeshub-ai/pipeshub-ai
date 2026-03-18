@@ -652,9 +652,14 @@ class GraphDataStore(DataStoreProvider):
             read=read_collections,
             write=write_collections
         )
+        
+        
+        
+        
         self.logger.debug(f"✅ Transaction started with ID: {txn}")
 
         tx_store = GraphTransactionStore(self.graph_provider, txn)
+
 
         try:
             yield tx_store
