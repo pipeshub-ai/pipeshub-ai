@@ -7,7 +7,7 @@ import json
 import os
 import uuid
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -72,6 +72,16 @@ class ChatQuery(BaseModel):
     currentTime: Optional[str] = None
     conversationId: Optional[str] = None  
 
+class RouteDecision(BaseModel):
+    """
+    Routing decision with mandatory reasoning.
+
+    reasoning: one-sentence explanation written before committing to a route
+               (chain-of-thought before commitment reduces misroutes)
+    route: the tier — type-safe, cannot produce an invalid value
+    """
+    reasoning: str
+    route: Literal["quick", "react", "deep"]
 
 # ============================================================================
 # Custom Exceptions
@@ -277,147 +287,119 @@ async def _auto_select_graph(
     logger: Logger,
     llm: BaseChatModel,
 ):
-    from langchain_core.messages import HumanMessage
+    from langchain_core.messages import HumanMessage, SystemMessage
 
-    tool_names = _extract_tool_names_for_routing(query_info)
-    apps = sorted({
-        name.split(".", 1)[0]
-        for name in tool_names
-        if isinstance(name, str) and "." in name
-    })
     user_query = query_info.get("query", "").strip()
-    domains_str = ", ".join(apps) if apps else "none"
+    if not user_query:
+        return modern_agent_graph
 
-    # ── Compact context extraction ────────────────────────────────────────────
-    # We only need enough signal to resolve follow-ups and clarifications.
-    # Heavy truncation keeps this routing call fast.
     context_block = _build_routing_context(query_info)
+    structured_llm = llm.with_structured_output(RouteDecision)
 
-    prompt = (
-    "You are a query router. Analyze the user query and classify it into exactly one tier.\n\n"
+    system_prompt = (
+        "You are a routing agent. Classify the user request into exactly one "
+        "execution tier: quick, react, or deep.\n\n"
 
-    + context_block +
+        + context_block +
 
-    "## Tiers\n\n"
+        "## quick\n"
+        "Every action and every parameter can be fully determined right now from "
+        "the query and context, before anything runs. The request itself is the "
+        "final action — retrieving, displaying, or acting on something where the "
+        "goal is the retrieval or action itself, not further processing of what "
+        "comes back.\n\n"
 
-    "**quick**\n"
-    "The complete execution plan — every tool call and every parameter value — can be "
-    "fully determined from the query and current context alone, before any tool runs. "
-    "This includes zero tool calls (direct answer), one tool call, or multiple parallel "
-    "tool calls where all arguments are already known.\n\n"
+        "## react\n"
+        "A fixed, predictable sequence of dependent steps where the chain length "
+        "is deterministic before execution starts, but at least one step's "
+        "parameters only become known from a prior step's result. The intent "
+        "implies: get something first, then do something with it — where 'it' "
+        "is one specific thing.\n\n"
 
-    "**react**\n"
-    "There is a data dependency: at least one tool call requires a value that only "
-    "becomes available from a previous tool's result. The dependency chain is fixed and "
-    "linear — the number of steps and their sequence can be determined upfront, even "
-    "though the parameter values cannot.\n\n"
+        "## deep\n"
+        "Reserved for tasks react cannot handle. Only two cases qualify:\n"
+        "(a) The intent requires getting a collection and then doing something "
+        "to EVERY item in it — the number of items is unknown before the "
+        "collection is retrieved. Wanting to SEE a collection is not this.\n"
+        "(b) The intent requires gathering information from multiple fully "
+        "independent sources and combining it into one unified answer.\n\n"
 
-    "**deep**\n"
-    "Either: (a) a discovery call (list/search) must run first and its results determine "
-    "how many subsequent operations are needed — the number of tool calls is unknown until "
-    "runtime; or (b) the task requires querying multiple fully independent sources in "
-    "parallel and synthesizing their results into a single unified answer.\n\n"
+        "## Decision\n"
+        "Q1: Is the request fully self-contained — can it be completed in one "
+        "pass with no dependency on runtime results? → quick\n\n"
+        "Q2: Does the request imply a fixed sequence where one result unlocks "
+        "the next step, operating on one specific thing? → react\n\n"
+        "Q3: Does the request imply acting on every item in a collection whose "
+        "size is only known at runtime, or combining independent sources? → deep\n\n"
+        "Default → react\n\n"
 
-    "## How to decide\n\n"
-    "Work through these questions in order:\n\n"
-    "1. Can I write out every tool call with every parameter right now, without needing "
-    "any tool result first?\n"
-    "   → YES: quick\n\n"
-    "2. Does completing the task require first fetching a list or set of items, then "
-    "doing something with each item in that list?\n"
-    "   → YES: deep\n\n"
-    "3. Does completing the task require merging results from multiple independent "
-    "services or data sources that have no dependency on each other?\n"
-    "   → YES: deep\n\n"
-    "4. Does completing the task require chaining calls where each call's input comes "
-    "from the previous call's output?\n"
-    "   → YES: react\n\n"
-    "5. Default → react\n\n"
+        "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', 'proceed') "
+        "— infer the full intent from the prior conversation above, then apply "
+        "the decision above to that inferred intent.\n\n"
 
-    "For short or ambiguous follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', "
-    "'proceed'), first infer the intended action from the prior conversation context "
-    "above, then apply the questions above to that inferred intent.\n\n"
-
-    f"Tool domains available: {domains_str}\n"
-    f"Query: {user_query}\n\n"
-    "Reply with exactly one word: quick, react, or deep."
+        f"Query: {user_query}"
     )
+
+    route_map = {
+        "quick": agent_graph,
+        "react": modern_agent_graph,
+        "deep": deep_agent_graph,
+    }
 
     try:
         invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
-        response = await llm.ainvoke([HumanMessage(content=prompt)], config=invoke_config)
-        raw = response.content.strip().lower().strip(".,!\"' ")
 
-        route_map = {
-            "quick": agent_graph,
-            "react": modern_agent_graph,
-            "deep": deep_agent_graph,
-        }
-
-        for keyword, graph in route_map.items():
-            if keyword in raw:
-                logger.info(
-                    "Agent graph route: %s | LLM auto-select (domains=%s, query=%s)",
-                    keyword,
-                    domains_str,
-                    user_query[:80],
-                )
-                return graph
-
-        logger.warning(
-            "Agent graph route: react (default) | LLM returned unparseable: %s",
-            raw[:100],
+        decision: RouteDecision = await structured_llm.ainvoke(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Classify."),
+            ],
+            config=invoke_config,
         )
-        return modern_agent_graph
+
+        route = decision.route
+        logger.info(
+            "Agent graph route: %s | (query=%s, reasoning=%s)",
+            route,
+            user_query[:80],
+            decision.reasoning[:120],
+        )
+        return route_map[route]
 
     except Exception as e:
         logger.warning(
-            "Agent graph route: react (fallback) | LLM router failed: %s", e
+            "Agent graph route: react (fallback) | router failed: %s", e
         )
         return modern_agent_graph
 
 
 def _build_routing_context(query_info: Dict[str, Any]) -> str:
     """
-    Build a compact context block for the router prompt.
-
-    Design goals:
-    - Fast: minimal tokens, heavy truncation
-    - Signal-dense: captures topic, pending actions, and referenced entities
-    - Resolves: follow-ups, confirmations, clarifications
-
-    Returns an empty string if no prior conversation exists.
+    Compact prior conversation context for resolving follow-ups.
+    Last 3 turns only. First line of bot responses only.
     """
     previous = query_info.get("previous_conversations", [])
     if not previous:
         return ""
 
-    # Take only the last 3 turns (6 messages max) — enough for any follow-up
     recent = previous[-6:]
-
     turns = []
+
     for conv in recent:
         role = conv.get("role", "")
         content = str(conv.get("content", "")).strip()
 
         if role == "user_query":
-            # Full user queries are short — keep them complete (cap at 200)
             turns.append(f"User: {content[:200]}")
-
         elif role == "bot_response":
-            # Bot responses can be long — extract only the leading summary.
-            # The first 200 chars typically contain the topic + key entities
-            # (IDs, names, services) needed to resolve follow-ups.
-            summary = content[:200]
-            if len(content) > 200:
-                summary += "…"
-            turns.append(f"Assistant: {summary}")
+            first_line = content.split("\n")[0][:150]
+            turns.append(f"Assistant: {first_line}")
 
     if not turns:
         return ""
 
     return (
-        "## Prior Conversation (last few turns — use to resolve follow-ups)\n"
+        "Prior conversation:\n"
         + "\n".join(turns)
         + "\n\n"
     )

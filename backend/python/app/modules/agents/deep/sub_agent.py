@@ -254,6 +254,23 @@ async def _execute_single_sub_agent(
     # would summarize the raw blocks, losing detail needed for citations.
     is_retrieval_task = any(d in ("retrieval", "knowledge") for d in task_domains)
 
+    # Multi-step takes priority over complex: it executes sequential steps
+    # where each step's result feeds the next (e.g., find space → list pages
+    # → fetch content). Complex phased execution is for bulk fetch+summarize
+    # with no inter-step dependencies.
+    if task.get("multi_step") and task.get("sub_steps"):
+        log.info("Sub-agent %s: using multi-step execution (%d steps)", task_id, len(task["sub_steps"]))
+        try:
+            return await _execute_multi_step_sub_agent(
+                task, state, completed_tasks, config, writer, log,
+            )
+        except Exception as e:
+            log.warning(
+                "Multi-step execution failed for %s: %s — falling back to simple mode",
+                task_id, e,
+            )
+            # Fall through to simple execution
+
     if complexity == "complex" and not is_retrieval_task:
         log.info("Sub-agent %s: using complex phased execution", task_id)
         try:
@@ -271,19 +288,6 @@ async def _execute_single_sub_agent(
             "Sub-agent %s: forcing simple execution for retrieval task "
             "(respond node handles citation pipeline)", task_id,
         )
-
-    if task.get("multi_step") and task.get("sub_steps"):
-        log.info("Sub-agent %s: using multi-step execution (%d steps)", task_id, len(task["sub_steps"]))
-        try:
-            return await _execute_multi_step_sub_agent(
-                task, state, completed_tasks, config, writer, log,
-            )
-        except Exception as e:
-            log.warning(
-                "Multi-step execution failed for %s: %s — falling back to simple mode",
-                task_id, e,
-            )
-            # Fall through to simple execution
 
     return await _execute_simple_sub_agent(
         task, state, completed_tasks, config, writer, log,
@@ -1272,9 +1276,9 @@ async def _prewarm_clients(
 def _build_sub_agent_instructions(state: DeepAgentState) -> str:
     """Build agent instructions prefix for sub-agent prompts.
 
-    Includes the agent's configured instructions so sub-agents
-    follow the same behavioral constraints and workflow rules
-    as the overall agent.
+    Includes the agent's configured instructions and current user context
+    so sub-agents follow the same behavioral constraints and know who
+    the current user is (critical for "my" / "me" queries).
     """
     parts = []
 
@@ -1282,6 +1286,37 @@ def _build_sub_agent_instructions(state: DeepAgentState) -> str:
     instructions = state.get("instructions", "")
     if instructions and instructions.strip():
         parts.append(f"## Agent Instructions\n{instructions.strip()}")
+
+    # Current user context — sub-agents need this to resolve "my space",
+    # "my tickets", "assigned to me", etc. Without it, the LLM guesses
+    # based on token ownership or the first result, which is often wrong.
+    user_info = state.get("user_info", {})
+    user_email = (
+        state.get("user_email")
+        or user_info.get("userEmail")
+        or user_info.get("email")
+        or ""
+    )
+    user_name = (
+        user_info.get("fullName")
+        or user_info.get("name")
+        or user_info.get("displayName")
+        or (
+            f"{user_info.get('firstName', '')} {user_info.get('lastName', '')}".strip()
+            if user_info.get("firstName") or user_info.get("lastName")
+            else ""
+        )
+    )
+    if user_name or user_email:
+        user_parts = ["## Current User"]
+        if user_name:
+            user_parts.append(f"- Name: {user_name}")
+        if user_email:
+            user_parts.append(f"- Email: {user_email}")
+        user_parts.append(
+            'When the query says "my", "me", or "I", it refers to this user.'
+        )
+        parts.append("\n".join(user_parts))
 
     if parts:
         return "\n\n".join(parts) + "\n\n"

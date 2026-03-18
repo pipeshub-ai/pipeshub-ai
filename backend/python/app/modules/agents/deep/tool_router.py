@@ -134,6 +134,11 @@ def assign_tools_to_tasks(
         assigned: List[str] = []
 
         # Add domain-specific tools
+        # Multi-step tasks get ALL domain tools (each step may need different
+        # tools, and keyword-based filtering against the combined description
+        # can incorrectly exclude tools needed by individual steps).
+        is_multi_step = bool(task.get("multi_step") and task.get("sub_steps"))
+
         for domain in task_domains:
             normalized = _DOMAIN_ALIASES.get(domain, domain)
             domain_tools = []
@@ -143,7 +148,8 @@ def assign_tools_to_tasks(
                 domain_tools = tool_groups[domain]
 
             # Filter tools by relevance when a domain has many tools
-            if len(domain_tools) > _MAX_TOOLS_PER_TASK:
+            # Skip filtering for multi-step tasks — they need the full set
+            if not is_multi_step and len(domain_tools) > _MAX_TOOLS_PER_TASK:
                 filtered = _filter_tools_by_relevance(
                     domain_tools, task, schema_tool_map, log,
                 )

@@ -3635,23 +3635,23 @@ async def planner_node(
         _is_retrieval_tool(t.get("name", ""))
         for t in plan_tools if isinstance(t, dict)
     )
-    has_write_in_plan = any(
-        _is_write_tool(t.get("name", ""))
+    has_non_retrieval_in_plan = any(
+        not _is_retrieval_tool(t.get("name", ""))
         for t in plan_tools if isinstance(t, dict)
     )
 
-    if has_retrieval_in_plan and has_write_in_plan and not retrieval_already_run:
+    if has_retrieval_in_plan and has_non_retrieval_in_plan and not retrieval_already_run:
         retrieval_tools = [
             t for t in plan_tools
             if isinstance(t, dict) and _is_retrieval_tool(t.get("name", ""))
         ]
-        write_tools = [
+        deferred_tools = [
             t for t in plan_tools
-            if isinstance(t, dict) and _is_write_tool(t.get("name", ""))
+            if isinstance(t, dict) and not _is_retrieval_tool(t.get("name", ""))
         ]
         log.info(
             f"⚡ TWO-PHASE PLAN: {len(plan_tools)} total tools detected. "
-            f"Deferring {len(write_tools)} write tool(s) to Phase 2 so LLM "
+            f"Deferring {len(deferred_tools)} tool(s) to Phase 2 so LLM "
             f"generates content from actual retrieval results (not hallucination). "
             f"Running {len(retrieval_tools)} retrieval tool(s) in Phase 1."
         )
@@ -4108,18 +4108,18 @@ def _build_continue_context(state: ChatState, log: logging.Logger) -> str:
         parts.append("")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Section 3 — Duplicate-prevention guard for write/action tools
+    # Section 3 — Duplicate-prevention guard for already-completed tools
     # ══════════════════════════════════════════════════════════════════════════
-    completed_writes = [
+    completed_tools = [
         r.get("tool_name", "unknown")
         for r in tool_results
-        if r.get("status") == "success" and _is_write_tool(r.get("tool_name", ""))
+        if r.get("status") == "success"
     ]
-    if completed_writes:
+    if completed_tools:
         parts.append(
             "⚠️ ALREADY COMPLETED — DO NOT REPEAT: The following tools already "
             "succeeded. Planning them again will create duplicates:\n" +
-            "\n".join(f"  ✅ {t}" for t in completed_writes) +
+            "\n".join(f"  ✅ {t}" for t in completed_tools) +
             "\nOnly plan the remaining incomplete steps."
         )
         parts.append("")
@@ -5568,70 +5568,6 @@ def _check_primary_tool_success(query: str, successful: List[Dict], log: logging
     return len(successful) > 0
 
 
-def _is_write_tool(tool_name: str) -> bool:
-    """
-    Return True if the tool performs a write / action / side-effect operation.
-
-    Detection is done by inspecting the verb prefix of the tool's action segment
-    (the part after the service prefix, e.g. "slack.", "jira.", "confluence.").
-    Prefix matching is reliable because all service tools follow the convention
-    <service>.<verb>_<object> (e.g. slack.send_message, jira.create_issue).
-    """
-    name = tool_name.lower()
-    # Strip service prefix (e.g. "slack.", "jira.", "confluence.", "retrieval.")
-    if "." in name:
-        name = name.split(".", 1)[1]
-    _WRITE_PREFIXES = (
-        "create_", "update_", "delete_", "add_", "send_", "reply_",
-        "set_", "assign_", "transition_", "publish_", "post_",
-        "remove_", "move_", "archive_", "upload_", "comment_",
-        "edit_", "modify_", "write_", "submit_",
-    )
-    return any(name.startswith(p) for p in _WRITE_PREFIXES)
-
-
-def _is_read_tool(tool_name: str) -> bool:
-    """
-    Return True if the tool is a read-only / information-gathering operation.
-    """
-    name = tool_name.lower()
-    if "." in name:
-        name = name.split(".", 1)[1]
-    _READ_PREFIXES = (
-        "get_", "search_", "list_", "fetch_", "retrieve_",
-        "find_", "query_", "read_",
-    )
-    return any(name.startswith(p) for p in _READ_PREFIXES)
-
-
-# Compiled regex for detecting write-action intent in the user query.
-# Design: match ONLY when the verb is used as an action command, not a noun/modifier.
-# - We require the write verb to appear either at the sentence start (after optional
-#   polite preamble) OR after a conjunction ("and", "then", "also").
-# - Removed "upload", "message", "write", "comment", "add" from the top-level match
-#   because they appear routinely as nouns/adjectives in search queries
-#   (e.g. "upload failure tickets", "comment count", "write permission error").
-# - "set status" is kept as a phrase since it's always an action.
-_WRITE_INTENT_RE = re.compile(
-    r"(?:"
-    # Pattern A: verb at start of sentence (optional polite prefix)
-    r"^(?:please\s+|can\s+you\s+|could\s+you\s+|i\s+(?:need|want|would\s+like)\s+(?:you\s+)?to\s+)?"
-    r"\b(send|reply|create|update|publish|notify|assign|post|set\s+status)\b"
-    r"|"
-    # Pattern B: verb after a conjunction (e.g. "find X and then send email")
-    r"\b(?:and|then|also|after\s+that)\b\s+\b(send|reply|create|update|publish|notify|assign|post|set\s+status)\b"
-    r")",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-# Additional fallback: explicit write-action verbs that are unambiguous anywhere
-_UNAMBIGUOUS_WRITE_RE = re.compile(
-    r"\b(add\s+comment|add\s+a\s+comment|leave\s+a\s+comment|write\s+(?:an?\s+)?email|"
-    r"upload\s+(?:the\s+)?file|comment\s+on\s+(?:the\s+|this\s+)?(?:ticket|issue|pr|pull\s+request))\b",
-    re.IGNORECASE,
-)
-
-
 def _check_if_task_needs_continue(
     query: str,
     executed_tools: List[str],
@@ -5640,68 +5576,20 @@ def _check_if_task_needs_continue(
     state: Optional[Dict[str, Any]] = None
 ) -> bool:
     """
-    Determine whether the agent needs another planning cycle to complete the task.
+    Determine whether the agent needs another planning cycle.
 
-    Logic (in order):
-    1. If at least one write/action tool already executed → task action phase done.
-    2. If this is Phase 1 of a genuine two-phase plan (retrieval before write) →
-       continue so the planner can execute the write action in Phase 2.
-    3. If the planner planned ONLY retrieval tools (no write plan at all) →
-       this is a read-only task regardless of what the regex detects. Return False.
-    4. If the query clearly signals a write/action intent (via tightened regex)
-       and no write tool has run yet → continue.
-    5. Default → False (task complete or read-only).
+    The ONLY reason to continue is when the planner explicitly set up a
+    two-phase plan (retrieval first, then write).  In all other cases the
+    planner already planned all needed tools and they all succeeded, so
+    the task is complete.
     """
-    query_lower = (query or "").lower()
     state = state or {}
-
-    # ── 1. Was any write/action tool executed? ────────────────────────────────
-    action_completed = any(_is_write_tool(t) for t in executed_tools)
-    if action_completed:
-        log.debug(
-            "Task complete: write/action tool already executed → no continue needed. "
-            f"Executed: {executed_tools}"
-        )
-        return False
-
-    # ── 2. Is this Phase 1 of a genuine two-phase plan? ─────────────────────
-    # The planner_node sets is_two_phase_plan=True when it strips write tools
-    # from the plan so that retrieval can run first. In that case we MUST continue
-    # to execute the deferred write tools in Phase 2.
     if state.get("is_two_phase_plan"):
         log.debug(
-            "Task incomplete: two-phase plan in Phase 1 — write tools deferred to Phase 2. "
-            f"Executed: {executed_tools}"
+            "Two-phase plan Phase 1 complete — continuing to Phase 2 for write tools. "
+            f"Executed so far: {executed_tools}"
         )
         return True
-
-    # ── 3. Did the planner choose ONLY retrieval tools (read-only signal)? ───
-    # planned_tool_calls reflects what the planner actually decided to do.
-    # If it contains ONLY retrieval tools, the LLM determined this is a read-only
-    # task — trust it and don't force a continuation based on regex alone.
-    planned_tools = state.get("planned_tool_calls", []) or []
-    if planned_tools:
-        all_planned_are_retrieval = all(
-            _is_retrieval_tool(t.get("name", "")) if isinstance(t, dict)
-            else "retrieval" in str(t).lower()
-            for t in planned_tools
-        )
-        if all_planned_are_retrieval:
-            log.debug(
-                "Task complete: planner only planned retrieval tools → read-only task. "
-                f"Executed: {executed_tools}"
-            )
-            return False
-
-    # ── 4. Does the query signal a write/action intent (tightened regex)? ────
-    if _WRITE_INTENT_RE.search(query_lower) or _UNAMBIGUOUS_WRITE_RE.search(query_lower):
-        log.debug(
-            "Task incomplete: query indicates a write/action intent but no action "
-            f"tool has executed yet. Executed: {executed_tools}"
-        )
-        return True
-
-    # ── 5. Default: task is complete (read-only or already handled) ───────────
     return False
 
 

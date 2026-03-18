@@ -119,6 +119,12 @@ async def orchestrator_node(
         # Add current query — this MUST be the last message so the LLM
         # focuses on it rather than getting distracted by conversation history.
         user_content = query
+
+        # Append user context so the orchestrator can embed the correct user
+        user_ctx = _build_user_context(state)
+        if user_ctx:
+            user_content += f"\n\n{user_ctx}"
+
         time_ctx = _build_time_context(state)
         if time_ctx:
             user_content += f"\n\n{time_ctx}"
@@ -522,6 +528,35 @@ def _build_time_context(state: DeepAgentState) -> str:
     if timezone:
         parts.append(f"Timezone: {timezone}")
     return "\n".join(parts) if parts else ""
+
+
+def _build_user_context(state: DeepAgentState) -> str:
+    """Build current user context so the orchestrator knows who 'my'/'me' refers to."""
+    user_info = state.get("user_info", {})
+    user_email = (
+        state.get("user_email")
+        or user_info.get("userEmail")
+        or user_info.get("email")
+        or ""
+    )
+    user_name = (
+        user_info.get("fullName")
+        or user_info.get("name")
+        or user_info.get("displayName")
+        or (
+            f"{user_info.get('firstName', '')} {user_info.get('lastName', '')}".strip()
+            if user_info.get("firstName") or user_info.get("lastName")
+            else ""
+        )
+    )
+    if not user_name and not user_email:
+        return ""
+    parts = ["Current user:"]
+    if user_name:
+        parts.append(f"  Name: {user_name}")
+    if user_email:
+        parts.append(f"  Email: {user_email}")
+    return "\n".join(parts)
 
 
 
