@@ -656,6 +656,7 @@ class GraphDataStore(DataStoreProvider):
 
         tx_store = GraphTransactionStore(self.graph_provider, txn)
 
+
         try:
             yield tx_store
         except Exception as e:
