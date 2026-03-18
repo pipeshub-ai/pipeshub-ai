@@ -1,11 +1,13 @@
 import asyncio
 import json
+import logging
 import time
-from typing import Any, Dict
+from typing import Any
 
 import httpx
 import jwt
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
@@ -20,7 +22,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class BlobStorage(Transformer):
-    def __init__(self,logger,config_service, graph_provider: IGraphDBProvider = None) -> None:
+    def __init__(self, logger: logging.Logger, config_service: ConfigurationService, graph_provider: IGraphDBProvider = None) -> None:
         self.logger = logger
         self.config_service = config_service
         self.graph_provider = graph_provider
@@ -106,7 +108,7 @@ class BlobStorage(Transformer):
 
             except Exception as e:
                 self.logger.error("❌ Failed to decompress record: %s", str(e))
-                raise Exception(f"Decompression failed: {str(e)}")
+                raise Exception(f"Decompression failed: {str(e)}") from e
 
         # OLD FORMAT: Uncompressed record
         elif data.get("record"):
@@ -155,7 +157,7 @@ class BlobStorage(Transformer):
         end: int,
         chunk_index: int,
         max_retries: int = 3
-    ) -> tuple[int, bytes]:
+    ) -> tuple[int, bytes] | None:
         """
         Download a single chunk with retry logic.
 
@@ -198,6 +200,7 @@ class BlobStorage(Transformer):
                 else:
                     self.logger.error("❌ Chunk %d download failed after %d attempts: %s", chunk_index, max_retries, str(e))
                     raise
+        return None
 
     async def _download_with_range_requests(
         self,
@@ -296,7 +299,7 @@ class BlobStorage(Transformer):
 
         return file_bytes
 
-    def _clean_top_level_empty_values(self, obj: Dict[str, Any]) -> Dict[str, Any]:
+    def _clean_top_level_empty_values(self, obj: dict[str, Any]) -> dict[str, Any]:
         """
         Remove top-level keys with None, empty strings, empty lists, and empty dicts.
         Only processes the first level of the given object.
@@ -307,7 +310,7 @@ class BlobStorage(Transformer):
             if v is not None and v != "" and v != [] and v != {}
         }
 
-    def _clean_empty_values(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _clean_empty_values(self, data: dict[str, Any]) -> dict[str, Any]:
         """
         Clean empty values at the top level of:
         1. The main record object
@@ -352,7 +355,7 @@ class BlobStorage(Transformer):
         ctx.record = record
         return ctx
 
-    async def _get_signed_url(self, client, url, data, headers) -> dict | None:
+    async def _get_signed_url(self, client: httpx.AsyncClient, url: str, data: dict, headers: dict) -> dict | None:
         """Helper method to get signed URL"""
         try:
             response = await client.post(url, json=data, headers=headers)
@@ -368,7 +371,7 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Network error getting signed URL: %s", str(e))
             raise
 
-    async def _upload_to_signed_url(self, client, signed_url, data) -> int | None:
+    async def _upload_to_signed_url(self, client: httpx.AsyncClient, signed_url: str, data: dict) -> int | None:
         """Helper method to upload to signed URL"""
         try:
             response = await client.put(
@@ -388,7 +391,7 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Network error uploading to signed URL: %s", str(e))
             raise
 
-    async def _create_placeholder(self, client, url, data, headers) -> dict | None:
+    async def _create_placeholder(self, client: httpx.AsyncClient, url: str, data: dict, headers: dict) -> dict | None:
         """Helper method to create placeholder"""
         try:
             response = await client.post(url, json=data, headers=headers)
