@@ -9,6 +9,7 @@ All methods support optional transaction parameter for atomic operations.
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from app.models.entities import Person
 
@@ -2052,6 +2053,64 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[Dict]: List of accessible records
+        """
+        pass
+
+    @abstractmethod
+    async def get_accessible_virtual_record_ids(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None = None
+    ) -> list[str]:
+        """
+        Get virtualRecordIds of all records accessible to a user (optimized version).
+
+        This is an optimized version that:
+        - Returns only virtualRecordIds (not full records)
+        - Filters by indexingStatus = COMPLETED
+        - Applies KB/app filters during traversal (not post-filter)
+        - Parallelizes per-connector queries
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
+                Format: {
+                    'departments': [dept_ids],
+                    'categories': [cat_ids],
+                    'subcategories1': [subcat1_ids],
+                    'subcategories2': [subcat2_ids],
+                    'subcategories3': [subcat3_ids],
+                    'languages': [language_ids],
+                    'topics': [topic_ids],
+                    'kb': [kb_ids],
+                    'apps': [connector_ids]
+                }
+
+        Returns:
+            List[str]: List of virtualRecordIds
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        org_id: str
+    ) -> list[dict]:
+        """
+        Batch fetch full record documents by their virtualRecordIds.
+
+        This is used after vector search to fetch only the records that were actually returned,
+        instead of fetching all accessible records upfront.
+
+        Args:
+            virtual_record_ids: List of virtualRecordIds to fetch
+            org_id: Organization ID for additional filtering
+
+        Returns:
+            List[Dict]: List of full record dictionaries
         """
         pass
 

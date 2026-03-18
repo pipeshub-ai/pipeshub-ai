@@ -6,11 +6,14 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 
 All operations are non-blocking and use aiohttp for async I/O.
 """
+import asyncio
 import time
+import traceback
 import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
+from typing import TYPE_CHECKING, Any, Optional
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.config.configuration_service import ConfigurationService
@@ -491,10 +494,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Indexes are built here: each call to ensure_persistent_index() creates (or ensures)
         the index via the ArangoDB HTTP API (see arango_http_client.ensure_persistent_index).
 
-        Currently no custom indexes are required - edge collections have automatic
-        indexes on _from and _to fields which optimize graph traversals.
+        Edge collections have automatic indexes on _from and _to fields which optimize
+        graph traversals. Custom indexes below cover document-lookup hot paths.
         """
-        pass
+        # COMPOSITE: virtualRecordId + orgId
+        # Pattern: FOR record IN records FILTER record.virtualRecordId IN @ids AND record.orgId == @orgId
+        # Used in: get_records_by_virtual_record_ids (Phase 3 batch fetch after Qdrant search)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["virtualRecordId", "orgId"],
+        )
 
     async def _ensure_departments_seed(self) -> None:
         """Initialize departments collection with predefined department types if missing."""
@@ -8620,6 +8629,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 folder_conditions = []
                 record_conditions = []
                 bind_vars: dict[str, Any] = {}
+                bind_vars: dict[str, Any] = {}
 
                 if search:
                     folder_conditions.append(
@@ -8901,6 +8911,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             def build_filters() -> tuple[str, str, dict]:
                 folder_conditions = []
                 record_conditions = []
+                bind_vars: dict[str, Any] = {}
                 bind_vars: dict[str, Any] = {}
 
                 if search:
@@ -11231,6 +11242,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
             filter_conditions = []
             filter_bind: dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
+            filter_bind: dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
             if search:
                 filter_conditions.append("(LIKE(LOWER(record.recordName), @search) OR LIKE(LOWER(record.externalRecordId), @search))")
                 filter_bind["search"] = f"%{(search or '').lower()}%"
@@ -11502,6 +11514,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Create a batch of file records and edges; skip name conflicts."""
         if not files:
             return []
+        valid_files: list[dict] = []
         valid_files: list[dict] = []
         for file_data in files:
             file_record = file_data.get("fileRecord") or {}
@@ -16741,6 +16754,551 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to get accessible records: {str(e)}")
             raise
+
+    async def _get_virtual_ids_for_connector(
+        self,
+        user_id: str,
+        org_id: str,
+        connector_id: str,
+        metadata_filters: dict[str, list[str]] | None = None
+    ) -> list[str]:
+        """
+        Get virtualRecordIds for a specific connector covering all permission paths.
+
+        Args:
+            user_id: The userId field value
+            org_id: Organization ID
+            connector_id: Specific connector/app ID to query
+            metadata_filters: Optional metadata filters (departments, categories, etc.)
+
+        Returns:
+            List of virtualRecordIds accessible for this connector
+        """
+        try:
+            metadata_filter_lines = []
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                            FILTER dept.departmentName IN @departmentNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("categories"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER cat.name IN @categoryNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories1"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat1Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories2"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat2Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories3"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat3Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("languages"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                            FILTER lang.name IN @languageNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("topics"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                            FILTER topic.name IN @topicNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+
+            metadata_filter_clause = "\n".join(metadata_filter_lines)
+
+            query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+
+            LET directRecords = (
+                FOR record IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("records", record)
+                    FILTER record.connectorId == @connectorId
+                    FILTER record.indexingStatus == @completedStatus
+                    {metadata_filter_clause}
+                    RETURN DISTINCT record.virtualRecordId
+            )
+
+            LET groupRecords = (
+                FOR group IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        FILTER record.connectorId == @connectorId
+                        FILTER record.indexingStatus == @completedStatus
+                        {metadata_filter_clause}
+                        RETURN DISTINCT record.virtualRecordId
+            )
+
+            LET groupRecordsPermissionEdge = (
+                FOR group IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        FILTER record.connectorId == @connectorId
+                        FILTER record.indexingStatus == @completedStatus
+                        {metadata_filter_clause}
+                        RETURN DISTINCT record.virtualRecordId
+            )
+
+            LET orgRecords = (
+                FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        FILTER record.connectorId == @connectorId
+                        FILTER record.indexingStatus == @completedStatus
+                        {metadata_filter_clause}
+                        RETURN DISTINCT record.virtualRecordId
+            )
+
+            LET orgRecordGroupRecords = (
+                FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FOR recordGroup IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+                        FOR record IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                            FILTER IS_SAME_COLLECTION("records", record)
+                            FILTER record.connectorId == @connectorId
+                            FILTER record.indexingStatus == @completedStatus
+                            {metadata_filter_clause}
+                            RETURN DISTINCT record.virtualRecordId
+            )
+
+            LET recordGroupRecords = (
+                FOR group IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                    FOR recordGroup IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                        FOR record IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                            FILTER IS_SAME_COLLECTION("records", record)
+                            FILTER record.connectorId == @connectorId
+                            FILTER record.indexingStatus == @completedStatus
+                            {metadata_filter_clause}
+                            RETURN DISTINCT record.virtualRecordId
+            )
+
+            LET inheritedRecordGroupRecords = (
+                FOR recordGroup IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+                    FOR record IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        FILTER record.connectorId == @connectorId
+                        FILTER record.indexingStatus == @completedStatus
+                        {metadata_filter_clause}
+                        RETURN DISTINCT record.virtualRecordId
+            )
+
+            LET anyoneRecords = (
+                FOR anyone IN @@anyone
+                    FILTER anyone.organization == @orgId
+                    FOR record IN @@records
+                        FILTER record._key == anyone.file_key
+                        FILTER record.connectorId == @connectorId
+                        FILTER record.indexingStatus == @completedStatus
+                        {metadata_filter_clause}
+                        RETURN DISTINCT record.virtualRecordId
+            )
+
+            LET allIds = UNION_DISTINCT(
+                directRecords, groupRecords, groupRecordsPermissionEdge,
+                orgRecords, orgRecordGroupRecords, recordGroupRecords,
+                inheritedRecordGroupRecords, anyoneRecords
+            )
+            FOR id IN allIds
+                FILTER id != null
+                RETURN DISTINCT id
+            """
+
+            bind_vars = {
+                "userId": user_id,
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "completedStatus": ProgressStatus.COMPLETED.value,
+                "@users": CollectionNames.USERS.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@anyone": CollectionNames.ANYONE.value,
+            }
+
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    bind_vars["departmentNames"] = metadata_filters["departments"]
+                if metadata_filters.get("categories"):
+                    bind_vars["categoryNames"] = metadata_filters["categories"]
+                if metadata_filters.get("subcategories1"):
+                    bind_vars["subcat1Names"] = metadata_filters["subcategories1"]
+                if metadata_filters.get("subcategories2"):
+                    bind_vars["subcat2Names"] = metadata_filters["subcategories2"]
+                if metadata_filters.get("subcategories3"):
+                    bind_vars["subcat3Names"] = metadata_filters["subcategories3"]
+                if metadata_filters.get("languages"):
+                    bind_vars["languageNames"] = metadata_filters["languages"]
+                if metadata_filters.get("topics"):
+                    bind_vars["topicNames"] = metadata_filters["topics"]
+
+            query_start = time.time()
+            results = await self.execute_query(query, bind_vars=bind_vars)
+            elapsed = time.time() - query_start
+            virtual_ids = [r for r in results if r] if results else []
+
+            self.logger.info(
+                f"Connector {connector_id}: found {len(virtual_ids)} virtualRecordIds in {elapsed:.3f}s"
+            )
+            return virtual_ids
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to get virtual IDs for connector {connector_id}: {e}\n{traceback.format_exc()}"
+            )
+            return []
+
+    async def _get_kb_virtual_ids(
+        self,
+        user_id: str,
+        org_id: str,
+        kb_ids: list[str] | None = None,
+        metadata_filters: dict[str, list[str]] | None = None
+    ) -> list[str]:
+        """
+        Get virtualRecordIds from Knowledge Bases (RecordGroups).
+
+        Args:
+            user_id: The userId field value
+            org_id: Organization ID
+            kb_ids: Optional list of KB IDs to filter by
+            metadata_filters: Optional metadata filters
+
+        Returns:
+            List of virtualRecordIds from KBs
+        """
+        try:
+            kb_filter_clause = "FILTER kb._key IN @kb_ids" if kb_ids else ""
+            metadata_filter_lines = []
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                            FILTER dept.departmentName IN @departmentNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("categories"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER cat.name IN @categoryNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories1"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat1Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories2"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat2Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories3"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat3Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("languages"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                            FILTER lang.name IN @languageNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("topics"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                            FILTER topic.name IN @topicNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+
+            metadata_filter_clause = "\n".join(metadata_filter_lines)
+
+            query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+
+            LET directKbRecords = (
+                FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    {kb_filter_clause}
+                FOR record IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("records", record)
+                    FILTER record.origin == "UPLOAD"
+                    FILTER record.indexingStatus == @completedStatus
+                    {metadata_filter_clause}
+                    RETURN DISTINCT record.virtualRecordId
+            )
+
+            LET teamKbRecords = (
+                FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("teams", team)
+                    FILTER userTeamEdge.type == "USER"
+                FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    FILTER teamKbEdge.type == "TEAM"
+                    {kb_filter_clause}
+                FOR record IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("records", record)
+                    FILTER record.origin == "UPLOAD"
+                    FILTER record.indexingStatus == @completedStatus
+                    {metadata_filter_clause}
+                    RETURN DISTINCT record.virtualRecordId
+            )
+
+            LET allKbIds = UNION_DISTINCT(directKbRecords, teamKbRecords)
+            FOR id IN allKbIds
+                FILTER id != null
+                RETURN DISTINCT id
+            """
+
+            bind_vars = {
+                "userId": user_id,
+                "completedStatus": ProgressStatus.COMPLETED.value,
+                "@users": CollectionNames.USERS.value,
+            }
+
+            if kb_ids:
+                bind_vars["kb_ids"] = kb_ids
+
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    bind_vars["departmentNames"] = metadata_filters["departments"]
+                if metadata_filters.get("categories"):
+                    bind_vars["categoryNames"] = metadata_filters["categories"]
+                if metadata_filters.get("subcategories1"):
+                    bind_vars["subcat1Names"] = metadata_filters["subcategories1"]
+                if metadata_filters.get("subcategories2"):
+                    bind_vars["subcat2Names"] = metadata_filters["subcategories2"]
+                if metadata_filters.get("subcategories3"):
+                    bind_vars["subcat3Names"] = metadata_filters["subcategories3"]
+                if metadata_filters.get("languages"):
+                    bind_vars["languageNames"] = metadata_filters["languages"]
+                if metadata_filters.get("topics"):
+                    bind_vars["topicNames"] = metadata_filters["topics"]
+
+            query_start = time.time()
+            results = await self.execute_query(query, bind_vars=bind_vars)
+            elapsed = time.time() - query_start
+            kb_filter_info = f"filtered: {len(kb_ids)} KBs" if kb_ids else "all KBs"
+            virtual_ids = [r for r in results if r] if results else []
+
+            self.logger.info(
+                f"KB query ({kb_filter_info}): found {len(virtual_ids)} virtualRecordIds in {elapsed:.3f}s"
+            )
+            return virtual_ids
+
+        except Exception as e:
+            self.logger.error(f"Failed to get KB virtual IDs: {e}", exc_info=True)
+            return []
+
+    async def get_accessible_virtual_record_ids(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None = None
+    ) -> list[str]:
+        """
+        Get virtualRecordIds of all records accessible to a user.
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
+                Format: {
+                    'departments': [dept_ids],
+                    'categories': [cat_ids],
+                    'subcategories1': [subcat1_ids],
+                    'subcategories2': [subcat2_ids],
+                    'subcategories3': [subcat3_ids],
+                    'languages': [language_ids],
+                    'topics': [topic_ids],
+                    'kb': [kb_ids],
+                    'apps': [connector_ids]
+                }
+
+        Returns:
+            List[str]: List of virtualRecordIds
+        """
+        start_time = time.time()
+
+        try:
+            user_apps_ids = await self._get_user_app_ids(user_id)
+
+            if not user_apps_ids:
+                self.logger.warning(f"User {user_id} has no accessible apps")
+
+            filters = filters or {}
+            kb_ids = filters.get("kb")
+            connector_ids_filter = filters.get("apps")
+
+            # Extract metadata filters (everything except kb and apps)
+            metadata_filters = {
+                k: v for k, v in filters.items()
+                if k not in ["kb", "apps"] and v
+            }
+
+            has_kb_filter = bool(kb_ids)
+            has_app_filter = bool(connector_ids_filter)
+
+            tasks = []
+
+            if has_app_filter and has_kb_filter:
+                connectors_to_query = [
+                    cid for cid in user_apps_ids
+                    if cid in connector_ids_filter
+                ]
+                for connector_id in connectors_to_query:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(
+                        self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
+                    )
+                tasks.append(self._get_kb_virtual_ids(user_id, org_id, kb_ids, metadata_filters))
+
+            elif not has_app_filter and has_kb_filter:
+                tasks.append(self._get_kb_virtual_ids(user_id, org_id, kb_ids, metadata_filters))
+
+            elif not has_app_filter and not has_kb_filter:
+                for connector_id in user_apps_ids:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(
+                        self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
+                    )
+                tasks.append(self._get_kb_virtual_ids(user_id, org_id, None, metadata_filters))
+
+            else:  # has_app_filter and not has_kb_filter
+                connectors_to_query = [
+                    cid for cid in user_apps_ids
+                    if cid in connector_ids_filter
+                ]
+                for connector_id in connectors_to_query:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(
+                        self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
+                    )
+
+            if not tasks:
+                self.logger.warning(f"No queries to execute for user {user_id} with filters {filters}")
+                return []
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            all_virtual_ids = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    self.logger.error(f"Task {i} failed: {str(result)}")
+                    continue
+                if result:
+                    all_virtual_ids.extend(result)
+
+            unique_virtual_ids = list(set(all_virtual_ids))
+
+            total_time = time.time() - start_time
+            self.logger.info(
+                f"Found {len(unique_virtual_ids)} unique virtualRecordIds "
+                f"({len(all_virtual_ids)} total before dedup) in {total_time:.3f}s"
+            )
+
+            return unique_virtual_ids
+
+        except Exception as e:
+            self.logger.error(f"Get accessible virtual record IDs failed: {e}", exc_info=True)
+            return []
+
+    async def get_records_by_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        org_id: str
+    ) -> list[dict]:
+        """
+        Batch fetch full record documents by their virtualRecordIds.
+
+        Args:
+            virtual_record_ids: List of virtualRecordIds to fetch
+            org_id: Organization ID for additional filtering
+
+        Returns:
+            List[Dict]: List of full record dictionaries
+        """
+        try:
+            if not virtual_record_ids:
+                return []
+
+            self.logger.debug(f"Fetching {len(virtual_record_ids)} records by virtualRecordIds")
+
+            query = """
+            FOR record IN @@records
+                FILTER record.virtualRecordId IN @virtual_record_ids
+                  AND record.orgId == @orgId
+                RETURN record
+            """
+
+            bind_vars = {
+                "@records": CollectionNames.RECORDS.value,
+                "virtual_record_ids": virtual_record_ids,
+                "orgId": org_id,
+            }
+
+            results = await self.execute_query(query, bind_vars=bind_vars)
+            return [r for r in results if r] if results else []
+
+        except Exception as e:
+            self.logger.error(f"Failed to fetch records by virtualRecordIds: {e}\n{traceback.format_exc()}")
+            return []
 
     async def get_records_by_virtual_record_id(
         self,
