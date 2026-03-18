@@ -1,15 +1,12 @@
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
-"""DocuSign client implementation using the official docusign-esign SDK.
+"""DocuSign client implementation.
 
-This module provides clients for interacting with the DocuSign eSignature
-API using the official `docusign-esign` Python SDK instead of raw HTTP calls.
+Uses the official docusign-esign SDK for eSignature API, and HTTP client
+for Admin, Rooms, Click, Monitor, and WebForms REST APIs.
 
 Authentication modes:
 1. OAuth 2.0 authorization code flow (access_token + account_id)
 2. Pre-generated Bearer token (token + account_id)
-
-The SDK `ApiClient` handles header management internally; callers only need
-to supply a valid access token and account ID.
 
 SDK Reference: https://pypi.org/project/docusign-esign/
 API Reference: https://developers.docusign.com/docs/esign-rest-api/reference/
@@ -24,6 +21,7 @@ from pydantic import BaseModel, Field  # type: ignore
 from typing_extensions import override
 
 from app.config.configuration_service import ConfigurationService
+from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
 # ---------------------------------------------------------------------------
@@ -47,8 +45,8 @@ class DocuSignResponse(BaseModel):
     """Standardized DocuSign API response wrapper."""
 
     success: bool = Field(..., description="Whether the request was successful")
-    data: Any | None = Field(
-        default=None, description="Response data from the SDK"
+    data: dict[str, object] | list[object] | bytes | None = Field(
+        default=None, description="Response data from the SDK or HTTP"
     )
     error: str | None = Field(
         default=None, description="Error message if failed"
@@ -63,19 +61,21 @@ class DocuSignResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# SDK client classes
+# SDK + HTTP client classes
 # ---------------------------------------------------------------------------
 
 
 class DocuSignClientViaOAuth:
-    """DocuSign SDK client via OAuth 2.0 authorization code flow.
+    """DocuSign client via OAuth 2.0 authorization code flow.
 
-    Creates a ``docusign_esign.ApiClient`` and sets the Bearer token header.
+    Creates a ``docusign_esign.ApiClient`` for eSignature operations and
+    lazy ``HTTPClient`` instances for Admin, Rooms, Click, Monitor, and
+    WebForms REST APIs.
 
     Args:
         access_token: The OAuth access token
         account_id: DocuSign account ID (used in API calls)
-        base_path: API base path (default: demo environment)
+        base_path: eSign API base path (default: demo environment)
     """
 
     def __init__(
@@ -89,6 +89,7 @@ class DocuSignClientViaOAuth:
         self.base_path = base_path
 
         self._sdk: docusign_esign.ApiClient | None = None
+        self._http_clients: dict[str, HTTPClient] = {}
 
     def create_client(self) -> docusign_esign.ApiClient:
         """Create and configure the SDK ApiClient."""
@@ -104,13 +105,36 @@ class DocuSignClientViaOAuth:
             return self.create_client()
         return self._sdk
 
+    def get_http_client(self, base_url: str) -> HTTPClient:
+        """Return an HTTPClient configured for the given base URL.
+
+        Clients are cached per base_url so repeated calls return the
+        same instance.
+
+        Args:
+            base_url: The base URL for the target REST API.
+
+        Returns:
+            HTTPClient ready to execute requests.
+        """
+        if base_url not in self._http_clients:
+            client = HTTPClient(self.access_token, token_type="Bearer")
+            client.base_url = base_url  # type: ignore[attr-defined]
+            client.headers["Content-Type"] = "application/json"
+            self._http_clients[base_url] = client
+        return self._http_clients[base_url]
+
+    def get_access_token(self) -> str:
+        """Return the access token."""
+        return self.access_token
+
     def get_account_id(self) -> str:
         """Return the account ID."""
         return self.account_id
 
 
 class DocuSignClientViaToken:
-    """DocuSign SDK client via pre-generated Bearer token.
+    """DocuSign client via pre-generated Bearer token.
 
     Functionally identical to the OAuth variant but semantically distinct
     for configuration clarity.
@@ -118,7 +142,7 @@ class DocuSignClientViaToken:
     Args:
         token: The pre-generated Bearer token
         account_id: DocuSign account ID (used in API calls)
-        base_path: API base path (default: demo environment)
+        base_path: eSign API base path (default: demo environment)
     """
 
     def __init__(
@@ -132,6 +156,7 @@ class DocuSignClientViaToken:
         self.base_path = base_path
 
         self._sdk: docusign_esign.ApiClient | None = None
+        self._http_clients: dict[str, HTTPClient] = {}
 
     def create_client(self) -> docusign_esign.ApiClient:
         """Create and configure the SDK ApiClient."""
@@ -146,6 +171,29 @@ class DocuSignClientViaToken:
         if self._sdk is None:
             return self.create_client()
         return self._sdk
+
+    def get_http_client(self, base_url: str) -> HTTPClient:
+        """Return an HTTPClient configured for the given base URL.
+
+        Clients are cached per base_url so repeated calls return the
+        same instance.
+
+        Args:
+            base_url: The base URL for the target REST API.
+
+        Returns:
+            HTTPClient ready to execute requests.
+        """
+        if base_url not in self._http_clients:
+            client = HTTPClient(self.token, token_type="Bearer")
+            client.base_url = base_url  # type: ignore[attr-defined]
+            client.headers["Content-Type"] = "application/json"
+            self._http_clients[base_url] = client
+        return self._http_clients[base_url]
+
+    def get_access_token(self) -> str:
+        """Return the token."""
+        return self.token
 
     def get_account_id(self) -> str:
         """Return the account ID."""

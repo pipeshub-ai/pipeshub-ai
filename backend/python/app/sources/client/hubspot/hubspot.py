@@ -48,7 +48,7 @@ class HubSpotResponse(BaseModel):
     """
 
     success: bool = Field(..., description="Whether the request was successful")
-    data: Any = Field(
+    data: dict[str, object] | list[object] | bytes | None = Field(
         default=None, description="Response data from the HubSpot SDK"
     )
     error: str | None = Field(default=None, description="Error message if failed")

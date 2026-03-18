@@ -36,7 +36,7 @@ class DatadogResponse(BaseModel):
     """Standardized Datadog API response wrapper."""
 
     success: bool = Field(..., description="Whether the request was successful")
-    data: Any | None = None
+    data: dict[str, object] | list[object] | bytes | None = None
     error: str | None = Field(
         default=None, description="Error message if failed"
     )

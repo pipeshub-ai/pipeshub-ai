@@ -1,4 +1,4 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportMissingImports=false, reportOptionalMemberAccess=false
 """Opsgenie client implementation using the official ``opsgenie-sdk`` package.
 
 This module provides a client for interacting with the Opsgenie API using
@@ -30,7 +30,7 @@ class OpsgenieResponse(BaseModel):
     """Standardised Opsgenie API response wrapper."""
 
     success: bool = Field(..., description="Whether the request was successful")
-    data: Any = Field(default=None, description="Response data from the SDK")
+    data: dict[str, object] | list[object] | bytes | None = Field(default=None, description="Response data from the SDK")
     error: str | None = Field(default=None, description="Error message if failed")
     message: str | None = Field(
         default=None, description="Additional message information"

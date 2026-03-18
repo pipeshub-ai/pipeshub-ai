@@ -39,7 +39,7 @@ class TableauResponse(BaseModel):
     """Standardized Tableau API response wrapper."""
 
     success: bool = Field(..., description="Whether the request was successful")
-    data: Any = None
+    data: dict[str, object] | list[object] | bytes | None = None
     error: str | None = Field(default=None, description="Error message if failed")
     message: str | None = Field(
         default=None, description="Additional message information"

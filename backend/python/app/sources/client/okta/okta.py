@@ -1,4 +1,4 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportMissingImports=false
 """Okta client implementation using the official ``okta`` SDK.
 
 This module provides clients for interacting with the Okta API using either:
@@ -44,7 +44,7 @@ class OktaResponse(BaseModel):
     """Standardised Okta API response wrapper."""
 
     success: bool = Field(..., description="Whether the request was successful")
-    data: Any = Field(default=None, description="Response data from the SDK")
+    data: dict[str, object] | list[object] | bytes | None = Field(default=None, description="Response data from the SDK")
     error: str | None = Field(default=None, description="Error message if failed")
     message: str | None = Field(
         default=None, description="Additional message information"
