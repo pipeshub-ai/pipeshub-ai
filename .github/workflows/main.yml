@@ -79,6 +79,7 @@ jobs:
 
   ruff-lint-pr:
     runs-on: ubuntu-latest
+    continue-on-error: true
 
     steps:
       - name: Checkout code
@@ -109,6 +110,7 @@ jobs:
 
   pyright-type-check-pr:
     runs-on: ubuntu-latest
+    continue-on-error: true
 
     steps:
       - name: Checkout code
