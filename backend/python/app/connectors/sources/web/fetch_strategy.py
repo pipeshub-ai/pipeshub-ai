@@ -567,7 +567,7 @@ class Crawl4AIFetcher:
     A semaphore (MAX_CONCURRENT_PAGES) prevents runaway parallelism.
     """
 
-    MAX_CONCURRENT_PAGES = 8
+    MAX_CONCURRENT_PAGES = 1
 
     # HTTP status codes that should NOT trigger retries
     _NON_RETRYABLE_STATUSES = frozenset({400, 401, 403, 404, 405, 410, 451})
@@ -578,6 +578,21 @@ class Crawl4AIFetcher:
     # Shorter timeout for tier-1 so fallback to tier-2/3 happens fast
     # when a server tarpits the regular browser.
     _TIER1_PAGE_TIMEOUT = 20_000  # 20s
+
+    # Status codes indicating rate-limiting or bot-detection where
+    # an immediate retry against the same server is counterproductive.
+    _RATE_LIMIT_CODES = frozenset({
+        403,                              # Forbidden (WAF/bot block)
+        429,                              # Too Many Requests
+        520, 521, 522, 523, 524, 529, 530 # Cloudflare
+    })
+
+    # Subset: retry the SAME tier with exponential backoff before
+    # falling through to the next tier.
+    _SAME_TIER_RETRY_CODES = frozenset({429, 529})
+
+    _MAX_SAME_TIER_RETRIES = 2
+    _MAX_TIER_BACKOFF_SECS = 120.0
 
     def __init__(
         self,
@@ -751,6 +766,85 @@ class Crawl4AIFetcher:
             return False
         msg = result.error_message or ""
         return "Target crashed" in msg or "Target closed" in msg
+
+    @staticmethod
+    def _is_rate_limited(result: Optional["FetchResponse"]) -> bool:
+        """Return True if the failure looks like server-side rate-limiting or bot-detection."""
+        if result is None:
+            return False
+        return result.status_code in Crawl4AIFetcher._RATE_LIMIT_CODES
+
+    @staticmethod
+    def _should_retry_same_tier(result: Optional["FetchResponse"]) -> bool:
+        """Return True if the status code warrants retrying the same tier."""
+        if result is None:
+            return False
+        return result.status_code in Crawl4AIFetcher._SAME_TIER_RETRY_CODES
+
+    async def _rate_limit_backoff(
+        self,
+        url: str,
+        result: "FetchResponse",
+        attempt: int,
+        next_label: str,
+    ) -> None:
+        """Sleep with exponential backoff + jitter before the next attempt.
+
+        Args:
+            url:        The URL being fetched (for logging).
+            result:     The failed FetchResponse (checked for Retry-After header).
+            attempt:    1-based attempt index (controls exponential base).
+            next_label: Human-readable label for the next attempt (for logging).
+        """
+        # Respect Retry-After header if present
+        retry_after_raw = (
+            result.headers.get("Retry-After")
+            or result.headers.get("retry-after")
+        )
+        if retry_after_raw:
+            try:
+                delay = min(float(retry_after_raw), self._MAX_TIER_BACKOFF_SECS)
+            except (ValueError, TypeError):
+                delay = float(2 ** attempt)
+        else:
+            delay = float(2 ** attempt)
+
+        jitter = random.uniform(0, 1.0)
+        delay = min(delay + jitter, self._MAX_TIER_BACKOFF_SECS)
+
+        self.logger.info(
+            f"[crawl4ai] Rate-limited (HTTP {result.status_code}) on {url}, "
+            f"backing off {delay:.1f}s before {next_label}"
+        )
+        await asyncio.sleep(delay)
+
+    async def _try_tier(
+        self,
+        url: str,
+        crawler,
+        tier_label: str,
+        fetch_kwargs: dict,
+    ) -> tuple[Optional["FetchResponse"], bool]:
+        """Try a single tier, retrying on 429/529 with exponential backoff.
+
+        Returns (result, usable) where usable=True means we got good content.
+        """
+        result = await self._do_fetch(url, crawler=crawler, **fetch_kwargs)
+        if self._is_usable(result):
+            return result, True
+
+        # For 429/529: retry same tier up to _MAX_SAME_TIER_RETRIES times
+        if self._should_retry_same_tier(result):
+            for retry in range(1, self._MAX_SAME_TIER_RETRIES + 1):
+                await self._rate_limit_backoff(
+                    url, result, attempt=retry,
+                    next_label=f"{tier_label} retry {retry}/{self._MAX_SAME_TIER_RETRIES}",
+                )
+                result = await self._do_fetch(url, crawler=crawler, **fetch_kwargs)
+                if self._is_usable(result):
+                    return result, True
+
+        return result, False
 
     async def close(self) -> None:
         for crawler, label in [
@@ -955,42 +1049,70 @@ class Crawl4AIFetcher:
 
             # ---- Tier 1: Regular browser + stealth (shorter timeout) ----
             tier1_kwargs = {**fetch_kwargs, "page_timeout": self._TIER1_PAGE_TIMEOUT}
-            result = await self._do_fetch(url, crawler=self._crawler, **tier1_kwargs)
-            if self._is_usable(result):
+            result, usable = await self._try_tier(
+                url, self._crawler, "tier-1", tier1_kwargs,
+            )
+            if usable:
                 self._log_result(url, result, "tier-1", failed_tiers)
                 if not self._check_content_size(result.content_bytes, max_size_mb):
                     self.logger.info(f"⚠️ Skipping {url}: content size exceeds limit of {max_size_mb}MB")
-                    return None
+                    return FetchResponse(
+                            status_code=413,
+                            content_bytes=b"",
+                            headers={"X-Fetch-Skip-Reason": "max_size_exceeded"},
+                            final_url=result.final_url,
+                            strategy="size_guard",
+                        )
                 return result
             failed_tiers.append("tier-1")
-            self.logger.warning(f"⚠️ [crawl4ai] tier-1 failed for {url}, trying tier-2")
             # If the browser process crashed, restart it so subsequent
             # URLs aren't poisoned by the dead process.
             if self._is_target_crashed(result) or result is None:
+                self.logger.warning(f"⚠️ [crawl4ai] tier-1 crashed for {url}, restarting and trying tier-2")
                 try:
-                    self.logger.info(f"[crawl4ai] Restarting tier-1 crawler after browser crash")
                     await self._restart_crawler("tier-1")
                 except Exception as exc:
                     self.logger.error(f"[crawl4ai] Failed to restart tier-1: {exc}")
+            elif self._is_rate_limited(result):
+                self.logger.warning(f"⚠️ [crawl4ai] tier-1 rate-limited for {url}, trying tier-2")
+                await self._rate_limit_backoff(url, result, attempt=1, next_label="tier-2")
+            elif result is not None and result.status_code != 0:
+                # Non-retryable error — no point trying other tiers
+                self._log_result(url, result, "tier-1-non-retryable", failed_tiers)
+                return result
 
             # ---- Tier 2: Undetected browser, no stealth ----
             undetected = await self._get_undetected_crawler()
             if undetected:
-                result = await self._do_fetch(url, crawler=undetected, **fetch_kwargs)
-                if self._is_usable(result):
+                result, usable = await self._try_tier(
+                    url, undetected, "tier-2", fetch_kwargs,
+                )
+                if usable:
                     self._log_result(url, result, "tier-2", failed_tiers)
                     if not self._check_content_size(result.content_bytes, max_size_mb):
                         self.logger.info(f"⚠️ Skipping {url}: content size exceeds limit of {max_size_mb}MB")
-                        return None
+                        return FetchResponse(
+                            status_code=413,
+                            content_bytes=b"",
+                            headers={"X-Fetch-Skip-Reason": "max_size_exceeded"},
+                            final_url=result.final_url,
+                            strategy="size_guard",
+                        )
                     return result
                 failed_tiers.append("tier-2")
-                self.logger.warning(f"⚠️ [crawl4ai] tier-2 failed for {url}, trying tier-3")
                 if self._is_target_crashed(result) or result is None:
+                    self.logger.warning(f"⚠️ [crawl4ai] tier-2 crashed for {url}, restarting and trying tier-3")
                     try:
-                        self.logger.info(f"[crawl4ai] Restarting tier-2 crawler after browser crash")
                         await self._restart_crawler("tier-2")
                     except Exception as exc:
                         self.logger.error(f"[crawl4ai] Failed to restart tier-2: {exc}")
+                elif self._is_rate_limited(result):
+                    self.logger.warning(f"⚠️ [crawl4ai] tier-2 rate-limited for {url}, trying tier-3")
+                    await self._rate_limit_backoff(url, result, attempt=2, next_label="tier-3")
+                elif result is not None and result.status_code != 0:
+                    # Non-retryable error — no point trying other tiers
+                    self._log_result(url, result, "tier-2-non-retryable", failed_tiers)
+                    return result
             else:
                 failed_tiers.append("tier-2 (unavailable)")
                 self.logger.warning(f"⚠️ [crawl4ai] tier-2 unavailable for {url}, trying tier-3")
@@ -998,8 +1120,10 @@ class Crawl4AIFetcher:
             # ---- Tier 3: Undetected browser + stealth ----
             undetected_stealth = await self._get_undetected_stealth_crawler()
             if undetected_stealth:
-                result = await self._do_fetch(url, crawler=undetected_stealth, **fetch_kwargs)
-                if self._is_usable(result):
+                result, usable = await self._try_tier(
+                    url, undetected_stealth, "tier-3", fetch_kwargs,
+                )
+                if usable:
                     self._log_result(url, result, "tier-3", failed_tiers)
                     if not self._check_content_size(result.content_bytes, max_size_mb):
                         self.logger.info(f"⚠️ Skipping {url}: content size exceeds limit of {max_size_mb}MB")
@@ -1024,6 +1148,12 @@ class Crawl4AIFetcher:
             self.logger.error(
                 f"❌ [crawl4ai] All tiers failed for {url}"
                 + (f" (tried: {', '.join(failed_tiers)})" if failed_tiers else "")
+            )
+        elif tier.endswith("-non-retryable"):
+            status = result.status_code if result else "N/A"
+            self.logger.warning(
+                f"⚠️ [crawl4ai] {tier} for {url} — HTTP {status}, "
+                f"not retryable across tiers{failed_ctx}"
             )
         elif result and result.success:
             if result.status_code and result.status_code >= 400:

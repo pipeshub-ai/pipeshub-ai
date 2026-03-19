@@ -12,7 +12,6 @@ from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
-import pillow_avif  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from bs4 import BeautifulSoup, Tag
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -742,19 +741,7 @@ class WebConnector(BaseConnector):
                 self.config_service, "web", self.connector_id, self.logger
             )
 
-            if self.use_headless_browser:
-                self.logger.info(
-                    f"Headless browser sync requested for {self.url} "
-                    f"(connector {self.connector_id}). Waiting for headless sync slot..."
-                )
-                async with _headless_sync_semaphore:
-                    self.logger.info(
-                        f"Acquired headless sync slot for {self.url} "
-                        f"(connector {self.connector_id})"
-                    )
-                    await self._do_crawl()
-            else:
-                await self._do_crawl()
+            await self._do_crawl()
             
             await self.process_retry_urls()
 
@@ -1080,10 +1067,11 @@ class WebConnector(BaseConnector):
                 f"(depth={depth})"
             )
             if self.use_headless_browser and self.crawl4ai_fetcher:
-                result = await self.crawl4ai_fetcher.fetch(
-                    url=url,
-                    max_size_mb=self.max_size_mb,
-                )
+                async with _headless_sync_semaphore:
+                    result = await self.crawl4ai_fetcher.fetch(
+                        url=url,
+                        max_size_mb=self.max_size_mb,
+                    )
             else:
                 result = await fetch_url_with_fallback(
                     url=url,
@@ -1371,10 +1359,11 @@ class WebConnector(BaseConnector):
 
                 # Re-fetch using the same strategy configured for this connector
                 if self.use_headless_browser and self.crawl4ai_fetcher:
-                    result = await self.crawl4ai_fetcher.fetch(
-                        url=file_record.weburl,
-                        max_size_mb=self.max_size_mb,
-                    )
+                    async with _headless_sync_semaphore:
+                        result = await self.crawl4ai_fetcher.fetch(
+                            url=file_record.weburl,
+                            max_size_mb=self.max_size_mb,
+                        )
                 else:
                     result = await fetch_url_with_fallback(
                         url=file_record.weburl,
@@ -2543,9 +2532,10 @@ class WebConnector(BaseConnector):
                 )
 
             if self.use_headless_browser and self.crawl4ai_fetcher:
-                result = await self.crawl4ai_fetcher.fetch(
-                    url=record.weburl,
-                )
+                async with _headless_sync_semaphore:
+                    result = await self.crawl4ai_fetcher.fetch(
+                        url=record.weburl,
+                    )
             else:
                 result = await fetch_url_with_fallback(
                     url=record.weburl,
