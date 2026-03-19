@@ -805,9 +805,9 @@ class Crawl4AIFetcher:
             try:
                 delay = min(float(retry_after_raw), self._MAX_TIER_BACKOFF_SECS)
             except (ValueError, TypeError):
-                delay = float(2 ** attempt)
+                delay = float(2 ** (attempt+1))
         else:
-            delay = float(2 ** attempt)
+            delay = float(2 ** (attempt+1))
 
         jitter = random.uniform(0, 1.0)
         delay = min(delay + jitter, self._MAX_TIER_BACKOFF_SECS)
@@ -1135,6 +1135,8 @@ class Crawl4AIFetcher:
 
             # All tiers exhausted — return whatever the last result was
             self._log_result(url, result, "all-tiers-failed", failed_tiers)
+            if result is not None and result.status_code in Crawl4AIFetcher._RATE_LIMIT_CODES:
+                await asyncio.sleep(16)
             return result
 
     def _log_result(
