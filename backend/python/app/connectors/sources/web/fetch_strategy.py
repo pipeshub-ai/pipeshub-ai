@@ -1026,7 +1026,13 @@ class Crawl4AIFetcher:
                 + (f" (tried: {', '.join(failed_tiers)})" if failed_tiers else "")
             )
         elif result and result.success:
-            self.logger.info(f"✅ [crawl4ai] {tier} succeeded for {url}{failed_ctx}")
+            if result.status_code and result.status_code >= 400:
+                self.logger.warning(
+                    f"⚠️ [crawl4ai] {tier} got content for {url} but HTTP status is "
+                    f"{result.status_code} (browser success, server error){failed_ctx}"
+                )
+            else:
+                self.logger.info(f"✅ [crawl4ai] {tier} succeeded for {url}{failed_ctx}")
         else:
             self.logger.warning(f"⚠️ [crawl4ai] {tier} failed for {url}{failed_ctx}")
     # ------------------------------------------------------------------
@@ -1111,6 +1117,14 @@ class Crawl4AIFetcher:
                 links=None,
                 success=False,
                 error_message=result.error_message,
+            )
+
+        # Log when browser got content but HTTP status indicates an error
+        if result.status_code and result.status_code >= 400:
+            error_detail = f": {result.error_message}" if result.error_message else ""
+            self.logger.warning(
+                f"[crawl4ai] Browser returned content for {url} but HTTP status is {result.status_code} "
+                f"(server returned error page; content may not be usable){error_detail}"
             )
 
         # Prefer cleaned_html; fall back to raw html
