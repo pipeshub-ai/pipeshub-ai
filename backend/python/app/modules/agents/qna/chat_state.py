@@ -85,6 +85,7 @@ class ChatState(TypedDict):
     # Planner-based execution fields
     execution_plan: dict[str, Any] | None  # Planned execution from planner node
     planned_tool_calls: list[dict[str, Any]] | None  # List of planned tool calls to execute
+    executed_tool_names: list[str] | None  # Accumulates tool names executed across iterations
     completion_data: dict[str, Any] | None  # Final completion data with citations
 
     # ⚡ PERFORMANCE: Cache fields (must be in TypedDict to persist between nodes!)

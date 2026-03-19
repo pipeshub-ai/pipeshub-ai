@@ -344,14 +344,14 @@ def _is_knowledge_dependent_tool(full_name: str, registry_tool: 'Tool') -> bool:
     Check if a tool is a knowledge-dependent internal tool.
 
     These tools should only be included when knowledge is configured.
-    Includes both retrieval (semantic search) and knowledge_hub (file browsing).
+    Includes both retrieval (semantic search) and knowledgehub (file browsing).
     """
     if hasattr(registry_tool, 'app_name'):
         app_name = str(registry_tool.app_name).lower()
-        if app_name in ('retrieval', 'knowledge_hub'):
+        if app_name in ('retrieval', 'knowledgehub'):
             return True
 
-    knowledge_patterns = ["retrieval.", "knowledge_hub."]
+    knowledge_patterns = ["retrieval.", "knowledgehub."]
     return any(p in full_name.lower() for p in knowledge_patterns)
 
 

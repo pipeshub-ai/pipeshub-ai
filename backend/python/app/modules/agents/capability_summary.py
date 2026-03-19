@@ -123,7 +123,7 @@ def _build_knowledge_section(
         if knowledge_types & tool_domains or knowledge_types - {"kb", ""}:
             parts.append(
                 "\n**IMPORTANT**: When listing or browsing files/documents, use BOTH:\n"
-                "  - `knowledge_hub.list_files` for indexed files with metadata from the Knowledge Hub\n"
+                "  - `knowledgehub.list_files` for indexed files with metadata from the Knowledge Hub\n"
                 "  - Service search/list tools for live data directly from connectors\n"
                 "  This gives the most complete picture."
             )
@@ -149,8 +149,8 @@ def _build_actions_section(
         service_domains.setdefault("retrieval", []).append(
             "retrieval.search_internal_knowledge",
         )
-        service_domains.setdefault("knowledge_hub", []).append(
-            "knowledge_hub.list_files",
+        service_domains.setdefault("knowledgehub", []).append(
+            "knowledgehub.list_files",
         )
 
     parts.append("### Available Actions")

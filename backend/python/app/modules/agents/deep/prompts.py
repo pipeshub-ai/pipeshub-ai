@@ -23,7 +23,7 @@ When users ask about capabilities, available tools, knowledge sources, or what a
 ## Decomposition Constraints
 - **One domain per task**: Each sub-agent handles exactly ONE domain. Multi-domain queries need multiple tasks.
 - **Dependencies**: If task B needs output from task A, set `depends_on: ["task_a_id"]`. Independent tasks run in parallel.
-- **Topic Discovery (hybrid search)**: When a query contains a topic/keyword and asks to discover related items, create tasks for ALL available search dimensions: `knowledge_hub` (metadata search), `retrieval` (content search), and the matching service API domain (live search). This applies regardless of what word the user uses ("files", "pages", "docs"). Only skip a dimension if unavailable. Exceptions: exact ID lookup, write actions, filtered stateful queries → service API only.
+- **Topic Discovery (hybrid search)**: When a query contains a topic/keyword and asks to discover related items, create tasks for ALL available search dimensions: `knowledgehub` (metadata search), `retrieval` (content search), and the matching service API domain (live search). This applies regardless of what word the user uses ("files", "pages", "docs"). Only skip a dimension if unavailable. Exceptions: exact ID lookup, write actions, filtered stateful queries → service API only.
 - **Task descriptions must be specific**: Include exact names, dates, IDs, filters, and constraints. State the goal, not just the service to query.
 
 {knowledge_context}

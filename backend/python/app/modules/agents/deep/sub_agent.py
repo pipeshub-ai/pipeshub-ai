@@ -1422,7 +1422,7 @@ def _format_tools_for_prompt(tools: list, log: logging.Logger) -> str:
 
         lines.append(f"### {name}")
         if description:
-            desc_text = description[:_TOOL_DESC_TRUNCATE_LEN] if len(description) > _TOOL_DESC_TRUNCATE_LEN else description
+            desc_text = description
             lines.append(f"  {desc_text}")
 
         # Extract parameter schema
@@ -1432,13 +1432,14 @@ def _format_tools_for_prompt(tools: list, log: logging.Logger) -> str:
                 from app.modules.agents.deep.tool_router import _extract_params
                 params = _extract_params(schema)
                 if params:
+                    lines.append("")
                     lines.append("  **Parameters:**")
                     for param_name, param_info in params.items():
                         required_marker = "**required**" if param_info.get("required") else "optional"
                         param_type = param_info.get("type", "any").upper()
                         param_desc = param_info.get("description", "")
                         if param_desc:
-                            lines.append(f"  - `{param_name}` ({required_marker}): {param_desc[:100]} [{param_type}]")
+                            lines.append(f"  - `{param_name}` ({required_marker}): {param_desc} [{param_type}]")
                         else:
                             lines.append(f"  - `{param_name}` ({required_marker}) [{param_type}]")
         except Exception as e:

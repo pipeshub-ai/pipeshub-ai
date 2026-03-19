@@ -105,7 +105,8 @@ def tool(
             if when_not_to_use:
                 parts.append("\n**WHEN NOT TO USE**:")
                 parts.extend(f"- {item}" for item in when_not_to_use)
-            final_llm_description = "\n".join(parts)
+            # Join with newlines and ensure trailing newline for proper spacing with Parameters section
+            final_llm_description = "\n".join(parts) + "\n"
 
         # Create tool object
         tool_obj = Tool(

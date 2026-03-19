@@ -147,64 +147,16 @@ def _normalize_list_param(value: str | list[object] | None) -> list[str] | None:
     return None
 
 
-def _format_browse_response(response: KnowledgeHubNodesResponse) -> str:
-    """Format KnowledgeHubNodesResponse into compact JSON for LLM consumption."""
+def _format_browse_response(response: KnowledgeHubNodesResponse) -> tuple[bool, str]:
+    """Return KnowledgeHubNodesResponse as-is (no formatting needed)."""
     if not response.success:
-        return json.dumps({
+        return False, json.dumps({
             "status": "error",
             "message": response.error or "Failed to browse knowledge files",
         })
-
-    items = []
-    for item in response.items:
-        node: dict[str, Any] = {
-            "id": item.id,
-            "name": item.name,
-            "nodeType": item.nodeType,
-            "hasChildren": item.hasChildren,
-        }
-        # Include optional fields only when present to keep response compact
-        if item.recordType:
-            node["recordType"] = item.recordType
-        if item.sizeInBytes is not None:
-            node["sizeInBytes"] = item.sizeInBytes
-        if item.webUrl:
-            node["webUrl"] = item.webUrl
-        if item.mimeType:
-            node["mimeType"] = item.mimeType
-        if item.extension:
-            node["extension"] = item.extension
-        if item.updatedAt:
-            node["updatedAt"] = item.updatedAt
-        if item.createdAt:
-            node["createdAt"] = item.createdAt
-        if item.connector:
-            node["connector"] = item.connector
-        items.append(node)
-
-    result: dict[str, Any] = {
-        "status": "success",
-        "items": items,
-        "resultCount": len(items),
-    }
-
-    if response.pagination:
-        result["pagination"] = {
-            "page": response.pagination.page,
-            "limit": response.pagination.limit,
-            "totalItems": response.pagination.totalItems,
-            "totalPages": response.pagination.totalPages,
-            "hasNext": response.pagination.hasNext,
-        }
-
-    if response.currentNode:
-        result["currentNode"] = {
-            "id": response.currentNode.id,
-            "name": response.currentNode.name,
-            "nodeType": response.currentNode.nodeType,
-        }
-
-    return json.dumps(result, ensure_ascii=False)
+    
+    # Return the full API response structure as-is
+    return True, json.dumps(response.model_dump(exclude_none=True), ensure_ascii=False)
 
 
 @ToolsetBuilder("KnowledgeHub")\
@@ -224,7 +176,7 @@ class KnowledgeHub:
         self.state: ChatState | None = state
 
     @tool(
-        app_name="knowledge_hub",
+        app_name="knowledgehub",
         tool_name="list_files",
         description="List and search all indexed items in the Knowledge Hub by name, structure, or metadata",
         args_schema=ListFilesInput,
@@ -275,10 +227,10 @@ class KnowledgeHub:
         sort_by: str = "updatedAt",
         sort_order: str = "desc",
         flattened: bool = False,
-    ) -> str:
+    ) -> tuple[bool, str]:
         """Browse and search files in the Knowledge Hub."""
         if not self.state:
-            return json.dumps({
+            return False, json.dumps({
                 "status": "error",
                 "message": "Knowledge hub tool state not initialized",
             })
@@ -290,7 +242,7 @@ class KnowledgeHub:
             user_id = self.state.get("user_id", "")
 
             if not graph_provider:
-                return json.dumps({
+                return False, json.dumps({
                     "status": "error",
                     "message": "Graph provider not available",
                 })
@@ -301,7 +253,7 @@ class KnowledgeHub:
             kb_ids = set(_extract_kb_record_groups(agent_knowledge))
 
             if not agent_connector_ids:
-                return json.dumps({
+                return False, json.dumps({
                     "status": "error",
                     "message": "No knowledge sources configured for this agent",
                 })
@@ -313,7 +265,7 @@ class KnowledgeHub:
             parent_type = parent_type.strip() if parent_type else None
 
             if parent_id and not parent_type:
-                return json.dumps({
+                return False, json.dumps({
                     "status": "error",
                     "message": "parent_type is required when parent_id is provided. "
                                "Valid types: 'kb', 'app', 'folder', 'recordGroup'.",
@@ -449,7 +401,7 @@ class KnowledgeHub:
         except Exception as e:
             logger_instance = self.state.get("logger", logger) if self.state else logger
             logger_instance.error(f"Error in knowledge hub tool: {str(e)}", exc_info=True)
-            return json.dumps({
+            return False, json.dumps({
                 "status": "error",
                 "message": f"Knowledge hub error: {str(e)}",
             })

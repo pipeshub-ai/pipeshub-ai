@@ -163,6 +163,10 @@ def assign_tools_to_tasks(
         if has_knowledge and ("retrieval" in task_domains or _is_knowledge_task(task)) and "retrieval" in tool_groups:
             assigned.extend(tool_groups["retrieval"])
 
+        # Add knowledgehub if domain requests it OR if it's a knowledge listing task
+        if has_knowledge and ("knowledgehub" in task_domains) and "knowledgehub" in tool_groups:
+            assigned.extend(tool_groups["knowledgehub"])
+
         # De-duplicate while preserving order
         seen: set[str] = set()
         unique_tools: list[str] = []

@@ -529,10 +529,17 @@ def _underscore_to_dotted(name: str) -> str:
 
     'jira_search_users' → 'jira.search_users'
     'confluence_get_page_content' → 'confluence.get_page_content'
+    'knowledgehub_list_files' → 'knowledgehub.list_files'
 
     Tool names follow 'app.tool_name' format.  The first underscore
     that corresponds to the app/tool separator is replaced with a dot.
+    
+    If the name already contains a dot, return it as-is (don't create invalid names).
     """
+    # If name already has a dot, don't convert (avoid creating invalid names like calculator.calculate.single_operand)
+    if '.' in name:
+        return name
+    
     parts = name.split('_')
     if len(parts) >= 2:
         # First underscore is the app.tool separator
@@ -936,11 +943,19 @@ class ToolExecutor:
             tool_name = tool_call.get("name", "")
             tool_args = tool_call.get("args", {})
 
-            # Normalize tool name
-            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
-            actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
+            # Resolve tool name: tools_by_name contains both sanitized (underscore)
+            # and original (dot) names, so a direct lookup covers the common cases.
+            # Fall back to sanitizing the LLM name (replaces dots→underscores) in
+            # case the LLM used the dotted form but only the sanitized key is stored.
+            actual_tool_name = None
+            if tool_name in tools_by_name:
+                actual_tool_name = tool_name
+            else:
+                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
+                if normalized_name in tools_by_name:
+                    actual_tool_name = normalized_name
 
-            if actual_tool_name not in tools_by_name:
+            if actual_tool_name is None:
                 log.warning(f"❌ Tool not found: {tool_name}")
                 tool_results.append({
                     "tool_name": tool_name,
@@ -1177,11 +1192,16 @@ class ToolExecutor:
             tool_name = tool_call.get("name", "")
             tool_args = tool_call.get("args", {})
 
-            # Normalize tool name
-            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
-            actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
+            # Resolve tool name: same 2-step strategy as sequential executor.
+            actual_tool_name = None
+            if tool_name in tools_by_name:
+                actual_tool_name = tool_name
+            else:
+                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
+                if normalized_name in tools_by_name:
+                    actual_tool_name = normalized_name
 
-            if actual_tool_name not in tools_by_name:
+            if actual_tool_name is None:
                 log.warning(f"❌ Tool not found: {tool_name}")
                 # Create error result directly
                 tasks.append(asyncio.create_task(asyncio.sleep(0, result={
@@ -2391,7 +2411,7 @@ Examples of retrieval queries:
 
 When the user query contains a **topic, keyword, or concept** AND requests discovery of related items (list, find, show, search, browse), perform **hybrid search** by calling ALL available search dimensions in parallel:
 
-1. **Metadata search** → `knowledge_hub.list_files` (finds items by name/metadata in the index)
+1. **Metadata search** → `knowledgehub.list_files` (finds items by name/metadata in the index)
 2. **Semantic content search** → service search tools like `*.search_content`, `*.search_issues`, etc (searches within documents via live API)
 3. **Content retrieval** → `retrieval.search_internal_knowledge` (searches within indexed document content)
 
@@ -3643,59 +3663,6 @@ async def planner_node(
         "can_answer_directly": plan.get("can_answer_directly", False),
     }
 
-    # ── TWO-PHASE ENFORCEMENT ──────────────────────────────────────────────────
-    # If the plan has BOTH retrieval.search_internal_knowledge AND write tools,
-    # strip the write tools from this cycle. Let retrieval run first; in the
-    # continue cycle the planner will see the actual KB content in context and
-    # can write grounded email/comment/page content inline — no hallucination.
-    #
-    # Skip this enforcement if retrieval has already run in a previous iteration
-    # (meaning we're in Phase 2 and the planner should proceed with write tools).
-    plan_tools = plan.get("tools", [])
-    executed_tool_names = state.get("executed_tool_names", [])
-
-    def _is_retrieval_tool(name: str) -> bool:
-        n = name.lower()
-        return "retrieval" in n or "search_internal_knowledge" in n
-
-    retrieval_already_run = any(_is_retrieval_tool(t) for t in executed_tool_names)
-    has_retrieval_in_plan = any(
-        _is_retrieval_tool(t.get("name", ""))
-        for t in plan_tools if isinstance(t, dict)
-    )
-    has_non_retrieval_in_plan = any(
-        not _is_retrieval_tool(t.get("name", ""))
-        for t in plan_tools if isinstance(t, dict)
-    )
-
-    if has_retrieval_in_plan and has_non_retrieval_in_plan and not retrieval_already_run:
-        retrieval_tools = [
-            t for t in plan_tools
-            if isinstance(t, dict) and _is_retrieval_tool(t.get("name", ""))
-        ]
-        deferred_tools = [
-            t for t in plan_tools
-            if isinstance(t, dict) and not _is_retrieval_tool(t.get("name", ""))
-        ]
-        log.info(
-            f"⚡ TWO-PHASE PLAN: {len(plan_tools)} total tools detected. "
-            f"Deferring {len(deferred_tools)} tool(s) to Phase 2 so LLM "
-            f"generates content from actual retrieval results (not hallucination). "
-            f"Running {len(retrieval_tools)} retrieval tool(s) in Phase 1."
-        )
-        plan["tools"] = retrieval_tools
-        state["execution_plan"] = plan
-        state["planned_tool_calls"] = retrieval_tools
-        state["pending_tool_calls"] = bool(retrieval_tools)
-        # Mark that this is Phase 1 of a genuine two-phase plan (retrieval first,
-        # then write action). The reflect node uses this to correctly determine
-        # whether a continue is needed vs. the task being read-only.
-        state["is_two_phase_plan"] = True
-    else:
-        # Not a two-phase plan (or Phase 2 is running) — clear the flag.
-        state["is_two_phase_plan"] = False
-    # ─────────────────────────────────────────────────────────────────────────
-
     # Handle clarification request
     if plan.get("needs_clarification"):
         state["reflection_decision"] = "respond_clarify"
@@ -4527,17 +4494,27 @@ def _validate_planned_tools(
         tools = get_agent_tools_with_schemas(state)
         llm = state.get("llm")
 
-        # Get available tool names
-        available_tool_names = {getattr(tool, 'name', str(tool)) for tool in tools}
+        # Get available tool names (both sanitized and original, like tools_by_name in execution)
+        available_tool_names = set()
+        for tool in tools:
+            sanitized_name = getattr(tool, 'name', str(tool))
+            available_tool_names.add(sanitized_name)
+            # Also add original name if different (like tools_by_name does)
+            original_name = getattr(tool, '_original_name', sanitized_name)
+            if original_name != sanitized_name:
+                available_tool_names.add(original_name)
 
-        # Check for invalid tools
+        # Check for invalid tools — same 2-step resolution as execution
         invalid_tools = []
         for tool_call in planned_tools:
             if isinstance(tool_call, dict):
                 tool_name = tool_call.get('name', '')
-                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
-
-                if normalized_name not in available_tool_names and tool_name not in available_tool_names:
+                found = (
+                    tool_name in available_tool_names
+                    or (_sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name)
+                    in available_tool_names
+                )
+                if not found:
                     invalid_tools.append(tool_name)
 
         is_valid = len(invalid_tools) == 0
@@ -4606,7 +4583,7 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     # ── 1. Classify knowledge sources ────────────────────────────────────────
     # KB = document stores; everything else = app connector snapshot
     kb_sources: list[str] = []
-    indexed_apps: list[dict] = []   # {"label": str, "type_key": str}
+    indexed_apps: list[dict] = []   # {"label": str, "type_key": str, "connector_id": str}
 
     for k in agent_knowledge:
         if not isinstance(k, dict):
@@ -4614,14 +4591,15 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
         name     = k.get("displayName") or k.get("name") or ""
         ktype    = (k.get("type") or "").strip()
         ktype_up = ktype.upper()
+        connector_id = (k.get("connectorId") or "").strip()
 
         if ktype_up == "KB":
-            kb_sources.append(name or "Knowledge Base")
+            kb_sources.append(name or "Knowledge Base (Collection)")
         else:
             # Normalise to lowercase single-word key (e.g. "DRIVE WORKSPACE" → "drive")
             type_key = ktype.lower().split()[0] if ktype else ""
             label    = name or type_key.capitalize() or "App Connector"
-            indexed_apps.append({"label": label, "type_key": type_key})
+            indexed_apps.append({"label": label, "type_key": type_key, "connector_id": connector_id})
 
     indexed_type_keys = {a["type_key"] for a in indexed_apps if a["type_key"]}
 
@@ -4676,9 +4654,12 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
         if indexed_apps:
             lines.append(
                 "\n**Indexed App Connectors** (text is searchable via retrieval):\n"
-                "  ⚠️  Only these app names are valid in `filters.apps` for retrieval:"
+                "  Use the type_key or connector_id in `filters.apps` for retrieval:"
             )
-            lines.extend(f"  - 🔗 `{app['type_key']}` ({app['label']})" for app in indexed_apps)
+            lines.extend(
+                f"  - 🔗 `{app['type_key']}` ({app['label']}) — connector_id: `{app['connector_id']}`"
+                for app in indexed_apps
+            )
         else:
             lines.append(
                 "\n⚠️  **NO app connectors are indexed** — only Knowledge Bases above are available.\n"
@@ -4987,7 +4968,7 @@ def _format_tool_descriptions(tools: list, log: logging.Logger) -> str:
         lines.append(f"### {name}")
         if description:
             # Truncate long descriptions
-            desc_text = description[:MAX_TOOL_DESCRIPTION_LENGTH] if len(description) > MAX_TOOL_DESCRIPTION_LENGTH else description
+            desc_text = description
             lines.append(f"  {desc_text}")
 
         # Extract parameter schema
@@ -4996,6 +4977,8 @@ def _format_tool_descriptions(tools: list, log: logging.Logger) -> str:
             if schema:
                 params_info = _extract_parameters_from_schema(schema, log)
                 if params_info:
+                    # Add blank line between description and parameters
+                    lines.append("")
                     lines.append("  **Parameters:**")
                     for param_name, param_info in params_info.items():
                         required_marker = "**required**" if param_info.get("required") else "optional"
@@ -5004,7 +4987,7 @@ def _format_tool_descriptions(tools: list, log: logging.Logger) -> str:
 
                         # Format: - param_name (required): description [TYPE]
                         if param_desc:
-                            lines.append(f"  - `{param_name}` ({required_marker}): {param_desc[:80]} [{param_type}]")
+                            lines.append(f"  - `{param_name}` ({required_marker}): {param_desc} [{param_type}]")
                         else:
                             lines.append(f"  - `{param_name}` ({required_marker}) [{param_type}]")
         except Exception as e:
@@ -5100,12 +5083,17 @@ async def execute_node(
         tools = get_agent_tools_with_schemas(state)
         llm = state.get("llm")
 
-        # Build tool mapping
+        # Build tool mapping: both sanitized (underscore) and original (dot) names.
+        # _underscore_to_dotted is NOT applied here because it only replaces the
+        # first underscore, which is wrong for multi-word app names like
+        # knowledge_hub (knowledge_hub_list_files → knowledge.hub_list_files ✗).
+        # The two-entry map (sanitized + original) is sufficient: the LLM outputs
+        # either the sanitized or the original name and step-1 lookup always hits.
         tools_by_name = {}
         for t in tools:
             sanitized_name = getattr(t, 'name', str(t))
-            tools_by_name[sanitized_name] = t
             original_name = getattr(t, '_original_name', sanitized_name)
+            tools_by_name[sanitized_name] = t
             if original_name != sanitized_name:
                 tools_by_name[original_name] = t
 
@@ -5196,7 +5184,7 @@ async def reflect_node(
     for r in successful:
         log.info(f"  ✅ {r.get('tool_name')}")
     for r in failed:
-        log.info(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))}")
+        log.info(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))[:300]}")
     for r in cascade_errors:
         log.info(f"  🔗❌ {r.get('tool_name')}: cascade broken")
 
@@ -5587,18 +5575,35 @@ def _check_if_task_needs_continue(
     """
     Determine whether the agent needs another planning cycle.
 
-    The ONLY reason to continue is when the planner explicitly set up a
-    two-phase plan (retrieval first, then write).  In all other cases the
-    planner already planned all needed tools and they all succeeded, so
-    the task is complete.
+    Returns True if there are planned tools that have not yet been executed.
+    Returns False if all planned tools have been executed.
     """
-    state = state or {}
-    if state.get("is_two_phase_plan"):
-        log.debug(
-            "Two-phase plan Phase 1 complete — continuing to Phase 2 for write tools. "
-            f"Executed so far: {executed_tools}"
-        )
+    if not state:
+        return False
+
+    planned_tools = state.get("planned_tool_calls", [])
+    if not planned_tools:
+        return False
+
+    # Normalize tool names for comparison (handle both dotted and underscored formats)
+    planned_names = set()
+    for tool in planned_tools:
+        if isinstance(tool, dict):
+            name = tool.get("name", "")
+            planned_names.add(name)
+            planned_names.add(name.replace(".", "_"))
+            planned_names.add(name.replace("_", "."))
+
+    executed_names = set(executed_tools)
+    for tool_name in executed_tools:
+        executed_names.add(tool_name.replace(".", "_"))
+        executed_names.add(tool_name.replace("_", "."))
+
+    if not planned_names.issubset(executed_names):
+        missing = planned_names - executed_names
+        log.debug(f"Some planned tools not yet executed: {missing}")
         return True
+
     return False
 
 
@@ -7545,7 +7550,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 3. **Topic Discovery — Hybrid Search** (HIGHEST PRIORITY):
    When the user query contains a topic/keyword and asks to discover related items
    (list, find, show, search, browse), call ALL available search dimensions in parallel:
-   - `knowledge_hub_list_files` → finds items by name/metadata in the index
+   - `knowledgehub.list_files` → finds items by name/metadata in the index
    - Service search tools → searches live data via the service API
    - `retrieval_search_internal_knowledge` → searches within indexed document content
 
