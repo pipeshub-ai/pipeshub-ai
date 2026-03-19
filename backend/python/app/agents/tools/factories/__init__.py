@@ -6,6 +6,7 @@ from app.agents.tools.factories.base import ClientFactory
 from app.agents.tools.factories.google import GoogleClientFactory
 from app.agents.tools.factories.mariadb import MariaDBClientFactory
 from app.agents.tools.factories.registry import ClientFactoryRegistry
+from app.agents.tools.factories.redshift import RedshiftClientFactory
 
 __all__ = [
     'ClientFactory',
@@ -17,4 +18,5 @@ __all__ = [
     'MSGraphClientFactory',
     'NotionClientFactory',
     'ClientFactoryRegistry',
+    'RedshiftClientFactory',
 ]
