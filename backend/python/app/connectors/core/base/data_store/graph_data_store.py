@@ -590,7 +590,7 @@ class GraphTransactionStore(TransactionStore):
 
     async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:
         """Delete a record and all its relations"""
-        return await self.graph_provider.delete_records_and_relations(record_key, hard_delete, transaction=self.txn)
+        return await self.graph_provider.delete_records_and_relations(record_key, hard_delete=hard_delete, transaction=self.txn)
 
     async def process_file_permissions(self, org_id: str, file_key: str, permissions: List[Dict]) -> None:
         """Process file permissions"""
