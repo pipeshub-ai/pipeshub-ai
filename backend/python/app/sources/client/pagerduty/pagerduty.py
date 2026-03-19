@@ -1,318 +1,510 @@
-"""PagerDuty REST API Client - Official SDK Integration.
+"""PagerDuty client implementation using the official pagerduty SDK.
 
-This module provides a PagerDuty client using the official python-pagerduty SDK.
-It follows the project's pattern (similar to Box and Asana) by wrapping the official SDK.
+This module provides clients for interacting with the PagerDuty API using either:
+1. OAuth 2.0 authorization code flow (Bearer token)
+2. API Token authentication (Token token=<value>)
 
-Architecture:
-- Uses official RestApiV2Client from pagerduty SDK (>=5.0.0)
-- Returns standardized PagerDutyResponse objects
-- Supports Token authentication
-- Type hints use proper SDK types
-- Pydantic models for configuration
+The underlying SDK is ``pagerduty`` (PyPI, >=5.0.0).  All API access is routed
+through ``RestApiV2Client`` which exposes ``rget``, ``rpost``, ``rput``,
+``rdelete``, ``list_all``, ``iter_all``, and ``find`` methods.
 
-Reference: https://github.com/PagerDuty/python-pagerduty
-Documentation: https://pagerduty.github.io/python-pagerduty/
+Authentication Reference: https://developer.pagerduty.com/docs/authentication
+API Reference: https://developer.pagerduty.com/api-reference/
 """
 
 import logging
-from typing import Any
+from enum import Enum
+from typing import Any, cast
 
-from pydantic import BaseModel, Field
+from pagerduty import RestApiV2Client  # type: ignore[import-untyped]
+from pydantic import BaseModel, Field  # type: ignore
+from typing_extensions import override
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
 
-try:
-    from pagerduty import RestApiV2Client  # Official PagerDuty SDK
-except ImportError:
-    raise ImportError(
-        "pagerduty is not installed. Please install it with `pip install pagerduty>=5.0.0`",
-    )
+# ---------------------------------------------------------------------------
+# Enums
+# ---------------------------------------------------------------------------
 
-logger = logging.getLogger(__name__)
+
+class PagerDutyAuthType(str, Enum):
+    """Authentication types supported by the PagerDuty connector."""
+
+    OAUTH = "OAUTH"
+    TOKEN = "TOKEN"
+
+
+# ---------------------------------------------------------------------------
+# Response model
+# ---------------------------------------------------------------------------
 
 
 class PagerDutyResponse(BaseModel):
-    """Standardized PagerDuty API response wrapper."""
+    """Standardized PagerDuty API response wrapper.
 
-    success: bool = Field(..., description="Whether the API call was successful")
-    data: dict[str, Any] | None = Field(
-        None, description="Response data from PagerDuty API",
+    The data field holds deserialized SDK response objects (dicts or lists).
+    The SDK returns dicts for single-resource calls (rget/rpost/rput) and
+    lists for collection calls (list_all).
+    """
+
+    success: bool = Field(
+        ..., description="Whether the request was successful"
     )
-    error: str | None = Field(None, description="Error message if the call failed")
-    message: str | None = Field(None, description="Additional message information")
+    data: dict[str, object] | list[object] | None = Field(
+        default=None,
+        description="Response data from the PagerDuty SDK",
+    )
+    error: str | None = Field(
+        default=None, description="Error message if failed"
+    )
+    message: str | None = Field(
+        default=None, description="Additional message information"
+    )
 
     class Config:
         """Pydantic configuration."""
 
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "data": {"id": "PXXXXXX", "type": "incident"},
-                "error": None,
-                "message": None,
-            },
-        }
+        extra = "allow"
 
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return self.model_dump()
-
-    def to_json(self) -> str:
-        """Convert to JSON string."""
-        return self.model_dump_json()
+    def to_dict(self) -> dict[str, object]:
+        """Convert response to dictionary."""
+        return self.model_dump(exclude_none=True)
 
 
-class PagerDutyRESTClientViaToken:
-    """PagerDuty REST client using API Token authentication.
+# ---------------------------------------------------------------------------
+# SDK wrapper classes
+# ---------------------------------------------------------------------------
 
-    Wraps the official RestApiV2Client from pagerduty SDK.
+
+class PagerDutyClientViaOAuth:
+    """PagerDuty SDK wrapper using OAuth 2.0 Bearer token.
+
+    Creates a ``RestApiV2Client`` authenticated with a Bearer access token.
+    Stores client_id / client_secret for potential token-refresh flows
+    handled at a higher layer.
 
     Args:
-        api_token: The PagerDuty API token (starts with 'u+')
-        base_url: Optional base URL for PagerDuty API (for non-US regions)
-
+        access_token: The OAuth access token.
+        client_id: OAuth client ID (used for token refresh externally).
+        client_secret: OAuth client secret (used for token refresh externally).
     """
 
     def __init__(
         self,
-        api_token: str,
-        base_url: str | None = None,
+        access_token: str,
+        client_id: str | None = None,
+        client_secret: str | None = None,
     ) -> None:
-        """Initialize PagerDuty client configuration.
+        self.access_token = access_token
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self._sdk: RestApiV2Client = RestApiV2Client(  # type: ignore[reportUnknownVariableType]
+            api_key=access_token,
+            auth_type="bearer",
+        )  # type: ignore[reportInvalidTypeForm]
 
-        Args:
-            api_token: PagerDuty API token
-            base_url: Optional custom base URL (default: https://api.pagerduty.com)
+    def get_sdk(self) -> RestApiV2Client:  # type: ignore[reportInvalidTypeForm]
+        """Return the underlying ``RestApiV2Client`` SDK instance."""
+        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-        """
-        self.api_token = api_token
-        self.base_url = base_url
-        self._client: RestApiV2Client | None = None
 
-    async def create_client(self) -> RestApiV2Client:
-        """Create and initialize the PagerDuty SDK client.
+class PagerDutyClientViaToken:
+    """PagerDuty SDK wrapper using an API token.
 
-        Returns:
-            RestApiV2Client instance from official pagerduty SDK
+    API tokens use ``Token token=<value>`` authentication. The SDK handles
+    this when ``auth_type='token'`` is specified.
 
-        Raises:
-            ValueError: If API token is invalid
+    Args:
+        token: The PagerDuty API token.
+    """
 
-        """
-        # Validate token is not empty
-        # Note: PagerDuty supports multiple token types:
-        # - User tokens (start with 'u+')
-        # - Account-level API keys (may start with 'v2_')
-        # - OAuth access tokens (various formats)
-        # The SDK will validate the token during API calls, so we only check for emptiness
-        if not self.api_token:
-            raise ValueError("PagerDuty API token cannot be empty")
+    def __init__(self, token: str) -> None:
+        self.token = token
+        self._sdk: RestApiV2Client = RestApiV2Client(  # type: ignore[reportUnknownVariableType]
+            api_key=token,
+            auth_type="token",
+        )  # type: ignore[reportInvalidTypeForm]
 
-        # Initialize official SDK client
-        # Note: RestApiV2Client uses 'api_key' parameter
-        self._client = RestApiV2Client(api_key=self.api_token)
+    def get_sdk(self) -> RestApiV2Client:  # type: ignore[reportInvalidTypeForm]
+        """Return the underlying ``RestApiV2Client`` SDK instance."""
+        return self._sdk  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
-        # Note: SDK doesn't support custom base_url in __init__
-        # Warn if a custom base_url was provided but cannot be used
-        if self.base_url:
-            logger.warning(
-                "A custom base_url was provided, but the PagerDuty SDK does not support it. "
-                "Using the default URL (https://api.pagerduty.com).",
-            )
 
-        return self._client
+# ---------------------------------------------------------------------------
+# Configuration models (Pydantic)
+# ---------------------------------------------------------------------------
 
-    def get_sdk_client(self) -> RestApiV2Client:
-        """Get the underlying PagerDuty SDK client.
 
-        Returns:
-            RestApiV2Client instance from official pagerduty SDK
+class PagerDutyOAuthConfig(BaseModel):
+    """Configuration for PagerDuty client via OAuth 2.0.
 
-        Raises:
-            RuntimeError: If client not initialized
+    Args:
+        access_token: The OAuth access token.
+        client_id: OAuth client ID.
+        client_secret: OAuth client secret.
+    """
 
-        """
-        if self._client is None:
-            raise RuntimeError(
-                "Client not initialized. Call create_client() first.",
-            )
-        return self._client
+    access_token: str
+    client_id: str | None = None
+    client_secret: str | None = None
+
+    def create_client(self) -> PagerDutyClientViaOAuth:
+        return PagerDutyClientViaOAuth(
+            self.access_token,
+            self.client_id,
+            self.client_secret,
+        )
 
 
 class PagerDutyTokenConfig(BaseModel):
-    """Configuration for PagerDuty REST client via API Token.
+    """Configuration for PagerDuty client via API Token.
 
     Args:
-        api_token: The PagerDuty API token
-        base_url: Optional base URL for PagerDuty API
-
+        token: The PagerDuty API token.
     """
 
-    api_token: str = Field(..., description="PagerDuty API token (starts with 'u+')")
-    base_url: str | None = Field(
-        None, description="Optional base URL for PagerDuty API",
+    token: str
+
+    def create_client(self) -> PagerDutyClientViaToken:
+        return PagerDutyClientViaToken(self.token)
+
+
+# ---------------------------------------------------------------------------
+# Connector configuration models for build_from_services
+# ---------------------------------------------------------------------------
+
+
+class PagerDutyAuthConfig(BaseModel):
+    """Auth section of the PagerDuty connector configuration from etcd."""
+
+    authType: PagerDutyAuthType = PagerDutyAuthType.TOKEN
+    apiToken: str | None = None
+    token: str | None = None
+    clientId: str | None = None
+    clientSecret: str | None = None
+    redirectUri: str | None = None
+    oauthConfigId: str | None = None
+
+    class Config:
+        extra = "allow"
+
+
+class PagerDutyCredentialsConfig(BaseModel):
+    """Credentials section of the PagerDuty connector configuration."""
+
+    access_token: str | None = None
+    refresh_token: str | None = None
+
+    class Config:
+        extra = "allow"
+
+
+class PagerDutyConnectorConfig(BaseModel):
+    """Top-level PagerDuty connector configuration from etcd."""
+
+    auth: PagerDutyAuthConfig = Field(
+        default_factory=PagerDutyAuthConfig
+    )
+    credentials: PagerDutyCredentialsConfig = Field(
+        default_factory=PagerDutyCredentialsConfig
     )
 
-    def create_client(self) -> PagerDutyRESTClientViaToken:
-        """Create a PagerDuty REST client instance.
+    class Config:
+        extra = "allow"
 
-        Returns:
-            PagerDutyRESTClientViaToken instance
 
-        """
-        return PagerDutyRESTClientViaToken(self.api_token, self.base_url)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert the configuration to a dictionary.
-
-        Returns:
-            Dictionary representation of the configuration
-
-        """
-        return self.model_dump()
+# ---------------------------------------------------------------------------
+# Client builder
+# ---------------------------------------------------------------------------
 
 
 class PagerDutyClient(IClient):
-    """Builder class for PagerDuty clients with different construction methods.
+    """Builder class for PagerDuty clients with different authentication methods.
 
-    This follows the same pattern as BoxClient and AsanaClient in the project.
+    Supports:
+    - OAuth 2.0 authorization code flow (Bearer token)
+    - API Token authentication (Token token=<value>)
     """
 
-    def __init__(self, client: PagerDutyRESTClientViaToken) -> None:
-        """Initialize with a PagerDuty client object.
-
-        Args:
-            client: PagerDutyRESTClientViaToken instance
-
-        """
+    def __init__(
+        self,
+        client: PagerDutyClientViaOAuth | PagerDutyClientViaToken,
+    ) -> None:
+        """Initialize with a PagerDuty SDK wrapper."""
+        super().__init__()
         self.client = client
 
-    def get_client(self) -> PagerDutyRESTClientViaToken:
-        """Return the PagerDuty client wrapper.
-
-        Returns:
-            PagerDutyRESTClientViaToken instance
-
-        """
+    @override
+    def get_client(
+        self,
+    ) -> PagerDutyClientViaOAuth | PagerDutyClientViaToken:
+        """Return the PagerDuty SDK wrapper."""
         return self.client
 
-    def get_sdk_client(self) -> RestApiV2Client:
-        """Return the underlying SDK client directly.
-
-        Returns:
-            RestApiV2Client from official pagerduty SDK
-
-        Raises:
-            RuntimeError: If client not initialized
-
-        """
-        return self.client.get_sdk_client()
+    def get_sdk(self) -> RestApiV2Client:  # type: ignore[reportInvalidTypeForm]
+        """Return the underlying ``RestApiV2Client`` SDK instance."""
+        return self.client.get_sdk()  # type: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
     @classmethod
-    async def build_with_config(cls, config: PagerDutyTokenConfig) -> "PagerDutyClient":
+    def build_with_config(
+        cls,
+        config: PagerDutyOAuthConfig | PagerDutyTokenConfig,
+    ) -> "PagerDutyClient":
         """Build PagerDutyClient with configuration.
 
         Args:
-            config: PagerDutyTokenConfig instance (Pydantic model)
+            config: PagerDutyOAuthConfig or PagerDutyTokenConfig instance
 
         Returns:
             PagerDutyClient instance
-
-        Example:
-            >>> config = PagerDutyTokenConfig(api_token="u+YOUR_TOKEN")
-            >>> client = await PagerDutyClient.build_with_config(config)
-            >>> sdk = client.get_sdk_client()
-            >>> response = sdk.get("/users/me")
-
         """
-        client = config.create_client()
-        await client.create_client()  # Initialize the SDK client
-        return cls(client)
+        return cls(config.create_client())
 
     @classmethod
     async def build_from_services(
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: str | None = None,
     ) -> "PagerDutyClient":
         """Build PagerDutyClient using configuration service.
+
+        Supports two authentication strategies:
+        1. OAUTH: OAuth 2.0 Bearer token
+        2. TOKEN: PagerDuty API token
 
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+            connector_instance_id: Optional connector instance ID
 
         Returns:
             PagerDutyClient instance
-
-        Raises:
-            ValueError: If configuration is invalid or missing
-
         """
         try:
-            # Get PagerDuty configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
-
-            if not config:
-                raise ValueError("Failed to get PagerDuty connector configuration")
-
-            auth_config = config.get("auth", {}) or {}
-            if not auth_config:
+            raw_config = await cls._get_connector_config(
+                logger, config_service, connector_instance_id
+            )
+            if not raw_config:
                 raise ValueError(
-                    "Auth configuration not found in PagerDuty connector configuration",
+                    "Failed to get PagerDuty connector configuration"
                 )
 
-            credentials_config = config.get("credentials", {}) or {}
+            connector_config = PagerDutyConnectorConfig.model_validate(
+                raw_config
+            )
 
-            # Extract configuration values
-            auth_type = auth_config.get("authType", "API_TOKEN")
+            if connector_config.auth.authType == PagerDutyAuthType.OAUTH:
+                access_token = (
+                    connector_config.credentials.access_token or ""
+                )
+                client_id = connector_config.auth.clientId or ""
+                client_secret = connector_config.auth.clientSecret or ""
 
-            # Get token based on auth type
-            token: str
-            if auth_type == "API_TOKEN":
-                token = auth_config.get("apiToken", "")
-                if not token:
-                    raise ValueError("API token required for API_TOKEN auth type")
-            elif auth_type == "OAUTH":
-                token = credentials_config.get("access_token", "")
-                if not token:
-                    raise ValueError("Access token required for OAuth auth type")
+                # Try shared OAuth config if credentials are missing
+                oauth_config_id = connector_config.auth.oauthConfigId
+                if oauth_config_id and not (client_id and client_secret):
+                    try:
+                        oauth_configs_raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
+                            "/services/oauth/pagerduty", default=[]
+                        )
+                        oauth_configs: list[Any] = (
+                            cast(list[Any], oauth_configs_raw)
+                            if isinstance(oauth_configs_raw, list)
+                            else []
+                        )
+                        for cfg in oauth_configs:
+                            c: dict[str, Any] = cast(
+                                dict[str, Any], cfg
+                            )
+                            if c.get("_id") == oauth_config_id:
+                                shared: dict[str, Any] = cast(
+                                    dict[str, Any],
+                                    c.get("config", {}),
+                                )
+                                client_id = str(
+                                    shared.get("clientId")
+                                    or shared.get("client_id")
+                                    or client_id
+                                )
+                                client_secret = str(
+                                    shared.get("clientSecret")
+                                    or shared.get("client_secret")
+                                    or client_secret
+                                )
+                                break
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to fetch shared OAuth config: {e}"
+                        )
+
+                if not access_token:
+                    raise ValueError(
+                        "Access token required for OAuth auth type"
+                    )
+
+                oauth_cfg = PagerDutyOAuthConfig(
+                    access_token=access_token,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                )
+                return cls(oauth_cfg.create_client())
+
             else:
-                raise ValueError(f"Invalid auth type: {auth_type}")
+                # Default: TOKEN
+                token = (
+                    connector_config.auth.apiToken
+                    or connector_config.auth.token
+                    or ""
+                )
+                if not token:
+                    raise ValueError(
+                        "Token required for TOKEN auth type"
+                    )
 
-            # Create and initialize client with token
-            base_url = auth_config.get("baseUrl")
-            client = PagerDutyRESTClientViaToken(token, base_url)
-            await client.create_client()  # Initialize the SDK client
+                token_config = PagerDutyTokenConfig(token=token)
+                return cls(token_config.create_client())
 
-            return cls(client)
+        except Exception as e:
+            logger.error(
+                f"Failed to build PagerDuty client from services: {str(e)}"
+            )
+            raise
 
-        except Exception:
-            logger.exception("Failed to build PagerDuty client from services")
+    @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: dict[str, Any],
+        logger: logging.Logger,
+        config_service: ConfigurationService | None = None,
+    ) -> "PagerDutyClient":
+        """Build client from per-user toolset configuration.
+
+        Args:
+            toolset_config: Per-user toolset configuration dict
+            logger: Logger instance
+            config_service: Optional configuration service for shared OAuth
+
+        Returns:
+            PagerDutyClient instance
+        """
+        try:
+            credentials: dict[str, Any] = cast(
+                dict[str, Any],
+                toolset_config.get("credentials", {}) or {},
+            )
+            auth_config: dict[str, Any] = cast(
+                dict[str, Any],
+                toolset_config.get("auth", {}) or {},
+            )
+            auth_type = auth_config.get("authType", "TOKEN")
+
+            if auth_type == "OAUTH":
+                access_token = str(
+                    credentials.get("access_token", "")
+                )
+                if not access_token:
+                    raise ValueError(
+                        "Access token not found in toolset config"
+                    )
+
+                client_id = str(auth_config.get("clientId", ""))
+                client_secret = str(
+                    auth_config.get("clientSecret", "")
+                )
+
+                # Try shared OAuth config
+                oauth_config_id: str | None = cast(
+                    str | None, auth_config.get("oauthConfigId")
+                )
+                if oauth_config_id and config_service and not (
+                    client_id and client_secret
+                ):
+                    try:
+                        oauth_configs_raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
+                            "/services/oauth/pagerduty", default=[]
+                        )
+                        oauth_configs: list[Any] = (
+                            cast(list[Any], oauth_configs_raw)
+                            if isinstance(oauth_configs_raw, list)
+                            else []
+                        )
+                        for cfg in oauth_configs:
+                            c: dict[str, Any] = cast(
+                                dict[str, Any], cfg
+                            )
+                            if c.get("_id") == oauth_config_id:
+                                shared: dict[str, Any] = cast(
+                                    dict[str, Any],
+                                    c.get("config", {}),
+                                )
+                                client_id = str(
+                                    shared.get("clientId")
+                                    or shared.get("client_id")
+                                    or client_id
+                                )
+                                client_secret = str(
+                                    shared.get("clientSecret")
+                                    or shared.get("client_secret")
+                                    or client_secret
+                                )
+                                break
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to fetch shared OAuth config: {e}"
+                        )
+
+                oauth_cfg = PagerDutyOAuthConfig(
+                    access_token=access_token,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                )
+                return cls(oauth_cfg.create_client())
+
+            else:
+                # Default: TOKEN
+                token = str(
+                    credentials.get("token", "")
+                    or credentials.get("api_token", "")
+                    or auth_config.get("apiToken", "")
+                    or auth_config.get("token", "")
+                )
+                if not token:
+                    raise ValueError(
+                        "Token not found in toolset config"
+                    )
+                token_config = PagerDutyTokenConfig(token=token)
+                return cls(token_config.create_client())
+
+        except Exception as e:
+            logger.error(
+                f"Failed to build PagerDuty client from toolset: {str(e)}"
+            )
             raise
 
     @staticmethod
     async def _get_connector_config(
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: str | None = None,
     ) -> dict[str, Any]:
-        """Fetch connector config from etcd for PagerDuty.
-
-        Args:
-            logger: Logger instance
-            config_service: Configuration service
-
-        Returns:
-            Configuration dictionary
-
-        """
+        """Fetch connector config from etcd for PagerDuty."""
         try:
-            config = await config_service.get_config("/services/connectors/pagerduty/config")
-            return config or {}
-        except (KeyError, ConnectionError, TimeoutError) as e:
-            logger.exception(f"Failed to get PagerDuty connector config: {e}")
-            return {}
+            raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
+                f"/services/connectors/{connector_instance_id}/config"
+            )
+            if not raw:
+                raise ValueError(
+                    f"Failed to get PagerDuty connector configuration "
+                    f"for instance {connector_instance_id}"
+                )
+            return cast(dict[str, Any], raw)
         except Exception as e:
-            logger.error(f"Unexpected error getting PagerDuty connector config: {e}")
-            return {}
-
+            logger.error(
+                f"Failed to get PagerDuty connector config: {e}"
+            )
+            raise ValueError(
+                f"Failed to get PagerDuty connector configuration "
+                f"for instance {connector_instance_id}"
+            ) from e
