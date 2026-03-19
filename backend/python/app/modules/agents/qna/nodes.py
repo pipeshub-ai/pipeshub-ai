@@ -539,7 +539,7 @@ def _underscore_to_dotted(name: str) -> str:
     # If name already has a dot, don't convert (avoid creating invalid names like calculator.calculate.single_operand)
     if '.' in name:
         return name
-    
+
     parts = name.split('_')
     if len(parts) >= 2:
         # First underscore is the app.tool separator

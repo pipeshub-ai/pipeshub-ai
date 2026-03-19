@@ -9,7 +9,6 @@ metadata/structure, while retrieval searches file contents.
 
 import json
 import logging
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -154,7 +153,7 @@ def _format_browse_response(response: KnowledgeHubNodesResponse) -> tuple[bool, 
             "status": "error",
             "message": response.error or "Failed to browse knowledge files",
         })
-    
+
     # Return the full API response structure as-is
     return True, json.dumps(response.model_dump(exclude_none=True), ensure_ascii=False)
 

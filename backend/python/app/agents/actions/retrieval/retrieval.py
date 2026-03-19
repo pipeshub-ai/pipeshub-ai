@@ -10,7 +10,7 @@ OPTION B: Skip get_message_content() in individual retrieval calls.
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from langgraph.types import StreamWriter
 from pydantic import BaseModel, Field
@@ -45,18 +45,18 @@ class RetrievalToolOutput(BaseModel):
     """Structured output from the retrieval tool."""
     status: str = Field(default="success", description="Status: 'success' or 'error'")
     content: str = Field(description="Formatted content for LLM consumption")
-    final_results: List[Dict[str, Any]] = Field(description="Processed results for citation generation")
-    virtual_record_id_to_result: Dict[str, Dict[str, Any]] = Field(description="Mapping for citation normalization")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    final_results: list[dict[str, Any]] = Field(description="Processed results for citation generation")
+    virtual_record_id_to_result: dict[str, dict[str, Any]] = Field(description="Mapping for citation normalization")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
 class SearchInternalKnowledgeInput(BaseModel):
     """Input schema for the search_internal_knowledge tool"""
     query: str = Field(description="The search query to find relevant information")
-    limit: Optional[int] = Field(default=50, description="Maximum number of results to return (default: 50, max: 100)")
-    connector_ids: Optional[List[str]] = Field(default=None, description="Filter to specific connectors by their IDs. If not provided or IDs don't match agent scope, uses all agent connectors.")
-    collection_ids: Optional[List[str]] = Field(default=None, description="Filter to specific KB collections by their record group IDs. If not provided or IDs don't match agent scope, uses all agent collections.")
-    top_k: Optional[int] = Field(default=None, description="Alias for limit")
+    limit: int | None = Field(default=50, description="Maximum number of results to return (default: 50, max: 100)")
+    connector_ids: list[str] | None = Field(default=None, description="Filter to specific connectors by their IDs. If not provided or IDs don't match agent scope, uses all agent connectors.")
+    collection_ids: list[str] | None = Field(default=None, description="Filter to specific KB collections by their record group IDs. If not provided or IDs don't match agent scope, uses all agent collections.")
+    top_k: int | None = Field(default=None, description="Alias for limit")
 
 
 @ToolsetBuilder("Retrieval")\
@@ -72,8 +72,8 @@ class SearchInternalKnowledgeInput(BaseModel):
 class Retrieval:
     """Internal knowledge retrieval tool exposed to agents"""
 
-    def __init__(self, state: Optional[ChatState] = None, writer: Optional[StreamWriter] = None, **kwargs) -> None:
-        self.state: Optional[ChatState] = state or kwargs.get('state')
+    def __init__(self, state: ChatState | None = None, writer: StreamWriter | None = None, **kwargs) -> None:
+        self.state: ChatState | None = state or kwargs.get('state')
         self.writer = writer
         logger.info("🚀 Initializing Internal Knowledge Retrieval tool")
 
@@ -114,11 +114,11 @@ class Retrieval:
     )
     async def search_internal_knowledge(
         self,
-        query: Optional[str] = None,
-        limit: Optional[int] = None,
-        top_k: Optional[int] = None,
-        connector_ids: Optional[List[str]] = None,
-        collection_ids: Optional[List[str]] = None,
+        query: str | None = None,
+        limit: int | None = None,
+        top_k: int | None = None,
+        connector_ids: list[str] | None = None,
+        collection_ids: list[str] | None = None,
         **kwargs
     ) -> str:
         """Search internal knowledge bases and return formatted results."""
