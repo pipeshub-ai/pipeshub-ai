@@ -40,12 +40,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
         
-      - name: Debug secrets avaliability
-        run: |
-          echo "PIPESHUB_BASE_URL: ${{ secrets.PIPESHUB_BASE_URL }}"
-          echo "PIPESHUB_CLIENT_ID: ${{ secrets.PIPESHUB_CLIENT_ID }}"
-          echo "TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}"
-
       - name: Run integration tests
         working-directory: integration-tests
         env:
