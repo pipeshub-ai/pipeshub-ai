@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from enum import Enum
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -17,7 +18,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
-from app.sources.client.clickup.clickup import ClickUpClient
+from app.sources.client.clickup.clickup import ClickUpClient, ClickUpResponse
 from app.sources.external.clickup.clickup import ClickUpDataSource
 
 logger = logging.getLogger(__name__)
@@ -25,31 +26,80 @@ logger = logging.getLogger(__name__)
 CLICKUP_APP_BASE = "https://app.clickup.com"
 
 
-def _build_clickup_web_url(entity: str, team_id: Optional[str] = None, **kwargs: str) -> str:
+class ClickUpEntityType(str, Enum):
+    """Entity types for building ClickUp app web URLs."""
+
+    WORKSPACE = "workspace"
+    SPACE = "space"
+    FOLDER = "folder"
+    LIST = "list"
+    DOC = "doc"
+    PAGE = "page"
+    COMMENT = "comment"
+    COMMENT_REPLY = "comment_reply"
+
+
+def _build_clickup_web_url(
+    entity: ClickUpEntityType, team_id: Optional[str] = None, **kwargs: str
+) -> str:
     """Build ClickUp app web URL for an entity. All IDs as strings. team_id optional for comment/comment_reply."""
-    if entity == "workspace":
+    if team_id is None and entity in (
+        ClickUpEntityType.WORKSPACE,
+        ClickUpEntityType.SPACE,
+        ClickUpEntityType.FOLDER,
+        ClickUpEntityType.LIST,
+        ClickUpEntityType.DOC,
+        ClickUpEntityType.PAGE,
+    ):
+        logger.warning(
+            "Attempted to build ClickUp web URL for entity '%s' without a team_id.",
+            entity.value,
+        )
+        return ""
+
+    if entity == ClickUpEntityType.WORKSPACE:
         return f"{CLICKUP_APP_BASE}/{team_id}/home"
-    if entity == "space":
-        return f"{CLICKUP_APP_BASE}/{team_id}/v/o/s/{kwargs.get('space_id', '')}"
-    if entity == "folder":
-        return f"{CLICKUP_APP_BASE}/{team_id}/v/o/f/{kwargs.get('folder_id', '')}?pr={kwargs.get('space_id', '')}"
-    if entity == "list":
-        return f"{CLICKUP_APP_BASE}/{team_id}/v/l/li/{kwargs.get('list_id', '')}?pr={kwargs.get('folder_id', '')}"
-    if entity == "doc":
-        return f"{CLICKUP_APP_BASE}/{team_id}/v/dc/{kwargs.get('doc_id', '')}"
-    if entity == "page":
-        return f"{CLICKUP_APP_BASE}/{team_id}/v/dc/{kwargs.get('doc_id', '')}/{kwargs.get('page_id', '')}"
-    if entity == "comment":
+    if entity == ClickUpEntityType.SPACE:
+        space_id = kwargs.get("space_id", "")
+        if not space_id:
+            return ""
+        return f"{CLICKUP_APP_BASE}/{team_id}/v/o/s/{space_id}"
+    if entity == ClickUpEntityType.FOLDER:
+        folder_id = kwargs.get("folder_id", "")
+        space_id = kwargs.get("space_id", "")
+        if not folder_id or not space_id:
+            return ""
+        return f"{CLICKUP_APP_BASE}/{team_id}/v/o/f/{folder_id}?pr={space_id}"
+    if entity == ClickUpEntityType.LIST:
+        list_id = kwargs.get("list_id", "")
+        folder_id = kwargs.get("folder_id", "")
+        if not list_id or not folder_id:
+            return ""
+        return f"{CLICKUP_APP_BASE}/{team_id}/v/l/li/{list_id}?pr={folder_id}"
+    if entity == ClickUpEntityType.DOC:
+        doc_id = kwargs.get("doc_id", "")
+        if not doc_id:
+            return ""
+        return f"{CLICKUP_APP_BASE}/{team_id}/v/dc/{doc_id}"
+    if entity == ClickUpEntityType.PAGE:
+        doc_id = kwargs.get("doc_id", "")
+        page_id = kwargs.get("page_id", "")
+        if not doc_id or not page_id:
+            return ""
+        return f"{CLICKUP_APP_BASE}/{team_id}/v/dc/{doc_id}/{page_id}"
+    if entity == ClickUpEntityType.COMMENT:
         task_id = kwargs.get("task_id", "")
         comment_id = kwargs.get("comment_id", "")
         if task_id and comment_id:
             return f"{CLICKUP_APP_BASE}/t/{task_id}?comment={comment_id}"
-    if entity == "comment_reply":
+        return ""
+    if entity == ClickUpEntityType.COMMENT_REPLY:
         task_id = kwargs.get("task_id", "")
         comment_id = kwargs.get("comment_id", "")
         threaded_comment_id = kwargs.get("threaded_comment_id", "")
         if task_id and comment_id and threaded_comment_id:
             return f"{CLICKUP_APP_BASE}/t/{task_id}?comment={comment_id}&threadedComment={threaded_comment_id}"
+        return ""
     return ""
 
 
@@ -96,7 +146,7 @@ class CreateTaskInput(BaseModel):
     description: Optional[str] = Field(default=None, description="Task description")
     status: Optional[str] = Field(default=None, description="Status name (e.g. to do, in progress)")
     priority: Optional[int] = Field(default=None, description="Priority: 1=Urgent, 2=High, 3=Normal, 4=Low")
-    assignees: Optional[List[int]] = Field(default=None, description="Assignee user IDs (e.g. from get_authorized_user or get_list_members)")
+    assignees: Optional[list[int]] = Field(default=None, description="Assignee user IDs (e.g. from get_authorized_user or get_list_members)")
     parent: Optional[str] = Field(default=None, description="Parent task ID to create this as a subtask")
 
 
@@ -113,8 +163,8 @@ class UpdateTaskInput(BaseModel):
     time_estimate: Optional[int] = Field(default=None, description="Time estimate in milliseconds (omit to leave unchanged)")
     start_date: Optional[int] = Field(default=None, description="Start date as Unix timestamp in ms (omit to leave unchanged)")
     start_date_time: Optional[bool] = Field(default=None, description="Include time in start date (omit to leave unchanged)")
-    assignees_add: Optional[List[int]] = Field(default=None, description="User IDs to add as assignees")
-    assignees_rem: Optional[List[int]] = Field(default=None, description="User IDs to remove from assignees")
+    assignees_add: Optional[list[int]] = Field(default=None, description="User IDs to add as assignees")
+    assignees_rem: Optional[list[int]] = Field(default=None, description="User IDs to remove from assignees")
     archived: Optional[bool] = Field(default=None, description="Archive or unarchive the task")
     custom_task_ids: Optional[bool] = Field(default=None, description="Use custom task IDs; requires team_id if true")
     team_id: Optional[str] = Field(default=None, description="Team ID (required when custom_task_ids is true)")
@@ -182,20 +232,20 @@ class GetWorkspaceTasksInput(BaseModel):
     order_by: Optional[str] = Field(default="updated", description="Order by: created, updated, due_date, start_date. Default: updated.")
     reverse: Optional[bool] = Field(default=None, description="Reverse sort order")
     subtasks: Optional[bool] = Field(default=None, description="Include subtasks")
-    statuses: Optional[List[str]] = Field(default=None, description="Filter by status names")
+    statuses: Optional[list[str]] = Field(default=None, description="Filter by status names")
     include_closed: Optional[bool] = Field(default=False, description="Include closed tasks")
-    assignees: Optional[List[str]] = Field(default=None, description="Filter by assignee user IDs")
-    tags: Optional[List[str]] = Field(default=None, description="Filter by tag names")
+    assignees: Optional[list[str]] = Field(default=None, description="Filter by assignee user IDs")
+    tags: Optional[list[str]] = Field(default=None, description="Filter by tag names")
     due_date_gt: Optional[int] = Field(default=None, description="Filter tasks due after (Unix ms)")
     due_date_lt: Optional[int] = Field(default=None, description="Filter tasks due before (Unix ms)")
     date_created_gt: Optional[int] = Field(default=None, description="Filter tasks created after (Unix ms)")
     date_created_lt: Optional[int] = Field(default=None, description="Filter tasks created before (Unix ms)")
     date_updated_gt: Optional[int] = Field(default=None, description="Filter tasks updated after (Unix ms)")
     date_updated_lt: Optional[int] = Field(default=None, description="Filter tasks updated before (Unix ms)")
-    space_ids: Optional[List[str]] = Field(default=None, description="Filter by space IDs")
-    project_ids: Optional[List[str]] = Field(default=None, description="Filter by folder (project) IDs")
-    list_ids: Optional[List[str]] = Field(default=None, description="Filter by list IDs")
-    custom_fields: Optional[List[Dict[str, Any]]] = Field(default=None, description="Filter by custom field values")
+    space_ids: Optional[list[str]] = Field(default=None, description="Filter by space IDs")
+    project_ids: Optional[list[str]] = Field(default=None, description="Filter by folder (project) IDs")
+    list_ids: Optional[list[str]] = Field(default=None, description="Filter by list IDs")
+    custom_fields: Optional[list[dict[str, Any]]] = Field(default=None, description="Filter by custom field values")
 
 
 class SearchTasksInput(BaseModel):
@@ -211,7 +261,7 @@ class CreateSpaceInput(BaseModel):
     team_id: str = Field(description="Workspace (team) ID. Get from get_authorized_teams_workspaces.")
     name: str = Field(description="Name of the new space.")
     multiple_assignees: Optional[bool] = Field(default=None, description="Enable multiple assignees in the space")
-    features: Optional[Dict[str, Any]] = Field(default=None, description="Space features configuration")
+    features: Optional[dict[str, Any]] = Field(default=None, description="Space features configuration")
 
 
 class CreateFolderInput(BaseModel):
@@ -350,7 +400,11 @@ class ClickUp:
         """
         self.client = ClickUpDataSource(client)
 
-    def _handle_response(self, response, data_override: Any = None) -> Tuple[bool, str]:
+    def _handle_response(
+        self,
+        response: ClickUpResponse,
+        data_override: dict[str, object] | list[object] | None = None,
+    ) -> tuple[bool, str]:
         """Return (success, json_string). If data_override is set, serialize with it instead of response.data."""
         if data_override is not None:
             payload = {
@@ -384,7 +438,7 @@ class ClickUp:
         ],
         typical_queries=["Who am I in ClickUp?", "Get my ClickUp profile", "Which account is connected?"],
     )
-    async def get_authorized_user(self) -> Tuple[bool, str]:
+    async def get_authorized_user(self) -> tuple[bool, str]:
         """Get the authorized ClickUp user details."""
         try:
             response = await self.client.get_authorized_user()
@@ -412,7 +466,7 @@ class ClickUp:
         ],
         typical_queries=["List my ClickUp workspaces", "Show teams", "What workspaces do I have?"],
     )
-    async def get_authorized_teams_workspaces(self) -> Tuple[bool, str]:
+    async def get_authorized_teams_workspaces(self) -> tuple[bool, str]:
         """Get the authorized teams (workspaces)."""
         try:
             response = await self.client.get_authorized_teams_workspaces()
@@ -422,7 +476,7 @@ class ClickUp:
             if isinstance(data, dict):
                 for item in data.get("teams") or []:
                     if isinstance(item, dict) and item.get("id") is not None:
-                        item["web_url"] = _build_clickup_web_url("workspace", team_id=str(item["id"]))
+                        item["web_url"] = _build_clickup_web_url(ClickUpEntityType.WORKSPACE, team_id=str(item["id"]))
             return self._handle_response(response, data_override=data)
         except Exception as e:
             logger.error(f"Error in get_authorized_teams_workspaces: {e}")
@@ -450,8 +504,9 @@ class ClickUp:
     async def get_spaces(
         self,
         team_id: str,
+        *,
         archived: Optional[bool] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Get all spaces in a workspace."""
         try:
             response = await self.client.get_spaces(team_id, archived=archived)
@@ -461,7 +516,7 @@ class ClickUp:
             if isinstance(data, dict) and team_id:
                 for item in data.get("spaces") or []:
                     if isinstance(item, dict) and item.get("id") is not None:
-                        item["web_url"] = _build_clickup_web_url("space", team_id=team_id, space_id=str(item["id"]))
+                        item["web_url"] = _build_clickup_web_url(ClickUpEntityType.SPACE, team_id=team_id, space_id=str(item["id"]))
             return self._handle_response(response, data_override=data)
         except Exception as e:
             logger.error(f"Error in get_spaces: {e}")
@@ -490,8 +545,9 @@ class ClickUp:
         self,
         space_id: str,
         team_id: str,
+        *,
         archived: Optional[bool] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Get all folders in a space."""
         try:
             response = await self.client.get_folders(space_id, archived=archived)
@@ -502,7 +558,10 @@ class ClickUp:
                 for item in data.get("folders") or []:
                     if isinstance(item, dict) and item.get("id") is not None:
                         item["web_url"] = _build_clickup_web_url(
-                            "folder", team_id=team_id, space_id=space_id, folder_id=str(item["id"])
+                            ClickUpEntityType.FOLDER,
+                            team_id=team_id,
+                            space_id=space_id,
+                            folder_id=str(item["id"]),
                         )
             return self._handle_response(response, data_override=data)
         except Exception as e:
@@ -532,8 +591,9 @@ class ClickUp:
         self,
         folder_id: str,
         team_id: str,
+        *,
         archived: Optional[bool] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Get all lists in a folder."""
         try:
             response = await self.client.get_lists(folder_id, archived=archived)
@@ -544,7 +604,10 @@ class ClickUp:
                 for item in data.get("lists") or []:
                     if isinstance(item, dict) and item.get("id") is not None:
                         item["web_url"] = _build_clickup_web_url(
-                            "list", team_id=team_id, list_id=str(item["id"]), folder_id=folder_id
+                            ClickUpEntityType.LIST,
+                            team_id=team_id,
+                            list_id=str(item["id"]),
+                            folder_id=folder_id,
                         )
             return self._handle_response(response, data_override=data)
         except Exception as e:
@@ -574,8 +637,9 @@ class ClickUp:
         self,
         space_id: str,
         team_id: str,
+        *,
         archived: Optional[bool] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Get folderless lists in a space."""
         try:
             response = await self.client.get_folderless_lists(space_id, archived=archived)
@@ -586,7 +650,10 @@ class ClickUp:
                 for item in data.get("lists") or []:
                     if isinstance(item, dict) and item.get("id") is not None:
                         item["web_url"] = _build_clickup_web_url(
-                            "list", team_id=team_id, list_id=str(item["id"]), folder_id=space_id
+                            ClickUpEntityType.LIST,
+                            team_id=team_id,
+                            list_id=str(item["id"]),
+                            folder_id=space_id,
                         )
             return self._handle_response(response, data_override=data)
         except Exception as e:
@@ -616,9 +683,10 @@ class ClickUp:
         self,
         team_id: str,
         name: str,
+        *,
         multiple_assignees: Optional[bool] = None,
-        features: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[bool, str]:
+        features: Optional[dict[str, Any]] = None,
+    ) -> tuple[bool, str]:
         """Create a new space in a workspace."""
         try:
             response = await self.client.create_space(
@@ -631,7 +699,9 @@ class ClickUp:
                 return self._handle_response(response)
             data = dict(response.data) if isinstance(response.data, dict) else {}
             if data.get("id") and team_id:
-                data["web_url"] = _build_clickup_web_url("space", team_id=team_id, space_id=str(data["id"]))
+                data["web_url"] = _build_clickup_web_url(
+                ClickUpEntityType.SPACE, team_id=team_id, space_id=str(data["id"])
+            )
             return self._handle_response(response, data_override=data)
         except Exception as e:
             logger.error(f"Error in create_space: {e}")
@@ -661,7 +731,7 @@ class ClickUp:
         space_id: str,
         name: str,
         team_id: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a new folder in a space."""
         try:
             response = await self.client.create_folder(space_id, name)
@@ -670,7 +740,10 @@ class ClickUp:
             data = dict(response.data) if isinstance(response.data, dict) else {}
             if data.get("id") and team_id and space_id:
                 data["web_url"] = _build_clickup_web_url(
-                    "folder", team_id=team_id, space_id=space_id, folder_id=str(data["id"])
+                    ClickUpEntityType.FOLDER,
+                    team_id=team_id,
+                    space_id=space_id,
+                    folder_id=str(data["id"]),
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:
@@ -705,11 +778,12 @@ class ClickUp:
         team_id: Optional[str] = None,
         content: Optional[str] = None,
         due_date: Optional[int] = None,
+        *,
         due_date_time: Optional[bool] = None,
         priority: Optional[int] = None,
         assignee: Optional[int] = None,
         status: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a list in a folder or a folderless list in a space."""
         try:
             if folder_id:
@@ -741,7 +815,10 @@ class ClickUp:
             data = dict(response.data) if isinstance(response.data, dict) else {}
             if data.get("id") and team_id and pr_id:
                 data["web_url"] = _build_clickup_web_url(
-                    "list", team_id=team_id, list_id=str(data["id"]), folder_id=pr_id
+                    ClickUpEntityType.LIST,
+                    team_id=team_id,
+                    list_id=str(data["id"]),
+                    folder_id=pr_id,
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:
@@ -773,12 +850,13 @@ class ClickUp:
         name: Optional[str] = None,
         content: Optional[str] = None,
         due_date: Optional[int] = None,
+        *,
         due_date_time: Optional[bool] = None,
         priority: Optional[int] = None,
         assignee_add: Optional[int] = None,
         assignee_rem: Optional[int] = None,
         unset_status: Optional[bool] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Update a list."""
         try:
             response = await self.client.update_list(
@@ -823,23 +901,24 @@ class ClickUp:
         team_id: str,
         page: Optional[int] = 0,
         order_by: Optional[str] = "updated",
+        *,
         reverse: Optional[bool] = None,
         subtasks: Optional[bool] = None,
-        statuses: Optional[List[str]] = None,
+        statuses: Optional[list[str]] = None,
         include_closed: Optional[bool] = False,
-        assignees: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None,
+        assignees: Optional[list[str]] = None,
+        tags: Optional[list[str]] = None,
         due_date_gt: Optional[int] = None,
         due_date_lt: Optional[int] = None,
         date_created_gt: Optional[int] = None,
         date_created_lt: Optional[int] = None,
         date_updated_gt: Optional[int] = None,
         date_updated_lt: Optional[int] = None,
-        space_ids: Optional[List[str]] = None,
-        project_ids: Optional[List[str]] = None,
-        list_ids: Optional[List[str]] = None,
-        custom_fields: Optional[List[Dict[str, Any]]] = None,
-    ) -> Tuple[bool, str]:
+        space_ids: Optional[list[str]] = None,
+        project_ids: Optional[list[str]] = None,
+        list_ids: Optional[list[str]] = None,
+        custom_fields: Optional[list[dict[str, Any]]] = None,
+    ) -> tuple[bool, str]:
         """Search/filter tasks across the whole workspace."""
         logger.info(
             "clickup get_tasks: team_id=%s page=%s order_by=%s reverse=%s subtasks=%s statuses=%s include_closed=%s assignees=%s tags=%s space_ids=%s project_ids=%s list_ids=%s",
@@ -899,9 +978,10 @@ class ClickUp:
         self,
         team_id: str,
         keyword: str,
+        *,
         show_closed: bool = True,
         page: Optional[int] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Search tasks by keyword via temporary workspace view."""
         view_id = None
         try:
@@ -951,7 +1031,7 @@ class ClickUp:
         ],
         typical_queries=["Get task abc123", "Show task details", "What is the status of this task?"],
     )
-    async def get_task(self, task_id: str) -> Tuple[bool, str]:
+    async def get_task(self, task_id: str) -> tuple[bool, str]:
         """Get a specific task."""
         try:
             response = await self.client.get_task(task_id)
@@ -986,9 +1066,9 @@ class ClickUp:
         description: Optional[str] = None,
         status: Optional[str] = None,
         priority: Optional[int] = None,
-        assignees: Optional[List[int]] = None,
+        assignees: Optional[list[int]] = None,
         parent: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a new task in a list."""
         try:
             response = await self.client.create_task(
@@ -1033,16 +1113,17 @@ class ClickUp:
         status: Optional[str] = None,
         priority: Optional[int] = None,
         due_date: Optional[int] = None,
+        *,
         due_date_time: Optional[bool] = None,
         time_estimate: Optional[int] = None,
         start_date: Optional[int] = None,
         start_date_time: Optional[bool] = None,
-        assignees_add: Optional[List[int]] = None,
-        assignees_rem: Optional[List[int]] = None,
+        assignees_add: Optional[list[int]] = None,
+        assignees_rem: Optional[list[int]] = None,
         archived: Optional[bool] = None,
         custom_task_ids: Optional[bool] = None,
         team_id: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Update an existing task."""
         logger.info(
             "clickup update_task: task_id=%s assignees_add=%s assignees_rem=%s (name=%s status=%s priority=%s)",
@@ -1094,11 +1175,12 @@ class ClickUp:
         self,
         task_id: Optional[str] = None,
         comment_id: Optional[str] = None,
+        *,
         custom_task_ids: Optional[bool] = None,
         team_id: Optional[str] = None,
         start: Optional[int] = None,
         start_id: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Get comments on a task or replies to a comment."""
         try:
             if comment_id:
@@ -1110,7 +1192,7 @@ class ClickUp:
                     for item in data.get("comments") or []:
                         if isinstance(item, dict) and item.get("id") is not None:
                             item["web_url"] = _build_clickup_web_url(
-                                "comment_reply",
+                                ClickUpEntityType.COMMENT_REPLY,
                                 task_id=task_id,
                                 comment_id=comment_id,
                                 threaded_comment_id=str(item["id"]),
@@ -1131,7 +1213,9 @@ class ClickUp:
                     for item in data.get("comments") or []:
                         if isinstance(item, dict) and item.get("id") is not None:
                             item["web_url"] = _build_clickup_web_url(
-                                "comment", task_id=task_id, comment_id=str(item["id"])
+                                ClickUpEntityType.COMMENT,
+                                task_id=task_id,
+                                comment_id=str(item["id"]),
                             )
                 return self._handle_response(response, data_override=data)
         except Exception as e:
@@ -1162,10 +1246,11 @@ class ClickUp:
         task_id: Optional[str] = None,
         comment_id: Optional[str] = None,
         assignee: Optional[int] = None,
+        *,
         notify_all: Optional[bool] = None,
         custom_task_ids: Optional[bool] = None,
         team_id: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Add a comment to a task or a reply to a comment."""
         try:
             if comment_id:
@@ -1190,14 +1275,14 @@ class ClickUp:
             if data.get("id") and task_id:
                 if comment_id:
                     data["web_url"] = _build_clickup_web_url(
-                        "comment_reply",
+                        ClickUpEntityType.COMMENT_REPLY,
                         task_id=task_id,
                         comment_id=comment_id,
                         threaded_comment_id=str(data["id"]),
                     )
                 else:
                     data["web_url"] = _build_clickup_web_url(
-                        "comment",
+                        ClickUpEntityType.COMMENT,
                         task_id=task_id,
                         comment_id=str(data["id"]),
                     )
@@ -1228,9 +1313,10 @@ class ClickUp:
         self,
         task_id: str,
         name: str,
+        *,
         custom_task_ids: Optional[bool] = None,
         team_id: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a checklist on a task."""
         try:
             response = await self.client.create_checklist(
@@ -1267,7 +1353,7 @@ class ClickUp:
         checklist_id: str,
         name: str,
         assignee: Optional[int] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Add an item to a checklist."""
         try:
             response = await self.client.create_checklist_item(
@@ -1304,9 +1390,10 @@ class ClickUp:
         checklist_item_id: str,
         name: Optional[str] = None,
         assignee: Optional[int] = None,
+        *,
         resolved: Optional[bool] = None,
         parent: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Update or check/uncheck a checklist item."""
         try:
             response = await self.client.update_checklist_item(
@@ -1349,7 +1436,7 @@ class ClickUp:
         parent_type: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """List docs in a workspace."""
         try:
             response = await self.client.get_workspace_docs(
@@ -1369,7 +1456,9 @@ class ClickUp:
                     for item in docs_list:
                         if isinstance(item, dict) and item.get("id") is not None:
                             item["web_url"] = _build_clickup_web_url(
-                                "doc", team_id=workspace_id, doc_id=str(item["id"])
+                                ClickUpEntityType.DOC,
+                                team_id=workspace_id,
+                                doc_id=str(item["id"]),
                             )
             return self._handle_response(response, data_override=data)
         except Exception as e:
@@ -1399,7 +1488,7 @@ class ClickUp:
         self,
         workspace_id: str,
         doc_id: str,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """List pages in a doc."""
         try:
             response = await self.client.get_doc_pages(workspace_id, doc_id)
@@ -1412,7 +1501,10 @@ class ClickUp:
                     for item in pages_list:
                         if isinstance(item, dict) and item.get("id") is not None:
                             item["web_url"] = _build_clickup_web_url(
-                                "page", team_id=workspace_id, doc_id=doc_id, page_id=str(item["id"])
+                                ClickUpEntityType.PAGE,
+                                team_id=workspace_id,
+                                doc_id=doc_id,
+                                page_id=str(item["id"]),
                             )
             return self._handle_response(response, data_override=data)
         except Exception as e:
@@ -1443,7 +1535,7 @@ class ClickUp:
         workspace_id: str,
         doc_id: str,
         page_id: str,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Get full details of a single page in a doc."""
         try:
             response = await self.client.get_doc_page(workspace_id, doc_id, page_id)
@@ -1452,7 +1544,10 @@ class ClickUp:
             data = response.data if response.data is not None else {}
             if isinstance(data, dict) and workspace_id and doc_id and page_id:
                 data["web_url"] = _build_clickup_web_url(
-                    "page", team_id=workspace_id, doc_id=doc_id, page_id=page_id
+                    ClickUpEntityType.PAGE,
+                    team_id=workspace_id,
+                    doc_id=doc_id,
+                    page_id=page_id,
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:
@@ -1485,7 +1580,7 @@ class ClickUp:
         parent_id: Optional[str] = None,
         parent_type: Optional[int] = None,
         visibility: Optional[str] = None,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a doc in a workspace."""
         parent = None
         if parent_id is not None and parent_type is not None:
@@ -1502,7 +1597,9 @@ class ClickUp:
                 return self._handle_response(response)
             data = dict(response.data) if isinstance(response.data, dict) else {}
             if data.get("id") and workspace_id:
-                data["web_url"] = _build_clickup_web_url("doc", team_id=workspace_id, doc_id=str(data["id"]))
+                data["web_url"] = _build_clickup_web_url(
+                    ClickUpEntityType.DOC, team_id=workspace_id, doc_id=str(data["id"])
+                )
             return self._handle_response(response, data_override=data)
         except Exception as e:
             logger.error(f"Error in create_doc: {e}")
@@ -1536,7 +1633,7 @@ class ClickUp:
         sub_title: Optional[str] = None,
         content: str = "",
         content_format: str = "text/md",
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Create a page in a doc."""
         try:
             response = await self.client.create_doc_page(
@@ -1553,7 +1650,10 @@ class ClickUp:
             data = dict(response.data) if isinstance(response.data, dict) else {}
             if data.get("id") and workspace_id and doc_id:
                 data["web_url"] = _build_clickup_web_url(
-                    "page", team_id=workspace_id, doc_id=doc_id, page_id=str(data["id"])
+                    ClickUpEntityType.PAGE,
+                    team_id=workspace_id,
+                    doc_id=doc_id,
+                    page_id=str(data["id"]),
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:
@@ -1589,7 +1689,7 @@ class ClickUp:
         content: Optional[str] = None,
         content_edit_mode: str = "replace",
         content_format: str = "text/md",
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Edit or update a doc page."""
         try:
             response = await self.client.update_doc_page(
@@ -1607,7 +1707,10 @@ class ClickUp:
             data = dict(response.data) if isinstance(response.data, dict) else {}
             if workspace_id and doc_id and page_id:
                 data["web_url"] = _build_clickup_web_url(
-                    "page", team_id=workspace_id, doc_id=doc_id, page_id=page_id
+                    ClickUpEntityType.PAGE,
+                    team_id=workspace_id,
+                    doc_id=doc_id,
+                    page_id=page_id,
                 )
             return self._handle_response(response, data_override=data)
         except Exception as e:

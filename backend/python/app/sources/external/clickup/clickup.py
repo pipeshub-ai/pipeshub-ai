@@ -1266,16 +1266,13 @@ class ClickUpDataSource:
         if subtasks is not None:
             query_pairs.append(("subtasks", str(subtasks).lower()))
         if statuses is not None:
-            for s in statuses:
-                query_pairs.append(("statuses[]", str(s)))
+            query_pairs.extend(("statuses[]", str(s)) for s in statuses)
         if include_closed is not None:
             query_pairs.append(("include_closed", str(include_closed).lower()))
         if assignees is not None:
-            for a in assignees:
-                query_pairs.append(("assignees[]", str(a)))
+            query_pairs.extend(("assignees[]", str(a)) for a in assignees)
         if tags is not None:
-            for t in tags:
-                query_pairs.append(("tags[]", str(t)))
+            query_pairs.extend(("tags[]", str(t)) for t in tags)
         if due_date_gt is not None:
             query_pairs.append(("due_date_gt", str(due_date_gt)))
         if due_date_lt is not None:
@@ -1289,14 +1286,11 @@ class ClickUpDataSource:
         if date_updated_lt is not None:
             query_pairs.append(("date_updated_lt", str(date_updated_lt)))
         if space_ids is not None:
-            for s in space_ids:
-                query_pairs.append(("space_ids[]", str(s)))
+            query_pairs.extend(("space_ids[]", str(s)) for s in space_ids)
         if project_ids is not None:
-            for p in project_ids:
-                query_pairs.append(("project_ids[]", str(p)))
+            query_pairs.extend(("project_ids[]", str(p)) for p in project_ids)
         if list_ids is not None:
-            for lid in list_ids:
-                query_pairs.append(("list_ids[]", str(lid)))
+            query_pairs.extend(("list_ids[]", str(lid)) for lid in list_ids)
         if custom_fields is not None:
             query_pairs.append(("custom_fields[]", json.dumps(custom_fields)))
 
@@ -2314,7 +2308,7 @@ class ClickUpDataSource:
         team_id: str,
         *,
         name: str,
-        type: str = "list",
+        view_type: str = "list",
         search: str | None = None,
         show_closed: bool = True,
     ) -> ClickUpResponse:
@@ -2325,7 +2319,7 @@ class ClickUpDataSource:
         Args:
             team_id: The Workspace (Team) ID
             name: Display name for the view
-            type: View type (list, board, calendar, table, etc.); default list
+            view_type: View type (list, board, calendar, table, etc.); default list
             search: Optional search string for task name/description/custom fields
             show_closed: Include closed (completed) tasks in the view; default True so completed tasks appear in search
 
@@ -2335,7 +2329,7 @@ class ClickUpDataSource:
         url = self.base_url + "/team/{team_id}/view".format(team_id=team_id)
         body: dict[str, Any] = {
             "name": name,
-            "type": type,
+            "type": view_type,
             "grouping": {"field": "status", "dir": 1, "collapsed": [], "ignore": False},
             "divide": {"field": None, "dir": None, "collapsed": []},
             "sorting": {"fields": []},

@@ -2,9 +2,12 @@
 Client factory for ClickUp.
 """
 
-from typing import Any, Dict
+from logging import Logger
+from typing import Any
 
 from app.agents.tools.factories.base import ClientFactory
+from app.config.configuration_service import ConfigurationService
+from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.clickup.clickup import ClickUpClient
 
 
@@ -17,10 +20,10 @@ class ClickUpClientFactory(ClientFactory):
 
     async def create_client(
         self,
-        config_service,
-        logger,
-        toolset_config: Dict[str, Any],
-        state=None
+        config_service: ConfigurationService,
+        logger: Logger,
+        toolset_config: dict[str, Any],
+        state: ChatState | None = None,
     ) -> ClickUpClient:
         """
         Create ClickUp client instance from toolset configuration.
