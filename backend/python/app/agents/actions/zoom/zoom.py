@@ -3,7 +3,9 @@ import logging
 import re
 from typing import Annotated, Literal, Optional, Tuple
 from urllib.parse import quote
-
+from pydantic import model_validator
+from datetime import datetime, timezone
+from dateutil.parser import parse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
@@ -18,6 +20,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
     ToolsetCategory,
 )
+from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.zoom.zoom import ZoomClient, ZoomResponse
 from app.sources.external.zoom.zoom import ZoomDataSource
 
@@ -34,7 +37,6 @@ MeetingId = Annotated[str, BeforeValidator(_coerce_meeting_id)]
 
 # Meeting type constants (avoid magic strings)
 MEETING_TYPES_SEARCH: Tuple[str, ...] = ("scheduled", "upcoming")
-TYPE_PREVIOUS_MEETINGS = "previous_meetings"
 
 
 # ---------------------------------------------------------------------------
@@ -50,24 +52,29 @@ class GetMyProfileInput(BaseModel):
 
 class ListMeetingsInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
-
-    user_id: str = Field(
-        description="Zoom user ID or email. Use 'me' for the authenticated user.",
-    )
-    type_: Literal["scheduled", "live", "upcoming", "all"] = Field(
-        default="scheduled",
-        alias="type",
-        description="Meeting type filter.",
-    )
-    page_size: Optional[int] = Field(default=30, ge=1, le=300, description="Results per page (max 300).")
-    next_page_token: Optional[str] = Field(default=None, description="Pagination token.")
     from_: Optional[str] = Field(default=None, alias="from", description="Start date (YYYY-MM-DD).")
-    to: Optional[str] = Field(default=None, description="End date (YYYY-MM-DD).")
-
+    to_: Optional[str] = Field(default=None, description="End date (YYYY-MM-DD).")
+    top: Optional[int] = Field(default=10, description="Maximum number of meetings to return.")
 
 class GetMeetingInput(BaseModel):
     meeting_id: MeetingId = Field(description="Zoom meeting ID.")
     occurrence_id: Optional[str] = Field(default=None, description="Occurrence ID for recurring meetings. (optional)")
+
+
+class RecurrenceInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    type_: int = Field(
+        alias="type", 
+        description="Recurrence type: 1=Daily, 2=Weekly, 3=Monthly."
+    )
+    repeat_interval: Optional[int] = Field(default=None, description="Interval for when the meeting should recur.")
+    end_date_time: Optional[str] = Field(default=None,description="End date/time in UTC ISO format. MUST end with 'Z' (e.g., '2026-03-31T19:00:00Z'). Cannot be used with end_times.")
+    end_times: Optional[int] = Field(default=None, description="Number of times to repeat (max 60). Cannot be used with end_date_time.")
+    monthly_day: Optional[int] = Field(default=None, description="Day of month for monthly recurrence (1-31).")
+    monthly_week: Optional[int] = Field(default=None, description="Week of month for monthly recurrence (-1 for last week, 1 for first week).")
+    monthly_week_day: Optional[int] = Field(default=None, description="Day of week for monthly recurrence (1=Sun, 2=Mon, etc.). Used with monthly_week.")
+    weekly_days: Optional[str] = Field(default=None, description="Days of week for weekly recurrence (e.g., '1,2' for Sun/Mon).")
 
 
 class CreateMeetingInput(BaseModel):
@@ -84,8 +91,17 @@ class CreateMeetingInput(BaseModel):
     type_: Optional[int] = Field(
         default=2,
         alias="type",
-        description="Meeting type: 1=instant, 2=scheduled.",
+        description="Meeting type: 1=instant, 2=scheduled, 3=recurring (no fixed time), 8=recurring (fixed time).",
     )
+    invitees: Optional[list[str]] = Field(default=None, description="List of email addresses to invite to the meeting.")
+    recurrence: Optional[RecurrenceInput] = Field(default=None, description="Recurrence configuration for type 8 meetings.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_empty_recurrence(cls, values: dict) -> dict:
+        if isinstance(values.get("recurrence"), dict) and not values["recurrence"]:
+            values["recurrence"] = None
+        return values
 
 
 class UpdateMeetingInput(BaseModel):
@@ -96,12 +112,21 @@ class UpdateMeetingInput(BaseModel):
     duration: Optional[int] = Field(default=None, description="New duration in minutes. Only set if user mentioned it.")
     timezone: Optional[str] = Field(default=None, description="Timezone for start_time. Infer from context; default Asia/Kolkata if user is in India.")
     agenda: Optional[str] = Field(default=None, description="New agenda. Only set if user provided one.")
-    occurrence_id: Optional[str] = Field(default=None, description="Occurrence ID for recurring meetings only.")
+    occurrence_id: Optional[str] = Field(default=None, description="To update a single occurrence of a recurring meeting, provide the occurrence_id. To update the entire series, leave this blank.")
+    invitees: Optional[list[str]] = Field(default=None, description="List of email addresses to invite to the meeting.")
+    recurrence: Optional[RecurrenceInput] = Field(default=None, description="New recurrence configuration. Only set to change the recurrence pattern of the entire series.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_empty_recurrence(cls, values: dict) -> dict:
+        if isinstance(values.get("recurrence"), dict) and not values["recurrence"]:
+            values["recurrence"] = None
+        return values
 
 
 class DeleteMeetingInput(BaseModel):
     meeting_id: MeetingId = Field(description="Zoom meeting ID to delete.")
-    occurrence_id: Optional[str] = Field(default=None, description="Occurrence ID to delete only one occurrence of a recurring meeting.")
+    occurrence_id: Optional[str] = Field(default=None, description="To delete a single occurrence of a recurring meeting, provide the occurrence_id. To delete the entire series, leave this blank.")
     cancel_meeting_reminder: Optional[bool] = Field(default=None, description="Send cancellation email to registrants.")
 
 
@@ -120,22 +145,61 @@ class GetMeetingTranscriptInput(BaseModel):
     meeting_id: MeetingId = Field(description="Meeting ID or UUID of the recorded meeting.")
 
 
-class DeleteMeetingTranscriptInput(BaseModel):
-    meeting_id: MeetingId = Field(description="Meeting ID or UUID whose transcript to delete.")
-
-
 class SearchMeetingsByNameInput(BaseModel):
     query: str = Field(description="Meeting name or topic keyword to search for.")
     user_id: str = Field(default="me", description="Zoom user ID or email. Use 'me' for the authenticated user.")
 
 
-class ListPastMeetingsInput(BaseModel):
-    user_id: str = Field(default="me", description="Zoom user ID or email. Use 'me' for the authenticated user.")
-    page_size: Optional[int] = Field(default=30, ge=1, le=300, description="Number of past meetings to return (max 300).")
-    from_: Optional[str] = Field(default=None, alias="from", description="Start date filter (YYYY-MM-DD).")
-    to: Optional[str] = Field(default=None, description="End date filter (YYYY-MM-DD).")
+class ListContactsInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)  # add this
+    type_: Optional[Literal["company", "external", "personal"]] = Field(default=None, alias="type", description="Filter contacts by type: 'company' (same org), 'external' (outside contacts), or 'personal' (your contacts). Omit to return all.")
+    top: Optional[int] = Field(default=10, description="Maximum number of contacts to return.")
 
 
+class GetContactInput(BaseModel):
+    identifier: str = Field(description="Contact's user ID, email address, or member ID.")
+
+
+class ListFolderChildrenInput(BaseModel):
+    folder_id: str = Field(
+        default="root",
+        description=(
+            "The file/folder ID whose children to list. "
+            "Use 'root' (default) to list the contents of the authenticated user's root 'My Docs' folder. "
+            "Pass a specific folder ID to drill into a sub-folder."
+        ),
+    )
+    page_size: Optional[int] = Field(default=50, ge=1, le=50, description="Results per page (max 50).")
+
+
+class ListRecordingsInput(BaseModel):
+    user_id: Optional[str] = Field(default="me")
+
+
+class GetMeetingRecordingsInput(BaseModel):
+    meeting_id: str
+
+
+class ListRecurringMeetingsEndingInput(BaseModel):
+    from_: str = Field(alias="from_", description="Range start in ISO 8601 UTC (e.g. '2026-03-01T00:00:00Z').")
+    to_: str = Field(alias="to_", description="Range end in ISO 8601 UTC (e.g. '2026-03-31T23:59:59Z').")
+    top: int = Field(default=10, ge=1, le=50, description="Max results to return.")
+
+
+_STRIP_FIELDS = {"global_dial_in_numbers", "global_dial_in_countries", "dial_in_numbers"}
+
+def _ensure_aware(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _in_range(start_time: str, from_dt: datetime, to_dt: datetime) -> bool:
+    try:
+        dt = _ensure_aware(datetime.fromisoformat(start_time.replace("Z", "+00:00")))
+        return from_dt <= dt <= to_dt
+    except ValueError:
+        return False
 # ---------------------------------------------------------------------------
 # Toolset registration
 # ---------------------------------------------------------------------------
@@ -155,19 +219,19 @@ class ListPastMeetingsInput(BaseModel):
                 team_sync=[],
                 agent=[
                     "meeting:read:meeting",
-                    "meeting:read:list_meetings",
-                    "meeting:read:list_upcoming_meetings",
-                    "meeting:read:invitation",
                     "meeting:write:meeting",
                     "meeting:delete:meeting",
-                    "user:read:email",
+                    "meeting:update:meeting",
+                    "meeting:read:invitation",
+                    "meeting:read:list_meetings",
+                    "meeting:read:list_upcoming_meetings",
+                    "meeting:read:list_past_instances",
                     "user:read:user",
-                    "cloud_recording:read:list_user_recordings",
-                    "cloud_recording:read:list_recording_files",
+                    "user:read:email",
+                    "docs:read:list_children",
+                    "contact:read:list_contacts",
                     "cloud_recording:read:recording",
                     "cloud_recording:read:meeting_transcript",
-                    "meeting:read:list_past_instances",
-                    "meeting:update:meeting",
                 ]
             ),
             fields=[
@@ -187,23 +251,34 @@ class Zoom:
     def __init__(self, client: ZoomClient) -> None:
         self.client = ZoomDataSource(client)
 
+
+    def _clean_response_data(self, data: object) -> object:
+        """Strip noisy dial-in fields from any response data."""
+        if isinstance(data, dict):
+            cleaned = {k: v for k, v in data.items() if k not in _STRIP_FIELDS}
+            if "settings" in cleaned and isinstance(cleaned["settings"], dict):
+                cleaned["settings"] = {k: v for k, v in cleaned["settings"].items() if k not in _STRIP_FIELDS}
+            if "meetings" in cleaned and isinstance(cleaned["meetings"], list):
+                cleaned["meetings"] = [self._clean_response_data(m) for m in cleaned["meetings"]]
+            return cleaned
+        return data
+
     def _handle_response(
         self,
         response: ZoomResponse | dict[str, object],
         success_message: str,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Normalize ZoomResponse to (success, json_string)."""
         if isinstance(response, ZoomResponse):
             if response.success:
-                return True, json.dumps({"message": success_message, "data": response.data})
+                return True, json.dumps({"message": success_message, "data": self._clean_response_data(response.data)})
             error = response.error or response.message or "Unknown error"
             return False, json.dumps({"error": error})
         # Fallback for raw dict responses
         if isinstance(response, dict):
             if response.get("code") or response.get("error"):
                 return False, json.dumps(response)
-            return True, json.dumps({"message": success_message, "data": response})
-        return True, json.dumps({"message": success_message, "data": str(response)})
+            return True, json.dumps({"message": success_message, "data": self._clean_response_data(response)})
 
     # ------------------------------------------------------------------
     # User tools
@@ -262,28 +337,94 @@ class Zoom:
     )
     async def list_meetings(
         self,
-        user_id: str,
-        type_: Literal["scheduled", "live", "upcoming", "all"] = "scheduled",
-        page_size: Optional[int] = 30,
-        next_page_token: Optional[str] = None,
-        from_: Optional[str] = None,
-        to: Optional[str] = None,
+        from_: str,
+        to_: str,
+        top: int | None = 10,
     ) -> Tuple[bool, str]:
-        """List meetings for a Zoom user."""
+        """Return all meeting instances (including recurring occurrences) within [from_date, to_date]."""
         try:
-            logger.info("zoom.list_meetings called with user_id=%s type=%s", user_id, type_)
-            response = await self.client.meetings(
-                userId=user_id,
-                type_=type_,
-                page_size=page_size,
-                next_page_token=next_page_token,
-                from_=from_,
-                to=to,
-            )
-            return self._handle_response(response, "Meetings listed successfully")
+            top = min(top, 50)
+            from_dt = _ensure_aware(datetime.fromisoformat(from_.replace("Z", "+00:00")))
+            to_dt   = _ensure_aware(datetime.fromisoformat(to_.replace("Z", "+00:00")))
+
+            # Step 1 — fetch all parent meetings
+            all_parents: list[dict] = []
+            for meeting_type in ("scheduled", "upcoming"):
+                response = await self.client.meetings(userId="me", type_=meeting_type, page_size=100)
+                success, cleaned = self._handle_response(response, "ok")
+                if not success:
+                    continue
+                data = json.loads(cleaned)
+                all_parents.extend(data.get("data", data).get("meetings", []))
+
+
+
+            # Deduplicate parents by ID
+            seen: set[str] = set()
+            parents: list[dict] = []
+            for m in all_parents:
+                mid = str(m.get("id", ""))
+                if mid not in seen:
+                    seen.add(mid)
+                    parents.append(m)
+
+            results: list[dict] = []
+
+            for m in parents:
+                meeting_type = m.get("type")
+
+                # Non-recurring (type 2) — single start_time check
+                if meeting_type == 2:
+                    start = m.get("start_time")
+                    if start and _in_range(start, from_dt, to_dt):
+                        results.append({
+                            "meeting_id": m.get("id"),
+                            "topic": m.get("topic"),
+                            "start_time": start,
+                            "duration": m.get("duration"),
+                            "join_url": m.get("join_url"),
+                            "recurring": False,
+                        })
+
+                # Recurring (type 8 fixed, type 3 no-fixed-time) — expand occurrences
+                elif meeting_type in (3, 8):
+                    detail_response = await self.client.meeting(meetingId=str(m.get("id")))
+                    detail_success, detail_cleaned = self._handle_response(detail_response, "ok")
+                    if not detail_success:
+                        continue
+
+                    detail = json.loads(detail_cleaned)
+                    detail = detail.get("data", detail)
+                    occurrences = detail.get("occurrences", [])
+
+                    for occ in occurrences:
+                        occ_start = occ.get("start_time")
+                        if occ_start and _in_range(occ_start, from_dt, to_dt):
+                            results.append({
+                                "meeting_id": m.get("id"),
+                                "occurrence_id": occ.get("occurrence_id"),
+                                "topic": m.get("topic"),
+                                "start_time": occ_start,
+                                "duration": occ.get("duration"),
+                                "join_url": detail.get("join_url"),
+                                "recurring": True,
+                                "status": occ.get("status"),
+                            })
+
+            results.sort(key=lambda x: x["start_time"])
+            trimmed = results[:top]
+
+            return True, json.dumps({
+                "meetings": trimmed,
+                "count": len(trimmed),
+                "from": from_,
+                "to": to_,
+            })
+
         except Exception as e:
-            logger.error("Error listing meetings: %s", e)
+            logger.error("Error listing meetings in range: %s", e)
             return False, json.dumps({"error": str(e)})
+
 
     @tool(
         app_name="zoom",
@@ -306,7 +447,7 @@ class Zoom:
     async def get_meeting(
         self,
         meeting_id: str,
-        occurrence_id: Optional[str] = None,
+        occurrence_id: str | None = None,
     ) -> Tuple[bool, str]:
         """Get a Zoom meeting by ID."""
         try:
@@ -323,33 +464,39 @@ class Zoom:
     @tool(
         app_name="zoom",
         tool_name="create_meeting",
-        description="Create a new Zoom meeting.",
-        llm_description=(
-            "Creates a scheduled meeting. Required: topic. Optional: start_time (ISO 8601), duration (minutes), timezone, agenda. "
-            "Infer timezone from context (e.g. if user is in India use Asia/Kolkata). "
-            "Do NOT ask for password or settings unless user explicitly mentions them."
-        ),
+        description="Create a new Zoom meeting (including recurring meetings).",
         args_schema=CreateMeetingInput,
         returns="JSON with created meeting details including join URL",
         primary_intent=ToolIntent.ACTION,
         category=ToolCategory.COMMUNICATION,
         when_to_use=[
             "User wants to create or schedule a Zoom meeting",
+            "User wants to create a daily, weekly, or monthly recurring meeting",
         ],
         when_not_to_use=[
             "User wants to update an existing meeting (use update_meeting)",
         ],
-        typical_queries=["Create a Zoom meeting", "Schedule a meeting", "Set up a Zoom call for 5pm"],
+        typical_queries=["Create a Zoom meeting", "Schedule a daily meeting", "Set up a weekly recurring Zoom call"],
+        llm_description=(
+            "Creates a scheduled or recurring meeting. Required: topic. Optional: start_time (ISO 8601), duration (minutes), timezone, agenda. "
+            "For recurring meetings, set type=8 and provide a recurrence object. "
+            "IMPORTANT: If the meeting is NOT recurring, completely omit the recurrence field. Do not pass an empty object. "
+            "If providing recurrence.end_date_time, you MUST format it as UTC and append 'Z' (e.g., '2026-03-31T23:59:00Z'). "
+            "Infer timezone from context (e.g. if user is in India use Asia/Kolkata). "
+            "Do NOT ask for password or settings unless user explicitly mentions them."
+        ),
     )
     async def create_meeting(
         self,
         user_id: str,
         topic: str,
-        start_time: Optional[str] = None,
-        duration: Optional[int] = 60,
-        timezone: Optional[str] = None,
-        agenda: Optional[str] = None,
-        type_: Optional[int] = 2,
+        start_time: str | None = None,
+        duration: int | None = 60,
+        timezone: str | None = None,
+        agenda: str | None = None,
+        type_: int | None = 2,
+        invitees: list[str] | None = None,
+        recurrence: RecurrenceInput | None = None,
     ) -> Tuple[bool, str]:
         """Create a Zoom meeting."""
         try:
@@ -364,6 +511,17 @@ class Zoom:
                 body["agenda"] = agenda
             if type_ is not None:
                 body["type"] = type_
+            if recurrence is not None:
+                # Forcefully append 'Z' to end_date_time if the AI forgot it
+                if getattr(recurrence, "end_date_time", None) and not recurrence.end_date_time.endswith("Z"):
+                    recurrence.end_date_time += "Z"
+                
+                # Dump the Pydantic model to a dict, applying aliases (e.g., type_ -> type)
+                body["recurrence"] = recurrence.model_dump(by_alias=True, exclude_none=True) if hasattr(recurrence, "model_dump") else recurrence
+            if invitees:
+                body["settings"] = {
+                    "meeting_invitees": [{"email": email} for email in invitees]
+                }
             logger.info("zoom.create_meeting called for user_id=%s topic=%s", user_id, topic)
             response = await self.client.meeting_create(userId=user_id, body=body)
             return self._handle_response(response, "Meeting created successfully")
@@ -374,9 +532,10 @@ class Zoom:
     @tool(
         app_name="zoom",
         tool_name="update_meeting",
-        description="Update a Zoom meeting.",
+        description="Update a Zoom meeting (entire series or specific occurrence).",
         llm_description=(
             "Updates only the fields the user explicitly asked to change. "
+            "For recurring meetings, omit occurrence_id to update the entire series, or provide occurrence_id to update a single instance. "
             "IMPORTANT: Only populate fields the user mentioned — if user says 'change to 5pm', only set start_time (and timezone if needed). "
             "NEVER ask for or include password, settings, agenda, or other fields unless the user specifically mentioned them. "
             "Infer timezone from context (default Asia/Kolkata for India). "
@@ -388,22 +547,25 @@ class Zoom:
         category=ToolCategory.COMMUNICATION,
         when_to_use=[
             "User wants to reschedule, rename, or change duration of a meeting",
+            "User wants to update a single occurrence or an entire recurring meeting series",
         ],
         when_not_to_use=[
             "User wants to create a new meeting (use create_meeting)",
             "User wants to delete a meeting (use delete_meeting)",
         ],
-        typical_queries=["Reschedule meeting to 5pm", "Change meeting time", "Update meeting topic", "Move my standup to 3pm"],
+        typical_queries=["Reschedule meeting to 5pm", "Update all occurrences of my daily sync", "Change tomorrow's instance of the weekly meeting"],
     )
     async def update_meeting(
         self,
         meeting_id: str,
-        topic: Optional[str] = None,
-        start_time: Optional[str] = None,
-        duration: Optional[int] = None,
-        timezone: Optional[str] = None,
-        agenda: Optional[str] = None,
-        occurrence_id: Optional[str] = None,
+        topic: str | None = None,
+        start_time: str | None = None,
+        duration: int | None = None,
+        timezone: str | None = None,
+        agenda: str | None = None,
+        occurrence_id: str | None = None,
+        invitees: list[str] | None = None,
+        recurrence: RecurrenceInput | None = None,
     ) -> Tuple[bool, str]:
         """Update a Zoom meeting — only fields explicitly provided by user."""
         try:
@@ -418,6 +580,17 @@ class Zoom:
                 body["timezone"] = timezone
             if agenda is not None:
                 body["agenda"] = agenda
+            if occurrence_id is not None:
+                body["occurrence_id"] = occurrence_id
+            if recurrence is not None:
+                # Forcefully append 'Z' to end_date_time if the AI forgot it
+                if getattr(recurrence, "end_date_time", None) and not recurrence.end_date_time.endswith("Z"):
+                    recurrence.end_date_time += "Z"
+                body["recurrence"] = recurrence.model_dump(by_alias=True, exclude_none=True) if hasattr(recurrence, "model_dump") else recurrence
+            if invitees:
+                body["settings"] = {
+                    "meeting_invitees": [{"email": email} for email in invitees]
+                }
             if not body:
                 return False, json.dumps({"error": "No fields to update were provided."})
             logger.info("zoom.update_meeting called for meeting_id=%s body=%s", meeting_id, body)
@@ -434,29 +607,39 @@ class Zoom:
     @tool(
         app_name="zoom",
         tool_name="delete_meeting",
-        description="Delete a Zoom meeting.",
-        llm_description="Deletes a meeting by meeting_id. For recurring meetings pass occurrence_id to delete one occurrence only.",
+        description="Delete a Zoom meeting (entire series or specific occurrence).",
+        llm_description=(
+            "Deletes a meeting by meeting_id. For recurring meetings, omit occurrence_id to delete the entire series. "
+            "Provide occurrence_id to delete only one specific occurrence."
+        ),
         args_schema=DeleteMeetingInput,
         returns="JSON confirming deletion",
         primary_intent=ToolIntent.ACTION,
         category=ToolCategory.COMMUNICATION,
         when_to_use=[
             "User wants to cancel or delete a Zoom meeting",
+            "User wants to cancel a whole recurring series or just one instance of it",
+            "User wants to delete the occurrences of a recurring meeting",
         ],
         when_not_to_use=[
             "User wants to reschedule (use update_meeting)",
         ],
-        typical_queries=["Cancel Zoom meeting", "Delete meeting", "Remove my standup"],
+        typical_queries=[
+            "Cancel Zoom meeting",
+            "Delete the entire sync series",
+            "Cancel tomorrow's instance of my meeting",
+            "Delete the occurrences of the recurring meeting on March 20 and March 21",
+        ],
     )
     async def delete_meeting(
         self,
         meeting_id: str,
-        occurrence_id: Optional[str] = None,
-        cancel_meeting_reminder: Optional[bool] = None,
+        occurrence_id: str | None = None,
+        cancel_meeting_reminder: bool | None = None,
     ) -> Tuple[bool, str]:
         """Delete a Zoom meeting."""
         try:
-            logger.info("zoom.delete_meeting called for meeting_id=%s", meeting_id)
+            logger.info("zoom.delete_meeting called for meeting_id=%s occurrence_id=%s", meeting_id, occurrence_id)
             response = await self.client.meeting_delete(
                 meetingId=meeting_id,
                 occurrence_id=occurrence_id,
@@ -523,24 +706,27 @@ class Zoom:
         try:
             logger.info("zoom.search_meetings_by_name called with query=%s user_id=%s", query, user_id)
             query_lower = query.lower()
-            matched: list[object] = []
+            matched: list[dict] = []
 
             for meeting_type in MEETING_TYPES_SEARCH:
                 response = await self.client.meetings(userId=user_id, type_=meeting_type, page_size=100)
-                if isinstance(response, ZoomResponse) and not response.success:
+
+                success, cleaned = self._handle_response(response, "Meetings fetched successfully")
+                if not success:
                     continue
-                data = response.data if isinstance(response, ZoomResponse) else response
-                meetings = data.get("meetings", []) if isinstance(data, dict) else []
+
+                data = json.loads(cleaned)
+                # _handle_response wraps under "data" key — unwrap it
+                meetings = data.get("data", data).get("meetings", [])
+
                 for m in meetings:
                     if isinstance(m, dict) and query_lower in str(m.get("topic", "")).lower():
                         matched.append(m)
 
-            # deduplicate by meeting id
+            # Deduplicate by meeting id, preserving all fields
             seen: set[str] = set()
-            unique: list[object] = []
+            unique: list[dict] = []
             for m in matched:
-                if not isinstance(m, dict):
-                    continue
                 mid = str(m.get("id", ""))
                 if mid not in seen:
                     seen.add(mid)
@@ -553,59 +739,6 @@ class Zoom:
 
         except Exception as e:
             logger.error("Error searching meetings by name: %s", e)
-            return False, json.dumps({"error": str(e)})
-
-    @tool(
-        app_name="zoom",
-        tool_name="list_past_meetings",
-        description="List previously held Zoom meetings.",
-        llm_description=(
-            "Returns a list of past/previous meetings for the user. "
-            "Useful when the user wants to find a recent meeting by browsing history or get a meeting ID for transcript/recording lookup."
-        ),
-        args_schema=ListPastMeetingsInput,
-        returns="JSON list of past meetings with IDs, topics, and start times",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User asks about previous or past meetings",
-            "User wants to find a recent Zoom call",
-            "User needs the meeting ID of a meeting that already happened",
-        ],
-        when_not_to_use=[
-            "User wants upcoming or scheduled meetings (use list_meetings or list_upcoming_meetings)",
-        ],
-        typical_queries=["Show my past meetings", "List recent Zoom calls", "What meetings did I have last week?"],
-    )
-    async def list_past_meetings(
-        self,
-        user_id: str = "me",
-        page_size: Optional[int] = 30,
-        from_: Optional[str] = None,
-        to: Optional[str] = None,
-    ) -> Tuple[bool, str]:
-        """List previously held meetings for a user."""
-        try:
-            logger.info("zoom.list_past_meetings called for user_id=%s", user_id)
-            response = await self.client.meetings(
-                userId=user_id,
-                type_=TYPE_PREVIOUS_MEETINGS,
-                page_size=page_size,
-                from_=from_,
-                to=to,
-            )
-            if isinstance(response, ZoomResponse) and not response.success:
-                return False, json.dumps({
-                    "error": response.error or response.message or "Unknown error",
-                })
-
-            data = response.data if isinstance(response, ZoomResponse) else response
-            meetings = data.get("meetings", []) if isinstance(data, dict) else []
-
-            return True, json.dumps({"meetings": meetings, "count": len(meetings)})
-
-        except Exception as e:
-            logger.error("Error listing past meetings: %s", e)
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -633,6 +766,119 @@ class Zoom:
             return self._handle_response(response, "Meeting invitation fetched successfully")
         except Exception as e:
             logger.error("Error getting meeting invitation: %s", e)
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="zoom",
+        tool_name="list_recurring_meetings_ending_in_range",
+        description="List recurring Zoom meetings whose series ends within a given date range.",
+        llm_description=(
+            "Returns recurring meetings that are ending (final occurrence) within the given from_/to_ window. "
+            "Useful for finding series that are about to expire. "
+            "Checks recurrence.end_date_time if set, otherwise falls back to the last occurrence's start_time."
+        ),
+        args_schema=ListRecurringMeetingsEndingInput,
+        returns="JSON list of recurring meetings ending in range, with their end date and remaining occurrences",
+        primary_intent=ToolIntent.SEARCH,
+        category=ToolCategory.COMMUNICATION,
+        when_to_use=[
+            "User asks which recurring meetings are ending soon",
+            "User wants to know which series expire this month/week",
+        ],
+        when_not_to_use=[
+            "User wants all meetings in a range (use list_meetings)",
+            "User wants a specific meeting's details (use get_meeting)",
+        ],
+        typical_queries=["Which recurring meetings are ending this month?", "Show me series expiring this week"],
+    )
+    async def list_recurring_meetings_ending_in_range(
+        self,
+        from_: str,
+        to_: str,
+        top: int | None = 10,
+    ) -> Tuple[bool, str]:
+        """Return recurring meetings whose series ends within [from_, to_]."""
+        try:
+            top = min(top, 50)
+            from_dt = _ensure_aware(datetime.fromisoformat(from_.replace("Z", "+00:00")))
+            to_dt   = _ensure_aware(datetime.fromisoformat(to_.replace("Z", "+00:00")))
+
+            # Step 1 — fetch all parent meetings and keep only recurring ones
+            all_parents: list[dict] = []
+            for meeting_type in ("scheduled", "upcoming"):
+                response = await self.client.meetings(userId="me", type_=meeting_type, page_size=100)
+                success, cleaned = self._handle_response(response, "ok")
+                if not success:
+                    continue
+                data = json.loads(cleaned)
+                all_parents.extend(data.get("data", data).get("meetings", []))
+
+            # Deduplicate
+            seen: set[str] = set()
+            recurring_parents: list[dict] = []
+            for m in all_parents:
+                mid = str(m.get("id", ""))
+                if mid not in seen and m.get("type") in (3, 8):
+                    seen.add(mid)
+                    recurring_parents.append(m)
+
+            results: list[dict] = []
+
+            for m in recurring_parents:
+                detail_response = await self.client.meeting(meetingId=str(m.get("id")))
+                detail_success, detail_cleaned = self._handle_response(detail_response, "ok")
+                if not detail_success:
+                    continue
+
+                detail = json.loads(detail_cleaned)
+                detail = detail.get("data", detail)
+                recurrence = detail.get("recurrence", {})
+                occurrences = detail.get("occurrences", [])
+
+                # Resolve series end — prefer explicit end_date_time, fall back to last occurrence
+                series_end: str | None = recurrence.get("end_date_time")
+
+                if not series_end and occurrences:
+                    # occurrences are returned in ascending order by Zoom
+                    series_end = occurrences[-1].get("start_time")
+
+                if not series_end:
+                    continue
+
+                if not _in_range(series_end, from_dt, to_dt):
+                    continue
+
+                results.append({
+                    "meeting_id": detail.get("id"),
+                    "topic": detail.get("topic"),
+                    "series_end": series_end,
+                    "end_determined_by": "end_date_time" if recurrence.get("end_date_time") else "last_occurrence",
+                    "recurrence_type": recurrence.get("type"),       # 1=daily 2=weekly 3=monthly
+                    "repeat_interval": recurrence.get("repeat_interval"),
+                    "remaining_occurrences": [
+                        {
+                            "occurrence_id": occ.get("occurrence_id"),
+                            "start_time": occ.get("start_time"),
+                            "duration": occ.get("duration"),
+                            "status": occ.get("status"),
+                        }
+                        for occ in occurrences
+                    ],
+                    "join_url": detail.get("join_url"),
+                })
+
+            results.sort(key=lambda x: x["series_end"])
+            trimmed = results[:top]
+
+            return True, json.dumps({
+                "meetings": trimmed,
+                "count": len(trimmed),
+                "from": from_,
+                "to": to_,
+            })
+
+        except Exception as e:
+            logger.error("Error listing recurring meetings ending in range: %s", e)
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
@@ -729,11 +975,10 @@ class Zoom:
             logger.error("Error getting meeting transcript: %s", e)
             return False, json.dumps({"error": str(e)})
 
-    async def _fetch_text(self, url: str) -> Optional[str]:
+    async def _fetch_text(self, url: str) -> str | None:
         """Download a plain text/VTT file via the Zoom HTTP client."""
         try:
-            from app.sources.client.http.http_request import HTTPRequest as _HTTPRequest
-            request = _HTTPRequest(
+            request = HTTPRequest(
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
@@ -762,30 +1007,168 @@ class Zoom:
                 continue
             text_lines.append(line)
         return " ".join(text_lines)
+    
+    # ------------------------------------------------------------------
+    # Contact tools
+    # ------------------------------------------------------------------
 
     @tool(
         app_name="zoom",
-        tool_name="delete_meeting_transcript",
-        description="Delete the transcript for a recorded Zoom meeting.",
-        llm_description="Permanently deletes the transcript for a meeting recording. Cannot be undone.",
-        args_schema=DeleteMeetingTranscriptInput,
-        returns="JSON confirming transcript deletion",
-        primary_intent=ToolIntent.ACTION,
+        tool_name="list_contacts",
+        description="List the authenticated user's Zoom contacts.",
+        llm_description=(
+            "Returns the user's Zoom contacts. "
+            "Use type='company' for people in the same org, type='external' for outside contacts. "
+            "Omit type to return all. Supports pagination via next_page_token."
+        ),
+        args_schema=ListContactsInput,
+        returns="JSON with list of contacts and pagination token",
+        primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.COMMUNICATION,
         when_to_use=[
-            "User explicitly wants to delete a meeting transcript",
+            "User wants to see their Zoom contacts",
+            "User asks who is in their Zoom contact list",
+            "User wants to find a contact's email or user ID before inviting them to a meeting",
         ],
         when_not_to_use=[
-            "User wants to read the transcript (use get_meeting_transcript)",
+            "User wants details of a single contact (use get_contact)",
+            "User wants to list meeting participants (use list_meetings)",
         ],
-        typical_queries=["Delete transcript for meeting 123", "Remove Zoom call transcript"],
+        typical_queries=["Show my Zoom contacts", "List company contacts", "Who are my external Zoom contacts?"],
     )
-    async def delete_meeting_transcript(self, meeting_id: str) -> Tuple[bool, str]:
-        """Delete the transcript for a recorded meeting."""
+    async def list_contacts(
+        self,
+        type_: str | None = None,
+        top: int | None = 10,
+    ) -> Tuple[bool, str]:
+        """List Zoom contacts (personal, company, external) with auto-pagination."""
         try:
-            logger.info("zoom.delete_meeting_transcript called for meeting_id=%s", meeting_id)
-            response = await self.client.delete_meeting_transcript(meetingId=meeting_id)
-            return self._handle_response(response, "Meeting transcript deleted successfully")
+            # Zoom supports filtering via type param
+            types_to_fetch = [type_] if type_ else ["personal", "company", "external"]
+            page_size = min(100, top)
+            top = min(top, 50)
+            all_contacts: list = []
+            for contact_type in types_to_fetch:
+                next_page_token: str | None = None
+
+                while True:
+                    response = await self.client.get_user_contacts(
+                        type_=contact_type,
+                        page_size=page_size,
+                        next_page_token=next_page_token,
+                    )
+
+                    if not response.success:
+                        break
+
+                    data = response.data or {}
+                    contacts = data.get("contacts", [])
+
+                    # Tag contact type
+                    for contact in contacts:
+                        contact["contact_type"] = contact_type
+
+                    all_contacts.extend(contacts)
+                    if len(all_contacts) >= top:
+                        break
+
+                    # Pagination handling
+                    next_token = data.get("next_page_token")
+                    if not next_token:
+                        break
+                    next_page_token = next_token
+
+            return True, json.dumps({
+                "message": "Contacts fetched successfully",
+                "data": {
+                    "contacts": all_contacts,
+                    "total": len(all_contacts),
+                },
+            })
         except Exception as e:
-            logger.error("Error deleting meeting transcript: %s", e)
+            logger.error("Error listing contacts: %s", e)
+            return False, json.dumps({"error": str(e)})
+
+
+    @tool(
+        app_name="zoom",
+        tool_name="get_contact",
+        description="Get details of a specific Zoom contact by email, user ID, or member ID.",
+        llm_description=(
+            "Returns full details for a single Zoom contact. "
+            "The identifier can be the contact's email address, Zoom user ID, or member ID. "
+            "Set query_presence_status=true to also fetch their current availability/presence status."
+        ),
+        args_schema=GetContactInput,
+        returns="JSON with contact details including name, email, and optionally presence status",
+        primary_intent=ToolIntent.SEARCH,
+        category=ToolCategory.COMMUNICATION,
+        when_to_use=[
+            "User wants details of a specific Zoom contact",
+            "User asks for a contact's profile or presence status",
+            "User provides an email or name and wants to look up their Zoom details",
+        ],
+        when_not_to_use=[
+            "User wants to list all contacts (use list_contacts)",
+        ],
+        typical_queries=["Get contact details for john@example.com", "Is my contact online?", "Look up Zoom user by email"],
+    )
+    async def get_contact(
+        self,
+        identifier: str,
+    ) -> Tuple[bool, str]:
+        """Get a specific Zoom contact by identifier."""
+        try:
+            response = await self.client.get_user_contact(
+                identifier=identifier,
+            )
+            return self._handle_response(response, "Contact fetched successfully")
+        except Exception as e:
+            logger.error("Error getting contact: %s", e)
+            return False, json.dumps({"error": str(e)})
+
+    # ------------------------------------------------------------------
+    # Zoom Docs tools
+    # ------------------------------------------------------------------
+
+    @tool(
+        app_name="zoom",
+        tool_name="list_folder_children",
+        description="List files and folders inside a Zoom Docs folder.",
+        llm_description=(
+            "Lists the contents (files and sub-folders) of a Zoom Docs folder. "
+            "Use folder_id='root' (default) to browse the authenticated user's top-level 'My Docs' folder. "
+            "Pass a specific folder_id to drill into any sub-folder. "
+            "Supports pagination via next_page_token. "
+            "Scope: docs:read:list_files."
+        ),
+        args_schema=ListFolderChildrenInput,
+        returns="JSON with list of files and folders inside the specified folder",
+        primary_intent=ToolIntent.SEARCH,
+        category=ToolCategory.COMMUNICATION,
+        when_to_use=[
+            "User wants to browse their Zoom Docs files",
+            "User asks what's in a Zoom Docs folder",
+            "User wants to list files in their root Docs folder",
+            "User wants to explore contents of a specific folder",
+        ],
+        when_not_to_use=[
+            "User wants files shared with them (use list_shared_files or list_shared_folders)",
+        ],
+        typical_queries=["Show my Zoom Docs files", "What's in my root docs folder?", "List files in folder abc123", "Browse my Zoom documents"],
+    )
+    async def list_folder_children(
+        self,
+        folder_id: str = "root",
+        page_size: int | None = 50
+    ) -> Tuple[bool, str]:
+        """List children of a Zoom Docs folder (or root)."""
+        try:
+            response = await self.client.list_all_children(
+                fileId=folder_id,
+                page_size=page_size,
+            )
+            return self._handle_response(response, f"Folder contents listed successfully for '{folder_id}'")
+        except Exception as e:
+            logger.error("Error listing folder children: %s", e)
             return False, json.dumps({"error": str(e)})

@@ -1,4 +1,3 @@
-
 """Zoom client implementation.
 
 This module provides clients for interacting with the Zoom API using either:
