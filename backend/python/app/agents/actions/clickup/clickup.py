@@ -2,7 +2,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 CLICKUP_APP_BASE = "https://app.clickup.com"
 
 
-def _build_clickup_web_url(entity: str, team_id: str, **kwargs: str) -> str:
-    """Build ClickUp app web URL for an entity. All IDs as strings."""
+def _build_clickup_web_url(entity: str, team_id: Optional[str] = None, **kwargs: str) -> str:
+    """Build ClickUp app web URL for an entity. All IDs as strings. team_id optional for comment/comment_reply."""
     if entity == "workspace":
         return f"{CLICKUP_APP_BASE}/{team_id}/home"
     if entity == "space":
@@ -39,6 +39,17 @@ def _build_clickup_web_url(entity: str, team_id: str, **kwargs: str) -> str:
         return f"{CLICKUP_APP_BASE}/{team_id}/v/dc/{kwargs.get('doc_id', '')}"
     if entity == "page":
         return f"{CLICKUP_APP_BASE}/{team_id}/v/dc/{kwargs.get('doc_id', '')}/{kwargs.get('page_id', '')}"
+    if entity == "comment":
+        task_id = kwargs.get("task_id", "")
+        comment_id = kwargs.get("comment_id", "")
+        if task_id and comment_id:
+            return f"{CLICKUP_APP_BASE}/t/{task_id}?comment={comment_id}"
+    if entity == "comment_reply":
+        task_id = kwargs.get("task_id", "")
+        comment_id = kwargs.get("comment_id", "")
+        threaded_comment_id = kwargs.get("threaded_comment_id", "")
+        if task_id and comment_id and threaded_comment_id:
+            return f"{CLICKUP_APP_BASE}/t/{task_id}?comment={comment_id}&threadedComment={threaded_comment_id}"
     return ""
 
 
@@ -73,30 +84,9 @@ class GetFolderlessListsInput(BaseModel):
     archived: Optional[bool] = Field(default=None, description="Include archived lists")
 
 
-class GetTasksInput(BaseModel):
-    """Schema for getting tasks in a list."""
-    list_id: str = Field(description="List ID. Get from get_lists or get_folderless_lists.")
-    archived: Optional[bool] = Field(default=None, description="Include archived tasks")
-    page: Optional[int] = Field(default=None, description="Page number (0-based). 100 tasks per page.")
-    order_by: Optional[str] = Field(default=None, description="Order by: id, created, updated, due_date")
-    reverse: Optional[bool] = Field(default=None, description="Reverse sort order")
-    subtasks: Optional[bool] = Field(default=None, description="Include subtasks")
-    statuses: Optional[List[str]] = Field(default=None, description="Filter by status names")
-    include_closed: Optional[bool] = Field(default=None, description="Include closed tasks")
-    assignees: Optional[List[str]] = Field(default=None, description="Filter by assignee user IDs")
-    tags: Optional[List[str]] = Field(default=None, description="Filter by tag names")
-    due_date_gt: Optional[int] = Field(default=None, description="Filter tasks due after (Unix ms)")
-    due_date_lt: Optional[int] = Field(default=None, description="Filter tasks due before (Unix ms)")
-    date_created_gt: Optional[int] = Field(default=None, description="Filter tasks created after (Unix ms)")
-    date_created_lt: Optional[int] = Field(default=None, description="Filter tasks created before (Unix ms)")
-    date_updated_gt: Optional[int] = Field(default=None, description="Filter tasks updated after (Unix ms)")
-    date_updated_lt: Optional[int] = Field(default=None, description="Filter tasks updated before (Unix ms)")
-    custom_fields: Optional[List[Dict[str, Any]]] = Field(default=None, description="Filter by custom field values")
-
-
 class GetTaskInput(BaseModel):
     """Schema for getting a specific task."""
-    task_id: str = Field(description="Task ID. Get from get_tasks or create_task.")
+    task_id: str = Field(description="Task ID. Get from get_tasks, create_task, or search_tasks.")
 
 
 class CreateTaskInput(BaseModel):
@@ -104,12 +94,15 @@ class CreateTaskInput(BaseModel):
     list_id: str = Field(description="List ID. Get from get_lists or get_folderless_lists.")
     name: str = Field(description="Task name")
     description: Optional[str] = Field(default=None, description="Task description")
-    status: Optional[str] = Field(default=None, description="Status name (optional)")
+    status: Optional[str] = Field(default=None, description="Status name (e.g. to do, in progress)")
+    priority: Optional[int] = Field(default=None, description="Priority: 1=Urgent, 2=High, 3=Normal, 4=Low")
+    assignees: Optional[List[int]] = Field(default=None, description="Assignee user IDs (e.g. from get_authorized_user or get_list_members)")
+    parent: Optional[str] = Field(default=None, description="Parent task ID to create this as a subtask")
 
 
 class UpdateTaskInput(BaseModel):
     """Schema for updating a task."""
-    task_id: str = Field(description="Task ID. Get from get_tasks or create_task.")
+    task_id: str = Field(description="Task ID. Get from get_tasks, create_task, or search_tasks.")
     name: Optional[str] = Field(default=None, description="New task name (omit to leave unchanged)")
     description: Optional[str] = Field(default=None, description="New task description, plain text (omit to leave unchanged)")
     markdown_description: Optional[str] = Field(default=None, description="New task description in markdown (omit to leave unchanged)")
@@ -128,8 +121,13 @@ class UpdateTaskInput(BaseModel):
 
 
 class GetWorkspaceDocsInput(BaseModel):
-    """Schema for listing docs in a workspace (ClickUp Docs API v3)."""
+    """Schema for listing docs in a workspace (ClickUp Docs API v3). For 'list all docs' pass only workspace_id; leave all optional fields unset."""
     workspace_id: str = Field(description="Workspace ID. Same as team id from get_authorized_teams_workspaces.")
+    creator: Optional[int] = Field(default=None, description="Only set when user asks 'my docs' (use get_authorized_user id). Leave unset for list all docs.")
+    parent_id: Optional[str] = Field(default=None, description="Only set when user asks docs under a specific parent. Leave unset for list all docs.")
+    parent_type: Optional[str] = Field(default=None, description="Only set when user explicitly filters by parent type. Leave unset for list all docs; do not use WORKSPACE.")
+    limit: Optional[int] = Field(default=None, description="Only set when user asks to limit (e.g. 'first 10 docs'); use 10 then. Leave unset for list all docs.")
+    cursor: Optional[str] = Field(default=None, description="Cursor for next page; only when paginating. Leave unset for first page.")
 
 
 class GetDocPagesInput(BaseModel):
@@ -145,15 +143,47 @@ class GetDocPageInput(BaseModel):
     page_id: str = Field(description="Page ID. Get from get_doc_pages.")
 
 
+class CreateDocInput(BaseModel):
+    """Schema for creating a doc in a workspace (ClickUp Docs API v3)."""
+    workspace_id: str = Field(description="Workspace ID. Same as team id from get_authorized_teams_workspaces.")
+    name: str = Field(description="Name of the new doc.")
+    parent_id: Optional[str] = Field(default=None, description="Parent id (e.g. space_id, folder_id, list_id). Required if parent_type is set.")
+    parent_type: Optional[int] = Field(default=None, description="Parent type: 4=Space, 5=Folder, 6=List, 7=Everything, 12=Workspace. Use with parent_id.")
+    visibility: Optional[str] = Field(default=None, description="Visibility: PUBLIC or PRIVATE.")
+
+
+class CreateDocPageInput(BaseModel):
+    """Schema for creating a page in a doc (ClickUp Docs API v3)."""
+    workspace_id: str = Field(description="Workspace ID. Same as team id from get_authorized_teams_workspaces.")
+    doc_id: str = Field(description="Doc ID. Get from get_workspace_docs.")
+    parent_page_id: Optional[str] = Field(default=None, description="Parent page ID. Omit for a root page in the doc.")
+    name: str = Field(default="", description="Name of the new page.")
+    sub_title: Optional[str] = Field(default=None, description="Subtitle of the new page.")
+    content: str = Field(default="", description="Content of the new page.")
+    content_format: str = Field(default="text/md", description="Content format: text/md (markdown) or text/plain.")
+
+
+class UpdateDocPageInput(BaseModel):
+    """Schema for updating a doc page (ClickUp Docs API v3)."""
+    workspace_id: str = Field(description="Workspace ID. Same as team id from get_authorized_teams_workspaces.")
+    doc_id: str = Field(description="Doc ID. Get from get_workspace_docs.")
+    page_id: str = Field(description="Page ID. Get from get_doc_pages.")
+    name: Optional[str] = Field(default=None, description="Updated name of the page (omit to leave unchanged).")
+    sub_title: Optional[str] = Field(default=None, description="Updated subtitle (omit to leave unchanged).")
+    content: Optional[str] = Field(default=None, description="Updated content (omit to leave unchanged).")
+    content_edit_mode: str = Field(default="replace", description="How to update content: replace, append, or prepend.")
+    content_format: str = Field(default="text/md", description="Content format: text/md or text/plain.")
+
+
 class GetWorkspaceTasksInput(BaseModel):
     """Schema for searching/filtering tasks across a workspace (team)."""
     team_id: str = Field(description="Workspace (team) ID. Get from get_authorized_teams_workspaces.")
-    page: Optional[int] = Field(default=None, description="Page number (0-based). 100 tasks per page.")
-    order_by: Optional[str] = Field(default=None, description="Order by: created, updated, due_date, start_date")
+    page: Optional[int] = Field(default=0, description="Page number (0-based). 0 = first page. 100 tasks per page.")
+    order_by: Optional[str] = Field(default="updated", description="Order by: created, updated, due_date, start_date. Default: updated.")
     reverse: Optional[bool] = Field(default=None, description="Reverse sort order")
     subtasks: Optional[bool] = Field(default=None, description="Include subtasks")
     statuses: Optional[List[str]] = Field(default=None, description="Filter by status names")
-    include_closed: Optional[bool] = Field(default=None, description="Include closed tasks")
+    include_closed: Optional[bool] = Field(default=False, description="Include closed tasks")
     assignees: Optional[List[str]] = Field(default=None, description="Filter by assignee user IDs")
     tags: Optional[List[str]] = Field(default=None, description="Filter by tag names")
     due_date_gt: Optional[int] = Field(default=None, description="Filter tasks due after (Unix ms)")
@@ -172,8 +202,114 @@ class SearchTasksInput(BaseModel):
     """Schema for keyword search across workspace tasks (creates temporary view, returns tasks, deletes view)."""
     team_id: str = Field(description="Workspace (team) ID. Get from get_authorized_teams_workspaces.")
     keyword: str = Field(description="Search string for task name, description, and custom field text.")
-    show_closed: bool = Field(default=False, description="Include closed tasks in search results")
+    show_closed: bool = Field(default=True, description="Include closed (completed) tasks in search results")
     page: Optional[int] = Field(default=None, description="Page number (0-based). 100 tasks per page.")
+
+
+class CreateSpaceInput(BaseModel):
+    """Schema for creating a space in a workspace."""
+    team_id: str = Field(description="Workspace (team) ID. Get from get_authorized_teams_workspaces.")
+    name: str = Field(description="Name of the new space.")
+    multiple_assignees: Optional[bool] = Field(default=None, description="Enable multiple assignees in the space")
+    features: Optional[Dict[str, Any]] = Field(default=None, description="Space features configuration")
+
+
+class CreateFolderInput(BaseModel):
+    """Schema for creating a folder in a space."""
+    space_id: str = Field(description="Space ID. Get from get_spaces.")
+    name: str = Field(description="Name of the new folder.")
+    team_id: Optional[str] = Field(default=None, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Used for web_url in response.")
+
+
+class CreateListInput(BaseModel):
+    """Schema for creating a list in a folder or a folderless list in a space. Exactly one of folder_id or space_id required."""
+    folder_id: Optional[str] = Field(default=None, description="Folder ID from get_folders. Use to create a list inside a folder. Mutually exclusive with space_id.")
+    space_id: Optional[str] = Field(default=None, description="Space ID from get_spaces. Use to create a folderless list. Mutually exclusive with folder_id.")
+    name: str = Field(description="Name of the new list.")
+    team_id: Optional[str] = Field(default=None, description="Workspace (team) ID. Get from get_authorized_teams_workspaces. Used for web_url in response.")
+    content: Optional[str] = Field(default=None, description="List description")
+    due_date: Optional[int] = Field(default=None, description="Due date as Unix timestamp (ms)")
+    due_date_time: Optional[bool] = Field(default=None, description="Include time in due date")
+    priority: Optional[int] = Field(default=None, description="Priority: 1=Urgent, 2=High, 3=Normal, 4=Low")
+    assignee: Optional[int] = Field(default=None, description="Assignee user ID")
+    status: Optional[str] = Field(default=None, description="Status name")
+
+    @model_validator(mode="after")
+    def require_folder_or_space(self) -> "CreateListInput":
+        if not self.folder_id and not self.space_id:
+            raise ValueError("At least one of folder_id or space_id is required.")
+        return self
+
+
+class UpdateListInput(BaseModel):
+    """Schema for updating a list."""
+    list_id: str = Field(description="List ID. Get from get_lists or get_folderless_lists.")
+    name: Optional[str] = Field(default=None, description="New name (omit to leave unchanged)")
+    content: Optional[str] = Field(default=None, description="List description (omit to leave unchanged)")
+    due_date: Optional[int] = Field(default=None, description="Due date as Unix timestamp (ms)")
+    due_date_time: Optional[bool] = Field(default=None, description="Include time in due date")
+    priority: Optional[int] = Field(default=None, description="Priority: 1=Urgent, 2=High, 3=Normal, 4=Low")
+    assignee_add: Optional[int] = Field(default=None, description="Add assignee by user ID")
+    assignee_rem: Optional[int] = Field(default=None, description="Remove assignee by user ID")
+    unset_status: Optional[bool] = Field(default=None, description="Remove the status field")
+
+
+class GetCommentsInput(BaseModel):
+    """Schema for getting comments: either all comments on a task (task_id) or replies to a comment (comment_id). Exactly one of task_id or comment_id required."""
+    task_id: Optional[str] = Field(default=None, description="Task ID to list all comments on the task. Get from get_tasks, get_task, create_task, or search_tasks.")
+    comment_id: Optional[str] = Field(default=None, description="Comment ID to list replies (thread). Get from get_comments. When set, returns only replies; optionally pass task_id for web_url.")
+    custom_task_ids: Optional[bool] = Field(default=None, description="Use custom task IDs (only when task_id is set). If true, team_id is required.")
+    team_id: Optional[str] = Field(default=None, description="Workspace (team) ID. Required when custom_task_ids is true. Optional when comment_id is set (for web_url).")
+    start: Optional[int] = Field(default=None, description="Start timestamp for pagination (only when task_id is set).")
+    start_id: Optional[str] = Field(default=None, description="Start comment ID for pagination (only when task_id is set).")
+
+    @model_validator(mode="after")
+    def require_task_or_comment(self) -> "GetCommentsInput":
+        if not self.task_id and not self.comment_id:
+            raise ValueError("At least one of task_id or comment_id is required. Use task_id for comments on a task, comment_id for replies to a comment (optionally task_id for web_url).")
+        return self
+
+
+class CreateTaskCommentInput(BaseModel):
+    """Schema for creating a comment on a task or a reply to a comment. For new comment use task_id. For reply use comment_id (optionally task_id for web_url)."""
+    task_id: Optional[str] = Field(default=None, description="Task ID for a new top-level comment, or for web_url when replying. Get from get_tasks, get_task, create_task, or search_tasks.")
+    comment_id: Optional[str] = Field(default=None, description="Comment ID for a reply (threaded comment). Get from get_comments. When set, creates a reply; optionally pass task_id for web_url in response.")
+    comment_text: str = Field(description="The comment or reply text (plain text).")
+    assignee: Optional[int] = Field(default=None, description="Assign the comment/reply to a user ID.")
+    notify_all: Optional[bool] = Field(default=None, description="Notify all assignees.")
+    custom_task_ids: Optional[bool] = Field(default=None, description="Use custom task IDs (only when task_id is set for new comment). If true, team_id is required.")
+    team_id: Optional[str] = Field(default=None, description="Workspace (team) ID. Required when task_id is set and custom_task_ids is true.")
+
+    @model_validator(mode="after")
+    def require_task_or_comment(self) -> "CreateTaskCommentInput":
+        if not self.task_id and not self.comment_id:
+            raise ValueError("At least one of task_id or comment_id is required. Use task_id for a new comment, comment_id for a reply (optionally task_id too for reply web_url).")
+        return self
+
+
+class CreateChecklistInput(BaseModel):
+    """Schema for creating a checklist on a task."""
+    task_id: str = Field(description="Task ID. Get from get_tasks, get_task, create_task, or search_tasks.")
+    name: str = Field(description="Checklist name.")
+    custom_task_ids: Optional[bool] = Field(default=None, description="Use custom task IDs. If true, team_id is required.")
+    team_id: Optional[str] = Field(default=None, description="Workspace (team) ID. Required when custom_task_ids is true.")
+
+
+class CreateChecklistItemInput(BaseModel):
+    """Schema for creating a checklist item."""
+    checklist_id: str = Field(description="Checklist ID. Get from task checklists (get_task) or create_checklist response.")
+    name: str = Field(description="Checklist item name.")
+    assignee: Optional[int] = Field(default=None, description="Assignee user ID.")
+
+
+class UpdateChecklistItemInput(BaseModel):
+    """Schema for updating a checklist item (name, assignee, resolved, parent)."""
+    checklist_id: str = Field(description="Checklist ID. Get from task checklists or create_checklist response.")
+    checklist_item_id: str = Field(description="Checklist item ID. Get from checklist items or create_checklist_item response.")
+    name: Optional[str] = Field(default=None, description="New item name (omit to leave unchanged).")
+    assignee: Optional[int] = Field(default=None, description="Assignee user ID.")
+    resolved: Optional[bool] = Field(default=None, description="Mark item resolved (checked) or unresolved.")
+    parent: Optional[str] = Field(default=None, description="Parent checklist item ID for nesting.")
 
 
 # Register ClickUp toolset (OAuth only); tools are auto-discovered from @tool decorators
@@ -260,15 +396,15 @@ class ClickUp:
     @tool(
         app_name="clickup",
         tool_name="get_authorized_teams_workspaces",
-        description="Get the authorized teams (workspaces) for the authenticated user.",
+        description="Get the authorized teams (workspaces).",
         llm_description="Returns list of ClickUp workspaces (teams). Use the returned team id as team_id in get_spaces. Call this first when user asks for spaces, folders, or lists.",
         parameters=[],
-        returns="JSON with list of workspaces (teams); use team id for get_spaces.",
+        returns="JSON with list of workspaces (teams)",
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
         when_to_use=[
             "User wants to list ClickUp workspaces or teams",
-            "User needs team_id to list spaces (call this first, then get_spaces)",
+            "User needs team_id to list spaces",
         ],
         when_not_to_use=[
             "User wants user profile only (use get_authorized_user)",
@@ -295,8 +431,8 @@ class ClickUp:
     @tool(
         app_name="clickup",
         tool_name="get_spaces",
-        description="Get all spaces in a workspace (team).",
-        llm_description="Returns spaces in a workspace. Need team_id from get_authorized_teams_workspaces. Use returned space id for get_folders or get_folderless_lists.",
+        description="Get all spaces in a workspace.",
+        llm_description="Returns spaces in a workspace. Need team_id from get_authorized_teams_workspaces.",
         args_schema=GetSpacesInput,
         returns="JSON with list of spaces in the workspace",
         primary_intent=ToolIntent.SEARCH,
@@ -306,8 +442,8 @@ class ClickUp:
             "User needs space_id for folders or lists (call get_authorized_teams_workspaces first for team_id)",
         ],
         when_not_to_use=[
-            "User wants workspaces/teams list (use get_authorized_teams_workspaces)",
-            "User wants folders in a space (use get_folders with space_id)",
+            "User wants workspaces/teams list",
+            "User wants folders in a space",
         ],
         typical_queries=["List spaces in my workspace", "Show ClickUp spaces", "What spaces do I have?"],
     )
@@ -345,8 +481,8 @@ class ClickUp:
             "User needs folder_id for get_lists (call get_spaces first for space_id)",
         ],
         when_not_to_use=[
-            "User wants folderless lists (use get_folderless_lists with space_id)",
-            "User wants lists inside a folder (use get_lists with folder_id)",
+            "User wants folderless lists",
+            "User wants lists inside a folder",
         ],
         typical_queries=["List folders in this space", "Show folders", "What folders are in the space?"],
     )
@@ -388,7 +524,7 @@ class ClickUp:
         ],
         when_not_to_use=[
             "User wants lists not in a folder (use get_folderless_lists with space_id)",
-            "User wants tasks in a list (use get_tasks with list_id)",
+            "User wants tasks in a list (use get_tasks with list_ids=[list_id])",
         ],
         typical_queries=["List lists in this folder", "Show lists", "What lists are in the folder?"],
     )
@@ -459,75 +595,212 @@ class ClickUp:
 
     @tool(
         app_name="clickup",
-        tool_name="get_tasks",
-        description="Get tasks in a list, with optional filters by status, assignee, tags, dates.",
-        llm_description="Returns tasks in a list. Need list_id from get_lists or get_folderless_lists. Supports optional filters (statuses, assignees, tags, dates). Use returned task id for get_task or update_task.",
-        args_schema=GetTasksInput,
-        returns="JSON with list of tasks in the list",
-        primary_intent=ToolIntent.SEARCH,
+        tool_name="create_space",
+        description="Create a new space in a workspace.",
+        llm_description="Creates a space in a workspace. Need team_id from get_authorized_teams_workspaces; name is required. Optional: multiple_assignees, features.",
+        args_schema=CreateSpaceInput,
+        returns="JSON with the created space details",
+        primary_intent=ToolIntent.ACTION,
         category=ToolCategory.PROJECT_MANAGEMENT,
         when_to_use=[
-            "User wants to list tasks in a ClickUp list",
-            "User wants tasks in a specific list with optional filters (status, assignee, tags, dates)",
-            "User needs task_id for get_task or update_task (call get_lists or get_folderless_lists first for list_id)",
+            "User wants to create a new space in a ClickUp workspace",
+            "User asks to add a space (need team_id from get_authorized_teams_workspaces)",
         ],
         when_not_to_use=[
-            "User wants tasks across the whole workspace (use get_workspace_tasks)",
-            "User wants a single task by id (use get_task)",
-            "User wants to create a task (use create_task)",
+            "User wants to list spaces (use get_spaces)",
+            "User wants to create a folder or list",
         ],
-        typical_queries=["List tasks in this list", "Show my tasks", "What tasks are in the list?", "Tasks in list X with status To Do"],
+        typical_queries=["Create a space", "Add a space to workspace", "New space: Engineering"],
     )
-    async def get_tasks(
+    async def create_space(
         self,
-        list_id: str,
-        archived: Optional[bool] = None,
-        page: Optional[int] = None,
-        order_by: Optional[str] = None,
-        reverse: Optional[bool] = None,
-        subtasks: Optional[bool] = None,
-        statuses: Optional[List[str]] = None,
-        include_closed: Optional[bool] = None,
-        assignees: Optional[List[str]] = None,
-        tags: Optional[List[str]] = None,
-        due_date_gt: Optional[int] = None,
-        due_date_lt: Optional[int] = None,
-        date_created_gt: Optional[int] = None,
-        date_created_lt: Optional[int] = None,
-        date_updated_gt: Optional[int] = None,
-        date_updated_lt: Optional[int] = None,
-        custom_fields: Optional[List[Dict[str, Any]]] = None,
+        team_id: str,
+        name: str,
+        multiple_assignees: Optional[bool] = None,
+        features: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str]:
-        """Get tasks in a list."""
+        """Create a new space in a workspace."""
         try:
-            response = await self.client.get_tasks(
-                list_id,
-                archived=archived,
-                page=page,
-                order_by=order_by,
-                reverse=reverse,
-                subtasks=subtasks,
-                statuses=statuses,
-                include_closed=include_closed,
-                assignees=assignees,
-                tags=tags,
-                due_date_gt=due_date_gt,
-                due_date_lt=due_date_lt,
-                date_created_gt=date_created_gt,
-                date_created_lt=date_created_lt,
-                date_updated_gt=date_updated_gt,
-                date_updated_lt=date_updated_lt,
-                custom_fields=custom_fields,
+            response = await self.client.create_space(
+                team_id,
+                name,
+                multiple_assignees=multiple_assignees,
+                features=features,
             )
-            return self._handle_response(response)
+            if not response.success:
+                return self._handle_response(response)
+            data = dict(response.data) if isinstance(response.data, dict) else {}
+            if data.get("id") and team_id:
+                data["web_url"] = _build_clickup_web_url("space", team_id=team_id, space_id=str(data["id"]))
+            return self._handle_response(response, data_override=data)
         except Exception as e:
-            logger.error(f"Error in get_tasks: {e}")
+            logger.error(f"Error in create_space: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
         app_name="clickup",
-        tool_name="get_workspace_tasks",
-        description="Search/filter tasks across the whole workspace (team) by status, assignee, tags, dates, or scope.",
+        tool_name="create_folder",
+        description="Create a new folder in a space.",
+        llm_description="Creates a folder in a space. Need space_id from get_spaces; name is required.",
+        args_schema=CreateFolderInput,
+        returns="JSON with the created folder details",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to create a new folder in a ClickUp space",
+            "User asks to add a folder (need space_id from get_spaces)",
+        ],
+        when_not_to_use=[
+            "User wants to list folders (use get_folders)",
+            "User wants to create a list",
+        ],
+        typical_queries=["Create a folder", "Add a folder to space", "New folder: Sprint 1"],
+    )
+    async def create_folder(
+        self,
+        space_id: str,
+        name: str,
+        team_id: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Create a new folder in a space."""
+        try:
+            response = await self.client.create_folder(space_id, name)
+            if not response.success:
+                return self._handle_response(response)
+            data = dict(response.data) if isinstance(response.data, dict) else {}
+            if data.get("id") and team_id and space_id:
+                data["web_url"] = _build_clickup_web_url(
+                    "folder", team_id=team_id, space_id=space_id, folder_id=str(data["id"])
+                )
+            return self._handle_response(response, data_override=data)
+        except Exception as e:
+            logger.error(f"Error in create_folder: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
+        tool_name="create_list",
+        description="Create a list in a folder or a folderless list in a space.",
+        llm_description="Creates a list in a folder (provide folder_id from get_folders) or a folderless list in a space (provide space_id from get_spaces). Name required. Exactly one of folder_id or space_id required. Optional: team_id for web_url, content, due_date, priority, assignee, status.",
+        args_schema=CreateListInput,
+        returns="JSON with the created list details",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to create a new list in a ClickUp folder (use folder_id from get_folders)",
+            "User wants to create a folderless list in a space (use space_id from get_spaces)",
+            "User asks to add a list",
+        ],
+        when_not_to_use=[
+            "User wants to list lists (use get_lists or get_folderless_lists)",
+            "User wants to create a task (use create_task)",
+        ],
+        typical_queries=["Create a list", "Add a list to folder", "New list: Backlog", "Create folderless list"],
+    )
+    async def create_list(
+        self,
+        name: str,
+        folder_id: Optional[str] = None,
+        space_id: Optional[str] = None,
+        team_id: Optional[str] = None,
+        content: Optional[str] = None,
+        due_date: Optional[int] = None,
+        due_date_time: Optional[bool] = None,
+        priority: Optional[int] = None,
+        assignee: Optional[int] = None,
+        status: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Create a list in a folder or a folderless list in a space."""
+        try:
+            if folder_id:
+                response = await self.client.create_list(
+                    folder_id,
+                    name,
+                    content=content,
+                    due_date=due_date,
+                    due_date_time=due_date_time,
+                    priority=priority,
+                    assignee=assignee,
+                    status=status,
+                )
+                pr_id = folder_id
+            else:
+                response = await self.client.create_folderless_list(
+                    space_id,
+                    name,
+                    content=content,
+                    due_date=due_date,
+                    due_date_time=due_date_time,
+                    priority=priority,
+                    assignee=assignee,
+                    status=status,
+                )
+                pr_id = space_id
+            if not response.success:
+                return self._handle_response(response)
+            data = dict(response.data) if isinstance(response.data, dict) else {}
+            if data.get("id") and team_id and pr_id:
+                data["web_url"] = _build_clickup_web_url(
+                    "list", team_id=team_id, list_id=str(data["id"]), folder_id=pr_id
+                )
+            return self._handle_response(response, data_override=data)
+        except Exception as e:
+            logger.error(f"Error in create_list: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
+        tool_name="update_list",
+        description="Update a list.",
+        llm_description="Updates a list. Need list_id from get_lists or get_folderless_lists. Pass only fields to change; omit others to leave unchanged.",
+        args_schema=UpdateListInput,
+        returns="JSON with the updated list details",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to edit or update a ClickUp list",
+            "User asks to rename a list or change list settings",
+        ],
+        when_not_to_use=[
+            "User wants to create a list (use create_list)",
+            "User wants to list lists (use get_lists)",
+        ],
+        typical_queries=["Update list", "Rename list", "Change list due date", "Edit list settings"],
+    )
+    async def update_list(
+        self,
+        list_id: str,
+        name: Optional[str] = None,
+        content: Optional[str] = None,
+        due_date: Optional[int] = None,
+        due_date_time: Optional[bool] = None,
+        priority: Optional[int] = None,
+        assignee_add: Optional[int] = None,
+        assignee_rem: Optional[int] = None,
+        unset_status: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
+        """Update a list."""
+        try:
+            response = await self.client.update_list(
+                list_id,
+                name=name,
+                content=content,
+                due_date=due_date,
+                due_date_time=due_date_time,
+                priority=priority,
+                assignee_add=assignee_add,
+                assignee_rem=assignee_rem,
+                unset_status=unset_status,
+            )
+            return self._handle_response(response)
+        except Exception as e:
+            logger.error(f"Error in update_list: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
+        tool_name="get_tasks",
+        description="Search/filter tasks across the whole workspace.",
         llm_description="Returns tasks across a workspace matching filters. Need team_id from get_authorized_teams_workspaces. For 'assigned to me' or 'my tasks', call get_authorized_user first and pass assignees=[user_id]. Use for one workspace only (pick by name from get_authorized_teams_workspaces). 100 tasks per page; use page for more.",
         args_schema=GetWorkspaceTasksInput,
         returns="JSON with list of tasks in the workspace matching filters",
@@ -540,20 +813,20 @@ class ClickUp:
             "User asks for 'my tasks' or 'tasks assigned to me' in a workspace (use get_authorized_user for user id, then this with assignees=[user_id])",
         ],
         when_not_to_use=[
-            "User wants tasks in a specific list (use get_tasks with list_id)",
+            "User wants tasks in a specific list (use get_tasks with list_ids=[list_id])",
             "User wants a single task by id (use get_task)",
         ],
         typical_queries=["Tasks in workspace with status In Progress", "All tasks assigned to me", "Tasks with tag urgent in workspace"],
     )
-    async def get_workspace_tasks(
+    async def get_tasks(
         self,
         team_id: str,
-        page: Optional[int] = None,
-        order_by: Optional[str] = None,
+        page: Optional[int] = 0,
+        order_by: Optional[str] = "updated",
         reverse: Optional[bool] = None,
         subtasks: Optional[bool] = None,
         statuses: Optional[List[str]] = None,
-        include_closed: Optional[bool] = None,
+        include_closed: Optional[bool] = False,
         assignees: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
         due_date_gt: Optional[int] = None,
@@ -568,6 +841,10 @@ class ClickUp:
         custom_fields: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[bool, str]:
         """Search/filter tasks across the whole workspace."""
+        logger.info(
+            "clickup get_tasks: team_id=%s page=%s order_by=%s reverse=%s subtasks=%s statuses=%s include_closed=%s assignees=%s tags=%s space_ids=%s project_ids=%s list_ids=%s",
+            team_id, page, order_by, reverse, subtasks, statuses, include_closed, assignees, tags, space_ids, project_ids, list_ids,
+        )
         try:
             # API expects assignees as list of strings; normalize in case caller passes ints
             assignees_out = None
@@ -596,14 +873,14 @@ class ClickUp:
             )
             return self._handle_response(response)
         except Exception as e:
-            logger.error(f"Error in get_workspace_tasks: {e}")
+            logger.error(f"Error in get_tasks: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
         app_name="clickup",
         tool_name="search_tasks",
-        description="Search tasks by keyword or phrase in name, description, and custom field text.",
-        llm_description="Returns tasks matching a keyword/phrase across the workspace. Creates a temporary view, fetches tasks, then deletes the view. Use for free-text search (e.g. 'login bug', 'invoice'). Get team_id from get_authorized_teams_workspaces. Prefer this over get_workspace_tasks when user asks for tasks containing specific text.",
+        description="Search tasks by keyword or phrase.",
+        llm_description="Returns tasks matching a keyword/phrase across the workspace. Creates a temporary view, fetches tasks, then deletes the view. Use for free-text search (e.g. 'login bug', 'invoice'). Get team_id from get_authorized_teams_workspaces. Prefer this over get_tasks when user asks for tasks containing specific text.",
         args_schema=SearchTasksInput,
         returns="JSON with list of tasks matching the keyword",
         primary_intent=ToolIntent.SEARCH,
@@ -613,8 +890,8 @@ class ClickUp:
             "User asks for tasks with a word or phrase in name/description (e.g. 'login bug', 'invoice')",
         ],
         when_not_to_use=[
-            "User wants to filter by status/assignee/tags/dates only (use get_workspace_tasks)",
-            "User wants tasks in a specific list (use get_tasks)",
+            "User wants to filter by status/assignee/tags/dates only (use get_tasks)",
+            "User wants tasks in a specific list (use get_tasks with list_ids)",
         ],
         typical_queries=["Tasks containing login bug", "Find tasks with invoice", "Search for tasks named X"],
     )
@@ -622,7 +899,7 @@ class ClickUp:
         self,
         team_id: str,
         keyword: str,
-        show_closed: bool = False,
+        show_closed: bool = True,
         page: Optional[int] = None,
     ) -> Tuple[bool, str]:
         """Search tasks by keyword via temporary workspace view."""
@@ -658,18 +935,18 @@ class ClickUp:
     @tool(
         app_name="clickup",
         tool_name="get_task",
-        description="Get a specific task by ID.",
-        llm_description="Returns one task by task_id. Get task_id from get_tasks or create_task. Use for 'show task X', 'details of task Y'.",
+        description="Get a specific task details.",
+        llm_description="Returns one task by task_id. Get task_id from get_tasks, create_task, or search_tasks. Use for 'show task X', 'details of task Y'.",
         args_schema=GetTaskInput,
         returns="JSON with task details",
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.PROJECT_MANAGEMENT,
         when_to_use=[
             "User wants details of a specific ClickUp task",
-            "User asks for a task by ID (get task_id from get_tasks or create_task)",
+            "User asks for a task by ID (get task_id from get_tasks, create_task, or search_tasks)",
         ],
         when_not_to_use=[
-            "User wants all tasks in a list (use get_tasks)",
+            "User wants all tasks in a list (use get_tasks with list_ids)",
             "User wants to create a task (use create_task)",
         ],
         typical_queries=["Get task abc123", "Show task details", "What is the status of this task?"],
@@ -686,8 +963,8 @@ class ClickUp:
     @tool(
         app_name="clickup",
         tool_name="create_task",
-        description="Create a new task in a list.",
-        llm_description="Creates a task. Need list_id from get_lists or get_folderless_lists; name is required. Optional: description, status. Returns the created task including task id.",
+        description="Create a new task or subtask in a list.",
+        llm_description="Creates a task. Need list_id from get_lists or get_folderless_lists; name is required. Optional: description, status, priority, assignees, parent (for subtasks). Returns the created task including task id.",
         args_schema=CreateTaskInput,
         returns="JSON with the created task details including task id",
         primary_intent=ToolIntent.ACTION,
@@ -708,6 +985,9 @@ class ClickUp:
         name: str,
         description: Optional[str] = None,
         status: Optional[str] = None,
+        priority: Optional[int] = None,
+        assignees: Optional[List[int]] = None,
+        parent: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Create a new task in a list."""
         try:
@@ -716,6 +996,9 @@ class ClickUp:
                 name,
                 description=description,
                 status=status,
+                priority=priority,
+                assignees=assignees,
+                parent=parent,
             )
             return self._handle_response(response)
         except Exception as e:
@@ -725,15 +1008,15 @@ class ClickUp:
     @tool(
         app_name="clickup",
         tool_name="update_task",
-        description="Update an existing task (name, description, status, priority, dates, assignees, archived).",
-        llm_description="Updates a task. Need task_id from get_tasks or create_task. Pass only fields to change (name, description, status, priority, due_date, start_date, assignees_add/assignees_rem, archived, etc.); omit others to leave unchanged.",
+        description="Update an existing task.",
+        llm_description="Updates a task. Need task_id from get_tasks, create_task, or search_tasks. Pass only fields to change (name, description, status, priority, due_date, start_date, assignees_add/assignees_rem, archived, etc.); omit others to leave unchanged.",
         args_schema=UpdateTaskInput,
         returns="JSON with the updated task details",
         primary_intent=ToolIntent.ACTION,
         category=ToolCategory.PROJECT_MANAGEMENT,
         when_to_use=[
             "User wants to edit or update a ClickUp task",
-            "User asks to change task name, description, status, priority, due date, assignees, or archive (need task_id from get_tasks or create_task)",
+            "User asks to change task name, description, status, priority, due date, assignees, or archive (need task_id from get_tasks, create_task, or search_tasks)",
         ],
         when_not_to_use=[
             "User wants to create a task (use create_task)",
@@ -791,9 +1074,259 @@ class ClickUp:
 
     @tool(
         app_name="clickup",
+        tool_name="get_comments",
+        description="Get comments on a task or replies to a comment.",
+        llm_description="Returns comments on a task (pass task_id) or replies to a comment (pass comment_id; optionally task_id for web_url). Get task_id from get_tasks, get_task, create_task, or search_tasks; comment_id from get_comments. For task comments: optional custom_task_ids, team_id, start, start_id.",
+        args_schema=GetCommentsInput,
+        returns="JSON with list of comments or comment replies",
+        primary_intent=ToolIntent.SEARCH,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to see comments on a task (pass task_id)",
+            "User wants to see replies to a comment / comment thread (pass comment_id from get_comments)",
+        ],
+        when_not_to_use=[
+            "User wants to add a comment (use create_task_comment)",
+        ],
+        typical_queries=["Comments on task", "List task comments", "Replies to comment", "Comment thread"],
+    )
+    async def get_comments(
+        self,
+        task_id: Optional[str] = None,
+        comment_id: Optional[str] = None,
+        custom_task_ids: Optional[bool] = None,
+        team_id: Optional[str] = None,
+        start: Optional[int] = None,
+        start_id: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Get comments on a task or replies to a comment."""
+        try:
+            if comment_id:
+                response = await self.client.get_comment_replies(comment_id)
+                if not response.success:
+                    return self._handle_response(response)
+                data = response.data if response.data is not None else {}
+                if isinstance(data, dict) and task_id and comment_id:
+                    for item in data.get("comments") or []:
+                        if isinstance(item, dict) and item.get("id") is not None:
+                            item["web_url"] = _build_clickup_web_url(
+                                "comment_reply",
+                                task_id=task_id,
+                                comment_id=comment_id,
+                                threaded_comment_id=str(item["id"]),
+                            )
+                return self._handle_response(response, data_override=data)
+            else:
+                response = await self.client.get_task_comments(
+                    task_id,
+                    custom_task_ids=custom_task_ids,
+                    team_id=team_id,
+                    start=start,
+                    start_id=start_id,
+                )
+                if not response.success:
+                    return self._handle_response(response)
+                data = response.data if response.data is not None else {}
+                if isinstance(data, dict) and task_id:
+                    for item in data.get("comments") or []:
+                        if isinstance(item, dict) and item.get("id") is not None:
+                            item["web_url"] = _build_clickup_web_url(
+                                "comment", task_id=task_id, comment_id=str(item["id"])
+                            )
+                return self._handle_response(response, data_override=data)
+        except Exception as e:
+            logger.error(f"Error in get_comments: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
+        tool_name="create_task_comment",
+        description="Add a comment to a task or a reply to a comment.",
+        llm_description="Creates a top-level comment on a task (provide task_id) or a reply to a comment (provide comment_id from get_comments). comment_text required. Exactly one of task_id or comment_id required. Optional: assignee, notify_all; for task_id only: custom_task_ids, team_id.",
+        args_schema=CreateTaskCommentInput,
+        returns="JSON with the created comment or reply",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to add a comment to a task (use task_id)",
+            "User wants to reply to a comment (use comment_id from get_comments)",
+        ],
+        when_not_to_use=[
+            "User wants to read comments (use get_comments)",
+        ],
+        typical_queries=["Add comment to task", "Reply on task", "Reply to comment", "Comment on task X"],
+    )
+    async def create_task_comment(
+        self,
+        comment_text: str,
+        task_id: Optional[str] = None,
+        comment_id: Optional[str] = None,
+        assignee: Optional[int] = None,
+        notify_all: Optional[bool] = None,
+        custom_task_ids: Optional[bool] = None,
+        team_id: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Add a comment to a task or a reply to a comment."""
+        try:
+            if comment_id:
+                response = await self.client.create_task_comment_reply(
+                    comment_id,
+                    comment_text,
+                    assignee=assignee,
+                    notify_all=notify_all,
+                )
+            else:
+                response = await self.client.create_task_comment(
+                    task_id,
+                    comment_text,
+                    assignee=assignee,
+                    notify_all=notify_all,
+                    custom_task_ids=custom_task_ids,
+                    team_id=team_id,
+                )
+            if not response.success:
+                return self._handle_response(response)
+            data = dict(response.data) if isinstance(response.data, dict) else {}
+            if data.get("id") and task_id:
+                if comment_id:
+                    data["web_url"] = _build_clickup_web_url(
+                        "comment_reply",
+                        task_id=task_id,
+                        comment_id=comment_id,
+                        threaded_comment_id=str(data["id"]),
+                    )
+                else:
+                    data["web_url"] = _build_clickup_web_url(
+                        "comment",
+                        task_id=task_id,
+                        comment_id=str(data["id"]),
+                    )
+            return self._handle_response(response, data_override=data)
+        except Exception as e:
+            logger.error(f"Error in create_task_comment: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
+        tool_name="create_checklist",
+        description="Create a checklist on a task.",
+        llm_description="Creates a checklist on a task. Need task_id from get_tasks or create_task; name required. Returns checklist id for create_checklist_item. Optional: custom_task_ids, team_id.",
+        args_schema=CreateChecklistInput,
+        returns="JSON with the created checklist (includes checklist id for create_checklist_item)",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to add a checklist to a task",
+            "User asks to create a checklist on a task (need task_id)",
+        ],
+        when_not_to_use=[
+            "User wants to add checklist items (use create_checklist_item after create_checklist)",
+        ],
+        typical_queries=["Add checklist to task", "Create checklist on task", "New checklist"],
+    )
+    async def create_checklist(
+        self,
+        task_id: str,
+        name: str,
+        custom_task_ids: Optional[bool] = None,
+        team_id: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Create a checklist on a task."""
+        try:
+            response = await self.client.create_checklist(
+                task_id,
+                name,
+                custom_task_ids=custom_task_ids,
+                team_id=team_id,
+            )
+            return self._handle_response(response)
+        except Exception as e:
+            logger.error(f"Error in create_checklist: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
+        tool_name="create_checklist_item",
+        description="Add an item to a checklist.",
+        llm_description="Adds an item to a checklist. Need checklist_id from task checklists (get_task) or create_checklist; name required. Optional: assignee.",
+        args_schema=CreateChecklistItemInput,
+        returns="JSON with the created checklist item",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to add an item to a checklist",
+            "User asks to add a checklist item (need checklist_id from create_checklist or task checklists)",
+        ],
+        when_not_to_use=[
+            "User wants to create the checklist (use create_checklist)",
+        ],
+        typical_queries=["Add item to checklist", "Add checklist item", "New checklist item"],
+    )
+    async def create_checklist_item(
+        self,
+        checklist_id: str,
+        name: str,
+        assignee: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        """Add an item to a checklist."""
+        try:
+            response = await self.client.create_checklist_item(
+                checklist_id,
+                name,
+                assignee=assignee,
+            )
+            return self._handle_response(response)
+        except Exception as e:
+            logger.error(f"Error in create_checklist_item: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
+        tool_name="update_checklist_item",
+        description="Update or check/uncheck a checklist item.",
+        llm_description="Updates a checklist item (name, assignee, resolved/checked, parent). Need checklist_id and checklist_item_id from task checklists or create_checklist_item. Pass only fields to change.",
+        args_schema=UpdateChecklistItemInput,
+        returns="JSON with the updated checklist item",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to check/uncheck or edit a checklist item",
+            "User asks to rename item, set assignee, or mark resolved (need checklist_id and checklist_item_id)",
+        ],
+        when_not_to_use=[
+            "User wants to add an item (use create_checklist_item)",
+        ],
+        typical_queries=["Check checklist item", "Uncheck item", "Rename checklist item", "Mark checklist item done"],
+    )
+    async def update_checklist_item(
+        self,
+        checklist_id: str,
+        checklist_item_id: str,
+        name: Optional[str] = None,
+        assignee: Optional[int] = None,
+        resolved: Optional[bool] = None,
+        parent: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Update or check/uncheck a checklist item."""
+        try:
+            response = await self.client.update_checklist_item(
+                checklist_id,
+                checklist_item_id,
+                name=name,
+                assignee=assignee,
+                resolved=resolved,
+                parent=parent,
+            )
+            return self._handle_response(response)
+        except Exception as e:
+            logger.error(f"Error in update_checklist_item: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
         tool_name="get_workspace_docs",
-        description="List all docs in a ClickUp workspace (Docs API v3).",
-        llm_description="Returns all docs in a workspace. Use workspace_id (same as team id from get_authorized_teams_workspaces). Use returned doc ids for get_doc_pages.",
+        description="List docs in a workspace.",
+        llm_description="Returns docs in a workspace. Pass only workspace_id unless user asks to filter (e.g. my docs, first 10).",
         args_schema=GetWorkspaceDocsInput,
         returns="JSON with list of docs in the workspace",
         primary_intent=ToolIntent.SEARCH,
@@ -808,10 +1341,25 @@ class ClickUp:
         ],
         typical_queries=["List docs in workspace", "Show all docs", "What docs do we have?"],
     )
-    async def get_workspace_docs(self, workspace_id: str) -> Tuple[bool, str]:
-        """List all docs in a workspace."""
+    async def get_workspace_docs(
+        self,
+        workspace_id: str,
+        creator: Optional[int] = None,
+        parent_id: Optional[str] = None,
+        parent_type: Optional[str] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """List docs in a workspace."""
         try:
-            response = await self.client.get_workspace_docs(workspace_id)
+            response = await self.client.get_workspace_docs(
+                workspace_id,
+                creator=creator,
+                parent_id=parent_id,
+                parent_type=parent_type,
+                limit=limit,
+                cursor=cursor,
+            )
             if not response.success:
                 return self._handle_response(response)
             data = response.data if response.data is not None else {}
@@ -831,7 +1379,7 @@ class ClickUp:
     @tool(
         app_name="clickup",
         tool_name="get_doc_pages",
-        description="List pages in a ClickUp doc (Docs API v3).",
+        description="List pages in a doc.",
         llm_description="Returns pages in a doc. Need workspace_id and doc_id from get_workspace_docs. Use returned page ids for get_doc_page.",
         args_schema=GetDocPagesInput,
         returns="JSON with list or tree of pages in the doc",
@@ -874,7 +1422,7 @@ class ClickUp:
     @tool(
         app_name="clickup",
         tool_name="get_doc_page",
-        description="Get full details of a single page in a ClickUp doc (Docs API v3).",
+        description="Get details of a page.",
         llm_description="Returns full details of one page. Need workspace_id, doc_id from get_workspace_docs, and page_id from get_doc_pages.",
         args_schema=GetDocPageInput,
         returns="JSON with page details and content",
@@ -909,4 +1457,159 @@ class ClickUp:
             return self._handle_response(response, data_override=data)
         except Exception as e:
             logger.error(f"Error in get_doc_page: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
+        tool_name="create_doc",
+        description="Create a doc in a workspace.",
+        llm_description="Creates a doc in a workspace. Need workspace_id and name. Optional: parent_id+parent_type (type 4=Space, 5=Folder, 6=List, 7=Everything, 12=Workspace), visibility (PUBLIC/PRIVATE).",
+        args_schema=CreateDocInput,
+        returns="JSON with the created doc (includes doc id for create_doc_page)",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to create a new doc in a workspace",
+            "User asks to add a doc (need workspace_id from get_authorized_teams_workspaces)",
+        ],
+        when_not_to_use=[
+            "User wants to list docs (use get_workspace_docs)",
+            "User wants to create a page in a doc (use create_doc_page)",
+        ],
+        typical_queries=["Create a doc", "New doc in workspace", "Add a doc"],
+    )
+    async def create_doc(
+        self,
+        workspace_id: str,
+        name: str,
+        parent_id: Optional[str] = None,
+        parent_type: Optional[int] = None,
+        visibility: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Create a doc in a workspace."""
+        parent = None
+        if parent_id is not None and parent_type is not None:
+            parent = {"id": parent_id, "type": parent_type}
+        try:
+            response = await self.client.create_doc(
+                workspace_id,
+                name=name,
+                parent=parent,
+                visibility=visibility,
+                create_page=False,
+            )
+            if not response.success:
+                return self._handle_response(response)
+            data = dict(response.data) if isinstance(response.data, dict) else {}
+            if data.get("id") and workspace_id:
+                data["web_url"] = _build_clickup_web_url("doc", team_id=workspace_id, doc_id=str(data["id"]))
+            return self._handle_response(response, data_override=data)
+        except Exception as e:
+            logger.error(f"Error in create_doc: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
+        tool_name="create_doc_page",
+        description="Create a page in a ClickUp doc",
+        llm_description="Creates a page in a doc. Need workspace_id and doc_id from get_workspace_docs; optional parent_page_id, name, sub_title, content, content_format.",
+        args_schema=CreateDocPageInput,
+        returns="JSON with the created page (includes page id for get_doc_page or update_doc_page)",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to add a page to a doc",
+            "User asks to create a page in a doc (need doc_id from get_workspace_docs)",
+        ],
+        when_not_to_use=[
+            "User wants to create a doc (use create_doc)",
+            "User wants to list pages (use get_doc_pages)",
+        ],
+        typical_queries=["Add page to doc", "Create doc page", "New page in doc"],
+    )
+    async def create_doc_page(
+        self,
+        workspace_id: str,
+        doc_id: str,
+        parent_page_id: Optional[str] = None,
+        name: str = "",
+        sub_title: Optional[str] = None,
+        content: str = "",
+        content_format: str = "text/md",
+    ) -> Tuple[bool, str]:
+        """Create a page in a doc."""
+        try:
+            response = await self.client.create_doc_page(
+                workspace_id,
+                doc_id,
+                parent_page_id=parent_page_id,
+                name=name,
+                sub_title=sub_title,
+                content=content,
+                content_format=content_format,
+            )
+            if not response.success:
+                return self._handle_response(response)
+            data = dict(response.data) if isinstance(response.data, dict) else {}
+            if data.get("id") and workspace_id and doc_id:
+                data["web_url"] = _build_clickup_web_url(
+                    "page", team_id=workspace_id, doc_id=doc_id, page_id=str(data["id"])
+                )
+            return self._handle_response(response, data_override=data)
+        except Exception as e:
+            logger.error(f"Error in create_doc_page: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="clickup",
+        tool_name="update_doc_page",
+        description="Edit or update a page in a doc",
+        llm_description="Updates a doc page. Need workspace_id, doc_id from get_workspace_docs, page_id from get_doc_pages. Pass only fields to change (name, sub_title, content); content_edit_mode: replace, append, prepend.",
+        args_schema=UpdateDocPageInput,
+        returns="JSON with the updated page details",
+        primary_intent=ToolIntent.ACTION,
+        category=ToolCategory.PROJECT_MANAGEMENT,
+        when_to_use=[
+            "User wants to edit or update a doc page",
+            "User asks to change page content or name (need page_id from get_doc_pages)",
+        ],
+        when_not_to_use=[
+            "User wants to create a page (use create_doc_page)",
+            "User wants to read a page (use get_doc_page)",
+        ],
+        typical_queries=["Edit doc page", "Update page content", "Change page name"],
+    )
+    async def update_doc_page(
+        self,
+        workspace_id: str,
+        doc_id: str,
+        page_id: str,
+        name: Optional[str] = None,
+        sub_title: Optional[str] = None,
+        content: Optional[str] = None,
+        content_edit_mode: str = "replace",
+        content_format: str = "text/md",
+    ) -> Tuple[bool, str]:
+        """Edit or update a doc page."""
+        try:
+            response = await self.client.update_doc_page(
+                workspace_id,
+                doc_id,
+                page_id,
+                name=name,
+                sub_title=sub_title,
+                content=content,
+                content_edit_mode=content_edit_mode,
+                content_format=content_format,
+            )
+            if not response.success:
+                return self._handle_response(response)
+            data = dict(response.data) if isinstance(response.data, dict) else {}
+            if workspace_id and doc_id and page_id:
+                data["web_url"] = _build_clickup_web_url(
+                    "page", team_id=workspace_id, doc_id=doc_id, page_id=page_id
+                )
+            return self._handle_response(response, data_override=data)
+        except Exception as e:
+            logger.error(f"Error in update_doc_page: {e}")
             return False, json.dumps({"error": str(e)})
