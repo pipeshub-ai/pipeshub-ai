@@ -3492,18 +3492,16 @@ This applies equally to start dates, end dates, and recurrence end dates.A wrong
 - When deleting occurrences, batch ALL dates into a SINGLE call (the tool handles them all).
 - `occurrence_dates` must be YYYY-MM-DD format strings.
 """
-ZOOM_GUIDANCE = """
+ZOOM_GUIDANCE = r"""
 # Zoom Toolset Guidance
 
 ## Available Tools
-
 ### User
 - **get_my_profile** — Get the authenticated user's profile (name, email, timezone).
 
 ### Meetings
-- **list_meetings** — List scheduled/live/upcoming/all meetings for a user.
+- **list_meetings** — List scheduled/live/upcoming/previous_meetings/all meetings for a user.
 - **list_upcoming_meetings** — Shorthand for upcoming meetings only.
-- **list_past_meetings** — List previously held meetings. Use when user refers to a past call.
 - **search_meetings_by_name** — Search meetings by topic keyword. Use when user refers to a meeting by name instead of ID.
 - **get_meeting** — Get full details of a specific meeting by ID.
 - **get_meeting_invitation** — Get the invitation text/join link for a meeting.
@@ -3511,79 +3509,119 @@ ZOOM_GUIDANCE = """
 - **update_meeting** — Update fields of an existing meeting (time, topic, duration, agenda).
 - **delete_meeting** — Delete or cancel a meeting.
 
+### Contacts
+- **list_contacts** — List all contacts for a user.
+- **get_contact** — Get details of a specific contact by email, user ID, or member ID.
+
 ### Transcripts
 - **get_meeting_transcript** — Fetch the AI Companion transcript for a past meeting as plain text.
-- **delete_meeting_transcript** — Permanently delete a meeting's transcript.
+
+### Docs
+- **list_folder_children** — List all documents in a folder.
+
+---
+## 🔗 Tool Dependencies & Resolution Strategy
+
+### General Principle
+- Always prefer **direct identifiers** (meeting_id, email).
+- If missing → resolve via **search tools**.
+- If still missing → fallback to **list tools**.
+- Never guess identifiers.
 
 ---
 
-## Multi-Step Sequences
+### Meeting Resolution Flow
+- If user provides **meeting name/topic**:
+  → Call `search_meetings_by_name`
+- If multiple matches:
+  → Ask user to confirm
+- Once `meeting_id` is known:
+  → Use `get_meeting`, `update_meeting`, `delete_meeting`, or `get_meeting_invitation`
 
-### Getting a Transcript When User Gives a Meeting Name
-The user says: *"Get transcript for my standup meeting"*
-```
-1. search_meetings_by_name(query="standup")
-   → get meeting ID from results
-2. get_meeting_transcript(meeting_id=<id>)
-```
-Never skip step 1 — you need the numeric meeting ID before fetching the transcript.
+---
 
-### Getting a Transcript When User Gives a Meeting ID
-The user says: *"Get transcript for meeting 87522501254"*
-```
-1. get_meeting_transcript(meeting_id="87522501254")
-   → internally fetches past instance UUID → downloads VTT → returns plain text
-```
-No extra steps needed — the tool handles UUID resolution internally.
+### Tool-Level Dependencies
 
-### Updating a Meeting When User Gives a Name
-The user says: *"Reschedule my design review to 5pm tomorrow"*
-```
-1. search_meetings_by_name(query="design review")
-   → get meeting ID from results
-2. update_meeting(meeting_id=<id>, start_time=<iso8601>, timezone=<inferred>)
-```
+| Tool | Dependency Logic |
+|-----|----------------|
+| `get_meeting` | Requires `meeting_id` → use `search_meetings_by_name` if missing |
+| `update_meeting` | Requires `meeting_id` → resolve via search first |
+| `delete_meeting` | Requires `meeting_id` → resolve via search first |
+| `get_meeting_invitation` | Requires `meeting_id` → resolve via search |
+| `get_meeting_transcript` | Requires `meeting_id` (past meeting) → resolve via search |
+| `create_meeting` | If invitees lack email → use `get_contact` or `list_contacts` |
+| `get_contact` | If identifier unclear → use `list_contacts` |
 
-### Updating a Meeting When User Gives an ID
-The user says: *"Change meeting 123 to 3pm"*
-```
-1. update_meeting(meeting_id="123", start_time=<iso8601>, timezone=<inferred>)
-```
+---
 
-### Deleting a Meeting When User Gives a Name
-```
-1. search_meetings_by_name(query=<name>)
-   → confirm with user if multiple matches
-2. delete_meeting(meeting_id=<id>)
-```
+### Contacts Resolution Flow
+- If user provides **name only**:
+  → Call `list_contacts` or `get_contact`
+  → Match name → extract email
+- If multiple matches:
+  → Ask user to confirm
 
-### Finding a Past Meeting's Transcript
-The user says: *"Get transcript from last week's sync"*
-```
-1. list_past_meetings(from_=<last_week_date>)
-   → find meeting ID by topic
-2. get_meeting_transcript(meeting_id=<id>)
-```
+---
+
+### Recurring Meeting Occurrence Resolution
+- If user refers to **specific occurrence** (e.g. "this Thursday"):
+  1. Call `get_meeting`
+  2. Extract occurrences
+  3. Match by date/time
+  4. Use `occurrence_id` in update/delete
+
+---
+
+## CreateMeetingInput
+| Field | Details |
+|---|---|
+| `type` | 1=instant, 2=scheduled, 3=recurring (no fixed time), 8=recurring (fixed time) |
+| `recurrence` | Required when `type=8`. Omit or leave null for non-recurring meetings. |
+
+## RecurrenceInput
+| Field | Details |
+|---|---|
+| `type` | **Required.** 1=Daily, 2=Weekly, 3=Monthly |
+| `repeat_interval` | How often to repeat — every N days/weeks/months. Defaults to 1 if omitted. |
+| `end_date_time` | End date/time in UTC ISO format, must end with `Z` (e.g. `2026-03-31T19:00:00Z`). Mutually exclusive with `end_times`. |
+| `end_times` | Number of occurrences (max 60). Mutually exclusive with `end_date_time`. |
+| `weekly_days` | **Weekly only.** Comma-separated day numbers: 1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri, 7=Sat. (e.g. `"2,4"` for Mon+Wed) |
+| `monthly_day` | **Monthly only (option A).** Day of month, 1–31. |
+| `monthly_week` | **Monthly only (option B).** Week of month: 1=first … 4=fourth, -1=last. Use with `monthly_week_day`. |
+| `monthly_week_day` | **Monthly only (option B).** Day of week in that week: 1=Sun, 2=Mon … 7=Sat. |
+
+### Recurrence Patterns — Quick Reference
+
+| User says | `type` | Key fields |
+|---|---|---|
+| "every day" | 1 | `repeat_interval=1` |
+| "every 3 days" | 1 | `repeat_interval=3` |
+| "every week on Monday" | 2 | `repeat_interval=1`, `weekly_days="2"` |
+| "every Mon, Wed, Fri" | 2 | `repeat_interval=1`, `weekly_days="2,4,6"` |
+| "every 2 weeks on Tuesday" | 2 | `repeat_interval=2`, `weekly_days="3"` |
+| "every month on the 15th" | 3 | `repeat_interval=1`, `monthly_day=15` |
+| "every month on the last Friday" | 3 | `repeat_interval=1`, `monthly_week=-1`, `monthly_week_day=6` |
+| "every month on the first Monday" | 3 | `repeat_interval=1`, `monthly_week=1`, `monthly_week_day=2` |
+
+### Recurrence End — Rules
+- Use `end_date_time` when the user gives an end date (e.g. "until June 30").
+- Use `end_times` when the user gives a count (e.g. "10 times", "for the next 5 weeks").
+- **Never set both.** If neither is given, ask the user which they prefer.
 
 ---
 
 ## Key Rules
-
 1. **Never guess a meeting ID.** If the user gives a name, always call `search_meetings_by_name` first.
-
 2. **Prefer specific tools over general ones.**
    - Use `list_upcoming_meetings` for "what's next", not `list_meetings`.
-   - Use `list_past_meetings` for "recent/past calls", not `list_meetings`.
-
 3. **Transcript requires a past meeting.** `get_meeting_transcript` will fail if the meeting hasn't ended yet or AI Companion was not enabled.
-
 4. **Update only fields the user mentioned.** Do not populate `topic`, `agenda`, `duration`, or `timezone` in `update_meeting` unless the user explicitly asked to change them.
-
 5. **Infer timezone from context.** If the user is in India, default to `Asia/Kolkata`. Never ask for timezone unless it's ambiguous.
-
 6. **Multiple matches on search — confirm before acting.** If `search_meetings_by_name` returns more than one result and the action is destructive (delete, update), confirm with the user which one to act on.
-
 7. **Use user_id='me'** for all user-scoped tools unless the user explicitly specifies another user.
+8. **Resolve occurrence ID before deleting a recurring meeting occurrence.**
+9. **Resolve invitee email from name using contacts.**
+10. **Recurring meetings require type=8 and a recurrence block.**
 """
 PLANNER_USER_TEMPLATE = """Query: {query}
 
