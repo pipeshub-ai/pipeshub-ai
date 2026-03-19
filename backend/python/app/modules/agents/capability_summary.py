@@ -7,10 +7,10 @@ automatically — only tools from the agent's configured toolsets are shown.
 Adding new internal tools requires no changes here.
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 
-def build_capability_summary(state: Dict[str, Any]) -> str:
+def build_capability_summary(state: dict[str, Any]) -> str:
     """
     Build a capability summary for the LLM to answer "what can you do?" questions.
 
@@ -22,14 +22,12 @@ def build_capability_summary(state: Dict[str, Any]) -> str:
     Internal utility tools (calculator, date_calculator, etc.) are NOT shown —
     they are implementation details, not user-facing capabilities.
     """
-    parts: List[str] = ["## Capability Summary", ""]
+    parts: list[str] = ["## Capability Summary", ""]
 
-    has_knowledge = bool(
-        state.get("kb") or state.get("apps") or state.get("agent_knowledge")
-    )
+    has_knowledge = state.get("has_knowledge", False)
 
-    _build_knowledge_section(state, has_knowledge, parts)
-    _build_actions_section(state, has_knowledge, parts)
+    _build_knowledge_section(state=state, has_knowledge=has_knowledge, parts=parts)
+    _build_actions_section(state=state, has_knowledge=has_knowledge, parts=parts)
 
     parts.append(
         "When users ask about your capabilities, what you can do, what tools or "
@@ -41,9 +39,10 @@ def build_capability_summary(state: Dict[str, Any]) -> str:
 
 
 def _build_knowledge_section(
-    state: Dict[str, Any],
+    state: dict[str, Any],
+    *,
     has_knowledge: bool,
-    parts: List[str],
+    parts: list[str],
 ) -> None:
     """Append knowledge sources section to parts."""
     parts.append("### Knowledge Sources")
@@ -53,30 +52,90 @@ def _build_knowledge_section(
         parts.append("")
         return
 
-    agent_knowledge = state.get("agent_knowledge", []) or []
-    if agent_knowledge:
-        for kb in agent_knowledge:
+    knowledge_list = state.get("agent_knowledge", []) or []
+    if knowledge_list:
+        for kb in knowledge_list:
             if not isinstance(kb, dict):
                 continue
-            kb_name = kb.get("name", "Unnamed")
+            kb_name = kb.get("name") or kb.get("displayName") or "Unnamed"
             kb_type = kb.get("type", "")
-            if kb_type == "KB":
-                kb_type = "Collection"
-            if kb_type:
-                parts.append(f"- {kb_name} ({kb_type})")
-            else:
-                parts.append(f"- {kb_name}")
+            connector_id = kb.get("connectorId", "")
+            display_type = "Collection" if kb_type == "KB" else kb_type
+            is_kb = kb_type == "KB"
+
+            label = f"- {kb_name} ({display_type})" if display_type else f"- {kb_name}"
+
+            # Extract record group IDs from filters
+            filters_data = kb.get("filters", {})
+            if isinstance(filters_data, str):
+                import json as _json
+                try:
+                    filters_data = _json.loads(filters_data)
+                except (ValueError, _json.JSONDecodeError):
+                    filters_data = {}
+            record_groups = filters_data.get("recordGroups", []) if isinstance(filters_data, dict) else []
+
+            # Build browse and filter hints:
+            # - KB sources: use record group IDs directly (connector ID
+            #   returns ALL KBs, not just configured ones)
+            # - App connectors: use connector ID with parent_type=app
+            browse_hints: list[str] = []
+            if is_kb and record_groups:
+                for rg_id in record_groups:
+                    browse_hints.append(
+                        f"list files with `list_files(parent_id=\"{rg_id}\", parent_type=\"recordGroup\")`"
+                    )
+                    browse_hints.append(
+                        f"filter search to this KB with `record_group_ids=[\"{rg_id}\"]`"
+                    )
+            elif connector_id:
+                browse_hints.append(
+                    f"browse with `list_files(parent_id=\"{connector_id}\", parent_type=\"app\")`"
+                )
+                browse_hints.append(
+                    f"filter search to this connector with `connector_ids=[\"{connector_id}\"]`"
+                )
+
+            if browse_hints:
+                label += " — " + "; ".join(browse_hints)
+            parts.append(label)
     else:
-        parts.append("- Internal knowledge base configured")
+        # has_knowledge is True but no detailed metadata available
+        parts.append("- Internal knowledge sources configured")
 
     parts.append("- Can search indexed documents, policies, and organizational information")
+
+    # If agent has BOTH knowledge sources and service tools for the same app,
+    # guide the LLM to use both for comprehensive results
+    service_tools = state.get("tools") or []
+    if knowledge_list and service_tools:
+        # Check if any knowledge source overlaps with a service tool domain
+        knowledge_types = {
+            (kb.get("type", "")).lower()
+            for kb in knowledge_list
+            if isinstance(kb, dict)
+        }
+        tool_domains = {
+            t.split(".", 1)[0].lower()
+            for t in service_tools
+            if isinstance(t, str) and "." in t
+        }
+        if knowledge_types & tool_domains or knowledge_types - {"kb", ""}:
+            parts.append(
+                "\n**IMPORTANT**: When listing or browsing files/documents, use BOTH:\n"
+                "  - `knowledge_hub.list_files` for indexed files with metadata from the Knowledge Hub\n"
+                "  - Service search/list tools for live data directly from connectors\n"
+                "  This gives the most complete picture."
+            )
+
     parts.append("")
 
 
 def _build_actions_section(
-    state: Dict[str, Any],
+    state: dict[str, Any],
+    *,
     has_knowledge: bool,
-    parts: List[str],
+    parts: list[str],
 ) -> None:
     """Append available actions section to parts.
 
@@ -112,7 +171,7 @@ def _build_actions_section(
     parts.append("")
 
 
-def _get_service_tool_domains(state: Dict[str, Any]) -> Dict[str, List[str]]:
+def _get_service_tool_domains(state: dict[str, Any]) -> dict[str, list[str]]:
     """
     Get user-configured service tools grouped by domain.
 
@@ -124,7 +183,7 @@ def _get_service_tool_domains(state: Dict[str, Any]) -> Dict[str, List[str]]:
     1. state["tools"] — canonical flat list from build_initial_state
     2. state["agent_toolsets"] — raw toolset metadata fallback
     """
-    domains: Dict[str, List[str]] = {}
+    domains: dict[str, list[str]] = {}
 
     # Primary: state["tools"] — populated by build_initial_state from toolsets
     for tool_name in (state.get("tools") or []):
@@ -144,7 +203,7 @@ def _get_service_tool_domains(state: Dict[str, Any]) -> Dict[str, List[str]]:
         if not toolset_name:
             continue
 
-        tool_names: List[str] = []
+        tool_names: list[str] = []
 
         for t in (toolset.get("tools") or []):
             if isinstance(t, dict):

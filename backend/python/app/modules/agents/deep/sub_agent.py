@@ -19,22 +19,28 @@ Complex tasks use a phased execution model:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import HumanMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
-from langgraph.types import StreamWriter
 
 from app.modules.agents.deep.context_manager import build_sub_agent_context
 from app.modules.agents.deep.prompts import SUB_AGENT_SYSTEM_PROMPT
 from app.modules.agents.deep.state import DeepAgentState, SubAgentTask, _opik_tracer
 from app.modules.agents.deep.tool_router import get_tools_for_sub_agent
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+    from uuid import UUID
+
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.types import StreamWriter
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +90,7 @@ async def execute_sub_agents_node(
         },
     }, config)
 
-    completed: List[SubAgentTask] = list(state.get("completed_tasks", []))
+    completed: list[SubAgentTask] = list(state.get("completed_tasks", []))
 
     # ------------------------------------------------------------------
     # Pre-warm API clients for all domains in parallel.
@@ -99,7 +105,7 @@ async def execute_sub_agents_node(
     # Each task gets an asyncio.Event that is set when the task finishes.
     # Dependent tasks await their dependencies' events, then execute.
     # ------------------------------------------------------------------
-    task_events: Dict[str, asyncio.Event] = {}
+    task_events: dict[str, asyncio.Event] = {}
 
     # Already-completed tasks (from prior aggregator iterations) are done
     for t in completed:
@@ -211,7 +217,7 @@ async def execute_sub_agents_node(
 async def _execute_single_sub_agent(
     task: SubAgentTask,
     state: DeepAgentState,
-    completed_tasks: List[SubAgentTask],
+    completed_tasks: list[SubAgentTask],
     config: RunnableConfig,
     writer: StreamWriter,
     log: logging.Logger,
@@ -254,6 +260,23 @@ async def _execute_single_sub_agent(
     # would summarize the raw blocks, losing detail needed for citations.
     is_retrieval_task = any(d in ("retrieval", "knowledge") for d in task_domains)
 
+    # Multi-step takes priority over complex: it executes sequential steps
+    # where each step's result feeds the next (e.g., find space → list pages
+    # → fetch content). Complex phased execution is for bulk fetch+summarize
+    # with no inter-step dependencies.
+    if task.get("multi_step") and task.get("sub_steps"):
+        log.info("Sub-agent %s: using multi-step execution (%d steps)", task_id, len(task["sub_steps"]))
+        try:
+            return await _execute_multi_step_sub_agent(
+                task, state, completed_tasks, config, writer, log,
+            )
+        except Exception as e:
+            log.warning(
+                "Multi-step execution failed for %s: %s — falling back to simple mode",
+                task_id, e,
+            )
+            # Fall through to simple execution
+
     if complexity == "complex" and not is_retrieval_task:
         log.info("Sub-agent %s: using complex phased execution", task_id)
         try:
@@ -272,19 +295,6 @@ async def _execute_single_sub_agent(
             "(respond node handles citation pipeline)", task_id,
         )
 
-    if task.get("multi_step") and task.get("sub_steps"):
-        log.info("Sub-agent %s: using multi-step execution (%d steps)", task_id, len(task["sub_steps"]))
-        try:
-            return await _execute_multi_step_sub_agent(
-                task, state, completed_tasks, config, writer, log,
-            )
-        except Exception as e:
-            log.warning(
-                "Multi-step execution failed for %s: %s — falling back to simple mode",
-                task_id, e,
-            )
-            # Fall through to simple execution
-
     return await _execute_simple_sub_agent(
         task, state, completed_tasks, config, writer, log,
     )
@@ -293,7 +303,7 @@ async def _execute_single_sub_agent(
 async def _execute_simple_sub_agent(
     task: SubAgentTask,
     state: DeepAgentState,
-    completed_tasks: List[SubAgentTask],
+    completed_tasks: list[SubAgentTask],
     config: RunnableConfig,
     writer: StreamWriter,
     log: logging.Logger,
@@ -415,10 +425,8 @@ async def _execute_simple_sub_agent(
             result = await agent.ainvoke({"messages": messages}, config=agent_config)
         finally:
             keepalive_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await keepalive_task
-            except asyncio.CancelledError:
-                pass
 
         # Extract results
         final_messages = result.get("messages", [])
@@ -471,7 +479,7 @@ async def _execute_simple_sub_agent(
 async def _execute_complex_sub_agent(
     task: SubAgentTask,
     state: DeepAgentState,
-    completed_tasks: List[SubAgentTask],
+    completed_tasks: list[SubAgentTask],
     config: RunnableConfig,
     writer: StreamWriter,
     log: logging.Logger,
@@ -607,10 +615,8 @@ async def _execute_complex_sub_agent(
         result = await agent.ainvoke({"messages": messages}, config=agent_config)
     finally:
         keepalive_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await keepalive_task
-        except asyncio.CancelledError:
-            pass
 
     final_messages = result.get("messages", [])
     tool_results = _extract_tool_results(final_messages, state, log)
@@ -703,10 +709,8 @@ async def _execute_complex_sub_agent(
         batch_summaries = await asyncio.gather(*summarize_coros, return_exceptions=True)
     finally:
         keepalive_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await keepalive_task
-        except asyncio.CancelledError:
-            pass
 
     # Filter out failures
     valid_summaries = []
@@ -753,10 +757,8 @@ async def _execute_complex_sub_agent(
         )
     finally:
         keepalive_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await keepalive_task
-        except asyncio.CancelledError:
-            pass
 
     duration_ms = (time.perf_counter() - start_time) * 1000
     consolidate_duration = duration_ms - fetch_duration - summarize_duration
@@ -793,7 +795,7 @@ _MAX_TOOL_CALLS_PER_STEP = 10  # per sub-sub-agent step
 async def _execute_multi_step_sub_agent(
     task: SubAgentTask,
     state: DeepAgentState,
-    completed_tasks: List[SubAgentTask],
+    completed_tasks: list[SubAgentTask],
     config: RunnableConfig,
     writer: StreamWriter,
     log: logging.Logger,
@@ -933,10 +935,8 @@ async def _execute_multi_step_sub_agent(
                 result = await agent.ainvoke({"messages": messages}, config=agent_config)
             finally:
                 keepalive_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await keepalive_task
-                except asyncio.CancelledError:
-                    pass
 
             final_messages = result.get("messages", [])
             response_text = _extract_response(final_messages, log)
@@ -992,7 +992,7 @@ async def _execute_multi_step_sub_agent(
 # Result extraction helpers
 # ---------------------------------------------------------------------------
 
-def _extract_response(messages: List, log: logging.Logger) -> str:
+def _extract_response(messages: list, log: logging.Logger) -> str:
     """Extract the final text response from agent messages.
 
     Falls back to summarizing tool results if no final text AIMessage exists,
@@ -1053,10 +1053,10 @@ def _extract_response(messages: List, log: logging.Logger) -> str:
 
 
 def _extract_tool_results(
-    messages: List,
+    messages: list,
     state: DeepAgentState,
     log: logging.Logger,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Extract tool results from agent messages and process retrieval outputs."""
     tool_results = []
 
@@ -1124,10 +1124,10 @@ class _ToolCallBudget:
 
 
 def _wrap_tools_with_budget(
-    tools: List,
+    tools: list,
     budget: _ToolCallBudget,
     log: logging.Logger = logger,
-) -> List:
+) -> list:
     """
     Wrap tools with a call budget to prevent runaway tool loops.
 
@@ -1168,10 +1168,16 @@ def _wrap_tools_with_budget(
     return wrapped
 
 
-def _make_budgeted_coro(orig_coro, orig_func, budget, tool_name, log) -> callable:
+def _make_budgeted_coro(
+    orig_coro: Callable[..., Coroutine[Any, Any, str]] | None,
+    orig_func: Callable[..., str] | None,
+    budget: _ToolCallBudget,
+    tool_name: str,
+    log: logging.Logger,
+) -> Callable[..., Coroutine[Any, Any, str]]:
     """Factory: create a budget-enforced async wrapper for a tool coroutine."""
 
-    async def _coro(**kwargs) -> str:
+    async def _coro(**kwargs: object) -> str:
         if not budget.consume():
             log.warning(
                 "Tool call budget exhausted (%d/%d) for %s",
@@ -1183,8 +1189,7 @@ def _make_budgeted_coro(orig_coro, orig_func, budget, tool_name, log) -> callabl
                 "now using the data from previous tool calls. Do NOT call any more tools."
             )
 
-        result = await orig_coro(**kwargs) if orig_coro else orig_func(**kwargs)
-        return result
+        return await orig_coro(**kwargs) if orig_coro else orig_func(**kwargs)
 
     return _coro
 
@@ -1194,7 +1199,7 @@ def _make_budgeted_coro(orig_coro, orig_func, budget, tool_name, log) -> callabl
 # ---------------------------------------------------------------------------
 
 async def _prewarm_clients(
-    tasks: List[SubAgentTask],
+    tasks: list[SubAgentTask],
     state: DeepAgentState,
     log: logging.Logger,
 ) -> None:
@@ -1211,7 +1216,7 @@ async def _prewarm_clients(
 
     # Collect one representative tool per (domain, toolset_id) pair
     tool_to_toolset_map = state.get("tool_to_toolset_map", {})
-    seen: Dict[tuple, str] = {}  # (app_name, toolset_id) -> tool_full_name
+    seen: dict[tuple, str] = {}  # (app_name, toolset_id) -> tool_full_name
     for task in tasks:
         for tool_name in task.get("tools", []):
             app_name = tool_name.split(".")[0] if "." in tool_name else tool_name.split("_")[0]
@@ -1272,9 +1277,9 @@ async def _prewarm_clients(
 def _build_sub_agent_instructions(state: DeepAgentState) -> str:
     """Build agent instructions prefix for sub-agent prompts.
 
-    Includes the agent's configured instructions so sub-agents
-    follow the same behavioral constraints and workflow rules
-    as the overall agent.
+    Includes the agent's configured instructions and current user context
+    so sub-agents follow the same behavioral constraints and know who
+    the current user is (critical for "my" / "me" queries).
     """
     parts = []
 
@@ -1282,6 +1287,37 @@ def _build_sub_agent_instructions(state: DeepAgentState) -> str:
     instructions = state.get("instructions", "")
     if instructions and instructions.strip():
         parts.append(f"## Agent Instructions\n{instructions.strip()}")
+
+    # Current user context — sub-agents need this to resolve "my space",
+    # "my tickets", "assigned to me", etc. Without it, the LLM guesses
+    # based on token ownership or the first result, which is often wrong.
+    user_info = state.get("user_info", {})
+    user_email = (
+        state.get("user_email")
+        or user_info.get("userEmail")
+        or user_info.get("email")
+        or ""
+    )
+    user_name = (
+        user_info.get("fullName")
+        or user_info.get("name")
+        or user_info.get("displayName")
+        or (
+            f"{user_info.get('firstName', '')} {user_info.get('lastName', '')}".strip()
+            if user_info.get("firstName") or user_info.get("lastName")
+            else ""
+        )
+    )
+    if user_name or user_email:
+        user_parts = ["## Current User"]
+        if user_name:
+            user_parts.append(f"- Name: {user_name}")
+        if user_email:
+            user_parts.append(f"- Email: {user_email}")
+        user_parts.append(
+            'When the query says "my", "me", or "I", it refers to this user.'
+        )
+        parts.append("\n".join(user_parts))
 
     if parts:
         return "\n\n".join(parts) + "\n\n"
@@ -1368,7 +1404,7 @@ def _build_sub_agent_tool_guidance(
 # Tool schema formatter for sub-agent prompts
 # ---------------------------------------------------------------------------
 
-def _format_tools_for_prompt(tools: List, log: logging.Logger) -> str:
+def _format_tools_for_prompt(tools: list, log: logging.Logger) -> str:
     """
     Format StructuredTool objects with their parameter schemas for the
     sub-agent's system prompt.
@@ -1432,10 +1468,10 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
         self.config = config
         self.log = log
         self.task_id = task_id
-        self._tool_names: Dict[str, str] = {}
-        self.collected_results: List[Dict[str, Any]] = []
+        self._tool_names: dict[str, str] = {}
+        self.collected_results: list[dict[str, Any]] = []
 
-    def _write(self, event_data: Dict[str, Any]) -> None:
+    def _write(self, event_data: dict[str, Any]) -> None:
         token = var_child_runnable_config.set(self.config)
         try:
             self.writer(event_data)
@@ -1444,7 +1480,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
         finally:
             var_child_runnable_config.reset(token)
 
-    async def on_tool_start(self, serialized, input_str, *, run_id, **kwargs) -> None:
+    async def on_tool_start(self, serialized: dict[str, Any], input_str: str, *, run_id: UUID, **kwargs: object) -> None:
         tool_name = serialized.get("name", kwargs.get("name", "unknown"))
         self._tool_names[str(run_id)] = tool_name
         display = tool_name.replace("_", " ").title()
@@ -1453,7 +1489,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
             "data": {"status": "executing", "message": f"Executing {display}..."},
         })
 
-    async def on_tool_end(self, output, *, run_id, **kwargs) -> None:
+    async def on_tool_end(self, output: object, *, run_id: UUID, **kwargs: object) -> None:
         tool_name = self._tool_names.pop(str(run_id), "unknown")
         status = _detect_status(output)
         # Collect tool results for partial recovery on timeout
@@ -1467,7 +1503,7 @@ class _SubAgentStreamingCallback(AsyncCallbackHandler):
             "data": {"tool": tool_name, "status": status},
         })
 
-    async def on_tool_error(self, error, *, run_id, **kwargs) -> None:
+    async def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: object) -> None:
         tool_name = self._tool_names.pop(str(run_id), "unknown")
         self._write({
             "event": "status",

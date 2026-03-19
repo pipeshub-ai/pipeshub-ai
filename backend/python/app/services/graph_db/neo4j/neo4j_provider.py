@@ -12380,6 +12380,7 @@ class Neo4jProvider(IGraphDBProvider):
         sort_dir: str,
         *,
         only_containers: bool = False,
+        record_group_ids: list[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -12397,6 +12398,7 @@ class Neo4jProvider(IGraphDBProvider):
             sort_field: Field to sort by.
             sort_dir: Sort direction ('ASC' or 'DESC').
             only_containers: If True, only return nodes that can have children.
+            record_group_ids: Optional list of record group IDs to restrict visibility.
             transaction: Optional transaction ID.
         """
         start = time.perf_counter()
@@ -12442,6 +12444,12 @@ class Neo4jProvider(IGraphDBProvider):
         else:
             return {"nodes": [], "total": 0}
 
+        # Build optional record_group_ids filter for the Cypher query
+        rg_filter_line = ""
+        if record_group_ids:
+            rg_filter_line = "AND (node.nodeType <> 'recordGroup' OR node.origin <> 'COLLECTION' OR node.id IN $record_group_ids)"
+            params["record_group_ids"] = record_group_ids
+
         # Simple query for direct children with sorting and pagination (no filters)
         query = f"""
         CALL {{
@@ -12451,9 +12459,10 @@ class Neo4jProvider(IGraphDBProvider):
         // Apply only_containers filter
         UNWIND raw_children AS node
         WITH node WHERE
-            ($only_containers IN [false, 'False', 'false'] OR $only_containers = false)
+            (($only_containers IN [false, 'False', 'false'] OR $only_containers = false)
             OR node.hasChildren = true
-            OR node.nodeType IN ['app', 'recordGroup', 'folder']
+            OR node.nodeType IN ['app', 'recordGroup', 'folder'])
+            {rg_filter_line}
 
         // Sort with explicit field mapping (Neo4j doesn't support dynamic property access)
         WITH node,
@@ -12510,6 +12519,7 @@ class Neo4jProvider(IGraphDBProvider):
         only_containers: bool = False,
         parent_id: str | None = None,
         parent_type: str | None = None,
+        record_group_ids: list[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -12528,7 +12538,7 @@ class Neo4jProvider(IGraphDBProvider):
         start = time.perf_counter()
 
         try:
-            self.logger.info(f"🔍 Starting knowledge hub search with parent_id={parent_id}, parent_type={parent_type}, only_containers={only_containers}, search_query={search_query}, node_types={node_types}, record_types={record_types}, origins={origins}, connector_ids={connector_ids}, indexing_status={indexing_status}, created_at={created_at}, updated_at={updated_at}, size={size}")
+            self.logger.info(f"🔍 Starting knowledge hub search with parent_id={parent_id}, parent_type={parent_type}, only_containers={only_containers}, search_query={search_query}, node_types={node_types}, record_types={record_types}, origins={origins}, connector_ids={connector_ids}, indexing_status={indexing_status}, created_at={created_at}, updated_at={updated_at}, size={size}, record_group_ids={record_group_ids}")
             # Build filter conditions using helper
             filter_conditions, filter_params = self._build_knowledge_hub_filter_conditions(
                 search_query=search_query,
@@ -12541,6 +12551,7 @@ class Neo4jProvider(IGraphDBProvider):
                 origins=origins,
                 connector_ids=connector_ids,
                 only_containers=only_containers,
+                record_group_ids=record_group_ids,
             )
 
             # Build scope filters
@@ -12567,7 +12578,7 @@ class Neo4jProvider(IGraphDBProvider):
             else:
                 # For app-level scope or global search, apply scope filters as before
                 scope_filter_rg, scope_filter_record, scope_filter_rg_inline, scope_filter_record_inline = self._build_scope_filters_cypher(
-                    parent_id, parent_type, parent_connector_id
+                    parent_id, parent_type, parent_connector_id, record_group_ids=record_group_ids
                 )
 
             # Build bind variables
@@ -12582,6 +12593,10 @@ class Neo4jProvider(IGraphDBProvider):
                 "user_permission_type": EntityType.USER.value,
                 "team_permission_type": EntityType.TEAM.value,
             }
+
+            # Add record_group_ids to params for scope filter binding
+            if record_group_ids:
+                params["record_group_ids"] = record_group_ids
 
             # Add bind variables based on parent_type
             if parent_id:
@@ -14002,6 +14017,7 @@ class Neo4jProvider(IGraphDBProvider):
         connector_ids: list[str] | None = None,
         *,
         only_containers: bool = False,
+        record_group_ids: list[str] | None = None,
     ) -> tuple[list[str], dict[str, Any]]:
         """
         Build filter conditions and parameters for knowledge hub search queries.
@@ -14071,6 +14087,16 @@ class Neo4jProvider(IGraphDBProvider):
         if connector_ids:
             filter_params["connector_ids"] = connector_ids
             filter_conditions.append("((node.nodeType = 'app' AND node.id IN $connector_ids) OR (node.connectorId IN $connector_ids))")
+
+        # Record group ID restriction: only allow COLLECTION-origin recordGroups
+        # whose IDs are in the provided list. CONNECTOR-origin recordGroups
+        # (Confluence spaces, Jira projects, etc.) pass through — they're
+        # already scoped by connector_ids. Non-recordGroup nodes also pass.
+        if record_group_ids:
+            filter_params["record_group_ids"] = record_group_ids
+            filter_conditions.append(
+                "(node.nodeType <> 'recordGroup' OR node.origin <> 'COLLECTION' OR node.id IN $record_group_ids)"
+            )
 
         # Add search condition to filter conditions if present
         if search_query:
@@ -14390,7 +14416,8 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         parent_id: str | None,
         parent_type: str | None,
-        parent_connector_id: str | None = None
+        parent_connector_id: str | None = None,
+        record_group_ids: list[str] | None = None,
     ) -> tuple[str, str, str, str]:
         """
         Generate Cypher scope filter conditions based on parent_id and parent_type.
@@ -14405,56 +14432,89 @@ class Neo4jProvider(IGraphDBProvider):
             parent_id: Optional parent node ID for scoped search
             parent_type: Optional type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'
             parent_connector_id: Optional connector ID of parent (needed for record/folder types)
+            record_group_ids: Optional list of allowed record group IDs.
+                When set, restricts both recordGroups AND their child records.
         """
+        # --- record_group_ids constraint (layered on top of parent scope) ---
+        # Restricts recordGroups by ID and records to those belonging to
+        # allowed recordGroups via INHERIT_PERMISSIONS chain.
+        rg_ids_filter = ""
+        rg_ids_inline = ""
+        record_ids_filter = ""
+        record_ids_inline = ""
+        if record_group_ids:
+            # Origin-aware: only restrict COLLECTION-origin recordGroups (KBs).
+            # CONNECTOR-origin recordGroups (spaces, drives) pass through —
+            # they are scoped by connector_ids instead.
+            rg_ids_filter = "AND (coalesce(rg.origin, 'CONNECTOR') <> 'COLLECTION' OR rg.id IN $record_group_ids)"
+            rg_ids_inline = "(coalesce(inherited_node.origin, 'CONNECTOR') <> 'COLLECTION' OR inherited_node.id IN $record_group_ids)"
+            # Same for records: only restrict COLLECTION-origin records.
+            record_ids_filter = """AND (coalesce(record.origin, 'CONNECTOR') <> 'COLLECTION' OR EXISTS {
+                MATCH (record)-[:INHERIT_PERMISSIONS|BELONGS_TO*]->(ancestor_rg:RecordGroup)
+                WHERE ancestor_rg.id IN $record_group_ids
+            })"""
+            record_ids_inline = """(coalesce(inherited_node.origin, 'CONNECTOR') <> 'COLLECTION' OR EXISTS {
+                MATCH (inherited_node)-[:INHERIT_PERMISSIONS|BELONGS_TO*]->(ancestor_rg:RecordGroup)
+                WHERE ancestor_rg.id IN $record_group_ids
+            }"""
+
         if not parent_id or not parent_type:
-            # Global search - no scope filters
+            # Global search
+            if record_group_ids:
+                return (
+                    rg_ids_filter,
+                    record_ids_filter,
+                    rg_ids_inline or "true",
+                    record_ids_inline or "true",
+                )
             return ("", "", "true", "true")
 
         if parent_type == "app":
-            # Filter RecordGroups by connectorId
-            scope_filter_rg = "AND rg.connectorId = $parent_id"
-            scope_filter_rg_inline = "inherited_node.connectorId = $parent_id"
-            # Records inherit scope from their RecordGroups, so filter by connectorId
-            scope_filter_record = "AND record.connectorId = $parent_id"
-            scope_filter_record_inline = "inherited_node.connectorId = $parent_id"
+            scope_filter_rg = f"AND rg.connectorId = $parent_id {rg_ids_filter}"
+            scope_filter_rg_inline = "inherited_node.connectorId = $parent_id" + (
+                f" AND {rg_ids_inline}" if rg_ids_inline else ""
+            )
+            scope_filter_record = f"AND record.connectorId = $parent_id {record_ids_filter}"
+            scope_filter_record_inline = "inherited_node.connectorId = $parent_id" + (
+                f" AND {record_ids_inline}" if record_ids_inline else ""
+            )
         elif parent_type in ("kb", "recordGroup"):
-            # Filter RecordGroups by hierarchy via BELONGS_TO or parentId
-            # For KB: use BELONGS_TO edges
-            # For connector: use parentId or BELONGS_TO
-            scope_filter_rg = """AND (
+            scope_filter_rg = f"""AND (
                 rg.parentId = $parent_id
-                OR EXISTS((rg)-[:BELONGS_TO]->(:RecordGroup {id: $parent_id}))
-            )"""
+                OR EXISTS((rg)-[:BELONGS_TO]->(:RecordGroup {{id: $parent_id}}))
+            ) {rg_ids_filter}"""
             scope_filter_rg_inline = """(
                 inherited_node.parentId = $parent_id
                 OR EXISTS((inherited_node)-[:BELONGS_TO]->(:RecordGroup {id: $parent_id}))
-            )"""
-            # Records belong to RecordGroups, so filter by parent RecordGroup hierarchy
-            scope_filter_record = """AND (
-                EXISTS((record)-[:BELONGS_TO]->(:RecordGroup {id: $parent_id}))
-                OR EXISTS((record)-[:BELONGS_TO]->(:RecordGroup)-[:BELONGS_TO*]->(:RecordGroup {id: $parent_id}))
-                OR EXISTS((record)-[:INHERIT_PERMISSIONS*]->(:RecordGroup {id: $parent_id}))
-            )"""
+            )""" + (f" AND {rg_ids_inline}" if rg_ids_inline else "")
+            scope_filter_record = f"""AND (
+                EXISTS((record)-[:BELONGS_TO]->(:RecordGroup {{id: $parent_id}}))
+                OR EXISTS((record)-[:BELONGS_TO]->(:RecordGroup)-[:BELONGS_TO*]->(:RecordGroup {{id: $parent_id}}))
+                OR EXISTS((record)-[:INHERIT_PERMISSIONS*]->(:RecordGroup {{id: $parent_id}}))
+            ) {record_ids_filter}"""
             scope_filter_record_inline = """(
                 EXISTS((inherited_node)-[:BELONGS_TO]->(:RecordGroup {id: $parent_id}))
                 OR EXISTS((inherited_node)-[:BELONGS_TO]->(:RecordGroup)-[:BELONGS_TO*]->(:RecordGroup {id: $parent_id}))
                 OR EXISTS((inherited_node)-[:INHERIT_PERMISSIONS*]->(:RecordGroup {id: $parent_id}))
-            )"""
+            )""" + (f" AND {record_ids_inline}" if record_ids_inline else "")
         elif parent_type in ("record", "folder"):
-            # Filter by same connector (parent_connector_id)
             if parent_connector_id:
-                scope_filter_rg = "AND rg.connectorId = $parent_connector_id"
-                scope_filter_rg_inline = "inherited_node.connectorId = $parent_connector_id"
-                scope_filter_record = "AND record.connectorId = $parent_connector_id"
-                scope_filter_record_inline = "inherited_node.connectorId = $parent_connector_id"
+                scope_filter_rg = f"AND rg.connectorId = $parent_connector_id {rg_ids_filter}"
+                scope_filter_rg_inline = "inherited_node.connectorId = $parent_connector_id" + (
+                    f" AND {rg_ids_inline}" if rg_ids_inline else ""
+                )
+                scope_filter_record = f"AND record.connectorId = $parent_connector_id {record_ids_filter}"
+                scope_filter_record_inline = "inherited_node.connectorId = $parent_connector_id" + (
+                    f" AND {record_ids_inline}" if record_ids_inline else ""
+                )
             else:
-                # No connector ID available - can't scope properly
-                scope_filter_rg = ""
-                scope_filter_rg_inline = "true"
-                scope_filter_record = ""
-                scope_filter_record_inline = "true"
+                scope_filter_rg = rg_ids_filter if rg_ids_filter else ""
+                scope_filter_rg_inline = rg_ids_inline if rg_ids_inline else "true"
+                scope_filter_record = record_ids_filter if record_ids_filter else ""
+                scope_filter_record_inline = record_ids_inline if record_ids_inline else "true"
         else:
-            # Unknown parent type - no scope filters
+            if record_group_ids:
+                return (rg_ids_filter, record_ids_filter, rg_ids_inline or "true", record_ids_inline or "true")
             return ("", "", "true", "true")
 
         return (scope_filter_rg, scope_filter_record, scope_filter_rg_inline, scope_filter_record_inline)

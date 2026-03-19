@@ -13,7 +13,8 @@ Key features:
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -63,7 +64,7 @@ def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
         pass
 
     try:
-        from langchain_openai import ChatOpenAI, AzureChatOpenAI
+        from langchain_openai import AzureChatOpenAI, ChatOpenAI
         if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)):
             return True
     except ImportError:
@@ -100,7 +101,7 @@ class ToolLoader:
     """Clean tool loader with smart caching"""
 
     @staticmethod
-    def load_tools(state: ChatState) -> List[RegistryToolWrapper]:
+    def load_tools(state: ChatState) -> list[RegistryToolWrapper]:
         """
         Load tools with intelligent caching.
 
@@ -116,7 +117,7 @@ class ToolLoader:
         """
         state_logger = state.get("logger")
 
-        has_knowledge = bool(state.get("kb") or state.get("apps") or state.get("agent_knowledge"))
+        has_knowledge = state.get("has_knowledge", False)
 
         # Check cache validity
         cached_tools = state.get("_cached_agent_tools")
@@ -170,7 +171,7 @@ class ToolLoader:
         return all_tools
 
     @staticmethod
-    def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolWrapper]:
+    def get_tool_by_name(tool_name: str, state: ChatState) -> RegistryToolWrapper | None:
         """Get specific tool by name"""
         registry_tools = _global_tools_registry.get_all_tools()
 
@@ -192,7 +193,7 @@ class ToolLoader:
 # Helper Functions
 # ============================================================================
 
-def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[RegistryToolWrapper]:
+def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[RegistryToolWrapper]:
     """
     Load all tools (internal + user toolsets).
 
@@ -232,8 +233,7 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
     user_tools = []
 
     # Check if knowledge is configured - retrieval tool is only loaded when knowledge exists
-    agent_knowledge = state.get("agent_knowledge", [])
-    has_knowledge = bool(agent_knowledge)
+    has_knowledge = state.get("has_knowledge", False)
 
     for full_name, registry_tool in registry_tools.items():
         try:
@@ -260,11 +260,11 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
                 is_internal = True
 
             # Check if user-enabled - ONLY exact matches, no toolset-level matching
-            is_user_enabled = False
-            if user_enabled_tools is not None:
+            is_user_enabled = (
+                user_enabled_tools is not None
                 # SECURITY: Only exact full name match - no toolset-level matching
-                if full_name in user_enabled_tools:
-                    is_user_enabled = True
+                and full_name in user_enabled_tools
+            )
 
             # Load tool if internal OR user-enabled
             if is_internal:
@@ -299,7 +299,7 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
     return tools
 
 
-def _extract_tool_names_from_toolsets(agent_toolsets: List[Dict]) -> Optional[Set[str]]:
+def _extract_tool_names_from_toolsets(agent_toolsets: list[dict]) -> set[str] | None:
     """
     Extract tool names from agent's configured toolsets.
 
@@ -388,7 +388,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
     return any(p in full_name.lower() for p in internal_patterns)
 
 
-def _get_blocked_tools(state: ChatState) -> Dict[str, int]:
+def _get_blocked_tools(state: ChatState) -> dict[str, int]:
     """Get tools that recently failed multiple times"""
     all_results = state.get("all_tool_results", [])
 
@@ -427,7 +427,7 @@ def _initialize_tool_state(state: ChatState) -> None:
 # Public API
 # ============================================================================
 
-def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
+def get_agent_tools(state: ChatState) -> list[RegistryToolWrapper]:
     """
     Get all agent tools (cached).
 
@@ -461,7 +461,7 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     return tools
 
 
-def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolWrapper]:
+def get_tool_by_name(tool_name: str, state: ChatState) -> RegistryToolWrapper | None:
     """Get specific tool by name"""
     return ToolLoader.get_tool_by_name(tool_name, state)
 
@@ -517,7 +517,7 @@ def get_tool_results_summary(state: ChatState) -> str:
 # Modern Tool System with Pydantic Schemas (for ReAct Agent)
 # ============================================================================
 
-def get_agent_tools_with_schemas(state: ChatState) -> List:
+def get_agent_tools_with_schemas(state: ChatState) -> list:
     """
     Convert registry tools to StructuredTools with Pydantic schemas.
 
@@ -569,6 +569,13 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
         if state_logger:
             state_logger.debug(f"get_agent_tools_with_schemas: received {len(registry_tools)} tools from get_agent_tools")
 
+        def _make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
+            """Create an async wrapper function that calls tool_wrapper.arun()."""
+            async def _async_tool_func(**kwargs: object) -> tuple[bool, str] | str | dict[str, Any] | list[Any]:
+                # Call arun with kwargs as a dict (arun handles both formats)
+                return await wrapper.arun(kwargs)
+            return _async_tool_func
+
         for tool_wrapper in registry_tools:
             try:
                 registry_tool = tool_wrapper.registry_tool
@@ -580,19 +587,8 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
                 original_tool_name = tool_wrapper.name
                 sanitized_tool_name = _sanitize_tool_name_if_needed(original_tool_name, llm, state)
 
-                # Create an async wrapper function that calls tool_wrapper.arun()
-                # This ensures proper async execution in the same event loop as FastAPI
-                def make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
-                    async def async_tool_func(**kwargs) -> Union[Tuple[bool, str], str, Dict[str, Any], List[Any]]:
-                        """Async tool function that wraps RegistryToolWrapper.arun()"""
-                        # Call arun with kwargs as a dict (arun handles both formats)
-                        result = await wrapper.arun(kwargs)
-                        # Return result as-is to preserve tuple format (bool, str) if present
-                        # The tool executor in nodes.py will handle both tuple and string formats
-                        return result
-                    return async_tool_func
-
-                async_tool_func = make_async_tool_func(tool_wrapper)
+                # Create an async wrapper that ensures proper execution in the same event loop as FastAPI
+                async_tool_func = _make_async_tool_func(tool_wrapper)
 
                 # Create StructuredTool with schema if available
                 # Explicitly mark as coroutine to ensure LangChain handles it correctly

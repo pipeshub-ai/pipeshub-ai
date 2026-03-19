@@ -8,14 +8,13 @@ decomposes it into focused sub-tasks, and manages execution flow.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
-from typing import Any, Dict, List, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.types import StreamWriter
 
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.deep.context_manager import (
@@ -29,6 +28,10 @@ from app.modules.agents.deep.tool_router import (
     group_tools_by_domain,
 )
 from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.types import StreamWriter
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +126,12 @@ async def orchestrator_node(
         # Add current query — this MUST be the last message so the LLM
         # focuses on it rather than getting distracted by conversation history.
         user_content = query
+
+        # Append user context so the orchestrator can embed the correct user
+        user_ctx = _build_user_context(state)
+        if user_ctx:
+            user_content += f"\n\n{user_ctx}"
+
         time_ctx = _build_time_context(state)
         if time_ctx:
             user_content += f"\n\n{time_ctx}"
@@ -138,10 +147,8 @@ async def orchestrator_node(
             response = await llm.ainvoke(messages, config=get_opik_config())
         finally:
             keepalive_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await keepalive_task
-            except asyncio.CancelledError:
-                pass
         plan = _parse_orchestrator_response(
             response.content if hasattr(response, "content") else str(response),
             log,
@@ -172,12 +179,10 @@ async def orchestrator_node(
 
         # Step 6: Validate and normalize tasks
         raw_tasks = plan.get("tasks", [])
-        normalized_tasks = _normalize_tasks(raw_tasks, tool_groups, log)
+        normalized_tasks = _normalize_tasks(raw_tasks, log)
 
         # Step 6b: Ensure retrieval task exists when knowledge base is configured
-        has_knowledge = bool(
-            state.get("kb") or state.get("apps") or state.get("agent_knowledge")
-        )
+        has_knowledge = state.get("has_knowledge", False)
         if has_knowledge:
             has_retrieval = any(
                 "retrieval" in (t.get("domains") or [])
@@ -193,7 +198,7 @@ async def orchestrator_node(
         # Step 7: Build sub-agent tasks from plan
         from app.modules.agents.deep.tool_router import assign_tools_to_tasks
 
-        tasks: List[SubAgentTask] = []
+        tasks: list[SubAgentTask] = []
         for task_spec in normalized_tasks:
             task: SubAgentTask = {
                 "task_id": task_spec.get("task_id", f"task_{len(tasks) + 1}"),
@@ -267,7 +272,7 @@ async def orchestrator_node(
 # Helper: create a standard retrieval task dict (DRY)
 # ---------------------------------------------------------------------------
 
-def _create_retrieval_task(query: str) -> Dict[str, Any]:
+def _create_retrieval_task(query: str) -> dict[str, Any]:
     """Return a standard retrieval task definition for the given query."""
     return {
         "task_id": "retrieval_search",
@@ -306,17 +311,16 @@ def should_dispatch(state: DeepAgentState) -> Literal["dispatch", "respond"]:
 # ---------------------------------------------------------------------------
 
 def _normalize_tasks(
-    raw_tasks: List[Dict[str, Any]],
-    tool_groups: Dict[str, List[str]],
+    raw_tasks: list[dict[str, Any]],
     log: logging.Logger,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Normalize LLM-generated tasks to enforce single domain per task.
 
     If the LLM puts multiple domains in one task, split it into
     separate tasks (one per domain) to ensure proper tool isolation.
     """
-    normalized: List[Dict[str, Any]] = []
+    normalized: list[dict[str, Any]] = []
 
     for task_spec in raw_tasks:
         domains = task_spec.get("domains", [])
@@ -338,7 +342,7 @@ def _normalize_tasks(
         description = task_spec.get("description", "")
 
         split_ids = []
-        for i, domain in enumerate(domains):
+        for _i, domain in enumerate(domains):
             split_id = f"{original_id}_{domain}"
             split_ids.append(split_id)
             normalized.append({
@@ -365,7 +369,7 @@ def _normalize_tasks(
 # Helper functions
 # ---------------------------------------------------------------------------
 
-def _parse_orchestrator_response(content: str, log: logging.Logger) -> Dict[str, Any]:
+def _parse_orchestrator_response(content: str, log: logging.Logger) -> dict[str, Any]:
     """Parse the orchestrator LLM response into a plan dict."""
     # Try to extract JSON from the response
     try:
@@ -411,9 +415,7 @@ def _parse_orchestrator_response(content: str, log: logging.Logger) -> Dict[str,
 
 def _build_knowledge_context(state: DeepAgentState, log: logging.Logger) -> str:
     """Build knowledge context for the orchestrator prompt."""
-    has_knowledge = bool(
-        state.get("kb") or state.get("apps") or state.get("agent_knowledge")
-    )
+    has_knowledge = state.get("has_knowledge", False)
     has_tools = bool(state.get("tools"))
 
     if not has_knowledge and not has_tools:
@@ -466,7 +468,7 @@ def _build_tool_guidance(state: DeepAgentState) -> str:
         return ""
 
     # Group tools by domain
-    domain_tools: Dict[str, List[str]] = {}
+    domain_tools: dict[str, list[str]] = {}
     for tool_name in tools:
         if not isinstance(tool_name, str):
             continue
@@ -526,6 +528,35 @@ def _build_time_context(state: DeepAgentState) -> str:
     if timezone:
         parts.append(f"Timezone: {timezone}")
     return "\n".join(parts) if parts else ""
+
+
+def _build_user_context(state: DeepAgentState) -> str:
+    """Build current user context so the orchestrator knows who 'my'/'me' refers to."""
+    user_info = state.get("user_info", {})
+    user_email = (
+        state.get("user_email")
+        or user_info.get("userEmail")
+        or user_info.get("email")
+        or ""
+    )
+    user_name = (
+        user_info.get("fullName")
+        or user_info.get("name")
+        or user_info.get("displayName")
+        or (
+            f"{user_info.get('firstName', '')} {user_info.get('lastName', '')}".strip()
+            if user_info.get("firstName") or user_info.get("lastName")
+            else ""
+        )
+    )
+    if not user_name and not user_email:
+        return ""
+    parts = ["Current user:"]
+    if user_name:
+        parts.append(f"  Name: {user_name}")
+    if user_email:
+        parts.append(f"  Email: {user_email}")
+    return "\n".join(parts)
 
 
 

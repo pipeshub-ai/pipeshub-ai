@@ -3067,6 +3067,7 @@ class IGraphDBProvider(ABC):
         sort_dir: str,
         *,
         only_containers: bool = False,
+        record_group_ids: list[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -3086,6 +3087,9 @@ class IGraphDBProvider(ABC):
             sort_field: Field to sort by
             sort_dir: Sort direction ('ASC' or 'DESC')
             only_containers: If True, only return nodes that can have children
+            record_group_ids: Optional list of record group IDs to restrict visibility.
+                When set, only recordGroup nodes whose IDs are in this list are returned;
+                non-recordGroup nodes (folders, records, apps) pass through unfiltered.
             transaction: Optional transaction ID
 
         Returns:
@@ -3115,6 +3119,7 @@ class IGraphDBProvider(ABC):
         only_containers: bool = False,
         parent_id: str | None = None,
         parent_type: str | None = None,
+        record_group_ids: list[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -3151,6 +3156,9 @@ class IGraphDBProvider(ABC):
             only_containers: If True, only return nodes that can have children
             parent_id: Optional parent node ID for scoped search
             parent_type: Optional type of parent: 'app', 'recordGroup', 'folder', 'record'
+            record_group_ids: Optional list of record group IDs to restrict visibility.
+                When set, only recordGroup nodes whose IDs are in this list are returned;
+                non-recordGroup nodes (folders, records, apps) pass through unfiltered.
             transaction: Optional transaction ID
 
         Returns:

@@ -21,19 +21,22 @@ from __future__ import annotations
 import logging
 import re
 import time
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any
 
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableConfig
-from langgraph.types import StreamWriter
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.deep.context_manager import (
     build_respond_conversation_context,
 )
-from app.modules.agents.deep.state import DeepAgentState
 from app.modules.agents.qna.stream_utils import safe_stream_write
+
+if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.types import StreamWriter
+
+    from app.modules.agents.deep.state import DeepAgentState
 
 logger = logging.getLogger(__name__)
 
@@ -635,10 +638,10 @@ def _build_simple_retrieval_messages(
 # ---------------------------------------------------------------------------
 
 def _trim_analyses_to_budget(
-    analyses: List[str],
+    analyses: list[str],
     log: logging.Logger,
     budget: int = _MAX_TOTAL_ANALYSES_CHARS,
-) -> List[str]:
+) -> list[str]:
     """Proportionally trim analyses to fit within budget."""
     total = sum(len(a) for a in analyses)
     if total <= budget:
@@ -694,7 +697,7 @@ def _log_state_diagnostic(state: DeepAgentState, log: logging.Logger) -> None:
 # Data collection
 # ---------------------------------------------------------------------------
 
-def _collect_analyses(state: DeepAgentState, log: logging.Logger) -> List[str]:
+def _collect_analyses(state: DeepAgentState, log: logging.Logger) -> list[str]:
     """
     Collect analyses from all available sources.
 
@@ -745,7 +748,7 @@ def _collect_analyses(state: DeepAgentState, log: logging.Logger) -> List[str]:
     return rebuilt
 
 
-def _collect_tool_results(state: DeepAgentState, log: logging.Logger) -> List[Dict[str, Any]]:
+def _collect_tool_results(state: DeepAgentState, log: logging.Logger) -> list[dict[str, Any]]:
     """
     Collect raw tool results for supplementary data (links, exact values).
 
@@ -834,15 +837,12 @@ def _collect_tool_results(state: DeepAgentState, log: logging.Logger) -> List[Di
 # Fallback response (when LLM returns empty)
 # ---------------------------------------------------------------------------
 
-def _build_fallback_response(analyses: List[str]) -> str:
+def _build_fallback_response(analyses: list[str]) -> str:
     """Build a fallback response directly from analyses when LLM fails."""
     parts = ["Here's what I found:\n"]
     for analysis in analyses:
         # Strip the [task_id (domains)]: prefix for cleaner output
-        if "]: " in analysis:
-            content = analysis.split("]: ", 1)[1]
-        else:
-            content = analysis
+        content = analysis.split("]: ", 1)[1] if "]: " in analysis else analysis
         parts.append(content)
     return "\n\n---\n\n".join(parts)
 
@@ -855,20 +855,20 @@ _URL_PATTERN = re.compile(r'https?://[^\s\)\]>]+')
 
 
 def _extract_reference_links(
-    analyses: List[str],
-    tool_results: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    analyses: list[str],
+    tool_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Extract unique URLs from analyses and tool results for frontend referenceData."""
     seen: set = set()
-    links: List[Dict[str, Any]] = []
+    links: list[dict[str, Any]] = []
 
     # From analyses text
     for text in analyses:
         for url in _URL_PATTERN.findall(text):
-            url = url.rstrip(".,;:!?\"'")
-            if url not in seen:
-                seen.add(url)
-                links.append({"url": url})
+            cleaned_url = url.rstrip(".,;:!?\"'")
+            if cleaned_url not in seen:
+                seen.add(cleaned_url)
+                links.append({"url": cleaned_url})
 
     # From tool results
     for r in tool_results:
@@ -884,20 +884,19 @@ def _extract_urls_from_value(value: object, seen: set, links: list, depth: int =
 
     if isinstance(value, str):
         for url in _URL_PATTERN.findall(value):
-            url = url.rstrip(".,;:!?\"'")
-            if url not in seen:
-                seen.add(url)
-                links.append({"url": url})
+            cleaned_url = url.rstrip(".,;:!?\"'")
+            if cleaned_url not in seen:
+                seen.add(cleaned_url)
+                links.append({"url": cleaned_url})
     elif isinstance(value, dict):
         # Check common URL fields first
         url_fields = ("url", "webLink", "webViewLink", "htmlUrl", "permalink",
                        "link", "href", "self", "joinUrl", "joinWebUrl")
         for field in url_fields:
             val = value.get(field)
-            if isinstance(val, str) and val.startswith("http"):
-                if val not in seen:
-                    seen.add(val)
-                    links.append({"url": val})
+            if isinstance(val, str) and val.startswith("http") and val not in seen:
+                seen.add(val)
+                links.append({"url": val})
         # Recurse into values
         for v in value.values():
             _extract_urls_from_value(v, seen, links, depth + 1)
@@ -937,7 +936,7 @@ def _handle_error_state(
 
 def _handle_clarify(
     state: DeepAgentState,
-    reflection: Dict[str, Any],
+    reflection: dict[str, Any],
     writer: StreamWriter,
     config: RunnableConfig,
     log: logging.Logger,
@@ -962,7 +961,7 @@ def _handle_clarify(
 
 def _handle_error_decision(
     state: DeepAgentState,
-    reflection: Dict[str, Any],
+    reflection: dict[str, Any],
     writer: StreamWriter,
     config: RunnableConfig,
     log: logging.Logger,

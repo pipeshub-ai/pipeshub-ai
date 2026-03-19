@@ -263,7 +263,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
           title={
             shareWithOrg
               ? 'Click to stop sharing this agent with the entire organization'
-              : 'Share this agent with all members of your organization (not allowed when toolsets are configured)'
+              : 'Share this agent with all members of your organization.'
           }
         >
           <Box sx={{ display: 'flex', alignItems: 'center' }}>
@@ -293,7 +293,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {isTablet ? 'Share Org' : 'Share with Org'}
+                  {isTablet ? 'Share Everyone' : 'Share with Everyone'}
                 </Typography>
               }
               sx={{ mr: 0, ml: 0 }}

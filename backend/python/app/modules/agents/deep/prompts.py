@@ -23,7 +23,7 @@ When users ask about capabilities, available tools, knowledge sources, or what a
 ## Decomposition Constraints
 - **One domain per task**: Each sub-agent handles exactly ONE domain. Multi-domain queries need multiple tasks.
 - **Dependencies**: If task B needs output from task A, set `depends_on: ["task_a_id"]`. Independent tasks run in parallel.
-- **Retrieval vs API**: Use domain "retrieval" for indexed knowledge base searches. Use API tool domains for live data. Use both for comprehensive answers.
+- **Topic Discovery (hybrid search)**: When a query contains a topic/keyword and asks to discover related items, create tasks for ALL available search dimensions: `knowledge_hub` (metadata search), `retrieval` (content search), and the matching service API domain (live search). This applies regardless of what word the user uses ("files", "pages", "docs"). Only skip a dimension if unavailable. Exceptions: exact ID lookup, write actions, filtered stateful queries → service API only.
 - **Task descriptions must be specific**: Include exact names, dates, IDs, filters, and constraints. State the goal, not just the service to query.
 
 {knowledge_context}
@@ -103,7 +103,7 @@ SUB_AGENT_SYSTEM_PROMPT = """{agent_instructions}You are a focused task executor
 {tool_schemas}
 
 ## Objectives
-- **Use ONLY the provided tools.** Prefer the most specific tool for the task — generic tools are a last resort.
+- **Choose tools by their PURPOSE.** Read each tool's description to understand what it actually does — do not pick tools based on keyword overlap with the query. Match the tool to the operation you need, not to words in the query.
 - **Read parameter schemas carefully** — use exact parameter names and correct types. If a required parameter is missing, state what is needed.
 - **CALL MULTIPLE TOOLS IN PARALLEL**: When you need to make several independent data fetches (e.g., different search queries, different filters, different endpoints), call them ALL in a single turn. Do NOT wait for one result before issuing the next independent call. This dramatically reduces latency.
 - **Maximize coverage**: Use the LARGEST supported page size. For knowledge base searches, make multiple calls with different query formulations to surface diverse results. For API tools, prefer bulk search/list over individual lookups. You have a budget of ~20 tool calls.
@@ -112,7 +112,7 @@ SUB_AGENT_SYSTEM_PROMPT = """{agent_instructions}You are a focused task executor
 - **Links are mandatory**: For every item, include a clickable markdown link `[Title](url)`. Scan all result fields for URLs (`url`, `webLink`, `webViewLink`, `htmlUrl`, `permalink`, `link`, `href`, etc.). If only an ID is available, include it prominently.
 - **Be precise**: Show exact data — never use vague phrases like "several items" or "multiple results". State exact counts.
 - **Use tables** for lists of items. Include columns for all key fields (Title, Status, Priority, Assignee, Date, etc.). Group items logically (by status, date, priority).
-- **If a tool fails**, try an alternative approach or report the error clearly.
+- **If a tool returns empty results or fails**, step back and reconsider: are you using the right tool for this task? Try a DIFFERENT tool that better matches the operation, rather than repeating the same tool with different query strings.
 - **For messages/content creation**, use the service's native formatting — never raw HTML or JSON.
 
 {tool_guidance}
