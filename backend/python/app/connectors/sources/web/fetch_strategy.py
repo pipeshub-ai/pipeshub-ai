@@ -726,13 +726,16 @@ class Crawl4AIFetcher:
         self.logger.info("Crawl4AIFetcher tier-3 started (undetected + stealth)")
         return self._undetected_stealth_crawler
 
+    _RESTART_TIMEOUT = 60  # seconds – hard ceiling for close()/start() on crashed browsers
+
     async def _restart_crawler(self, tier: str) -> None:
         """Close and recreate a crawler whose browser process has crashed."""
         self.logger.warning(f"[crawl4ai] Restarting {tier} crawler after browser crash")
         if tier == "tier-1":
             if self._crawler:
                 try:
-                    await self._crawler.close()
+                    async with asyncio.timeout(self._RESTART_TIMEOUT):
+                        await self._crawler.close()
                 except Exception:
                     pass
             self._crawler = None
@@ -740,12 +743,14 @@ class Crawl4AIFetcher:
             self._crawler = AsyncWebCrawler(
                 config=self._build_browser_config(stealth=self._stealth),
             )
-            await self._crawler.start()
+            async with asyncio.timeout(self._RESTART_TIMEOUT):
+                await self._crawler.start()
             self.logger.info(f"[crawl4ai] {tier} crawler restarted successfully")
         elif tier == "tier-2":
             if self._undetected_crawler:
                 try:
-                    await self._undetected_crawler.close()
+                    async with asyncio.timeout(self._RESTART_TIMEOUT):
+                        await self._undetected_crawler.close()
                 except Exception:
                     pass
             self._undetected_crawler = None
@@ -753,7 +758,8 @@ class Crawl4AIFetcher:
         elif tier == "tier-3":
             if self._undetected_stealth_crawler:
                 try:
-                    await self._undetected_stealth_crawler.close()
+                    async with asyncio.timeout(self._RESTART_TIMEOUT):
+                        await self._undetected_stealth_crawler.close()
                 except Exception:
                     pass
             self._undetected_stealth_crawler = None
@@ -805,9 +811,9 @@ class Crawl4AIFetcher:
             try:
                 delay = min(float(retry_after_raw), self._MAX_TIER_BACKOFF_SECS)
             except (ValueError, TypeError):
-                delay = float(2 ** (attempt+1))
+                delay = float(2 ** (attempt+2))
         else:
-            delay = float(2 ** (attempt+1))
+            delay = float(2 ** (attempt+2))
 
         jitter = random.uniform(0, 1.0)
         delay = min(delay + jitter, self._MAX_TIER_BACKOFF_SECS)
@@ -854,7 +860,8 @@ class Crawl4AIFetcher:
         ]:
             if crawler:
                 try:
-                    await crawler.close()
+                    async with asyncio.timeout(self._RESTART_TIMEOUT):
+                        await crawler.close()
                 except Exception as exc:
                     self.logger.warning(f"Error closing {label} crawler: {exc}")
         self._crawler = None
@@ -1229,7 +1236,18 @@ class Crawl4AIFetcher:
                 f"[crawl4ai] arun {url} "
                 f"(timeout={kwargs['page_timeout']}ms, wait_until={kwargs['wait_until']!r})"
             )
-            result = await crawler.arun(url=url, config=run_config)
+            # Hard ceiling: page_timeout (ms→s) + 30s buffer for browser overhead.
+            # Prevents indefinite hangs when the browser process crashes
+            # ("Target crashed") and Playwright never resolves the awaitable.
+            hard_timeout = kwargs["page_timeout"] / 1000 + 60
+            async with asyncio.timeout(hard_timeout):
+                result = await crawler.arun(url=url, config=run_config)
+        except TimeoutError:
+            self.logger.error(
+                f"[crawl4ai] Hard timeout ({hard_timeout:.0f}s) exceeded for {url} — "
+                f"browser likely crashed or hung"
+            )
+            return None
         except Exception as exc:
             self.logger.error(f"[crawl4ai] Unhandled error for {url}: {exc}")
             return None
