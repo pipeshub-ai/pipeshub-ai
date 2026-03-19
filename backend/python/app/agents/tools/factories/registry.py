@@ -27,8 +27,8 @@ from app.agents.tools.factories.linear import LinearClientFactory
 from app.agents.tools.factories.mariadb import MariaDBClientFactory
 from app.agents.tools.factories.microsoft import MSGraphClientFactory
 from app.agents.tools.factories.notion import NotionClientFactory
-from app.agents.tools.factories.slack import SlackClientFactory
 from app.agents.tools.factories.redshift import RedshiftClientFactory
+from app.agents.tools.factories.slack import SlackClientFactory
 
 # from app.agents.tools.factories.gitlab import GitLabClientFactory
 

@@ -149,9 +149,9 @@ class ToolDiscoveryConfig:
             app_name="linear",
             client_builder="LinearClient",
         ),
-        "mariadb": AppConfiguration(
-            app_name="mariadb",
-            client_builder="MariaDBClient",
+        "redshift": AppConfiguration(
+            app_name="redshift",
+            client_builder="RedshiftClient",
         ),
         # "linkedin": AppConfiguration(
         #     app_name="linkedin",

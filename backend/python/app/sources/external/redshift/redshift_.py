@@ -17,7 +17,7 @@ Key differences from PostgreSQL DataSource:
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from app.sources.client.redshift.redshift import RedshiftClient, RedshiftResponse
 
@@ -608,7 +608,7 @@ class RedshiftDataSource:
                 message="Failed to get table DDL",
             )
 
-    def _build_type_string(self, col: Dict[str, Any]) -> str:
+    def _build_type_string(self, col: dict[str, Any]) -> str:
         """Reconstruct a SQL type string from information_schema column metadata.
 
         This is needed because Redshift does not support format_type() which
@@ -705,7 +705,7 @@ class RedshiftDataSource:
             )
 
     async def get_table_stats(
-        self, schemas: Optional[List[str]] = None
+        self, schemas: Optional[list[str]] = None
     ) -> RedshiftResponse:
         """Get table statistics for change detection.
 
@@ -775,7 +775,7 @@ class RedshiftDataSource:
         schema_name: str,
         table_name: str,
         limit: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Fetch rows from a table with an optional row limit.
 
         Uses quoted identifiers to safely handle schema/table names that may

@@ -2,25 +2,23 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
-
-from app.utils.conversation_tasks import register_task
-from app.modules.agents.qna.chat_state import ChatState
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.tool_builder import (
-    ToolDefinition,
     ToolsetBuilder,
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import AuthField
+from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.redshift.redshift import RedshiftClient
 from app.sources.external.redshift.redshift_ import RedshiftDataSource
+from app.utils.conversation_tasks import register_task
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +68,7 @@ class GetTablesSchemaInput(BaseModel):
     """Input schema for get_tables_schema."""
 
     schema_name: str = Field(..., description="Schema name the tables belong to")
-    tables: List[str] = Field(..., description="List of table names to fetch schema for")
+    tables: list[str] = Field(..., description="List of table names to fetch schema for")
 
 
 @ToolsetBuilder("Redshift")\
@@ -145,7 +143,7 @@ class Redshift:
         self.client = RedshiftDataSource(client)
         self.chat_state = state
 
-    def _result(self, success: bool, payload: Dict[str, Any]) -> Tuple[bool, str]:
+    def _result(self, success: bool, payload: dict[str, Any]) -> tuple[bool, str]:
         return success, json.dumps(payload, default=str)
 
     # ------------------------------------------------------------------
@@ -160,7 +158,7 @@ class Redshift:
         parameters=[],
         returns="JSON list of schema names",
     )
-    async def list_schemas(self) -> Tuple[bool, str]:
+    async def list_schemas(self) -> tuple[bool, str]:
         """List all schemas in the connected Redshift database."""
         try:
             resp = await self.client.list_schemas()
@@ -195,7 +193,7 @@ class Redshift:
         parameters=[],
         returns="JSON object with schemas, each containing their list of tables",
     )
-    async def list_schemas_and_tables(self) -> Tuple[bool, str]:
+    async def list_schemas_and_tables(self) -> tuple[bool, str]:
         """List all schemas and tables in the Redshift database in one call."""
         try:
             schemas_resp = await self.client.list_schemas()
@@ -206,7 +204,7 @@ class Redshift:
                 })
 
             schemas = schemas_resp.data if isinstance(schemas_resp.data, list) else []
-            payload: List[Dict[str, Any]] = []
+            payload: list[dict[str, Any]] = []
 
             for schema_row in schemas:
                 schema_name = schema_row.get("name")
@@ -262,7 +260,7 @@ class Redshift:
         self,
         schema_name: str,
         table: str,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Fetch DDL for a specific table in a Redshift schema."""
         try:
             if not schema_name or not table:
@@ -312,7 +310,7 @@ class Redshift:
     async def get_schema_ddl(
         self,
         schema_name: str,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Fetch DDL for all tables in a Redshift schema."""
         try:
             if not schema_name:
@@ -328,7 +326,7 @@ class Redshift:
                 })
 
             tables = tables_resp.data if isinstance(tables_resp.data, list) else []
-            ddl_payload: List[Dict[str, Any]] = []
+            ddl_payload: list[dict[str, Any]] = []
 
             for table_row in tables:
                 table_name = table_row.get("name")
@@ -385,8 +383,8 @@ class Redshift:
     async def get_tables_schema(
         self,
         schema_name: str,
-        tables: List[str],
-    ) -> Tuple[bool, str]:
+        tables: list[str],
+    ) -> tuple[bool, str]:
         """Fetch schema details for a given list of tables in a Redshift schema."""
         try:
             if not schema_name:
@@ -394,7 +392,7 @@ class Redshift:
             if not tables:
                 return self._result(False, {"error": "Missing required parameter: tables"})
 
-            table_payload: List[Dict[str, Any]] = []
+            table_payload: list[dict[str, Any]] = []
             for table_name in tables:
                 if not table_name:
                     continue
@@ -458,7 +456,7 @@ class Redshift:
     async def fetch_db_schema(
         self,
         include_views: bool = True,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Fetch full schema details for the connected Redshift database."""
         try:
             if include_views is not None:
@@ -472,7 +470,7 @@ class Redshift:
                 })
 
             schemas = schemas_resp.data if isinstance(schemas_resp.data, list) else []
-            schemas_payload: List[Dict[str, Any]] = []
+            schemas_payload: list[dict[str, Any]] = []
 
             for schema_row in schemas:
                 schema_name = schema_row.get("name")
@@ -489,7 +487,7 @@ class Redshift:
                     })
                     continue
 
-                table_payload: List[Dict[str, Any]] = []
+                table_payload: list[dict[str, Any]] = []
                 for table in tables_resp.data or []:
                     table_name = table.get("name")
                     if not table_name:
@@ -527,7 +525,7 @@ class Redshift:
                     table_info["foreign_keys"] = fk_resp.data if fk_resp.success else []
                     table_payload.append(table_info)
 
-                view_payload: List[Dict[str, Any]] = []
+                view_payload: list[dict[str, Any]] = []
                 if include_views:
                     views_resp = await self.client.list_views(schema=schema_name)
                     if views_resp.success and isinstance(views_resp.data, list):
@@ -572,7 +570,7 @@ class Redshift:
     async def execute_query(
         self,
         query: str,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """Execute SQL query using configured Redshift client."""
         try:
             if not query:
@@ -636,7 +634,7 @@ class Redshift:
                 raw_columns = columns
                 raw_rows = row_tuples
 
-                async def _save_csv_to_blob() -> Optional[Dict[str, Any]]:
+                async def _save_csv_to_blob() -> Optional[dict[str, Any]]:
                     try:
                         from app.utils.conversation_tasks import _rows_to_csv_bytes
 
@@ -668,10 +666,10 @@ class Redshift:
         except Exception as e:
             logger.error(f"execute_query failed: {e}")
             return self._result(False, {"error": str(e)})
-        
 
 
-        
+
+
     @tool(
         app_name="redshift",
         tool_name="list_tables",
@@ -690,7 +688,7 @@ class Redshift:
     async def list_tables(
         self,
         schema_name: str,
-    ) -> Tuple[bool, str]:
+    ) -> tuple[bool, str]:
         """List all tables in a specific Redshift schema."""
         try:
             if not schema_name:
@@ -712,4 +710,4 @@ class Redshift:
             })
         except Exception as e:
             logger.error(f"list_tables failed: {e}")
-            return self._result(False, {"error": str(e)})    
+            return self._result(False, {"error": str(e)})

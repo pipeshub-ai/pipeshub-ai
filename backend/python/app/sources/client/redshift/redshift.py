@@ -16,8 +16,10 @@ redshift_connector Documentation: https://github.com/aws/amazon-redshift-python-
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional
+
 from pydantic import BaseModel, Field, ValidationError
+
 from app.api.routes.toolsets import get_toolset_by_id
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
@@ -163,8 +165,8 @@ class RedshiftClient:
     def execute_query(
         self,
         query: str,
-        params: Optional[Union[Dict[str, Any], List[Any], tuple]] = None,
-    ) -> List[Dict[str, Any]]:
+        params: Optional[dict[str, Any] | list[Any] | tuple] = None,
+    ) -> list[dict[str, Any]]:
         """Execute a SQL query and return results as list of dicts.
 
         Args:
@@ -211,7 +213,7 @@ class RedshiftClient:
     def execute_query_raw(
         self,
         query: str,
-        params: Optional[Union[Dict[str, Any], List[Any], tuple]] = None,
+        params: Optional[dict[str, Any] | list[Any] | tuple] = None,
     ) -> tuple:
         """Execute a SQL query and return raw cursor results.
 
@@ -282,7 +284,7 @@ class RedshiftClient:
             logger.error(f"🔧 [RedshiftClient] Query execution failed: {e}")
             raise RuntimeError(f"Query execution failed: {e}") from e
 
-    def get_connection_info(self) -> Dict[str, Any]:
+    def get_connection_info(self) -> dict[str, Any]:
         """Get connection information."""
         return {
             "host": self.host,
@@ -304,7 +306,7 @@ class RedshiftClient:
     @classmethod
     async def build_from_toolset(
         cls,
-        toolset_config: Dict[str, Any],
+        toolset_config: dict[str, Any],
         logger: logging.Logger,
         config_service: ConfigurationService,
     ) -> "RedshiftClient":
@@ -322,7 +324,7 @@ class RedshiftClient:
             raise ValueError("Instance ID is required for Redshift client")
 
         redshift_instance = await get_toolset_by_id(instance_id, config_service)
-        def pick_value(config: Dict[str, Any], *keys: str) -> Optional[Any]:
+        def pick_value(config: dict[str, Any], *keys: str) -> Optional[Any]:
             auth_config = config.get("auth", {}) or {}
             credentials_config = config.get("credentials", {}) or {}
 
@@ -462,7 +464,7 @@ class RedshiftClientBuilder(IClient):
         """Return the Redshift client object."""
         return self._client
 
-    def get_connection_info(self) -> Dict[str, Any]:
+    def get_connection_info(self) -> dict[str, Any]:
         """Return the connection information."""
         return self._client.get_connection_info()
 
@@ -549,7 +551,7 @@ class RedshiftClientBuilder(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for Redshift.
 
         Args:
@@ -596,7 +598,7 @@ class RedshiftResponse(BaseModel):
     """Standard response wrapper for Redshift operations."""
 
     success: bool = Field(..., description="Whether the request was successful")
-    data: Optional[Union[Dict[str, Any], List[Any]]] = Field(
+    data: Optional[dict[str, Any] | list[Any]] = Field(
         default=None, description="Response data"
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
@@ -607,7 +609,7 @@ class RedshiftResponse(BaseModel):
 
         extra = "allow"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert response to dictionary."""
         return self.model_dump(exclude_none=True)
 

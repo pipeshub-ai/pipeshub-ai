@@ -62,4 +62,3 @@ async def await_and_collect_results(conversation_id: str) -> list[dict[str, Any]
         except Exception:
             logger.exception("Task failed for conversation %s", conversation_id)
     return results
-
