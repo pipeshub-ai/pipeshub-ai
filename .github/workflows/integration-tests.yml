@@ -88,11 +88,6 @@ jobs:
         working-directory: integration-tests
         run: uv pip install -e .
 
-      - name: Write GCS service account key file
-        env:
-          GCS_SA_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
-        run: echo "$GCS_SA_JSON" > ${{ runner.temp }}/gcs-service-account.json
-
       - name: Run integration tests
         working-directory: integration-tests
         env:
@@ -107,10 +102,10 @@ jobs:
           PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
 
           # Neo4j (local docker compose instance)
-          TEST_NEO4J_URI: bolt://localhost:7687
-          TEST_NEO4J_USERNAME: neo4j
-          TEST_NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
-          TEST_NEO4J_DATABASE: neo4j
+          TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
+          TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
+          TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
+          TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
 
           # AWS S3
           S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
@@ -118,7 +113,7 @@ jobs:
           S3_REGION: ${{ secrets.S3_REGION }}
 
           # Google Cloud Storage
-          GCS_SERVICE_ACCOUNT_JSON: ${{ runner.temp }}/gcs-service-account.json
+          GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
 
           # Azure Blob Storage
           AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
@@ -128,4 +123,4 @@ jobs:
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
-          PYTHONPATH=. pytest -m "$MARKERS" -v --tb=short 2>&1
+          pytest -m "$MARKERS" -v --tb=short 2>&1
