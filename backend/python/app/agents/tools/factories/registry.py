@@ -2,7 +2,7 @@
 Registry for managing client factories.
 """
 
-from typing import Dict, Optional
+from typing import Optional
 
 from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.factories.base import ClientFactory
@@ -38,7 +38,7 @@ class ClientFactoryRegistry:
     Provides centralized access to client factories and automatic initialization.
     """
 
-    _factories: Dict[str, ClientFactory] = {}
+    _factories: dict[str, ClientFactory] = {}
     _initialized: bool = False
 
     @classmethod

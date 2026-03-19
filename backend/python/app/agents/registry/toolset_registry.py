@@ -6,7 +6,8 @@ Similar to ConnectorRegistry but for toolsets (agent-focused tools)
 import importlib
 import inspect
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type, Union
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     pass
@@ -19,13 +20,13 @@ logger = logging.getLogger(__name__)
 def Toolset(
     name: str,
     app_group: str,
-    supported_auth_types: Union[str, List[str]],  # Supported auth types (user selects one during creation)
+    supported_auth_types: str | list[str],  # Supported auth types (user selects one during creation)
     description: str = "",
     category: ToolsetCategory = ToolsetCategory.APP,
-    config: Optional[Dict[str, Any]] = None,
-    tools: Optional[List[ToolDefinition]] = None,
+    config: Optional[dict[str, Any]] = None,
+    tools: Optional[list[ToolDefinition]] = None,
     internal: bool = False  # If True, toolset is internal and not sent to frontend
-) -> Callable[[Type], Type]:
+) -> Callable[[type], type]:
     """
     Decorator to register a toolset with metadata and configuration schema.
 
@@ -53,7 +54,7 @@ def Toolset(
         class JiraToolset:
             pass
     """
-    def decorator(cls: Type) -> Type:
+    def decorator(cls: type) -> type:
         # Normalize supported auth types
         if isinstance(supported_auth_types, str):
             supported_auth_types_list = [supported_auth_types]
@@ -121,11 +122,11 @@ class ToolsetRegistry:
         if self._initialized:
             return
 
-        self._toolsets: Dict[str, Dict[str, Any]] = {}
+        self._toolsets: dict[str, dict[str, Any]] = {}
         self._initialized = True
         logger.info("ToolsetRegistry initialized")
 
-    def register_toolset(self, toolset_class: Type) -> bool:
+    def register_toolset(self, toolset_class: type) -> bool:
         """
         Register a toolset class and its tools in the in-memory registry.
 
@@ -206,7 +207,7 @@ class ToolsetRegistry:
             logger.error(f"Failed to register toolset {toolset_class.__name__}: {e}", exc_info=True)
             return False
 
-    def _extract_icon_path(self, metadata: Dict[str, Any]) -> str:
+    def _extract_icon_path(self, metadata: dict[str, Any]) -> str:
         """Extract icon path from metadata or config"""
         # Try direct icon_path field
         icon = metadata.get('icon_path')
@@ -226,13 +227,13 @@ class ToolsetRegistry:
         """Normalize toolset name (lowercase, no spaces/underscores)"""
         return name.lower().replace(' ', '').replace('_', '')
 
-    def _normalize_auth_types(self, auth_types: Union[str, List[str], None]) -> List[str]:
+    def _normalize_auth_types(self, auth_types: str | list[str] | None) -> list[str]:
         """Normalize auth types to list"""
         if isinstance(auth_types, str):
             return [auth_types]
         return list(auth_types) if auth_types else ['API_TOKEN']
 
-    def _discover_tools_from_class(self, toolset_class: Type) -> Dict[str, Any]:
+    def _discover_tools_from_class(self, toolset_class: type) -> dict[str, Any]:
         """
         Discover tools from @tool decorated methods in a class.
 
@@ -279,7 +280,7 @@ class ToolsetRegistry:
 
         return tools
 
-    def _convert_parameters_to_dict(self, tool_metadata) -> List[Dict[str, Any]]:
+    def _convert_parameters_to_dict(self, tool_metadata) -> list[dict[str, Any]]:
         """
         Convert tool parameters to dict format for frontend API.
 
@@ -354,13 +355,13 @@ class ToolsetRegistry:
         # Default to string
         return 'string'
 
-    def discover_toolsets(self, module_paths: List[str]) -> None:
+    def discover_toolsets(self, module_paths: list[str]) -> None:
         """Discover and register toolsets from module paths"""
         for module_path in module_paths:
             try:
                 module = importlib.import_module(module_path)
 
-                for name, obj in inspect.getmembers(module):
+                for _name, obj in inspect.getmembers(module):
                     # Check for _toolset_metadata (added by @Toolset decorator)
                     if inspect.isclass(obj) and hasattr(obj, '_toolset_metadata'):
                         self.register_toolset(obj)
@@ -415,7 +416,7 @@ class ToolsetRegistry:
         self.discover_toolsets(standard_paths)
         logger.info(f"Auto-discovered {len(self._toolsets)} toolsets with in-memory registry")
 
-    def get_toolset_metadata(self, toolset_name: str, serialize: bool = True) -> Optional[Dict[str, Any]]:
+    def get_toolset_metadata(self, toolset_name: str, serialize: bool = True) -> Optional[dict[str, Any]]:
         """
         Get metadata for a toolset.
 
@@ -460,7 +461,7 @@ class ToolsetRegistry:
 
         # Return a copy without non-serializable fields (like 'class')
         # This ensures FastAPI can serialize the response
-        serializable_metadata = {
+        return {
             'name': metadata.get('name'),
             'normalized_name': metadata.get('normalized_name'),
             'display_name': metadata.get('display_name'),
@@ -474,9 +475,8 @@ class ToolsetRegistry:
             'icon_path': metadata.get('icon_path'),
             'isInternal': metadata.get('isInternal', False),
         }
-        return serializable_metadata
 
-    def _sanitize_config(self, config: Union[Dict[str, Any], object]) -> Dict[str, Any]:
+    def _sanitize_config(self, config: dict[str, Any] | object) -> dict[str, Any]:
         """Sanitize config dict to remove non-serializable objects"""
         if not isinstance(config, dict):
             return {}
@@ -524,7 +524,7 @@ class ToolsetRegistry:
 
         return sanitized
 
-    def _sanitize_oauth_configs(self, oauth_configs: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize_oauth_configs(self, oauth_configs: dict[str, Any]) -> dict[str, Any]:
         """Sanitize OAuth configs by converting dataclass instances to dicts"""
         from dataclasses import asdict, is_dataclass
 
@@ -551,7 +551,7 @@ class ToolsetRegistry:
 
         return sanitized
 
-    def _sanitize_tool_dict(self, tool: Dict[str, Any]) -> Dict[str, Any]:
+    def _sanitize_tool_dict(self, tool: dict[str, Any]) -> dict[str, Any]:
         """Sanitize tool dict to ensure all fields are serializable"""
         if not isinstance(tool, dict):
             return {}
@@ -575,11 +575,11 @@ class ToolsetRegistry:
 
         return sanitized
 
-    def list_toolsets(self) -> List[str]:
+    def list_toolsets(self) -> list[str]:
         """List all registered toolset names"""
         return list(self._toolsets.keys())
 
-    def get_all_toolsets(self) -> Dict[str, Dict[str, Any]]:
+    def get_all_toolsets(self) -> dict[str, dict[str, Any]]:
         """Get all registered toolsets"""
         return self._toolsets.copy()
 
@@ -589,7 +589,7 @@ class ToolsetRegistry:
         limit: int = 20,
         search: Optional[str] = None,
         include_tools: bool = True
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Get all registered toolsets with pagination and search.
         Includes tools for frontend drag-and-drop selection.
@@ -669,7 +669,7 @@ class ToolsetRegistry:
             }
         }
 
-    def get_toolset_config(self, toolset_name: str) -> Optional[Dict[str, Any]]:
+    def get_toolset_config(self, toolset_name: str) -> Optional[dict[str, Any]]:
         """Get configuration schema for a toolset"""
         metadata = self.get_toolset_metadata(toolset_name)
         if not metadata:

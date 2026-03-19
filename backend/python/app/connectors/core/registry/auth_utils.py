@@ -1,10 +1,10 @@
-from typing import Any, Dict
+from typing import Any
 
 from app.connectors.core.registry.auth_builder import OAuthConfig
 from app.connectors.core.registry.types import AuthField
 
 
-def auth_field_to_dict(field: AuthField) -> Dict[str, Any]:
+def auth_field_to_dict(field: AuthField) -> dict[str, Any]:
     """
     Convert AuthField to field config dictionary.
 
@@ -36,7 +36,7 @@ def auth_field_to_dict(field: AuthField) -> Dict[str, Any]:
 
 
 def auto_add_oauth_fields(
-    config: Dict[str, Any],
+    config: dict[str, Any],
     oauth_config: OAuthConfig,
     auth_type: str
 ) -> None:

@@ -2,7 +2,7 @@
 Client factory for MariaDB.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 from app.agents.tools.factories.base import ClientFactory
 from app.sources.client.mariadb.mariadb import MariaDBClient
@@ -15,7 +15,7 @@ class MariaDBClientFactory(ClientFactory):
 		self,
 		config_service: object,
 		logger,
-		toolset_config: Dict[str, Any],
+		toolset_config: dict[str, Any],
 		state=None,
 	) -> MariaDBClient:
 		"""Create MariaDB client instance from toolset configuration."""

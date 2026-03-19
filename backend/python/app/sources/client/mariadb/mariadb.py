@@ -8,11 +8,11 @@ MariaDB Connector/Python: https://mariadb.com/docs/server/connect/programming-la
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional
 
-from app.api.routes.toolsets import get_toolset_by_id
 from pydantic import BaseModel, Field, ValidationError
 
+from app.api.routes.toolsets import get_toolset_by_id
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
 
@@ -98,7 +98,7 @@ class MariaDBClient:
                 f"{self.host}:{self.port}{db_part}"
             )
 
-            connect_kwargs: Dict[str, Any] = {
+            connect_kwargs: dict[str, Any] = {
                 "host": self.host,
                 "port": self.port,
                 "user": self.user,
@@ -147,8 +147,8 @@ class MariaDBClient:
     def execute_query(
         self,
         query: str,
-        params: Optional[Union[Dict[str, Any], List[Any], tuple]] = None,
-    ) -> List[Dict[str, Any]]:
+        params: Optional[dict[str, Any] | list[Any] | tuple] = None,
+    ) -> list[dict[str, Any]]:
         """Execute a SQL query and return results as list of dicts.
 
         Args:
@@ -187,7 +187,7 @@ class MariaDBClient:
     def execute_query_raw(
         self,
         query: str,
-        params: Optional[Union[Dict[str, Any], List[Any], tuple]] = None,
+        params: Optional[dict[str, Any] | list[Any] | tuple] = None,
     ) -> tuple:
         """Execute a SQL query and return raw cursor results.
 
@@ -239,7 +239,7 @@ class MariaDBClient:
             logger.error(f"🔧 [MariaDBClient] Query execution failed: {e}")
             raise RuntimeError(f"Query execution failed: {e}") from e
 
-    def get_connection_info(self) -> Dict[str, Any]:
+    def get_connection_info(self) -> dict[str, Any]:
         """Get connection information."""
         return {
             "host": self.host,
@@ -254,14 +254,19 @@ class MariaDBClient:
         self.connect()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(
+        self,
+        exc_type,
+        exc_val,
+        exc_tb,
+    ) -> None:
         """Context manager exit."""
         self.close()
 
     @classmethod
     async def build_from_toolset(
         cls,
-        toolset_config: Dict[str, Any],
+        toolset_config: dict[str, Any],
         logger: logging.Logger,
         config_service: ConfigurationService,
     ) -> "MariaDBClient":
@@ -281,7 +286,7 @@ class MariaDBClient:
 
         mariadb_instance = await get_toolset_by_id(instance_id, config_service)
 
-        def pick_value(config: Dict[str, Any], *keys: str) -> Optional[Any]:
+        def pick_value(config: dict[str, Any], *keys: str) -> Optional[Any]:
             auth_config = config.get("auth", {}) or {}
 
             for container in (config, auth_config):
@@ -392,7 +397,7 @@ class MariaDBClientBuilder(IClient):
         """Return the MariaDB client object."""
         return self._client
 
-    def get_connection_info(self) -> Dict[str, Any]:
+    def get_connection_info(self) -> dict[str, Any]:
         """Return the connection information."""
         return self._client.get_connection_info()
 
@@ -456,7 +461,7 @@ class MariaDBClientBuilder(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Fetch connector config from etcd for MariaDB."""
         try:
             config = await config_service.get_config(
@@ -497,7 +502,7 @@ class MariaDBResponse(BaseModel):
     """Standard response wrapper for MariaDB operations."""
 
     success: bool = Field(..., description="Whether the request was successful")
-    data: Optional[Union[Dict[str, Any], List[Any]]] = Field(
+    data: Optional[dict[str, Any] | list[Any]] = Field(
         default=None, description="Response data"
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
@@ -506,7 +511,7 @@ class MariaDBResponse(BaseModel):
     class Config:
         extra = "allow"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)
 
     def to_json(self) -> str:

@@ -6,16 +6,18 @@ etc.) can be sent to the client.
 """
 from __future__ import annotations
 
-import asyncio
 import csv
 import io
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any
 
 from app.utils.logger import create_logger
 
+if TYPE_CHECKING:
+    import asyncio
+
 logger = create_logger("conversation_tasks")
 
-_conversation_tasks: Dict[str, List[asyncio.Task]] = {}
+_conversation_tasks: dict[str, list[asyncio.Task]] = {}
 
 
 def register_task(conversation_id: str, task: asyncio.Task) -> None:
@@ -29,7 +31,7 @@ def register_task(conversation_id: str, task: asyncio.Task) -> None:
         len(_conversation_tasks[conversation_id]),
     )
 
-def _rows_to_csv_bytes(columns: List[str], rows: List[tuple]) -> bytes:
+def _rows_to_csv_bytes(columns: list[str], rows: list[tuple]) -> bytes:
     """Serialise columns + rows into UTF-8 encoded CSV bytes."""
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -37,12 +39,12 @@ def _rows_to_csv_bytes(columns: List[str], rows: List[tuple]) -> bytes:
     writer.writerows(rows)
     return buf.getvalue().encode("utf-8")
 
-def pop_tasks(conversation_id: str) -> List[asyncio.Task]:
+def pop_tasks(conversation_id: str) -> list[asyncio.Task]:
     """Remove and return all tasks for *conversation_id*."""
     return _conversation_tasks.pop(conversation_id, [])
 
 
-async def await_and_collect_results(conversation_id: str) -> List[Dict[str, Any]]:
+async def await_and_collect_results(conversation_id: str) -> list[dict[str, Any]]:
     """Await every task registered for *conversation_id* and return results.
 
     Failed tasks are logged and skipped (they do not propagate).
@@ -51,7 +53,7 @@ async def await_and_collect_results(conversation_id: str) -> List[Dict[str, Any]
     if not tasks:
         return []
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     for task in tasks:
         try:
             result = await task

@@ -10,7 +10,7 @@ Provides async wrapper methods for MariaDB operations:
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 from app.sources.client.mariadb.mariadb import MariaDBClient, MariaDBResponse
 
@@ -471,7 +471,7 @@ class MariaDBDataSource:
             )
 
     async def get_table_stats(
-        self, databases: Optional[List[str]] = None
+        self, databases: Optional[list[str]] = None
     ) -> MariaDBResponse:
         """Get table statistics for change detection.
 

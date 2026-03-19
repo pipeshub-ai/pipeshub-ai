@@ -73,7 +73,7 @@ class DefaultEndpoints(Enum):
     QUERY_ENDPOINT = "http://localhost:8000"
     NODEJS_ENDPOINT = "http://localhost:3000"
     FRONTEND_ENDPOINT = "http://localhost:3001"
-    STORAGE_ENDPOINT = "http://localhost:3000"
+    STORAGE_ENDPOINT = "http://localhost:3000"  # noqa: PIE796
 
 class Routes(Enum):
     """Constants for routes"""
@@ -117,7 +117,7 @@ class CeleryConfig(Enum):
     """Constants for celery configuration"""
 
     TASK_SERIALIZER = "json"
-    RESULT_SERIALIZER = "json"
+    RESULT_SERIALIZER = "json"  # noqa: PIE796
     ACCEPT_CONTENT = ["json"]
     TIMEZONE = "UTC"
     ENABLE_UTC = True
