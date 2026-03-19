@@ -429,13 +429,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
         raise
 
-    # Resume sync services BEFORE starting Kafka consumers so that
-    # connectors_map is populated before we begin processing sync events.
-    try:
-        await resume_sync_services(app_container, data_store)
-    except Exception as e:
-        logger.error(f"❌ Error during sync service resumption: {str(e)}")
-
     # Start all Kafka consumers centrally - pass already resolved graph_provider
     try:
         consumers = await start_kafka_consumers(app_container, graph_provider)
@@ -447,6 +440,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
+    # Resume sync services BEFORE starting Kafka consumers so that
+    # connectors_map is populated before we begin processing sync events.
+    try:
+        await resume_sync_services(app_container, data_store)
+    except Exception as e:
+        logger.error(f"❌ Error during sync service resumption: {str(e)}")
 
     yield
     logger.info("🔄 Shut down application started")
