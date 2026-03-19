@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -22,7 +22,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
-    Connectors,
     FileRecord,
     LinkPublicStatus,
     LinkRecord,
@@ -38,10 +37,12 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.messaging.interface.producer import IMessagingProducer
 from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.services.messaging.interface.producer import IMessagingProducer
 
 ARANGO_NODE_ID_PARTS = 2 # ArangoDB node IDs are in format "collection/id"
 
@@ -57,8 +58,8 @@ PERMISSION_HIERARCHY = {
 @dataclass
 class RecordGroupWithPermissions:
     record_group: RecordGroup
-    users: List[Tuple[AppUser, Permission]]
-    user_groups: List[Tuple[AppUserGroup, Permission]]
+    users: list[tuple[AppUser, Permission]]
+    user_groups: list[tuple[AppUserGroup, Permission]]
     anyone_with_link: bool = False
     anyone_same_org: bool = False
     anyone_same_domain: bool = False
@@ -66,7 +67,7 @@ class RecordGroupWithPermissions:
 @dataclass
 class UserGroupWithMembers:
     user_group: AppUserGroup
-    users: List[Tuple[AppUser, Permission]]
+    users: list[tuple[AppUser, Permission]]
 
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
@@ -240,7 +241,7 @@ class DataSourceEntitiesProcessor:
     async def _handle_related_external_records(
         self,
         record: Record,
-        related_external_records: List[RelatedExternalRecord],
+        related_external_records: list[RelatedExternalRecord],
         tx_store: TransactionStore
     ) -> None:
         """
@@ -325,7 +326,7 @@ class DataSourceEntitiesProcessor:
                     relation_type=relation_type
                 )
 
-    async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> Optional[str]:
+    async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> str | None:
         """
         Prepare record group by looking up or creating it, and set record_group_id on the record.
         This should be called BEFORE saving the record so record_group_id is included in the first save.
@@ -359,7 +360,7 @@ class DataSourceEntitiesProcessor:
 
         return None
 
-    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Optional[Record] = None) -> None:
+    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Record | None = None) -> None:
         """
         Create edges between record and record group.
         This should be called AFTER saving the record (when record.id is available).
@@ -388,13 +389,13 @@ class DataSourceEntitiesProcessor:
     async def _prepare_ticket_user_edge(
         self,
         ticket: TicketRecord,
-        user_email: Optional[str],
+        user_email: str | None,
         edge_type: EntityRelations,
         timestamp_attr_name: str,
         fallback_timestamp_attr: str,
         tx_store: TransactionStore,
         edge_type_name: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Helper method to prepare a ticket-user edge data dictionary.
 
@@ -571,7 +572,7 @@ class DataSourceEntitiesProcessor:
 
         await tx_store.batch_upsert_records([record])
 
-    async def _handle_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
+    async def _handle_record_permissions(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> None:
         record_permissions = []
 
         try:
@@ -653,7 +654,7 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error("Failed to create permission edge: %s", e)
 
-    async def _upsert_external_person(self, email: str, tx_store) -> Optional[str]:
+    async def _upsert_external_person(self, email: str, tx_store) -> str | None:
         """
         Upsert person record for external email address.
         Uses deterministic UUID based on email to ensure only one Person record per email.
@@ -677,7 +678,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Error upserting person for {email}: {e}")
             return None
 
-    async def on_updated_record_permissions(self, record: Record, permissions: List[Permission]) -> None:
+    async def on_updated_record_permissions(self, record: Record, permissions: list[Permission]) -> None:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
 
 
@@ -725,7 +726,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to update permissions for record {record.id}: {e}", exc_info=True)
             raise
 
-    async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:
+    async def _process_record(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> Record | None:
         self.logger.info(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
@@ -812,7 +813,7 @@ class DataSourceEntitiesProcessor:
             # Log but don't fail the main operation if status update fails
             self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
-    async def on_new_records(self, records_with_permissions: List[Tuple[Record, List[Permission]]]) -> None:
+    async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:
         try:
             if not records_with_permissions:
                 self.logger.warning("on_new_records received an empty list; skipping processing.")
@@ -881,7 +882,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_record_by_key(record_id)
 
-    async def reindex_existing_records(self, records: List[Record]) -> None:
+    async def reindex_existing_records(self, records: list[Record]) -> None:
         """
         Publish reindex events for existing records without DB operations.
         Used for reindexing functionality where records already exist in DB.
@@ -922,7 +923,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
 
-    async def on_new_record_groups(self, record_groups: List[Tuple[RecordGroup, List[Permission]]]) -> None:
+    async def on_new_record_groups(self, record_groups: list[tuple[RecordGroup, list[Permission]]]) -> None:
         try:
             if not record_groups:
                 self.logger.warning("on_new_record_groups received an empty list; skipping processing.")
@@ -1140,7 +1141,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to update record group name for {folder_id}: {e}", exc_info=True)
             raise
 
-    async def on_new_app_users(self, users: List[AppUser]) -> None:
+    async def on_new_app_users(self, users: list[AppUser]) -> None:
         try:
             if not users:
                 self.logger.warning("on_new_app_users received an empty list; skipping processing.")
@@ -1153,7 +1154,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_users failed: {str(e)}")
             raise e
 
-    async def on_new_user_groups(self, user_groups: List[Tuple[AppUserGroup, List[AppUser]]]) -> None:
+    async def on_new_user_groups(self, user_groups: list[tuple[AppUserGroup, list[AppUser]]]) -> None:
         """
         Processes new user groups, upserts them, and creates permission edges.
         This follows the logic of 'on_new_record_groups'.
@@ -1237,7 +1238,7 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
             raise e
 
-    async def on_new_app_roles(self, roles: List[Tuple[AppRole, List[AppUser]]]) -> None:
+    async def on_new_app_roles(self, roles: list[tuple[AppRole, list[AppUser]]]) -> None:
         """
         Processes new app roles, upserts them, and creates permission edges
         from users to these roles.
@@ -1327,15 +1328,15 @@ class DataSourceEntitiesProcessor:
         pass
 
 
-    async def get_all_active_users(self) -> List[User]:
+    async def get_all_active_users(self) -> list[User]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_users(self.org_id, active=True)
 
-    async def get_all_app_users(self, connector_id: str) -> List[AppUser]:
+    async def get_all_app_users(self, connector_id: str) -> list[AppUser]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_users(self.org_id, connector_id)
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
 
@@ -1545,7 +1546,7 @@ class DataSourceEntitiesProcessor:
         group_id: str,
         user_email: str,
         connector_id: str,
-        tx_store: Optional[TransactionStore] = None
+        tx_store: TransactionStore | None = None
     ) -> None:
         """
         Migrate all permissions from a group to a user.
@@ -1578,7 +1579,7 @@ class DataSourceEntitiesProcessor:
                 f"User {user_email} not found in users collection, "
                 f"cannot migrate permissions. Skipping."
             )
-            return
+            return None
 
         # Get all permission edges FROM the group
         group_node_id = f"{CollectionNames.GROUPS.value}/{group_id}"
@@ -1589,7 +1590,7 @@ class DataSourceEntitiesProcessor:
 
         if not permission_edges:
             self.logger.debug(f"No permissions found for group {group_id}")
-            return
+            return None
 
         migrated_count = 0
         skipped_count = 0
@@ -1703,6 +1704,8 @@ class DataSourceEntitiesProcessor:
                 f"✅ Permission migration complete for user {user_email}: "
                 f"migrated {migrated_count}, skipped {skipped_count} duplicates"
             )
+            return None
+        return None
 
     async def migrate_group_to_user_by_external_id(
         self,
@@ -1881,7 +1884,7 @@ class DataSourceEntitiesProcessor:
         except Exception as e:
             self.logger.error(f"Error deleting organization edges for group {group_internal_id}: {e}")
 
-    async def add_permission_to_record(self, record: Record, permissions: List[Permission]) -> None:
+    async def add_permission_to_record(self, record: Record, permissions: list[Permission]) -> None:
         """Add permissions to a record."""
 
         async with self.data_store_provider.transaction() as tx_store:
@@ -1909,7 +1912,7 @@ class DataSourceEntitiesProcessor:
             else:
                 self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
 
-    async def get_app_creator_user(self, connector_id: str) -> Optional[User]:
+    async def get_app_creator_user(self, connector_id: str) -> User | None:
         """
         Fetch the creator user for a connector/app by connectorId.
         """
