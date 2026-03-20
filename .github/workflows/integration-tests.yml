@@ -34,8 +34,8 @@ jobs:
       - name: Build and start services
         working-directory: deployment/docker-compose
         run: |
-          docker compose -f docker-compose.dev.neo4j.yml build
-          docker compose -f docker-compose.dev.neo4j.yml up -d
+          docker compose -f docker-compose.integration.neo4j.yml build
+          docker compose -f docker-compose.integration.neo4j.yml up -d
 
       - name: Wait for core services to be healthy
         run: |
