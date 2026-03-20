@@ -3,9 +3,10 @@ Enhanced wrapper to adapt registry tools to LangChain format with proper client 
 """
 
 import asyncio
+import contextlib
 import inspect
 import json
-from typing import Callable, Dict, List, Optional, Union
+from collections.abc import Callable
 
 from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
@@ -17,7 +18,7 @@ from app.modules.agents.qna.chat_state import ChatState
 TOOL_RESULT_TUPLE_LENGTH = 2
 
 # Type aliases
-ToolResult = Union[tuple, str, dict, list, int, float, bool]
+ToolResult = tuple | str | dict | list | int | float | bool
 
 
 class ToolInstanceCreator:
@@ -43,11 +44,11 @@ class ToolInstanceCreator:
         # ToolInstanceCreator instances within the same request/sub-agent.
         if "_client_cache" not in state:
             state["_client_cache"] = {}
-        self._client_cache: Dict[tuple, object] = state["_client_cache"]
+        self._client_cache: dict[tuple, object] = state["_client_cache"]
         # Lock to prevent parallel tool calls from creating duplicate clients
         if "_client_cache_locks" not in state:
             state["_client_cache_locks"] = {}
-        self._cache_locks: Dict[tuple, asyncio.Lock] = state["_client_cache_locks"]
+        self._cache_locks: dict[tuple, asyncio.Lock] = state["_client_cache_locks"]
 
     def _get_config_service(self) -> object:
         """Get configuration service from state.
@@ -256,7 +257,7 @@ class ToolInstanceCreator:
             # For other errors, fall back to legacy creation
             return self._fallback_creation(action_class)
 
-    def _get_toolset_config(self, tool_full_name: str) -> Optional[Dict]:
+    def _get_toolset_config(self, tool_full_name: str) -> dict | None:
         """Get toolset config for a tool from state.
 
         Args:
@@ -349,7 +350,7 @@ class RegistryToolWrapper(BaseTool):
         tool_name: str,
         registry_tool: object,
         state: ChatState,
-        **kwargs: Union[str, int, bool, dict, list, None]
+        **kwargs: str | int | bool | dict | list | None
     ) -> None:
         """Initialize registry tool wrapper.
         Args:
@@ -359,16 +360,18 @@ class RegistryToolWrapper(BaseTool):
             state: Chat state
             **kwargs: Additional arguments
         """
-        base_description = getattr(
-            registry_tool,
-            'description',
-            f"Tool: {app_name}.{tool_name}"
+        # Prefer llm_description (includes when_to_use/when_not_to_use guidance)
+        # over description (short user-facing text)
+        base_description = (
+            getattr(registry_tool, 'llm_description', None)
+            or getattr(registry_tool, 'description', None)
+            or f"Tool: {app_name}.{tool_name}"
         )
         full_description = self._build_description(base_description, registry_tool)
 
         instance_creator = ToolInstanceCreator(state)
 
-        init_data: Dict[str, Union[str, object]] = {
+        init_data: dict[str, str | object] = {
             'name': f"{app_name}.{tool_name}",
             'description': full_description,
             'app_name': app_name,
@@ -403,7 +406,7 @@ class RegistryToolWrapper(BaseTool):
             return base_description
 
     @staticmethod
-    def _format_parameters(params: List[object]) -> List[str]:
+    def _format_parameters(params: list[object]) -> list[str]:
         """Format parameters for description.
 
         Args:
@@ -441,7 +444,7 @@ class RegistryToolWrapper(BaseTool):
         """
         return self.chat_state
 
-    async def arun(self, *args, **kwargs) -> Union[str, tuple]:
+    async def arun(self, *args, **kwargs) -> str | tuple:
         """Async execution - runs directly in the event loop, no thread executor needed.
 
         This ensures tools run in the same event loop as FastAPI and Neo4j driver.
@@ -462,7 +465,7 @@ class RegistryToolWrapper(BaseTool):
         except Exception as e:
             return self._format_error(e, kwargs if kwargs else (args[0] if args else {}))
 
-    def _run(self, **kwargs: Union[str, int, bool, dict, list, None]) -> Union[str, tuple]:
+    def _run(self, **kwargs: str | int | bool | dict | list | None) -> str | tuple:
         """Execute the registry tool (sync fallback - should not be used in async context).
 
         Args:
@@ -484,7 +487,7 @@ class RegistryToolWrapper(BaseTool):
 
     def _execute_tool(
         self,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None]
     ) -> ToolResult:
         """Execute the registry tool function.
 
@@ -515,7 +518,7 @@ class RegistryToolWrapper(BaseTool):
 
     async def _execute_tool_async(
         self,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None]
     ) -> ToolResult:
         """Execute the registry tool function asynchronously.
 
@@ -540,7 +543,7 @@ class RegistryToolWrapper(BaseTool):
     async def _execute_class_method_async(
         self,
         tool_function: Callable,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None]
     ) -> ToolResult:
         """Execute a class method asynchronously by creating an instance.
 
@@ -605,7 +608,7 @@ class RegistryToolWrapper(BaseTool):
     def _execute_class_method(
         self,
         tool_function: Callable,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None]
     ) -> ToolResult:
         """Execute a class method by creating an instance (sync fallback).
 
@@ -640,10 +643,8 @@ class RegistryToolWrapper(BaseTool):
                 # Teardown background resources if the action provides shutdown()
                 shutdown = getattr(instance, 'shutdown', None)
                 if callable(shutdown):
-                    try:
+                    with contextlib.suppress(Exception):
                         shutdown()
-                    except Exception:
-                        pass
 
         except Exception as e:
             raise RuntimeError(
@@ -669,7 +670,7 @@ class RegistryToolWrapper(BaseTool):
     def _format_error(
         self,
         error: Exception,
-        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+        arguments: dict[str, str | int | bool | dict | list | None]
     ) -> str:
         """Format error message.
 

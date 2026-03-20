@@ -1,5 +1,5 @@
 from logging import Logger
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
@@ -13,7 +13,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 class Document(TypedDict):
     page_content: str
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
 
 class ChatState(TypedDict):
     logger: Logger
@@ -26,116 +26,118 @@ class ChatState(TypedDict):
 
     query: str
     limit: int # Number of chunks to retrieve from the vector database
-    messages: List[BaseMessage]  # Changed to BaseMessage for tool calling
-    previous_conversations: List[Dict[str, str]]
+    messages: list[BaseMessage]  # Changed to BaseMessage for tool calling
+    previous_conversations: list[dict[str, str]]
     quick_mode: bool  # Renamed from decompose_query to avoid conflict
-    chat_mode: Optional[str]  # "quick", "standard", "analysis", "deep_research", "creative", "precise"
-    filters: Optional[Dict[str, Any]]
+    chat_mode: str | None  # "quick", "standard", "analysis", "deep_research", "creative", "precise"
+    filters: dict[str, Any] | None
     retrieval_mode: str
     graph_type: str
 
     # Query analysis results
-    query_analysis: Optional[Dict[str, Any]]  # Results from query analysis
+    query_analysis: dict[str, Any] | None  # Results from query analysis
 
     # Original query processing (now optional)
-    decomposed_queries: List[Dict[str, str]]
-    rewritten_queries: List[str]
-    expanded_queries: List[str]
-    web_search_queries: List[str]  # Web search queries for tool calling
+    decomposed_queries: list[dict[str, str]]
+    rewritten_queries: list[str]
+    expanded_queries: list[str]
+    web_search_queries: list[str]  # Web search queries for tool calling
 
     # Search results (conditional)
-    search_results: List[Document]
-    final_results: List[Document]
+    search_results: list[Document]
+    final_results: list[Document]
 
     # User and org info
-    user_info: Optional[Dict[str, Any]]
-    org_info: Optional[Dict[str, Any]]
-    response: Optional[str]
-    error: Optional[Dict[str, Any]]
+    user_info: dict[str, Any] | None
+    org_info: dict[str, Any] | None
+    response: str | None
+    error: dict[str, Any] | None
     org_id: str
     user_id: str
     user_email: str
     send_user_info: bool
 
     # Enhanced features
-    system_prompt: Optional[str]  # User-defined system prompt
-    instructions: Optional[str]  # Agent-specific instructions for the LLM
-    timezone: Optional[str]  # User's timezone (e.g., "America/New_York")
-    current_time: Optional[str]  # Current time in user's timezone (ISO 8601)
-    apps: Optional[List[str]]  # List of app IDs to search in (extracted from knowledge array)
-    kb: Optional[List[str]]  # List of KB record group IDs to search in (extracted from knowledge array filters)
-    agent_knowledge: Optional[List[Dict[str, Any]]]
+    system_prompt: str | None  # User-defined system prompt
+    instructions: str | None  # Agent-specific instructions for the LLM
+    timezone: str | None  # User's timezone (e.g., "America/New_York")
+    current_time: str | None  # Current time in user's timezone (ISO 8601)
+    apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
+    kb: list[str] | None  # List of KB record group IDs to search in (extracted from knowledge array filters)
+    agent_knowledge: list[dict[str, Any]] | None
+    has_knowledge: bool  # Whether the agent has real knowledge sources configured (excludes NO_KB_SELECTED sentinel)
     # connector_instances: Deprecated - use toolsets instead
-    tools: Optional[List[str]]  # List of tool names to enable for this agent
-    output_file_path: Optional[str]  # Optional file path for saving responses
-    tool_to_connector_map: Optional[Dict[str, str]]  # Mapping from app_name (tool) to connector instance ID
+    tools: list[str] | None  # List of tool names to enable for this agent
+    output_file_path: str | None  # Optional file path for saving responses
+    tool_to_connector_map: dict[str, str] | None  # Mapping from app_name (tool) to connector instance ID
 
     # Tool calling specific fields - no ToolExecutor dependency
-    pending_tool_calls: Optional[bool]  # Whether the agent has pending tool calls
-    tool_results: Optional[List[Dict[str, Any]]]  # Results of current tool execution
-    tool_records: Optional[List[Dict[str, Any]]]  # Full record data from tools (for citation normalization)
+    pending_tool_calls: bool | None  # Whether the agent has pending tool calls
+    tool_results: list[dict[str, Any]] | None  # Results of current tool execution
+    tool_records: list[dict[str, Any]] | None  # Full record data from tools (for citation normalization)
 
     # Toolset-based tool execution (NEW - replaces old connector-based system)
     # SECURITY NOTE: These fields contain sensitive authentication data and should be handled carefully
-    tool_to_toolset_map: Optional[Dict[str, str]]  # Maps "tool.name" -> instanceId (e.g. "slack.send_message" -> "uuid")
-    toolset_configs: Optional[Dict[str, Dict]]  # SENSITIVE: Auth configs keyed by instanceId (contains credentials)
-    agent_toolsets: Optional[List[Dict]]  # Toolset metadata from graph (instanceId, name, tools) - NO userId stored
+    tool_to_toolset_map: dict[str, str] | None  # Maps "tool.name" -> instanceId (e.g. "slack.send_message" -> "uuid")
+    toolset_configs: dict[str, dict] | None  # SENSITIVE: Auth configs keyed by instanceId (contains credentials)
+    agent_toolsets: list[dict] | None  # Toolset metadata from graph (instanceId, name, tools) - NO userId stored
 
     # Planner-based execution fields
-    execution_plan: Optional[Dict[str, Any]]  # Planned execution from planner node
-    planned_tool_calls: Optional[List[Dict[str, Any]]]  # List of planned tool calls to execute
-    completion_data: Optional[Dict[str, Any]]  # Final completion data with citations
+    execution_plan: dict[str, Any] | None  # Planned execution from planner node
+    planned_tool_calls: list[dict[str, Any]] | None  # List of planned tool calls to execute
+    executed_tool_names: list[str] | None  # Accumulates tool names executed across iterations
+    completion_data: dict[str, Any] | None  # Final completion data with citations
 
     # ⚡ PERFORMANCE: Cache fields (must be in TypedDict to persist between nodes!)
-    _cached_agent_tools: Optional[List[Any]]  # Cached list of tool wrappers
-    _cached_blocked_tools: Optional[Dict[str, int]]  # Cached dict of blocked tools
-    _tool_instance_cache: Optional[Dict[str, Any]]  # Cached tool instances
-    _performance_tracker: Optional[Any]  # Performance tracking object
-    _cached_llm_with_tools: Optional[Any]  # ⚡ NUCLEAR: Cached LLM with bound tools (eliminates 1-2s overhead!)
+    _cached_agent_tools: list[Any] | None  # Cached list of tool wrappers
+    _cached_blocked_tools: dict[str, int] | None  # Cached dict of blocked tools
+    _tool_instance_cache: dict[str, Any] | None  # Cached tool instances
+    _performance_tracker: Any | None  # Performance tracking object
+    _cached_llm_with_tools: Any | None  # ⚡ NUCLEAR: Cached LLM with bound tools (eliminates 1-2s overhead!)
 
     # Additional tracking fields
-    successful_tool_count: Optional[int]  # Count of successful tools
-    failed_tool_count: Optional[int]  # Count of failed tools
-    tool_retry_count: Optional[Dict[str, int]]  # Retry count per tool
-    available_tools: Optional[List[str]]  # List of available tool names
-    performance_summary: Optional[Dict[str, Any]]  # Performance summary data
-    all_tool_results: Optional[List[Dict[str, Any]]]  # All tool results for the session
+    successful_tool_count: int | None  # Count of successful tools
+    failed_tool_count: int | None  # Count of failed tools
+    tool_retry_count: dict[str, int] | None  # Retry count per tool
+    available_tools: list[str] | None  # List of available tool names
+    performance_summary: dict[str, Any] | None  # Performance summary data
+    all_tool_results: list[dict[str, Any]] | None  # All tool results for the session
 
     # Enhanced tool result tracking for better LLM context
-    tool_execution_summary: Optional[Dict[str, Any]]  # Summary of what tools have been executed
-    tool_data_available: Optional[Dict[str, Any]]  # What data is available from tool executions
-    tool_repetition_warnings: Optional[List[str]]  # Warnings about repeated tool calls
-    data_sufficiency: Optional[Dict[str, Any]]  # Analysis of whether we have sufficient data to answer the query
+    tool_execution_summary: dict[str, Any] | None  # Summary of what tools have been executed
+    tool_data_available: dict[str, Any] | None  # What data is available from tool executions
+    tool_repetition_warnings: list[str] | None  # Warnings about repeated tool calls
+    data_sufficiency: dict[str, Any] | None  # Analysis of whether we have sufficient data to answer the query
 
     # Loop detection and graceful handling
-    force_final_response: Optional[bool]  # Flag to force final response instead of tool execution
-    loop_detected: Optional[bool]  # Whether a loop was detected
-    loop_reason: Optional[str]  # Reason for loop detection
-    max_iterations: Optional[int]  # Maximum tool iteration limit
+    force_final_response: bool | None  # Flag to force final response instead of tool execution
+    loop_detected: bool | None  # Whether a loop was detected
+    loop_reason: str | None  # Reason for loop detection
+    max_iterations: int | None  # Maximum tool iteration limit
 
     # Web search specific fields
-    web_search_results: Optional[List[Dict[str, Any]]]  # Stored web search results
-    web_search_template_context: Optional[Dict[str, Any]]  # Template context for web search formatting
+    web_search_results: list[dict[str, Any]] | None  # Stored web search results
+    web_search_template_context: dict[str, Any] | None  # Template context for web search formatting
 
     # Pure registry integration - no executor
-    available_tools: Optional[List[str]]  # List of all available tools from registry
-    tool_configs: Optional[Dict[str, Any]]  # Tool configurations (Slack tokens, etc.)
-    registry_tool_instances: Optional[Dict[str, Any]]  # Cached tool instances
+    available_tools: list[str] | None  # List of all available tools from registry
+    tool_configs: dict[str, Any] | None  # Tool configurations (Slack tokens, etc.)
+    registry_tool_instances: dict[str, Any] | None  # Cached tool instances
 
     # Knowledge retrieval processing fields
-    virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]]  # Mapping for citations
-    record_label_to_uuid_map: Optional[Dict[str, str]]  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
-    qna_message_content: Optional[Any]  # get_message_content() output (list of content items, same as chatbot)
-    blob_store: Optional[Any]  # BlobStorage instance for processing results
-    is_multimodal_llm: Optional[bool]  # Whether LLM supports multimodal content
+    virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
+    record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
+    qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
+    blob_store: Any | None  # BlobStorage instance for processing results
+    is_multimodal_llm: bool | None  # Whether LLM supports multimodal content
 
     # Reflection and retry fields (for intelligent error recovery)
-    reflection: Optional[Dict[str, Any]]  # Reflection analysis result from reflect_node
-    reflection_decision: Optional[str]  # Decision: respond_success, respond_error, respond_clarify, retry_with_fix, continue_with_more_tools
+    reflection: dict[str, Any] | None  # Reflection analysis result from reflect_node
+    reflection_decision: str | None  # Decision: respond_success, respond_error, respond_clarify, retry_with_fix, continue_with_more_tools
     retry_count: int  # Current retry count (starts at 0)
     max_retries: int  # Maximum retries allowed (default 1 for speed)
     is_retry: bool  # Whether this is a retry iteration
-    execution_errors: Optional[List[Dict[str, Any]]]  # Error details for retry context
+    execution_errors: list[dict[str, Any]] | None  # Error details for retry context
 
     # Multi-step iteration tracking (separate from error retries)
     iteration_count: int  # Current iteration count for multi-step tasks (starts at 0)
@@ -143,7 +145,7 @@ class ChatState(TypedDict):
     is_continue: bool  # Whether this is a continue iteration (multi-step task)
     tool_validation_retry_count: int  # Retry count for tool validation in planner
 
-def _build_tool_to_toolset_map(toolsets: List[Dict[str, Any]]) -> Dict[str, str]:
+def _build_tool_to_toolset_map(toolsets: list[dict[str, Any]]) -> dict[str, str]:
     """
     Build a mapping from tool full name to toolset instance ID.
 
@@ -190,7 +192,7 @@ def _build_tool_to_toolset_map(toolsets: List[Dict[str, Any]]) -> Dict[str, str]
     return tool_to_toolset
 
 
-def _extract_tools_from_toolsets(toolsets: List[Dict[str, Any]]) -> List[str]:
+def _extract_tools_from_toolsets(toolsets: list[dict[str, Any]]) -> list[str]:
     """
     Extract list of tool full names from toolsets.
 
@@ -227,7 +229,7 @@ def _extract_tools_from_toolsets(toolsets: List[Dict[str, Any]]) -> List[str]:
     return tools
 
 
-def _extract_knowledge_connector_ids(knowledge: List[Dict[str, Any]]) -> List[str]:
+def _extract_knowledge_connector_ids(knowledge: list[dict[str, Any]]) -> list[str]:
     """
     Extract connector IDs from knowledge array for retrieval filtering.
 
@@ -250,7 +252,7 @@ def _extract_knowledge_connector_ids(knowledge: List[Dict[str, Any]]) -> List[st
     return connector_ids
 
 
-def _extract_kb_record_groups(knowledge: List[Dict[str, Any]]) -> List[str]:
+def _extract_kb_record_groups(knowledge: list[dict[str, Any]]) -> list[str]:
     """
     Extract KB record group IDs from knowledge array filters.
 
@@ -326,9 +328,9 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
         state["tool_repetition_warnings"] = []
 
 
-def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
+def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, org_info: Dict[str, Any] = None, graph_type: str = "legacy") -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, org_info: dict[str, Any] = None, graph_type: str = "legacy") -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -342,17 +344,17 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
 
     # Get user-defined system prompt or use default
     system_prompt = chat_query.get("systemPrompt", "You are an enterprise questions answering expert")
-    instructions = chat_query.get("instructions", None)
-    timezone = chat_query.get("timezone", None)
-    current_time = chat_query.get("currentTime", None)
-    output_file_path = chat_query.get("outputFilePath", None)
+    instructions = chat_query.get("instructions")
+    timezone = chat_query.get("timezone")
+    current_time = chat_query.get("currentTime")
+    output_file_path = chat_query.get("outputFilePath")
 
     # Get toolsets and knowledge from the new graph-based format
     toolsets = chat_query.get("toolsets", [])  # Array of toolset objects with tools
     knowledge = chat_query.get("knowledge", [])  # Array of knowledge objects with connectorId, filters
 
     # Extract tools list from toolsets for the planner
-    tools = _extract_tools_from_toolsets(toolsets) if toolsets else chat_query.get("tools", None)
+    tools = _extract_tools_from_toolsets(toolsets) if toolsets else chat_query.get("tools")
 
     # Build tool-to-toolset mapping for looking up configs during execution
     tool_to_toolset_map = _build_tool_to_toolset_map(toolsets) if toolsets else {}
@@ -369,6 +371,10 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
     kb = _extract_kb_record_groups(knowledge) if knowledge else filters.get("kb", None)
     # Store the original knowledge array in state so tool_system and nodes can check it
     agent_knowledge = knowledge if knowledge else []
+
+    # Compute has_knowledge once — filters out the NO_KB_SELECTED sentinel
+    real_kb = [k for k in (kb or []) if k and k != "NO_KB_SELECTED"]
+    has_knowledge = bool(real_kb or apps or agent_knowledge)
 
     logger.debug(f"toolsets: {len(toolsets)} loaded")
     logger.debug(f"knowledge: {len(knowledge)} sources")
@@ -425,6 +431,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
         "agent_knowledge": agent_knowledge,
+        "has_knowledge": has_knowledge,
         # connector_instances: Deprecated - use toolsets instead
         "tools": tools,  # Extracted from toolsets
         "output_file_path": output_file_path,

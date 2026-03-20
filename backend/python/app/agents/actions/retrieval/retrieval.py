@@ -10,7 +10,7 @@ OPTION B: Skip get_message_content() in individual retrieval calls.
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from langgraph.types import StreamWriter
 from pydantic import BaseModel, Field
@@ -27,22 +27,36 @@ from app.utils.chat_helpers import get_flattened_results
 logger = logging.getLogger(__name__)
 
 
+def _normalize_list_param(value: str | list[str] | None) -> list[str] | None:
+    """Normalize a parameter that should be a list of strings.
+    Handles LLM sending a single string instead of a list, or empty list."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        return [value] if value else None
+    if isinstance(value, list):
+        filtered = [str(v).strip() for v in value if v]
+        return filtered if filtered else None
+    return None
+
+
 class RetrievalToolOutput(BaseModel):
     """Structured output from the retrieval tool."""
     status: str = Field(default="success", description="Status: 'success' or 'error'")
     content: str = Field(description="Formatted content for LLM consumption")
-    final_results: List[Dict[str, Any]] = Field(description="Processed results for citation generation")
-    virtual_record_id_to_result: Dict[str, Dict[str, Any]] = Field(description="Mapping for citation normalization")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    final_results: list[dict[str, Any]] = Field(description="Processed results for citation generation")
+    virtual_record_id_to_result: dict[str, dict[str, Any]] = Field(description="Mapping for citation normalization")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
 class SearchInternalKnowledgeInput(BaseModel):
     """Input schema for the search_internal_knowledge tool"""
     query: str = Field(description="The search query to find relevant information")
-    limit: Optional[int] = Field(default=50, description="Maximum number of results to return (default: 50, max: 100)")
-    filters: Optional[Dict[str, Any]] = Field(default=None, description="Optional filters to narrow search (apps, kb, etc.)")
-    text: Optional[str] = Field(default=None, description="Alternative parameter name for query")
-    top_k: Optional[int] = Field(default=None, description="Alias for limit")
+    limit: int | None = Field(default=50, description="Maximum number of results to return (default: 50, max: 100)")
+    connector_ids: list[str] | None = Field(default=None, description="Filter to specific connectors by their IDs. If not provided or IDs don't match agent scope, uses all agent connectors.")
+    collection_ids: list[str] | None = Field(default=None, description="Filter to specific KB collections by their record group IDs. If not provided or IDs don't match agent scope, uses all agent collections.")
+    top_k: int | None = Field(default=None, description="Alias for limit")
 
 
 @ToolsetBuilder("Retrieval")\
@@ -58,8 +72,8 @@ class SearchInternalKnowledgeInput(BaseModel):
 class Retrieval:
     """Internal knowledge retrieval tool exposed to agents"""
 
-    def __init__(self, state: Optional[ChatState] = None, writer: Optional[StreamWriter] = None, **kwargs) -> None:
-        self.state: Optional[ChatState] = state or kwargs.get('state')
+    def __init__(self, state: ChatState | None = None, writer: StreamWriter | None = None, **kwargs) -> None:
+        self.state: ChatState | None = state or kwargs.get('state')
         self.writer = writer
         logger.info("🚀 Initializing Internal Knowledge Retrieval tool")
 
@@ -100,15 +114,15 @@ class Retrieval:
     )
     async def search_internal_knowledge(
         self,
-        query: Optional[str] = None,
-        text: Optional[str] = None,
-        limit: Optional[int] = None,
-        top_k: Optional[int] = None,
-        filters: Optional[Dict[str, Any]] = None,
+        query: str | None = None,
+        limit: int | None = None,
+        top_k: int | None = None,
+        connector_ids: list[str] | None = None,
+        collection_ids: list[str] | None = None,
         **kwargs
     ) -> str:
         """Search internal knowledge bases and return formatted results."""
-        search_query = query or text
+        search_query = query
 
         if not search_query:
             return json.dumps({
@@ -140,7 +154,41 @@ class Retrieval:
             user_id = self.state.get("user_id", "")
             base_limit = limit or top_k or self.state.get("limit", 50)
             adjusted_limit = min(base_limit, 100)
-            filter_groups = filters or self.state.get("filters", {})
+
+            # Normalize list inputs
+            connector_ids = _normalize_list_param(connector_ids)
+            collection_ids = _normalize_list_param(collection_ids)
+
+            # === BUILD FILTERS — always scoped to agent's configured knowledge ===
+            # Get agent's configured filters from state
+            agent_filters = self.state.get("filters", {}) or {}
+            agent_apps = set(agent_filters.get("apps") or [])
+            agent_kbs = set(agent_filters.get("kb") or [])
+
+            # Start from agent scope (ensure it's a dict, not None)
+            filter_groups = dict(agent_filters) if agent_filters else {}
+
+            # === RESOLVE CONNECTOR IDs ===
+            # Simple logic: if connector_id exists in agent scope, keep it; otherwise use all agent connectors
+            if connector_ids:
+                # Keep only connector IDs that exist in agent scope
+                resolved_apps = [cid for cid in connector_ids if cid in agent_apps]
+                # If nothing matched, fall back to full agent scope
+                filter_groups["apps"] = resolved_apps if resolved_apps else (list(agent_apps) if agent_apps else [])
+            else:
+                # No LLM input — use full agent scope
+                filter_groups["apps"] = list(agent_apps) if agent_apps else []
+
+            # === RESOLVE COLLECTION IDs (KB record groups) ===
+            # Simple logic: if collection_id exists in agent scope, keep it; otherwise use all agent collections
+            if collection_ids:
+                # Keep only collection IDs that exist in agent scope
+                resolved_kbs = [cid for cid in collection_ids if cid in agent_kbs]
+                # If nothing matched, fall back to full agent scope
+                filter_groups["kb"] = resolved_kbs if resolved_kbs else (list(agent_kbs) if agent_kbs else [])
+            else:
+                # No LLM input — use full agent scope
+                filter_groups["kb"] = list(agent_kbs) if agent_kbs else []
 
             # === SEARCH ===
             logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
@@ -169,33 +217,6 @@ class Retrieval:
                 })
 
             search_results = results.get("searchResults", [])
-
-            # === FALLBACK: if app filter returned 0 accessible records, retry without app filter ===
-            # This handles the case where the LLM passes filters.apps for an app that is only
-            # available as a live API toolset (not indexed as a connector). In that case, we
-            # fall back to searching all available indexed sources (e.g. KB).
-            if not search_results and filter_groups and filter_groups.get("apps"):
-                logger_instance.info(
-                    f"No results with app filter {filter_groups.get('apps')} — "
-                    "retrying without app filter (app may not be indexed as a connector)"
-                )
-                fallback_filters = {k: v for k, v in filter_groups.items() if k != "apps"}
-                fallback_results = await retrieval_service.search_with_filters(
-                    queries=[search_query],
-                    org_id=org_id,
-                    user_id=user_id,
-                    limit=adjusted_limit,
-                    filter_groups=fallback_filters,
-                    graph_provider=graph_provider,
-                )
-                if fallback_results and fallback_results.get("status_code", 200) not in [202, 500, 503]:
-                    fallback_search = fallback_results.get("searchResults", [])
-                    if fallback_search:
-                        logger_instance.info(
-                            f"Fallback retrieval (no app filter) returned {len(fallback_search)} results"
-                        )
-                        results = fallback_results
-                        search_results = fallback_search
             logger_instance.info(f"✅ Retrieved {len(search_results)} documents")
 
             if not search_results:
