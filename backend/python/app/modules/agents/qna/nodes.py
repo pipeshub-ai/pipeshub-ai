@@ -2347,8 +2347,9 @@ PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise
 2. **User asks about the conversation itself?** (meta-questions like "what did we discuss", "summarize our conversation") → `can_answer_directly: true`
 3. **User wants to PERFORM an action?** (create/update/delete/modify) → Use appropriate service tools
 4. **User wants data FROM a specific service?**
-   - *Explicit:* names the service ("list Jira issues", "Confluence pages", "my Gmail")
-   - *Implicit:* uses service-specific nouns — **"tickets/issues/bugs/epics/stories/sprints/backlog"** → Jira; **"pages/spaces/wiki"** → Confluence; **"emails/inbox"** → Gmail; **"messages/channels/DMs"** → Slack
+   - *Explicit:* names the service ("list Jira issues", "Confluence pages", "SharePoint sites", "my Gmail")
+   - *Implicit:* uses service-specific nouns — **"tickets/issues/bugs/epics/stories/sprints/backlog"** → Jira; **"pages/spaces/wiki"** → Confluence; **"sites"** → SharePoint; **"emails/inbox"** → Gmail; **"messages/channels/DMs"** → Slack
+   - Note: "pages" can map to either Confluence or SharePoint — prefer the explicitly named service or use context clues
    → Use the matching service tool. **If that service is ALSO indexed (see DUAL-SOURCE APPS), add retrieval in parallel.**
 5. **DEFAULT: Any information query** → Use `retrieval.search_internal_knowledge`
 
@@ -2375,6 +2376,8 @@ Examples of retrieval queries:
 - User uses **service-specific resource nouns** (even without naming the service):
   - `tickets` / `issues` / `bugs` / `epics` / `stories` / `sprints` / `backlog` → **Jira** search/list tool
   - `pages` / `spaces` / `wiki` → **Confluence** search/list tool
+  - `sites` → **SharePoint** search/list tool
+  - Note: `pages` can map to Confluence or SharePoint — prefer explicitly named service or use context
   - `emails` / `inbox` / `drafts` → **Gmail** search tool
   - `messages` / `channels` / `DMs` → **Slack** search tool
 - Tool description matches the user's request
@@ -2623,7 +2626,7 @@ Action: Set can_answer_directly: true, answer from conversation history, NO tool
 
 ## Content Generation for Action Tools
 
-**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `gmail.send`, etc.):**
+**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `sharepoint.create_page`, `sharepoint.update_page`, `gmail.send`, etc.):**
 
 **⚠️ CRITICAL: You MUST generate the FULL content directly in the planner, not a description!**
 
@@ -2635,12 +2638,12 @@ Action: Set can_answer_directly: true, answer from conversation history, NO tool
    - This is the content that should go on the page/in the message
 
 2. **Extract from tool results:**
-   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`)
+   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`, `sharepoint.get_page`)
    - Extract the relevant content from those results
    - Combine with conversation history if needed
 
 3. **Format according to tool requirements:**
-   - **Confluence**: Convert markdown to HTML storage format
+   - **Confluence & SharePoint**: Convert markdown to HTML format
      - `# Title` → `<h1>Title</h1>`
      - `## Section` → `<h2>Section</h2>`
      - `**bold**` → `<strong>bold</strong>`
@@ -2703,6 +2706,7 @@ Generate:
 {outlook_guidance}
 {teams_guidance}
 {github_guidance}
+{sharepoint_guidance}
 
 ## Planning Best Practices
 
@@ -3351,6 +3355,72 @@ This applies equally to start dates, end dates, and recurrence end dates.A wrong
 - When deleting occurrences, batch ALL dates into a SINGLE call (the tool handles them all).
 - `occurrence_dates` must be YYYY-MM-DD format strings.
 """
+SHAREPOINT_GUIDANCE = r"""
+## SharePoint Tools
+
+### Available Tools
+- get_sites — search and list accessible SharePoint sites (returns site_id, name)
+- get_site — full details of a single site by site_id
+- list_drives — document libraries in a site (returns drive_id, name)
+- list_files — files and folders in a library or folder
+- search_files — find files or folders by name/keyword across sites
+- get_file_metadata — file or folder metadata (size, mimeType, dates)
+- get_file_content — read content of a file (parsed text)
+- move_item — move a file or folder to a different folder in the same library
+- create_folder — create a folder in a document library
+- create_word_document — create a Word document (.docx) in a library
+- create_onenote_notebook — create a OneNote notebook in a site
+- search_pages — find SharePoint pages by name/keyword (returns page_id, site_id)
+- get_pages — list all pages in a site
+- get_page — full HTML content of a single page
+- create_page — create a new page (draft by default, publish=true only when user explicitly asks)
+- update_page — edit title or content of an existing page (draft by default, publish=true only when user explicitly asks)
+- find_notebook — locate a OneNote notebook by name within a site
+- list_notebook_pages — list sections and pages inside a notebook
+- get_notebook_page_content — read content of one or more notebook pages
+
+### Dependencies
+- get_sites                  depends on: (none)
+- get_site                   depends on: get_sites
+- list_drives                depends on: get_sites | get_site
+- list_files                 depends on: (get_sites | get_site), list_drives
+- search_files               depends on: (none)
+- get_file_metadata          depends on: search_files | list_files
+- get_file_content           depends on: search_files | list_files
+- move_item                  depends on: list_drives, (list_files | search_files for item_id and destination_folder_id)
+- create_folder              depends on: list_drives
+- create_word_document       depends on: list_drives
+- create_onenote_notebook     depends on: get_sites | get_site
+- get_pages                  depends on: get_sites | get_site
+- get_page                   depends on: search_pages | get_pages
+- create_page                depends on: get_sites | get_site
+- update_page                depends on: search_pages | (get_sites | get_site, get_pages)
+- find_notebook              depends on: search_files (for site_id)
+- list_notebook_pages        depends on: find_notebook
+- get_notebook_page_content   depends on: list_notebook_pages
+
+### Critical Rules
+
+**Placeholders — underscore tool names only**
+Use underscores in placeholder tool names, never dots.
+- ✅ `{{sharepoint_search_files.results[0].site_id}}`
+- ❌ `{{sharepoint.search_files.results[0].site_id}}`
+
+**Page ID field is `page_id` not `id`**
+From search_pages and list_notebook_pages, the field name is `page_id`. No `.data` wrapper.
+
+**Never use get_file_content for .one or .onetoc2 files**
+Use find_notebook → list_notebook_pages → get_notebook_page_content instead.
+
+**move_item — item_id and destination_folder_id must be different**
+When two search_files calls exist in the same plan, results are stored as `sharepoint_search_files` and `sharepoint_search_files_2`. Use different placeholders for source and destination.
+
+**OneNote — find_notebook handling**
+- If `resolved: true` → use `{{sharepoint_find_notebook.site_id}}` and `{{sharepoint_find_notebook.notebook_id}}` immediately for list_notebook_pages
+- If `ambiguous: true` → stop, show candidates list to user, wait for their choice. Do NOT call list_notebook_pages or get_notebook_page_content in the same turn.
+- After user chooses a notebook: extract site_id and notebook_id from the chosen candidate (from conversation or use `{{sharepoint_find_notebook.candidates.N.site_id}}` where N=0,1,2...), then call list_notebook_pages → get_notebook_page_content to complete the task.
+"""
+
 PLANNER_USER_TEMPLATE = """Query: {query}
 
 Plan the tools. Return only valid JSON."""
@@ -3511,6 +3581,7 @@ async def planner_node(
     outlook_guidance = OUTLOOK_GUIDANCE if _has_outlook_tools(state) else ""
     teams_guidance = TEAMS_GUIDANCE if _has_teams_tools(state) else ""
     github_guidance = GITHUB_GUIDANCE if _has_github_tools(state) else ""
+    sharepoint_guidance = SHAREPOINT_GUIDANCE if _has_sharepoint_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
@@ -3520,7 +3591,8 @@ async def planner_node(
         onedrive_guidance=onedrive_guidance,
         outlook_guidance=outlook_guidance,
         teams_guidance=teams_guidance,
-        github_guidance=github_guidance
+        github_guidance=github_guidance,
+        sharepoint_guidance=sharepoint_guidance
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -4564,6 +4636,10 @@ def _has_github_tools(state: ChatState) -> bool:
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "github" in ts.get("name", "").lower() for ts in agent_toolsets)
 
+def _has_sharepoint_tools(state: ChatState) -> bool:
+    """Check if SharePoint tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "sharepoint" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     """
@@ -7735,6 +7811,8 @@ Use this decision tree to choose the right approach:
     # ── Timezone / current time context ──────────────────────────────────────
     if _has_teams_tools(state):
         base_prompt += "\n" + TEAMS_GUIDANCE
+    if _has_sharepoint_tools(state):
+        base_prompt += "\n" + SHAREPOINT_GUIDANCE
 
     # Add timezone / current time context if provided
     timezone = state.get("timezone")
