@@ -56,7 +56,7 @@ class ChatState(TypedDict):
     user_id: str
     user_email: str
     send_user_info: bool
-    conversation_id: Optional[str]
+    conversation_id: str | None
 
     # Enhanced features
     system_prompt: str | None  # User-defined system prompt
