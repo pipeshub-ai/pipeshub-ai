@@ -15,7 +15,7 @@ import logging
 from enum import Enum
 from typing import Any, cast
 
-from pydantic import BaseModel, Field  # type: ignore
+from pydantic import BaseModel, Field
 from typing_extensions import override
 
 from app.config.configuration_service import ConfigurationService
@@ -334,7 +334,7 @@ class GongClient(IClient):
                 oauth_config_id = connector_config.auth.oauthConfigId
                 if oauth_config_id and not (client_id and client_secret):
                     try:
-                        oauth_configs_raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
+                        oauth_configs_raw = await config_service.get_config(
                             "/services/oauth/gong", default=[]
                         )
                         oauth_configs: list[Any] = (
@@ -349,14 +349,10 @@ class GongClient(IClient):
                                     dict[str, Any], c.get("config", {})
                                 )
                                 client_id = str(
-                                    shared.get("clientId")
-                                    or shared.get("client_id")
-                                    or client_id
+                                    shared.get("clientId", shared.get("client_id", client_id))
                                 )
                                 client_secret = str(
-                                    shared.get("clientSecret")
-                                    or shared.get("client_secret")
-                                    or client_secret
+                                    shared.get("clientSecret", shared.get("client_secret", client_secret))
                                 )
                                 break
                     except Exception as e:
@@ -457,7 +453,7 @@ class GongClient(IClient):
                     client_id and client_secret
                 ):
                     try:
-                        oauth_configs_raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
+                        oauth_configs_raw = await config_service.get_config(
                             "/services/oauth/gong", default=[]
                         )
                         oauth_configs: list[Any] = (
@@ -472,14 +468,10 @@ class GongClient(IClient):
                                     dict[str, Any], c.get("config", {})
                                 )
                                 client_id = str(
-                                    shared.get("clientId")
-                                    or shared.get("client_id")
-                                    or client_id
+                                    shared.get("clientId", shared.get("client_id", client_id))
                                 )
                                 client_secret = str(
-                                    shared.get("clientSecret")
-                                    or shared.get("client_secret")
-                                    or client_secret
+                                    shared.get("clientSecret", shared.get("client_secret", client_secret))
                                 )
                                 break
                     except Exception as e:
@@ -530,7 +522,7 @@ class GongClient(IClient):
     ) -> dict[str, Any]:
         """Fetch connector config from etcd for Gong."""
         try:
-            raw = await config_service.get_config(  # type: ignore[reportUnknownMemberType]
+            raw = await config_service.get_config(
                 f"/services/connectors/{connector_instance_id}/config"
             )
             if not raw:

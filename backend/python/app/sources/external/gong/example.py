@@ -79,10 +79,16 @@ def print_result(name: str, response: GongResponse, show_data: bool = True):
                     if isinstance(items, list):
                         print(f"   Found {len(items)} {key}.")
                         if items:
-                            print(f"   Sample: {json.dumps(items[0], indent=2, default=str)[:400]}...")
+                            sample = json.dumps(items[0], indent=2, default=str)
+                            if len(sample) > 400:
+                                sample = sample[:400] + "... (truncated)"
+                            print(f"   Sample: {sample}")
                     return
             # Generic response
-            print(f"   Data: {json.dumps(data, indent=2, default=str)[:500]}...")
+            data_str = json.dumps(data, indent=2, default=str)
+            if len(data_str) > 500:
+                data_str = data_str[:500] + "... (truncated)"
+            print(f"   Data: {data_str}")
     else:
         print(f"  {name}: Failed")
         print(f"   Error: {response.error}")
@@ -133,7 +139,6 @@ async def main() -> None:
             customer_base = token_response.get("api_base_url_for_customer")
             if customer_base:
                 base_url = customer_base.rstrip("/") + "/v2"
-                print(f"  Using customer API base: {base_url}")
 
             config = GongOAuthConfig(
                 access_token=access_token,
@@ -156,11 +161,11 @@ async def main() -> None:
         )
 
     if config is None:
-        print("  No valid authentication method found.")
-        print("   Please set one of the following:")
-        print("   - GONG_CLIENT_ID and GONG_CLIENT_SECRET (for OAuth2)")
-        print("   - GONG_ACCESS_KEY and GONG_ACCESS_KEY_SECRET (for Basic Auth)")
-        return
+        raise ValueError(
+            "No valid authentication method found. Please set one of the following: "
+            "GONG_CLIENT_ID and GONG_CLIENT_SECRET (for OAuth2), or "
+            "GONG_ACCESS_KEY and GONG_ACCESS_KEY_SECRET (for Basic Auth)"
+        )
 
     client = GongClient.build_with_config(config)
     data_source = GongDataSource(client)
@@ -227,9 +232,7 @@ async def main() -> None:
     finally:
         # Cleanup: Close the HTTP client session
         print("\nClosing client connection...")
-        inner_client = client.get_client()
-        if hasattr(inner_client, "close"):
-            await inner_client.close()
+        await client.get_client().close()
 
     print("\n" + "=" * 80)
     print("  All Gong API operations tested!")

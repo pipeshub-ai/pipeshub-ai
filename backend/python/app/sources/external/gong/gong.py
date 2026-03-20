@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.sources.client.gong.gong import GongClient, GongResponse
+from app.sources.client.gong.gong import (
+    GongClient,
+    GongResponse,
+    GongRESTClientViaBasicAuth,
+    GongRESTClientViaOAuth,
+)
 from app.sources.client.http.http_request import HTTPRequest
 
 # HTTP status code constant
@@ -51,11 +56,8 @@ class GongDataSource:
             client: GongClient instance with configured authentication
         """
         self._client = client
-        self.http = client.get_client()
-        try:
-            self.base_url = self.http.get_base_url().rstrip('/')
-        except AttributeError as exc:
-            raise ValueError('HTTP client does not have get_base_url method') from exc
+        self.http: GongRESTClientViaOAuth | GongRESTClientViaBasicAuth = client.get_client()
+        self.base_url = self.http.get_base_url().rstrip('/')
 
     def get_data_source(self) -> 'GongDataSource':
         """Return the data source instance."""
@@ -90,12 +92,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_calls" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_calls")
@@ -120,12 +122,12 @@ class GongDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_call" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_call")
@@ -163,12 +165,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_calls_extensive" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_calls_extensive")
@@ -252,12 +254,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed add_call" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute add_call")
@@ -286,12 +288,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_call_transcripts" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_call_transcripts")
@@ -321,12 +323,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_manual_crm_associations" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_manual_crm_associations")
@@ -358,12 +360,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed add_call_recording" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute add_call_recording")
@@ -397,12 +399,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_call_sharing" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_call_sharing")
@@ -437,12 +439,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_users" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_users")
@@ -467,12 +469,12 @@ class GongDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_user" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_user")
@@ -497,12 +499,12 @@ class GongDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_user_history" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_user_history")
@@ -541,12 +543,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_users_extensive" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_users_extensive")
@@ -575,12 +577,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_aggregate_activity" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_aggregate_activity")
@@ -613,12 +615,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_aggregate_activity_by_period" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_aggregate_activity_by_period")
@@ -651,12 +653,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_activity_day_by_day" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_activity_day_by_day")
@@ -689,12 +691,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_answered_scorecards" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_answered_scorecards")
@@ -723,12 +725,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_interaction_stats" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_interaction_stats")
@@ -762,12 +764,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_library_folders" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_library_folders")
@@ -800,12 +802,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_library_folder_calls" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_library_folder_calls")
@@ -843,12 +845,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_meetings" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_meetings")
@@ -878,12 +880,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_scorecards" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_scorecards")
@@ -904,12 +906,12 @@ class GongDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_workspaces" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_workspaces")
@@ -939,12 +941,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_trackers" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_trackers")
@@ -974,12 +976,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_smart_trackers" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_smart_trackers")
@@ -1013,12 +1015,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_crm_objects" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_crm_objects")
@@ -1050,12 +1052,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed upload_crm_data" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute upload_crm_data")
@@ -1087,12 +1089,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed upload_crm_schema" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute upload_crm_schema")
@@ -1121,12 +1123,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_crm_integration" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute delete_crm_integration")
@@ -1162,12 +1164,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed register_crm_integration" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute register_crm_integration")
@@ -1199,12 +1201,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_request_status" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_request_status")
@@ -1238,12 +1240,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed find_people_by_email_or_phone" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute find_people_by_email_or_phone")
@@ -1272,12 +1274,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed purge_email_address" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute purge_email_address")
@@ -1306,12 +1308,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed purge_phone_number" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute purge_phone_number")
@@ -1344,12 +1346,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_content_shared_with_external" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_content_shared_with_external")
@@ -1378,12 +1380,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed upload_customer_engagement" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute upload_customer_engagement")
@@ -1413,12 +1415,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_flows" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_flows")
@@ -1447,12 +1449,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed upload_digital_interactions" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute upload_digital_interactions")
@@ -1473,12 +1475,12 @@ class GongDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_permission_profiles" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_permission_profiles")
@@ -1503,12 +1505,12 @@ class GongDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_permission_profile" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_permission_profile")
@@ -1540,12 +1542,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed create_permission_profile" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute create_permission_profile")
@@ -1581,12 +1583,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed update_permission_profile" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute update_permission_profile")
@@ -1611,12 +1613,12 @@ class GongDataSource:
                 url=url,
                 headers={"Content-Type": "application/json"},
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed delete_permission_profile" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute delete_permission_profile")
@@ -1646,12 +1648,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_company_users" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_company_users")
@@ -1680,12 +1682,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_daily_briefs" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_daily_briefs")
@@ -1722,12 +1724,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 body=body,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed get_emails_extensive" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute get_emails_extensive")
@@ -1765,12 +1767,12 @@ class GongDataSource:
                 headers={"Content-Type": "application/json"},
                 query=query_params,
             )
-            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
             return GongResponse(
                 success=response.status < HTTP_ERROR_THRESHOLD,
                 data=response_data,
-                message="Successfully executed list_forecast_submissions" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+                message=None if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
             )
         except Exception as e:
             return GongResponse(success=False, error=str(e), message="Failed to execute list_forecast_submissions")
