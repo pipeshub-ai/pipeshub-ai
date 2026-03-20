@@ -2403,6 +2403,7 @@ CLICKUP_GUIDANCE = r"""
 - When creating a task as a subtask, pass the parent task_id in the parent field. The list_id must be the same list the parent task belongs to (get it from get_task(parent_id)).
 - Never fabricate IDs — always obtain team_id, space_id, folder_id, list_id, task_id, doc_id, page_id, checklist_id, checklist_item_id from a prior tool call or explicit user input.
 - get_authorized_user is the source for the current user's id — use it when the user says "me", "my tasks", or "assign to me".
+"""
 MARIADB_GUIDANCE = r"""
 ## MariaDB-Specific Guidance
 
