@@ -58,7 +58,6 @@ import { Org } from '../../user_management/schema/org.schema';
 import { Users } from '../../user_management/schema/users.schema';
 import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
-import { Users } from '../../user_management/schema/users.schema';
 
 const {
   LOGIN,

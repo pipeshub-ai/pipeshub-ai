@@ -247,8 +247,7 @@ export class AuthMiddleware {
         const orgId = decoded?.orgId;
 
         this.logger.info(`userId: ${userId}, orgId: ${orgId}, scope: ${scope}`);
-
-        if (userId && orgId && scope === TokenScopes.PASSWORD_RESET || scope === TokenScopes.VALIDATE_EMAIL) {
+        if (userId && orgId && (scope === TokenScopes.PASSWORD_RESET || scope === TokenScopes.VALIDATE_EMAIL)) {
           let userActivity: IUserActivity | null = null;
           try {
             userActivity = await UserActivities.findOne({

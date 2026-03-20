@@ -27,12 +27,11 @@ export function EmailChangeRedirect() {
     const hasCalledApi = useRef(false);
     const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
     const [errorMessage, setErrorMessage] = useState<string>('');
+    const token = searchParams.get('token');
 
     useEffect(() => {
-        const token = searchParams.get('token');
-
         if (!token) {
-            if (status !== 'success') setStatus('error');
+            setStatus('error');
             setErrorMessage('Token is missing in url');
             return;
         }
@@ -57,7 +56,7 @@ export function EmailChangeRedirect() {
         };
 
         validateEmailChange();
-    }, []);
+    }, [token]);
 
 
 
