@@ -1,10 +1,17 @@
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
-from kiota_serialization_json.json_serialization_writer import JsonSerializationWriter  # type: ignore
-from msgraph.generated.sites.item.pages.pages_request_builder import PagesRequestBuilder  # type: ignore
+# JSON-serializable value produced by _serialize_response (avoids Any)
+_JsonSerValue = dict[str, object] | list[object] | str | int | float | bool | None
+
+from kiota_serialization_json.json_serialization_writer import (
+    JsonSerializationWriter,  # type: ignore
+)
+from msgraph.generated.sites.item.pages.pages_request_builder import (
+    PagesRequestBuilder,  # type: ignore
+)
 from pydantic import BaseModel, Field
 
 from app.agents.tools.config import ToolCategory
@@ -157,7 +164,7 @@ class ListNotebookPagesInput(BaseModel):
 class GetNotebookPageContentInput(BaseModel):
     """Get HTML/text content for selected OneNote pages. Use page_ids from list_notebook_pages."""
     site_id: str = Field(description="SharePoint site ID")
-    page_ids: List[str] = Field(description="List of page IDs (from list_notebook_pages)", min_length=1)
+    page_ids: list[str] = Field(description="List of page IDs (from list_notebook_pages)", min_length=1)
 
 
 # ---------------------------------------------------------------------------
@@ -250,18 +257,19 @@ class SharePoint:
         """Return a standardised error tuple."""
         error_msg = str(error).lower()
 
-        if isinstance(error, AttributeError):
-            if "client" in error_msg or "sites" in error_msg:
-                logger.error(
+        if isinstance(error, AttributeError) and (
+            "client" in error_msg or "sites" in error_msg
+        ):
+            logger.error(
                     f"SharePoint client not properly initialised – authentication may be required: {error}"
                 )
-                return False, json.dumps({
-                    "error": (
-                        "SharePoint toolset is not authenticated. "
-                        "Please complete the OAuth flow first. "
-                        "Go to Settings > Toolsets to authenticate your SharePoint account."
-                    )
-                })
+            return False, json.dumps({
+                "error": (
+                    "SharePoint toolset is not authenticated. "
+                    "Please complete the OAuth flow first. "
+                    "Go to Settings > Toolsets to authenticate your SharePoint account."
+                )
+            })
 
         if (
             isinstance(error, ValueError)
@@ -283,7 +291,7 @@ class SharePoint:
         return False, json.dumps({"error": str(error)})
 
     @staticmethod
-    def _serialize_response(response_obj: Any) -> Any:
+    def _serialize_response(response_obj: object) -> _JsonSerValue:
         """Recursively convert a Graph SDK response object to a JSON-serialisable dict.
 
         Kiota model objects store their properties in an internal backing store.
@@ -316,7 +324,7 @@ class SharePoint:
             try:
                 backing_store = getattr(response_obj, "backing_store", None)
                 if backing_store is not None and hasattr(backing_store, "enumerate_"):
-                    result: Dict[str, Any] = {}
+                    result: dict[str, object] = {}
                     for key, value in backing_store.enumerate_():
                         if not str(key).startswith("_"):
                             try:
@@ -361,9 +369,9 @@ class SharePoint:
 
         return result if result else str(response_obj)
 
-    def _extract_collection(self, data: Any) -> List[Any]:
+    def _extract_collection(self, data: object) -> list[_JsonSerValue]:
         """Extract and serialize a collection from a Graph SDK response."""
-        items: List[Any] = []
+        items: list[_JsonSerValue] = []
         if isinstance(data, dict):
             raw = data.get("value", [])
             items = [self._serialize_response(item) for item in raw]
@@ -381,12 +389,12 @@ class SharePoint:
                 items = [serialized]
         return items
 
-    def _extract_page_html_content(self, page_data: Dict[str, Any]) -> str:
+    def _extract_page_html_content(self, page_data: dict[str, Any]) -> str:
         """Extract HTML content from page canvasLayout webparts."""
         html_parts = []
         canvas_layout = page_data.get("canvasLayout") or {}
         horizontal_sections = canvas_layout.get("horizontalSections") or []
-        
+
         for section in horizontal_sections:
             if not isinstance(section, dict):
                 continue
@@ -402,7 +410,7 @@ class SharePoint:
                     inner_html = webpart.get("innerHtml")
                     if inner_html:
                         html_parts.append(inner_html)
-        
+
         return "\n\n".join(html_parts) if html_parts else ""
 
     @staticmethod
@@ -563,12 +571,12 @@ class SharePoint:
 
             response = await graph.sites.by_site_id(site_id).pages.get(request_configuration=config)
             items = self._extract_collection(response)
-            
+
             # Normalize: rename 'id' to 'page_id' for consistency
             for item in items:
                 if isinstance(item, dict) and "id" in item and "page_id" not in item:
                     item["page_id"] = item["id"]
-            
+
             logger.info(f"✅ Retrieved {len(items)} pages from site")
             return True, json.dumps({
                 "pages": items,
@@ -576,7 +584,7 @@ class SharePoint:
                 "value": items,
                 "count": len(items),
             })
-            
+
         except Exception as e:
             error_str = str(e).lower()
             # 404 means site has no pages or pages API not available - return empty list
@@ -1199,6 +1207,7 @@ class SharePoint:
         site_id: str,
         title: str,
         content_html: str,
+        *,
         publish: Optional[bool] = False,
     ) -> tuple[bool, str]:
         """
@@ -1261,6 +1270,7 @@ class SharePoint:
         page_id: str,
         title: Optional[str] = None,
         content_html: Optional[str] = None,
+        *,
         publish: Optional[bool] = False,
     ) -> tuple[bool, str]:
         """
@@ -1300,7 +1310,7 @@ class SharePoint:
             except Exception:
                 pass
 
-            payload: Dict[str, Any] = {
+            payload: dict[str, Any] = {
                 "message": f"Page updated {'and published ' if published else '(draft) '}successfully",
                 "page": page_data,
                 "page_id": page_id,
@@ -1493,7 +1503,7 @@ class SharePoint:
             )
             if response.success:
                 data = response.data or {}
-                result: Dict[str, Any] = {
+                result: dict[str, Any] = {
                     "message": response.message or "Item moved successfully",
                     "item_id": data.get("id") or item_id,
                     "name": data.get("name"),
@@ -1556,7 +1566,7 @@ class SharePoint:
                 })
             notebooks = (list_resp.data or {}).get("results") or (list_resp.data or {}).get("notebooks") or []
             query_norm = self._normalize_notebook_name(notebook_query)
-            matches: List[Dict[str, Any]] = []
+            matches: list[dict[str, Any]] = []
             for nb in notebooks:
                 if not isinstance(nb, dict):
                     continue
@@ -1636,8 +1646,8 @@ class SharePoint:
             if not sec_resp.success:
                 return False, json.dumps({"error": sec_resp.error or "Failed to list sections"})
             sections_data = (sec_resp.data or {}).get("results") or (sec_resp.data or {}).get("sections") or []
-            sections_with_pages: List[Dict[str, Any]] = []
-            flat_pages: List[Dict[str, Any]] = []
+            sections_with_pages: list[dict[str, Any]] = []
+            flat_pages: list[dict[str, Any]] = []
             for sec in sections_data:
                 if not isinstance(sec, dict):
                     continue
@@ -1652,7 +1662,7 @@ class SharePoint:
                     skip=0,
                 )
                 raw_pages = (page_resp.data.get("results") or page_resp.data.get("pages") or []) if (page_resp.success and page_resp.data) else []
-                section_pages: List[Dict[str, Any]] = []
+                section_pages: list[dict[str, Any]] = []
                 for p in raw_pages:
                     if not isinstance(p, dict):
                         continue
@@ -1704,14 +1714,14 @@ class SharePoint:
     async def get_notebook_page_content(
         self,
         site_id: str,
-        page_ids: List[str],
+        page_ids: list[str],
     ) -> tuple[bool, str]:
         """Get content for selected OneNote pages."""
         try:
             cap = min(len(page_ids), 20)
             page_ids = page_ids[:cap]
-            results: List[Dict[str, Any]] = []
-            failed_page_ids: List[str] = []
+            results: list[dict[str, Any]] = []
+            failed_page_ids: list[str] = []
             for pid in page_ids:
                 content_resp = await self.client.get_onenote_page_content(
                     site_id=site_id,
@@ -1722,7 +1732,7 @@ class SharePoint:
                     results.append(content_resp.data)
                 else:
                     failed_page_ids.append(pid)
-            out: Dict[str, Any] = {
+            out: dict[str, Any] = {
                 "pages": results,
                 "count": len(results),
                 "usage_hint": "Use these page contents to answer the user; do not call get_file_content for .one or .onetoc2.",
@@ -1775,7 +1785,7 @@ class SharePoint:
             if response.success:
                 data = response.data or {}
                 logger.info(f"✅ create_onenote_notebook tool: '{notebook_name}' created in site {site_id}")
-                result: Dict[str, Any] = {
+                result: dict[str, Any] = {
                     "message": f"OneNote notebook '{notebook_name}' created successfully",
                     "notebook_id": data.get("notebook_id"),
                     "notebook_name": data.get("notebook_name"),

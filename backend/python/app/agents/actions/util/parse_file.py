@@ -75,9 +75,7 @@ class FileContentParser:
     ) -> tuple[bool, str]:
         try:
             doc = fitz.open(stream=raw, filetype="pdf")
-            pages_text = []
-            for page in doc:
-                pages_text.append(page.get_text() or "")
+            pages_text = [page.get_text() or "" for page in doc]
             doc.close()
             text = "\n\n".join(pages_text)
             text, truncated = self._truncate_text(text, max_bytes)
@@ -106,10 +104,10 @@ class FileContentParser:
                     rows = []
                     for ws in wb.worksheets:
                         rows.append(f"=== Sheet: {ws.title} ===")
-                        for row in ws.iter_rows(values_only=True):
-                            rows.append(
-                                "\t".join(str(c) if c is not None else "" for c in row)
-                            )
+                        rows.extend(
+                            "\t".join(str(c) if c is not None else "" for c in row)
+                            for row in ws.iter_rows(values_only=True)
+                        )
                     text = "\n".join(rows)
                     fmt_label = "xlsx"
                 elif "ppt/presentation.xml" in names:
