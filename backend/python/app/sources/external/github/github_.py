@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import datetime
+import difflib
 from collections.abc import Sequence
-from typing import List
+from typing import List, Optional
 
 from github import (
     Github,  # type: ignore
@@ -28,6 +30,7 @@ from github.NamedUser import NamedUser  # type: ignore
 from github.Organization import Organization  # type: ignore
 from github.PullRequest import PullRequest  # type: ignore
 from github.PullRequestComment import PullRequestComment  # type: ignore
+from github.PullRequestReview import PullRequestReview  # type: ignore
 from github.RateLimit import RateLimit  # type: ignore
 from github.Repository import Repository  # type: ignore
 from github.Tag import Tag  # type: ignore
@@ -66,6 +69,11 @@ class GitHubDataSource:
     def _not_none(**params: object) -> dict[str, object]:
         return {k: v for k, v in params.items() if v is not None}
 
+    @staticmethod
+    def _issues_only(items: list) -> list:
+        """Filter to items that are issues (pull_request is None), excluding PRs."""
+        return [i for i in items if getattr(i, "pull_request", None) is None]
+
 
     def get_authenticated(self) -> GitHubResponse[AuthenticatedUser]:
         """Return the authenticated user."""
@@ -93,12 +101,39 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    def list_user_repos(self, user: str, type: str = "owner") -> GitHubResponse[list[Repository]]:
-        """List repositories for a given user. `type` in {'all','owner','member'}."""
+    def get_owner(self, login: str, kind: str = "user") -> GitHubResponse[NamedUser | Organization]:
+        """Get a user or organization by login (the 'owner' of repos). Use login='me' for the authenticated user."""
         try:
-            u = self._sdk.get_user()
-            repos = list(u.get_repos(type=type))
+            if kind == "organization":
+                obj = self._sdk.get_organization(login)
+            else:
+                obj = self._sdk.get_user() if (login or "").strip().lower() == "me" else self._sdk.get_user(login)
+            return GitHubResponse(success=True, data=obj)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def list_user_repos(
+        self,
+        user: Optional[str]=None,
+        type: str = "owner",
+        per_page: Optional[int] = None,
+        page: Optional[int] = None,
+    ) -> GitHubResponse[list[Repository]]:
+        """List repositories for a given user. When both per_page and page are omitted, returns all repos. When either is passed, returns one page (default 10 per page, max 50). Pass the login from get_owner(owner='me') result; do not pass 'me' here."""
+        try:
+            # passing user name changes base url fetches only public repos although authenticated
+            u = self._sdk.get_user(user) if user else self._sdk.get_user()
+            paginated = u.get_repos(type=type)
+            if per_page is None and page is None:
+                repos = list(paginated)
+                return GitHubResponse(success=True, data=repos)
+            _per_page = 10 if per_page is None else min(50, max(1, per_page))
+            _page = 1 if page is None else max(1, page)
+            if hasattr(paginated, "get_page"):
+                page_items = paginated.get_page(_page - 1)
+            else:
+                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
+            repos = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
             return GitHubResponse(success=True, data=repos)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
@@ -133,16 +168,79 @@ class GitHubDataSource:
             return GitHubResponse(success=False, error=str(e))
 
 
-    def list_issues(self, owner: str, repo: str, state: str = "open", labels: Sequence[str] | None = None, assignee: str | None = None,since:str |None = None) -> GitHubResponse[list[Issue]]:
-        """List issues with filters."""
+    def list_issues(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        labels: Sequence[str] | None = None,
+        assignee: str | None = None,
+        since: str | None = None,
+        per_page: Optional[int] = None,
+        page: Optional[int] = None,
+    ) -> GitHubResponse[list[Issue]]:
+        """List issues with filters. When both per_page and page are None (e.g. from connector), returns all issues. Otherwise returns one page (default 10 per page, max 50)."""
         try:
             r = self._repo(owner, repo)
             params = self._not_none(labels=labels, assignee=assignee, since=since)
-            issues = list(r.get_issues(state=state, **params))
+            paginated = r.get_issues(state=state, **params)
+            if per_page is None and page is None:
+                issues = list(paginated)
+                return GitHubResponse(success=True, data=issues)
+            _per_page = 10 if per_page is None else min(50, max(1, per_page))
+            _page = 1 if page is None else max(1, page)
+            if hasattr(paginated, "get_page"):
+                page_items = paginated.get_page(_page - 1)
+            else:
+                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
+            issues = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
             return GitHubResponse(success=True, data=issues)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
+    def list_issues_only(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        labels: Sequence[str] | None = None,
+        assignee: str | None = None,
+        since: str | None = None,
+        per_page: int = 10,
+        page: int = 1,
+    ) -> GitHubResponse[list[Issue]]:
+        """List only issues (exclude PRs). Always returns one page (default 10 per page, max 50) by over-fetching API pages and filtering out PRs."""
+        try:
+            r = self._repo(owner, repo)
+            params = self._not_none(labels=labels, assignee=assignee, since=since)
+            paginated = r.get_issues(state=state, **params)
+
+            _per_page = min(50, max(1, per_page))
+            _page = max(1, page)
+            skip = (_page - 1) * _per_page
+            needed = skip + _per_page
+            accumulator: list = []
+            api_page_index = 0
+            api_page_size = 30
+            while len(accumulator) < needed:
+                if hasattr(paginated, "get_page"):
+                    raw = paginated.get_page(api_page_index)
+                else:
+                    all_items = list(paginated)
+                    filtered_all = self._issues_only(all_items)
+                    result = filtered_all[skip : skip + _per_page]
+                    return GitHubResponse(success=True, data=result)
+                if not raw:
+                    break
+                batch = raw if isinstance(raw, list) else list(raw)
+                accumulator.extend(self._issues_only(batch))
+                if len(batch) < api_page_size:
+                    break
+                api_page_index += 1
+            result = accumulator[skip : skip + _per_page]
+            return GitHubResponse(success=True, data=result)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
 
     def get_issue(self, owner: str, repo: str, number: int) -> GitHubResponse[Issue]:
         """Get a single issue."""
@@ -160,6 +258,30 @@ class GitHubDataSource:
             r = self._repo(owner, repo)
             params = self._not_none(body=body, assignees=assignees, labels=labels)
             issue = r.create_issue(title=title, **params)
+            return GitHubResponse(success=True, data=issue)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+
+    def update_issue(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        title: str | None = None,
+        body: str | None = None,
+        state: str | None = None,
+        assignees: Sequence[str] | None = None,
+        labels: Sequence[str] | None = None,
+    ) -> GitHubResponse[Issue]:
+        """Update an existing issue. Only pass fields to change (title, body, state, assignees, labels)."""
+        try:
+            r = self._repo(owner, repo)
+            issue = r.get_issue(number)
+            params = self._not_none(title=title, body=body, state=state, assignees=assignees, labels=labels)
+            if not params:
+                return GitHubResponse(success=True, data=issue)
+            issue.edit(**params)
             return GitHubResponse(success=True, data=issue)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
@@ -200,7 +322,7 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-    def get_issue_comment(self, owner: str, repo: str,number:int, comment_id: int) -> GitHubResponse[IssueComment]:
+    def get_issue_comment(self, owner: str, repo: str, number: int, comment_id: int) -> GitHubResponse[IssueComment]:
         """Get a single issue comment by ID."""
         try:
             r = self._repo(owner, repo)
@@ -210,12 +332,52 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-    def list_pulls(self, owner: str, repo: str, state: str = "open", head: str | None = None, base: str | None = None) -> GitHubResponse[list[PullRequest]]:
-        """List PRs."""
+    def create_issue_comment(self, owner: str, repo: str, number: int, body: str) -> GitHubResponse[IssueComment]:
+        """Create a comment on an issue."""
+        try:
+            r = self._repo(owner, repo)
+            issue = r.get_issue(number)
+            comment = issue.create_comment(body)
+            return GitHubResponse(success=True, data=comment)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def edit_issue_comment(self, owner: str, repo: str, number: int, comment_id: int, body: str) -> GitHubResponse[IssueComment]:
+        """Edit an existing issue comment."""
+        try:
+            r = self._repo(owner, repo)
+            issue = r.get_issue(number)
+            comment = issue.get_comment(id=comment_id)
+            comment.edit(body)
+            return GitHubResponse(success=True, data=comment)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def list_pulls(
+        self,
+        owner: str,
+        repo: str,
+        state: str = "open",
+        head: str | None = None,
+        base: str | None = None,
+        per_page: Optional[int] = None,
+        page: Optional[int] = None,
+    ) -> GitHubResponse[list[PullRequest]]:
+        """List PRs. When both per_page and page are None (e.g. from connector), returns all PRs. Otherwise returns one page (default 10 per page, max 50)."""
         try:
             r = self._repo(owner, repo)
             params = self._not_none(head=head, base=base)
-            pulls = list(r.get_pulls(state=state, **params))
+            paginated = r.get_pulls(state=state, **params)
+            if per_page is None and page is None:
+                pulls = list(paginated)
+                return GitHubResponse(success=True, data=pulls)
+            _per_page = 10 if per_page is None else min(50, max(1, per_page))
+            _page = 1 if page is None else max(1, page)
+            if hasattr(paginated, "get_page"):
+                page_items = paginated.get_page(_page - 1)
+            else:
+                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
+            pulls = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
             return GitHubResponse(success=True, data=pulls)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
@@ -240,14 +402,316 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-    def get_pull_file_changes(self, owner: str, repo: str, number: int) -> GitHubResponse[list[File]]:
-        """Get file changes of a PR."""
+    def get_pull_file_changes(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        fetch_full_content: bool = True,
+        max_changes_per_file: int = 10000,  # NEW: Skip files with excessive changes
+        max_diff_lines: int = 10000,        # NEW: Truncate very long diffs
+        context_lines: int = 2,            # NEW: Configurable context (GitHub default)
+    ) -> GitHubResponse[list[File]]:
+        """
+        Get file changes of a PR with complete diffs and safety limits.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            number: Pull request number
+            fetch_full_content: If True, fetches complete diffs for truncated files
+            max_changes_per_file: Skip files with more than this many total changes
+                                (default 3000). These are likely full rewrites or
+                                generated files that would overflow context.
+            max_diff_lines: Truncate diffs longer than this many lines (default 5000)
+                        to prevent context overflow on massive refactors.
+            context_lines: Number of context lines around each change (default 3,
+                        standard GitHub format).
+
+        Returns:
+            GitHubResponse containing list of File objects with complete diffs,
+            respecting safety limits to prevent context overflow.
+
+        Safety Features:
+            - Skips files with >max_changes_per_file total changes
+            - Truncates diffs longer than max_diff_lines
+            - Uses minimal context to reduce token usage
+            - Logs warnings for skipped/truncated files
+        """
         try:
             r = self._repo(owner, repo)
             pr = r.get_pull(number)
             files = list(pr.get_files())
-            # file_dicts = [file.raw_data for file in files]
-            return GitHubResponse(success=True, data=files)
+
+            # Fast path: return as-is if full content fetching disabled
+            if not fetch_full_content:
+                return GitHubResponse(success=True, data=files)
+
+            # Process each file with safety checks
+            enhanced_files = []
+            skipped_count = 0
+            truncated_count = 0
+
+            for file_obj in files:
+                raw_data = file_obj.raw_data if hasattr(file_obj, 'raw_data') else {}
+
+                filename = raw_data.get("filename", "")
+                status = raw_data.get("status", "")
+                patch = raw_data.get("patch", "")
+                additions = raw_data.get("additions", 0)
+                deletions = raw_data.get("deletions", 0)
+                total_changes = additions + deletions
+
+                # SAFETY CHECK 1: Skip files with excessive changes
+                if total_changes > max_changes_per_file:
+                    import logging
+                    logging.warning(
+                        f"SKIP: {filename} has {total_changes} changes "
+                        f"(exceeds limit of {max_changes_per_file}). "
+                        f"Likely a full rewrite or generated file."
+                    )
+
+                    # Add explanatory note in the patch
+                    enhanced_raw_data = dict(raw_data)
+                    enhanced_raw_data["patch"] = (
+                        f"[SKIPPED: File has {total_changes:,} total changes "
+                        f"(+{additions:,} -{deletions:,}), exceeding safety limit of "
+                        f"{max_changes_per_file:,}. This is likely a complete rewrite, "
+                        f"generated file, or vendor dependency. Manual review recommended.]"
+                    )
+                    enhanced_raw_data["_skipped_large_file"] = True
+                    enhanced_raw_data["_skip_reason"] = "excessive_changes"
+
+                    if hasattr(file_obj, '_rawData'):
+                        file_obj._rawData = enhanced_raw_data
+                    elif hasattr(file_obj, 'raw_data'):
+                        object.__setattr__(file_obj, '_raw_data', enhanced_raw_data)
+
+                    enhanced_files.append(file_obj)
+                    skipped_count += 1
+                    continue
+
+                # Detect truncated patches
+                is_truncated = False
+
+                if total_changes > 0 and not patch:
+                    is_truncated = True
+                elif patch and any(marker in patch.lower() for marker in [
+                    "diff too large", "binary file", "file is too large", "large diffs"
+                ]):
+                    is_truncated = True
+                elif total_changes > 1000 and len(patch) < 500:
+                    is_truncated = True
+
+                # Skip fetching for removed/renamed files
+                if not is_truncated or status in ("removed", "renamed"):
+                    enhanced_files.append(file_obj)
+                    continue
+
+                # Fetch full diff with safety limits
+                try:
+                    full_diff = self._generate_full_diff_for_file(
+                        owner=owner,
+                        repo=repo,
+                        pr=pr,
+                        filename=filename,
+                        status=status,
+                        max_diff_lines=max_diff_lines,
+                        context_lines=context_lines,
+                    )
+
+                    if full_diff:
+                        # Check if diff was truncated
+                        was_truncated = "[TRUNCATED]" in full_diff
+                        if was_truncated:
+                            truncated_count += 1
+
+                        # Replace the truncated patch
+                        enhanced_raw_data = dict(raw_data)
+                        enhanced_raw_data["patch"] = full_diff
+                        enhanced_raw_data["_full_content_fetched"] = True
+                        if was_truncated:
+                            enhanced_raw_data["_diff_truncated"] = True
+
+                        if hasattr(file_obj, '_rawData'):
+                            file_obj._rawData = enhanced_raw_data
+                        elif hasattr(file_obj, 'raw_data'):
+                            object.__setattr__(file_obj, '_raw_data', enhanced_raw_data)
+
+                    enhanced_files.append(file_obj)
+
+                except Exception as e:
+                    import logging
+                    logging.warning(f"Failed to fetch full content for {filename}: {e}")
+                    enhanced_files.append(file_obj)
+
+            # Log summary
+            if skipped_count > 0 or truncated_count > 0:
+                import logging
+                logging.info(
+                    f"PR #{number} file processing: "
+                    f"{len(enhanced_files)} total files, "
+                    f"{skipped_count} skipped (excessive changes), "
+                    f"{truncated_count} truncated (exceeded max_diff_lines)"
+                )
+
+            return GitHubResponse(success=True, data=enhanced_files)
+
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+
+    def _generate_full_diff_for_file(
+        self,
+        owner: str,
+        repo: str,
+        pr: PullRequest,
+        filename: str,
+        status: str,
+        max_diff_lines: int = 5000,
+        context_lines: int = 3,
+    ) -> Optional[str]:
+        """
+        Generate a complete unified diff with safety limits.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            pr: PullRequest object
+            filename: Path to the file
+            status: File status (added, modified, removed)
+            max_diff_lines: Maximum lines in the diff (default 5000)
+            context_lines: Number of context lines (default 3)
+
+        Returns:
+            Complete unified diff as string, truncated if exceeds max_diff_lines,
+            or None if generation fails.
+        """
+        try:
+            base_sha = pr.base.sha
+            head_sha = pr.head.sha
+
+            if not base_sha or not head_sha:
+                return None
+
+            # Fetch file content from base and head commits
+            base_content = ""
+            if status != "added":
+                base_content = self._fetch_file_content_at_ref(
+                    owner, repo, filename, base_sha
+                )
+
+            head_content = ""
+            if status != "removed":
+                head_content = self._fetch_file_content_at_ref(
+                    owner, repo, filename, head_sha
+                )
+
+            # Generate unified diff
+            base_lines = base_content.splitlines(keepends=True) if base_content else []
+            head_lines = head_content.splitlines(keepends=True) if head_content else []
+
+            diff_iterator = difflib.unified_diff(
+                base_lines,
+                head_lines,
+                fromfile=f"a/{filename}",
+                tofile=f"b/{filename}",
+                lineterm="",
+                n=context_lines,  # Configurable context
+            )
+
+            # Collect diff lines with limit
+            diff_lines = []
+            for i, line in enumerate(diff_iterator):
+                if i >= max_diff_lines:
+                    # Truncate and add marker
+                    remaining = sum(1 for _ in diff_iterator)  # Count remaining
+                    diff_lines.append(
+                        f"\n... [TRUNCATED: {remaining} more lines omitted to prevent "
+                        f"context overflow. This diff exceeds {max_diff_lines} lines. "
+                        f"Consider reviewing the file directly on GitHub.] ...\n"
+                    )
+                    import logging
+                    logging.warning(
+                        f"Diff for {filename} truncated at {max_diff_lines} lines "
+                        f"({remaining} lines omitted)"
+                    )
+                    break
+                diff_lines.append(line)
+
+            return "".join(diff_lines)
+
+        except Exception as e:
+            import logging
+            logging.debug(f"Error generating full diff for {filename}: {e}")
+            return None
+
+
+    def _fetch_file_content_at_ref(
+        self,
+        owner: str,
+        repo: str,
+        path: str,
+        ref: str,
+    ) -> str:
+        """
+        Fetch file content from a specific commit/ref.
+
+        Args:
+            owner: Repository owner
+            repo: Repository name
+            path: File path in the repository
+            ref: Git reference (commit SHA, branch, tag)
+
+        Returns:
+            File content as string, or empty string if file doesn't exist or is binary.
+        """
+        try:
+            r = self._repo(owner, repo)
+            content = r.get_contents(path, ref=ref)
+
+            # Handle directory response
+            if isinstance(content, list):
+                return ""
+
+            # Decode content
+            if hasattr(content, 'decoded_content'):
+                return content.decoded_content.decode("utf-8", errors="replace")
+            elif hasattr(content, 'content'):
+                decoded_bytes = base64.b64decode(content.content)
+                return decoded_bytes.decode("utf-8", errors="replace")
+
+            return ""
+
+        except Exception as e:
+            import logging
+            logging.debug(f"Could not fetch {path} at {ref}: {e}")
+            return ""
+
+    def get_pull_reviews(self, owner: str, repo: str, number: int) -> GitHubResponse[list[PullRequestReview]]:
+        """Get reviews of a PR (approve, request changes, comment with body)."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            reviews = list(pr.get_reviews())
+            return GitHubResponse(success=True, data=reviews)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def create_pull_request_review(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        event: str,
+        body: Optional[str] = None,
+    ) -> GitHubResponse[PullRequestReview]:
+        """Submit a PR review: APPROVE, REQUEST_CHANGES, or COMMENT. Optional body for the review summary."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            review = pr.create_review(event=event, body=body or "")
+            return GitHubResponse(success=True, data=review)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
@@ -258,6 +722,59 @@ class GitHubDataSource:
             pr = r.get_pull(number)
             comments = list(pr.get_review_comments())
             return GitHubResponse(success=True, data=comments)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def create_pull_request_review_comment(
+        self,
+        owner: str,
+        repo: str,
+        number: int,
+        body: str,
+        commit_id: str,
+        path: str,
+        line: int | None = None,
+        side: str | None = None,
+        in_reply_to: int | None = None,
+    ) -> GitHubResponse[PullRequestComment]:
+        """Create a review comment on a PR (line comment) or reply to a comment."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            params: dict[str, object] = {"body": body, "commit": commit_id, "path": path}
+            if line is not None:
+                params["line"] = line
+            if side is not None:
+                params["side"] = side
+            if in_reply_to is not None:
+                params["in_reply_to"] = in_reply_to
+            comment = pr.create_review_comment(**params)
+            return GitHubResponse(success=True, data=comment)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def create_pull_request_review_comment_reply(
+        self, owner: str, repo: str, number: int, comment_id: int, body: str
+    ) -> GitHubResponse[PullRequestComment]:
+        """Reply to an existing PR review comment."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            comment = pr.create_review_comment_reply(comment_id=comment_id, body=body)
+            return GitHubResponse(success=True, data=comment)
+        except Exception as e:
+            return GitHubResponse(success=False, error=str(e))
+
+    def edit_pull_request_review_comment(
+        self, owner: str, repo: str, number: int, comment_id: int, body: str
+    ) -> GitHubResponse[PullRequestComment]:
+        """Edit a PR review comment."""
+        try:
+            r = self._repo(owner, repo)
+            pr = r.get_pull(number)
+            comment = pr.get_review_comment(comment_id)
+            comment.edit(body)
+            return GitHubResponse(success=True, data=comment)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
@@ -841,10 +1358,22 @@ class GitHubDataSource:
             return GitHubResponse(success=False, error=str(e))
 
 
-    def search_repositories(self, query: str) -> GitHubResponse[list[Repository]]:
-        """Search repositories."""
+    def search_repositories(
+        self,
+        query: str,
+        per_page: Optional[int] = None,
+        page: Optional[int] = None,
+    ) -> GitHubResponse[list[Repository]]:
+        """Search repositories. Default 10 per page, max 50."""
         try:
-            res = list(self._sdk.search_repositories(query))
+            paginated = self._sdk.search_repositories(query)
+            _per_page = 10 if per_page is None else min(50, max(1, per_page))
+            _page = 1 if page is None else max(1, page)
+            if hasattr(paginated, "get_page"):
+                page_items = paginated.get_page(_page - 1)
+            else:
+                page_items = list(paginated)[(_page - 1) * _per_page : (_page - 1) * _per_page + _per_page]
+            res = page_items[:_per_page] if isinstance(page_items, list) else list(page_items)[:_per_page]
             return GitHubResponse(success=True, data=res)
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))

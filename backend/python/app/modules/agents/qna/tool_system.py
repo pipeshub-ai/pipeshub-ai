@@ -13,7 +13,8 @@ Key features:
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -40,8 +41,8 @@ FAILURE_THRESHOLD = 3
 def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
     """
     Check if the LLM requires sanitized tool names (dots replaced with underscores).
-    Only Anthropic models require sanitized names due to their tool name format restrictions.
-    Other LLMs (OpenAI, Gemini, etc.) support dots in tool names.
+    OpenAI and Anthropic APIs require tool/function names to match ^[a-zA-Z0-9_-]+$
+    (no dots). Most major LLM APIs have this restriction.
 
     Args:
         llm: The LLM instance to check (can be None)
@@ -50,26 +51,39 @@ def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
         True if tool names should be sanitized, False otherwise
     """
     if not llm:
-        return False
+        # Default to sanitized — most APIs require ^[a-zA-Z0-9_-]+$
+        return True
 
     try:
         from langchain_anthropic import ChatAnthropic
-        return isinstance(llm, ChatAnthropic)
+        if isinstance(llm, ChatAnthropic):
+            return True
     except ImportError:
-        # If langchain_anthropic is not available, assume no sanitization needed
-        return False
+        pass
     except Exception:
-        # If any error occurs, default to no sanitization (safer for other LLMs)
-        return False
+        pass
+
+    try:
+        from langchain_openai import AzureChatOpenAI, ChatOpenAI
+        if isinstance(llm, (ChatOpenAI, AzureChatOpenAI)):
+            return True
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    # Default to sanitized for safety — dots break most LLM function-calling APIs
+    return True
 
 
-def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel']) -> str:
+def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel'], state: ChatState) -> str:
     """
     Sanitize tool name only if the LLM requires it.
 
     Args:
         tool_name: Original tool name (may contain dots)
         llm: LLM instance to check requirements (can be None)
+        state: Chat state
 
     Returns:
         Sanitized name (dots replaced with underscores) if needed, original name otherwise
@@ -87,7 +101,7 @@ class ToolLoader:
     """Clean tool loader with smart caching"""
 
     @staticmethod
-    def load_tools(state: ChatState) -> List[RegistryToolWrapper]:
+    def load_tools(state: ChatState) -> list[RegistryToolWrapper]:
         """
         Load tools with intelligent caching.
 
@@ -103,7 +117,7 @@ class ToolLoader:
         """
         state_logger = state.get("logger")
 
-        has_knowledge = bool(state.get("kb") or state.get("apps") or state.get("agent_knowledge"))
+        has_knowledge = state.get("has_knowledge", False)
 
         # Check cache validity
         cached_tools = state.get("_cached_agent_tools")
@@ -157,7 +171,7 @@ class ToolLoader:
         return all_tools
 
     @staticmethod
-    def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolWrapper]:
+    def get_tool_by_name(tool_name: str, state: ChatState) -> RegistryToolWrapper | None:
         """Get specific tool by name"""
         registry_tools = _global_tools_registry.get_all_tools()
 
@@ -179,7 +193,7 @@ class ToolLoader:
 # Helper Functions
 # ============================================================================
 
-def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[RegistryToolWrapper]:
+def _load_all_tools(state: ChatState, blocked_tools: dict[str, int]) -> list[RegistryToolWrapper]:
     """
     Load all tools (internal + user toolsets).
 
@@ -219,8 +233,7 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
     user_tools = []
 
     # Check if knowledge is configured - retrieval tool is only loaded when knowledge exists
-    agent_knowledge = state.get("agent_knowledge", [])
-    has_knowledge = bool(agent_knowledge)
+    has_knowledge = state.get("has_knowledge", False)
 
     for full_name, registry_tool in registry_tools.items():
         try:
@@ -233,7 +246,7 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
                 continue
 
             # Skip retrieval tools when no knowledge is configured
-            is_retrieval = _is_retrieval_tool(full_name, registry_tool)
+            is_retrieval = _is_knowledge_dependent_tool(full_name, registry_tool)
             if is_retrieval and not has_knowledge:
                 if state_logger:
                     state_logger.debug(f"Skipping retrieval tool {full_name} - no knowledge configured")
@@ -247,11 +260,11 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
                 is_internal = True
 
             # Check if user-enabled - ONLY exact matches, no toolset-level matching
-            is_user_enabled = False
-            if user_enabled_tools is not None:
+            is_user_enabled = (
+                user_enabled_tools is not None
                 # SECURITY: Only exact full name match - no toolset-level matching
-                if full_name in user_enabled_tools:
-                    is_user_enabled = True
+                and full_name in user_enabled_tools
+            )
 
             # Load tool if internal OR user-enabled
             if is_internal:
@@ -286,7 +299,7 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
     return tools
 
 
-def _extract_tool_names_from_toolsets(agent_toolsets: List[Dict]) -> Optional[Set[str]]:
+def _extract_tool_names_from_toolsets(agent_toolsets: list[dict]) -> set[str] | None:
     """
     Extract tool names from agent's configured toolsets.
 
@@ -326,19 +339,20 @@ def _extract_tool_names_from_toolsets(agent_toolsets: List[Dict]) -> Optional[Se
     return tool_names if tool_names else None
 
 
-def _is_retrieval_tool(full_name: str, registry_tool: 'Tool') -> bool:
+def _is_knowledge_dependent_tool(full_name: str, registry_tool: 'Tool') -> bool:
     """
-    Check if a tool is a retrieval/RAG tool.
+    Check if a tool is a knowledge-dependent internal tool.
 
-    Retrieval tools should only be included when knowledge is configured.
+    These tools should only be included when knowledge is configured.
+    Includes both retrieval (semantic search) and knowledgehub (file browsing).
     """
     if hasattr(registry_tool, 'app_name'):
         app_name = str(registry_tool.app_name).lower()
-        if app_name == 'retrieval':
+        if app_name in ('retrieval', 'knowledgehub'):
             return True
 
-    retrieval_patterns = ["retrieval."]
-    return any(p in full_name.lower() for p in retrieval_patterns)
+    knowledge_patterns = ["retrieval.", "knowledgehub."]
+    return any(p in full_name.lower() for p in knowledge_patterns)
 
 
 def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
@@ -346,7 +360,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
     Check if tool is internal (always included).
 
     Internal tools are marked in registry with isInternal=True.
-    Note: Retrieval tools are handled separately via _is_retrieval_tool.
+    Note: Retrieval tools are handled separately via _is_knowledge_dependent_tool.
     """
     # Check registry metadata
     if hasattr(registry_tool, 'metadata'):
@@ -374,7 +388,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
     return any(p in full_name.lower() for p in internal_patterns)
 
 
-def _get_blocked_tools(state: ChatState) -> Dict[str, int]:
+def _get_blocked_tools(state: ChatState) -> dict[str, int]:
     """Get tools that recently failed multiple times"""
     all_results = state.get("all_tool_results", [])
 
@@ -413,7 +427,7 @@ def _initialize_tool_state(state: ChatState) -> None:
 # Public API
 # ============================================================================
 
-def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
+def get_agent_tools(state: ChatState) -> list[RegistryToolWrapper]:
     """
     Get all agent tools (cached).
 
@@ -447,7 +461,7 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     return tools
 
 
-def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolWrapper]:
+def get_tool_by_name(tool_name: str, state: ChatState) -> RegistryToolWrapper | None:
     """Get specific tool by name"""
     return ToolLoader.get_tool_by_name(tool_name, state)
 
@@ -457,6 +471,7 @@ def clear_tool_cache(state: ChatState) -> None:
     state.pop("_cached_agent_tools", None)
     state.pop("_tool_instance_cache", None)
     state.pop("_cached_blocked_tools", None)
+    state.pop("_cached_schema_tools", None)
     logger.info("Tool cache cleared")
 
 
@@ -502,15 +517,17 @@ def get_tool_results_summary(state: ChatState) -> str:
 # Modern Tool System with Pydantic Schemas (for ReAct Agent)
 # ============================================================================
 
-def get_agent_tools_with_schemas(state: ChatState) -> List:
+def get_agent_tools_with_schemas(state: ChatState) -> list:
     """
     Convert registry tools to StructuredTools with Pydantic schemas.
 
-    This function is used by the ReAct agent to get tools with proper
-    schema validation for function calling.
+    This function is used by the ReAct agent and deep agent to get tools with
+    proper schema validation for function calling.
 
-    Tool names are sanitized (dots -> underscores) only for LLMs that require it
-    (e.g., Anthropic). Other LLMs (OpenAI, Gemini, etc.) keep original names with dots.
+    Tool names are sanitized (dots -> underscores) for LLMs whose API requires
+    ^[a-zA-Z0-9_-]+$ (e.g., OpenAI, Anthropic). Other LLMs keep original names when not restricted.
+
+    Results are cached in state to avoid redundant conversions.
 
     Args:
         state: Chat state containing tool configuration and LLM instance
@@ -521,8 +538,27 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
     try:
         from langchain_core.tools import StructuredTool
 
+        # Check for cached StructuredTools — avoid re-converting if
+        # the underlying registry tools haven't changed
+        cached_schema_tools = state.get("_cached_schema_tools")
+        cached_registry_tools = state.get("_cached_agent_tools")
+
         # Get tools from registry (RegistryToolWrapper objects)
         registry_tools = get_agent_tools(state)
+
+        # Cache hit: if registry tools are the same object (same cache), reuse
+        if (
+            cached_schema_tools is not None
+            and cached_registry_tools is not None
+            and cached_registry_tools is registry_tools
+        ):
+            state_logger = state.get("logger")
+            if state_logger:
+                state_logger.debug(
+                    f"Using cached StructuredTools ({len(cached_schema_tools)} tools)"
+                )
+            return cached_schema_tools
+
         structured_tools = []
 
         # Get LLM from state to determine if sanitization is needed
@@ -533,6 +569,13 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
         if state_logger:
             state_logger.debug(f"get_agent_tools_with_schemas: received {len(registry_tools)} tools from get_agent_tools")
 
+        def _make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
+            """Create an async wrapper function that calls tool_wrapper.arun()."""
+            async def _async_tool_func(**kwargs: object) -> tuple[bool, str] | str | dict[str, Any] | list[Any]:
+                # Call arun with kwargs as a dict (arun handles both formats)
+                return await wrapper.arun(kwargs)
+            return _async_tool_func
+
         for tool_wrapper in registry_tools:
             try:
                 registry_tool = tool_wrapper.registry_tool
@@ -542,21 +585,10 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
 
                 # Sanitize tool name only if LLM requires it (e.g., Anthropic)
                 original_tool_name = tool_wrapper.name
-                sanitized_tool_name = _sanitize_tool_name_if_needed(original_tool_name, llm)
+                sanitized_tool_name = _sanitize_tool_name_if_needed(original_tool_name, llm, state)
 
-                # Create an async wrapper function that calls tool_wrapper.arun()
-                # This ensures proper async execution in the same event loop as FastAPI
-                def make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
-                    async def async_tool_func(**kwargs) -> Union[Tuple[bool, str], str, Dict[str, Any], List[Any]]:
-                        """Async tool function that wraps RegistryToolWrapper.arun()"""
-                        # Call arun with kwargs as a dict (arun handles both formats)
-                        result = await wrapper.arun(kwargs)
-                        # Return result as-is to preserve tuple format (bool, str) if present
-                        # The tool executor in nodes.py will handle both tuple and string formats
-                        return result
-                    return async_tool_func
-
-                async_tool_func = make_async_tool_func(tool_wrapper)
+                # Create an async wrapper that ensures proper execution in the same event loop as FastAPI
+                async_tool_func = _make_async_tool_func(tool_wrapper)
 
                 # Create StructuredTool with schema if available
                 # Explicitly mark as coroutine to ensure LangChain handles it correctly
@@ -615,6 +647,9 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
                 state_logger = state.get("logger")
                 if state_logger:
                     state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
+
+        # Cache the StructuredTools for reuse
+        state["_cached_schema_tools"] = structured_tools
 
         return structured_tools
     except ImportError:

@@ -252,7 +252,7 @@ export class ConnectorApiService {
       baseUrl: window.location.origin,
     });
     if (!response.data) throw new Error('Failed to update connector instance filters-sync config');
-    return response.data.config;
+    return response.data; // { config, syncFiltersChanged, success, message }
   }
 
   // ============================================================================
@@ -500,8 +500,8 @@ export class ConnectorApiService {
   /**
    * Toggle connector instance active status
    */
-  static async toggleConnectorInstance(connectorId: string, type: ConnectorToggleType): Promise<boolean> {
-    const response = await axios.post(`${BASE_URL}/${connectorId}/toggle`, { type });
+  static async toggleConnectorInstance(connectorId: string, type: ConnectorToggleType, fullSync?: boolean): Promise<boolean> {
+    const response = await axios.post(`${BASE_URL}/${connectorId}/toggle`, { type, fullSync });
     if (!response.data) throw new Error('Failed to toggle connector instance');
     return response.data.success;
   }

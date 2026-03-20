@@ -47,6 +47,7 @@ export interface MyToolset {
   createdBy?: string;
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
+  auth?: [key: string];
 }
 
 /**
@@ -707,7 +708,7 @@ class ToolsetApiService {
    */
   static async authenticateToolsetInstance(
     instanceId: string,
-    credentials: {
+    auth: {
       apiToken?: string;
       bearerToken?: string;
       username?: string;
@@ -718,11 +719,27 @@ class ToolsetApiService {
     try {
       const response = await axios.post(
         `/api/v1/toolsets/instances/${instanceId}/authenticate`,
-        { credentials }
+        { auth }
       );
       return response.data;
     } catch (error) {
       console.error('Failed to authenticate toolset instance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update the current user's credentials for a toolset instance.
+   */
+  static async updateToolsetCredentials(instanceId: string, auth: { [key: string]: any }): Promise<{ status: string; message: string }> {
+    try {
+      const response = await axios.put(
+        `/api/v1/toolsets/instances/${instanceId}/credentials`,
+        { auth }
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Failed to update toolset credentials:', error);
       throw error;
     }
   }

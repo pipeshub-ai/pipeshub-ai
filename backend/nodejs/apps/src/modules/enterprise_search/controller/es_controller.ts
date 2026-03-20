@@ -300,6 +300,7 @@ export const streamChat =
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
+        conversationId: savedConversation._id?.toString() || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -1339,6 +1340,7 @@ export const addMessageStream =
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
+        conversationId: conversationId || null,
       };
 
       const aiCommandOptions: AICommandOptions = {
@@ -2590,6 +2592,7 @@ async function regenerateAnswersInternal(
       modelName: req.body.modelName || null,
       modelFriendlyName: req.body.modelFriendlyName || null,
       chatMode: req.body.chatMode || 'quick',
+      conversationId: conversationId || null,
     };
 
     const aiCommandOptions: AICommandOptions = {
@@ -4723,12 +4726,13 @@ export const unshareAgent =
         recordIds: req.body.recordIds || [],
         filters: req.body.filters || {},
         tools: req.body.tools || [],
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: req.body.chatMode || 'auto',
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        conversationId: savedConversation._id?.toString() || null,
       };
 
       logger.info('aiPayload', aiPayload);
@@ -5036,7 +5040,7 @@ export const createAgentConversation =
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
           modelFriendlyName: req.body.modelFriendlyName || null,
-          chatMode: req.body.chatMode || 'quick',
+          chatMode: req.body.chatMode || 'auto',
           timezone: req.body.timezone || null,
           currentTime: req.body.currentTime || null,
         },
@@ -5324,7 +5328,7 @@ export const createAgentConversation =
             // New fields for multi-model support
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
-            chatMode: req.body.chatMode || 'quick',
+            chatMode: req.body.chatMode || 'auto',
             timezone: req.body.timezone || null,
             currentTime: req.body.currentTime || null,
           },
@@ -5658,9 +5662,10 @@ export const addMessageStreamToAgentConversation =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
-        chatMode: req.body.chatMode || 'quick',
+        chatMode: req.body.chatMode || 'auto',
         timezone: req.body.timezone || null,
         currentTime: req.body.currentTime || null,
+        conversationId: conversationId || null,
       };
 
       const aiCommandOptions: AICommandOptions = {

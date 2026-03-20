@@ -4,13 +4,16 @@ Handles agent instances, templates, chat, and permissions using graph-based arch
 """
 
 import json
+import os
 import uuid
+from collections.abc import AsyncGenerator
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
 from app.api.middlewares.auth import require_scopes
@@ -18,9 +21,11 @@ from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, config_node_constants
+from app.modules.agents.deep.graph import deep_agent_graph
+from app.modules.agents.deep.state import build_deep_agent_state
 from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
-from app.modules.agents.qna.graph import agent_graph
+from app.modules.agents.qna.graph import agent_graph, modern_agent_graph
 from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
     check_memory_health,
@@ -32,9 +37,19 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
 
+# Opik tracer initialization
+_opik_tracer = None
+_opik_api_key = os.getenv("OPIK_API_KEY")
+_opik_workspace = os.getenv("OPIK_WORKSPACE")
+if _opik_api_key and _opik_workspace:
+    try:
+        from opik.integrations.langchain import OpikTracer
+        _opik_tracer = OpikTracer()
+    except Exception:
+        pass
 # Constants
 SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
-
+NO_KB_SELECTED_FILTER = "NO_KB_SELECTED"
 
 # ============================================================================
 # Request Models
@@ -42,20 +57,32 @@ SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" sep
 
 class ChatQuery(BaseModel):
     query: str
-    limit: Optional[int] = 50
-    previousConversations: List[Dict] = []
+    limit: int | None = 50
+    previousConversations: list[dict] = []
     quickMode: bool = False
-    filters: Optional[Dict[str, Any]] = None
-    retrievalMode: Optional[str] = "HYBRID"
-    systemPrompt: Optional[str] = None
-    instructions: Optional[str] = None
-    tools: Optional[List[str]] = None
-    chatMode: Optional[str] = "quick"
-    modelKey: Optional[str] = None
-    modelName: Optional[str] = None
-    timezone: Optional[str] = None
-    currentTime: Optional[str] = None
+    filters: dict[str, Any] | None = None
+    retrievalMode: str | None = "HYBRID"
+    systemPrompt: str | None = None
+    instructions: str | None = None
+    tools: list[str] | None = None
+    chatMode: str | None = "auto"
+    modelKey: str | None = None
+    modelName: str | None = None
+    timezone: str | None = None
+    currentTime: str | None = None
+    conversationId: str | None = None
 
+
+class RouteDecision(BaseModel):
+    """
+    Routing decision with mandatory reasoning.
+
+    reasoning: one-sentence explanation written before committing to a route
+               (chain-of-thought before commitment reduces misroutes)
+    route: the tier — type-safe, cannot produce an invalid value
+    """
+    reasoning: str
+    route: Literal["quick", "react", "deep"]
 
 # ============================================================================
 # Custom Exceptions
@@ -116,7 +143,7 @@ class LLMInitializationError(AgentError):
 # Helper Functions
 # ============================================================================
 
-async def get_services(request: Request) -> Dict[str, Any]:
+async def get_services(request: Request) -> dict[str, Any]:
     """Get all required services from container"""
     container = request.app.container
 
@@ -143,7 +170,7 @@ async def get_services(request: Request) -> Dict[str, Any]:
     }
 
 
-def _get_user_context(request: Request) -> Dict[str, Any]:
+def _get_user_context(request: Request) -> dict[str, Any]:
     """Extract user context from request"""
     user = getattr(request.state, "user", {})
     user_id = user.get("userId")
@@ -162,7 +189,181 @@ def _get_user_context(request: Request) -> Dict[str, Any]:
     }
 
 
-async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> Dict[str, Any]:
+
+async def _select_agent_graph_for_query(
+    query_info: dict[str, Any],
+    logger: Logger,
+    llm: BaseChatModel,
+) -> CompiledStateGraph:
+    """
+    Graph selection based on chatMode from the chat input:
+    - quick: legacy agent graph (fast, no tool loops)
+    - verification: modern ReAct agent graph (tool calling with reflection)
+    - deep: deep agent graph (orchestrator + sub-agents)
+    - auto: LLM router decides based on query complexity (default: quick)
+    """
+    chat_mode = (query_info.get("chatMode") or "auto").lower().strip()
+
+    if chat_mode == "deep":
+        logger.info("Agent graph route: deep | chatMode=deep")
+        return deep_agent_graph
+
+    if chat_mode == "verification":
+        logger.info("Agent graph route: react | chatMode=verification")
+        return modern_agent_graph
+
+    if chat_mode == "auto":
+        # Auto-detect: use LLM to pick the right graph
+        return await _auto_select_graph(query_info, logger, llm)
+
+    # Default: "auto" → LLM router decides
+    logger.info("Agent graph route: legacy | chatMode=%s", chat_mode)
+    return agent_graph
+
+
+async def _auto_select_graph(
+    query_info: dict[str, Any],
+    logger: Logger,
+    llm: BaseChatModel,
+) -> CompiledStateGraph:
+    """
+    Auto-select graph using an LLM call to classify the query into one of
+    three agent types: quick, verification, or deep.
+    Falls back to 'verification' if parsing fails.
+    """
+
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    user_query = query_info.get("query", "").strip()
+    if not user_query:
+        return modern_agent_graph
+
+    context_block = _build_routing_context(query_info)
+    structured_llm = llm.with_structured_output(RouteDecision)
+
+    system_prompt = (
+        "You are a routing agent. Classify the user request into exactly one "
+        "execution tier: quick, react, or deep.\n\n"
+
+        + context_block +
+
+        "## quick\n"
+        "Every action and every parameter can be fully determined right now from "
+        "the query and context, before anything runs. The request itself is the "
+        "final action — retrieving, displaying, or acting on something where the "
+        "goal is the retrieval or action itself, not further processing of what "
+        "comes back.\n\n"
+        "CRITICAL: For a request to be 'quick', ALL required parameters for the "
+        "final action must be directly available from the query text, conversation "
+        "context, or system constants. If ANY required parameter must be obtained "
+        "by calling a tool first (e.g., resolving an ID, key, or identifier), "
+        "then it is NOT quick — it requires a prior step and should be 'react'.\n\n"
+
+        "## react\n"
+        "A fixed, predictable sequence of dependent steps where the chain length "
+        "is deterministic before execution starts, but at least one step's "
+        "parameters only become known from a prior step's result. The intent "
+        "implies: get something first, then do something with it — where 'it' "
+        "is one specific thing.\n\n"
+        "Key indicator: If the final action requires a parameter (ID, key, "
+        "identifier, or any structured value) that must be fetched/resolved "
+        "through a tool call, this is react. The dependency chain is: "
+        "resolve parameter → execute final action.\n\n"
+
+
+        "## deep\n"
+        "Reserved for tasks react cannot handle. Only two cases qualify:\n"
+        "(a) The intent requires getting a collection and then doing something "
+        "to EVERY item in it — the number of items is unknown before the "
+        "collection is retrieved. Wanting to SEE a collection is not this.\n"
+        "(b) The intent requires gathering information from multiple fully "
+        "independent sources and combining it into one unified answer.\n\n"
+
+        "## Decision\n"
+        "Q1: Are ALL required parameters for the final action directly available "
+        "from the query, context, or constants — with NO tool calls needed to "
+        "obtain them? If ANY parameter requires a tool call to resolve (IDs, "
+        "keys, identifiers, or any structured values), answer NO. → quick only if YES\n\n"
+        "Q2: Does the request require a fixed sequence where at least one "
+        "parameter for the final action must come from a prior tool's result? "
+        "→ react\n\n"
+        "Q3: Does the request imply acting on every item in a collection whose "
+        "size is only known at runtime, or combining independent sources? → deep\n\n"
+        "Default → react\n\n"
+
+        "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', 'proceed') "
+        "— infer the full intent from the prior conversation above, then apply "
+        "the decision above to that inferred intent.\n\n"
+
+        f"Query: {user_query}"
+    )
+
+    route_map = {
+        "quick": agent_graph,
+        "react": modern_agent_graph,
+        "deep": deep_agent_graph,
+    }
+
+    try:
+        invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
+
+        decision: RouteDecision = await structured_llm.ainvoke(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Classify."),
+            ],
+            config=invoke_config,
+        )
+
+        route = decision.route
+        logger.info(
+            "Agent graph route: %s | (query=%s, reasoning=%s)",
+            route,
+            user_query[:80],
+            decision.reasoning[:120],
+        )
+        return route_map[route]
+
+    except Exception as e:
+        logger.warning(
+            "Agent graph route: react (fallback) | router failed: %s", e
+        )
+        return modern_agent_graph
+
+
+
+def _build_routing_context(query_info: dict[str, Any]) -> str:
+    """
+    Compact prior conversation context for resolving follow-ups.
+    Last 3 turns only. First line of bot responses only.
+    """
+    previous = query_info.get("previous_conversations", [])
+    if not previous:
+        return ""
+
+    recent = previous[-6:]
+    turns = []
+
+    for conv in recent:
+        role = conv.get("role", "")
+        content = str(conv.get("content", "")).strip()
+
+        if role == "user_query":
+            turns.append(f"User: {content[:200]}")
+        elif role == "bot_response":
+            first_line = content.split("\n")[0][:150]
+            turns.append(f"Assistant: {first_line}")
+
+    if not turns:
+        return ""
+
+    return (
+        "Prior conversation:\n"
+        + "\n".join(turns)
+        + "\n\n"
+    )
+
+async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get user document with validation"""
     try:
         user = await graph_provider.get_user_by_user_id(user_id)
@@ -178,10 +379,10 @@ async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, log
         raise
     except Exception as e:
         logger.error(f"Error fetching user document: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve user information")
+        raise HTTPException(status_code=500, detail="Failed to retrieve user information") from e
 
 
-async def _get_org_info(user_info: Dict[str, Any], graph_provider: IGraphDBProvider, logger: Logger) -> Dict[str, Any]:
+async def _get_org_info(user_info: dict[str, Any], graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get organization information with validation"""
     try:
         org_doc = await graph_provider.get_document(user_info["orgId"], CollectionNames.ORGS.value)
@@ -201,10 +402,10 @@ async def _get_org_info(user_info: Dict[str, Any], graph_provider: IGraphDBProvi
         raise
     except Exception as e:
         logger.error(f"Error fetching organization info: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve organization information")
+        raise HTTPException(status_code=500, detail="Failed to retrieve organization information") from e
 
 
-async def _enrich_user_info(user_info: Dict[str, Any], user_doc: Dict[str, Any]) -> Dict[str, Any]:
+async def _enrich_user_info(user_info: dict[str, Any], user_doc: dict[str, Any]) -> dict[str, Any]:
     """Enrich user info with document data"""
     enriched = user_info.copy()
     enriched["userEmail"] = user_doc.get("email", "").strip()
@@ -218,14 +419,14 @@ async def _enrich_user_info(user_info: Dict[str, Any], user_doc: Dict[str, Any])
     return enriched
 
 
-def _validate_required_fields(data: Dict[str, Any], required_fields: List[str]) -> None:
+def _validate_required_fields(data: dict[str, Any], required_fields: list[str]) -> None:
     """Validate required fields in request data"""
     for field in required_fields:
         if not data.get(field) or not str(data.get(field)).strip():
             raise InvalidRequestError(f"'{field}' is required")
 
 
-def _parse_models(raw_models: List[Any], logger: Logger) -> tuple[List[str], bool]:
+def _parse_models(raw_models: list[Any], logger: Logger) -> tuple[list[str], bool]:
     """Parse and validate model entries"""
     model_entries = []
     has_reasoning_model = False
@@ -250,7 +451,7 @@ def _parse_models(raw_models: List[Any], logger: Logger) -> tuple[List[str], boo
     return model_entries, has_reasoning_model
 
 
-def _parse_toolsets(raw_toolsets: List[Any], logger: Logger) -> Dict[str, Dict[str, Any]]:
+def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
     """Parse toolsets with their tools.
 
     The key of the returned dict is the toolset name (lowercase).
@@ -302,7 +503,7 @@ def _parse_toolsets(raw_toolsets: List[Any], logger: Logger) -> Dict[str, Dict[s
     return toolsets_with_tools
 
 
-def _parse_knowledge_sources(raw_knowledge: List[Any], logger: Logger) -> Dict[str, Dict[str, Any]]:
+def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, Any]]:
     """Parse knowledge sources"""
     knowledge_sources = {}
 
@@ -332,14 +533,64 @@ def _parse_knowledge_sources(raw_knowledge: List[Any], logger: Logger) -> Dict[s
     return knowledge_sources
 
 
+def _filter_knowledge_by_enabled_sources(
+    agent_knowledge: list[dict[str, Any]],
+    filters: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """
+    Filter agent_knowledge to only include entries matching enabled filters.
+
+    Keeps:
+    - App connectors whose connectorId is in filters["apps"]
+    - KB connectors whose recordGroups overlap with filters["kb"],
+      or KB connectors with no recordGroups (unrestricted KB)
+    """
+    enabled_apps = set(filters.get("apps", []))
+    enabled_kbs = set(filters.get("kb", []))
+
+    if not enabled_apps and not enabled_kbs:
+        return agent_knowledge
+
+    filtered: list[dict[str, Any]] = []
+    for k in agent_knowledge:
+        if not isinstance(k, dict):
+            continue
+
+        connector_id = k.get("connectorId", "")
+
+        # App connector — keep if in enabled apps
+        if connector_id in enabled_apps:
+            filtered.append(k)
+            continue
+
+        # KB connector — keep if its record groups overlap or it has none
+        if connector_id.startswith("knowledgeBase_") and enabled_kbs:
+            filters_data = k.get("filters", k.get("filtersParsed", {}))
+            if isinstance(filters_data, str):
+                try:
+                    filters_data = json.loads(filters_data)
+                except (json.JSONDecodeError, ValueError):
+                    filters_data = {}
+
+            record_groups = (
+                filters_data.get("recordGroups", [])
+                if isinstance(filters_data, dict) else []
+            )
+
+            if any(rg in enabled_kbs for rg in record_groups):
+                filtered.append(k)
+
+    return filtered
+
+
 async def _create_toolset_edges(
     agent_key: str,
-    toolsets_with_tools: Dict[str, Dict[str, Any]],
-    user_info: Dict[str, Any],
+    toolsets_with_tools: dict[str, dict[str, Any]],
+    user_info: dict[str, Any],
     user_key: str,
     graph_provider: IGraphDBProvider,
     logger: Logger
-) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Create toolset nodes and edges for agent using batch operations"""
     from app.agents.constants.toolset_constants import normalize_app_name
 
@@ -396,14 +647,15 @@ async def _create_toolset_edges(
         return created_toolsets, [{"name": "all", "error": str(e)}]
 
     # Prepare agent -> toolset edges
-    agent_toolset_edges = []
-    for toolset_name, toolset_info in toolset_mapping.items():
-        agent_toolset_edges.append({
+    agent_toolset_edges = [
+        {
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
             "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
             "createdAtTimestamp": time,
             "updatedAtTimestamp": time,
-        })
+        }
+        for toolset_info in toolset_mapping.values()
+    ]
 
     # Batch create agent -> toolset edges
     try:
@@ -416,7 +668,7 @@ async def _create_toolset_edges(
     toolset_tool_edges = []
     tool_mapping = {}  # Map full_name to tool_key
 
-    for toolset_name, toolset_info in toolset_mapping.items():
+    for toolset_info in toolset_mapping.values():
         for tool_data in toolset_info["tools"]:
             tool_name = tool_data["name"]
             full_name = tool_data["fullName"]
@@ -467,7 +719,7 @@ async def _create_toolset_edges(
             logger.error(f"Failed to create toolset-tool edges: {e}")
 
     # Build response with created toolsets and tools
-    for toolset_name, toolset_info in toolset_mapping.items():
+    for toolset_info in toolset_mapping.values():
         created_tools = []
         for tool_data in toolset_info["tools"]:
             full_name = tool_data["fullName"]
@@ -490,11 +742,11 @@ async def _create_toolset_edges(
 
 async def _create_knowledge_edges(
     agent_key: str,
-    knowledge_sources: Dict[str, Dict[str, Any]],
+    knowledge_sources: dict[str, dict[str, Any]],
     user_key: str,
     graph_provider: IGraphDBProvider,
     logger: Logger
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Create knowledge nodes and edges for agent using batch operations"""
     created_knowledge = []
     time = get_epoch_timestamp_in_ms()
@@ -539,14 +791,15 @@ async def _create_knowledge_edges(
         return created_knowledge
 
     # Prepare agent -> knowledge edges
-    agent_knowledge_edges = []
-    for connector_id, knowledge_info in knowledge_mapping.items():
-        agent_knowledge_edges.append({
+    agent_knowledge_edges = [
+        {
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
             "_to": f"{CollectionNames.AGENT_KNOWLEDGE.value}/{knowledge_info['key']}",
             "createdAtTimestamp": time,
             "updatedAtTimestamp": time,
-        })
+        }
+        for knowledge_info in knowledge_mapping.values()
+    ]
 
     # Batch create agent -> knowledge edges
     try:
@@ -555,17 +808,19 @@ async def _create_knowledge_edges(
         logger.error(f"Failed to create agent-knowledge edges: {e}")
 
     # Build response
-    for connector_id, knowledge_info in knowledge_mapping.items():
-        created_knowledge.append({
+    created_knowledge.extend(
+        {
             "connectorId": connector_id,
             "key": knowledge_info["key"],
-            "filters": knowledge_info["filters"]
-        })
+            "filters": knowledge_info["filters"],
+        }
+        for knowledge_info in knowledge_mapping.values()
+    )
 
     return created_knowledge
 
 
-async def _enrich_agent_models(agent: Dict[str, Any], config_service: ConfigurationService, logger: Logger) -> None:
+async def _enrich_agent_models(agent: dict[str, Any], config_service: ConfigurationService, logger: Logger) -> None:
     """Enrich agent models with full configurations from etcd"""
     model_entries = agent.get("models", [])
 
@@ -631,7 +886,7 @@ async def _enrich_agent_models(agent: Dict[str, Any], config_service: Configurat
         logger.warning(f"Failed to enrich models: {e}")
 
 
-def _parse_request_body(body: bytes) -> Dict[str, Any]:
+def _parse_request_body(body: bytes) -> dict[str, Any]:
     """Parse and validate JSON request body"""
     if not body:
         raise InvalidRequestError("Request body is required")
@@ -639,7 +894,7 @@ def _parse_request_body(body: bytes) -> Dict[str, Any]:
     try:
         return json.loads(body.decode('utf-8'))
     except json.JSONDecodeError as e:
-        raise InvalidRequestError(f"Invalid JSON: {str(e)}")
+        raise InvalidRequestError(f"Invalid JSON: {str(e)}") from e
 
 
 # ============================================================================
@@ -678,20 +933,38 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Build and execute graph
-        initial_state = build_initial_state(
-            query_info.model_dump(),
-            enriched_user_info,
-            services["llm"],
-            logger,
-            retrieval_service,
-            graph_provider,
-            reranker_service,
-            config_service,
-            org_info,
-        )
+        selected_graph = await _select_agent_graph_for_query(query_info.model_dump(), logger, services["llm"])
 
+        if selected_graph == deep_agent_graph:
+            initial_state = build_deep_agent_state(
+                query_info.model_dump(),
+                enriched_user_info,
+                services["llm"],
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+            )
+        else:
+            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+            initial_state = build_initial_state(
+                query_info.model_dump(),
+                enriched_user_info,
+                services["llm"],
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                graph_type,
+            )
+
+        graph_to_use = selected_graph
         config = {"recursion_limit": 30}
-        final_state = await agent_graph.ainvoke(initial_state, config=config)
+        final_state = await graph_to_use.ainvoke(initial_state, config=config)
         final_state = auto_optimize_state(final_state, logger)
 
         # Check memory health
@@ -739,46 +1012,69 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error in askAI: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 async def stream_response(
-    query_info: Dict[str, Any],
-    user_info: Dict[str, Any],
+    query_info: dict[str, Any],
+    user_info: dict[str, Any],
     llm: BaseChatModel,
     logger: Logger,
     retrieval_service: RetrievalService,
-    graph_provider,
+    graph_provider: IGraphDBProvider,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
-    org_info: Dict[str, Any] = None,
+    org_info: dict[str, Any] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
-    initial_state = build_initial_state(
-        query_info,
-        user_info,
-        llm,
-        logger,
-        retrieval_service,
-        graph_provider,
-        reranker_service,
-        config_service,
-        org_info,
-    )
+    try:
+        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
-    config = {"recursion_limit": 30}
-    chunk_count = 0
-
-    async for chunk in agent_graph.astream(initial_state, config=config, stream_mode="custom"):
-        chunk_count += 1
-        if isinstance(chunk, dict) and "event" in chunk:
-            event_type = chunk.get('event', 'unknown')
-            data = chunk.get('data', {})
-            yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+        if selected_graph == deep_agent_graph:
+            graph_type = "deep"
+            initial_state = build_deep_agent_state(
+                query_info,
+                user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+            )
         else:
-            logger.warning(f"Unexpected chunk format: {type(chunk)}")
+            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+            initial_state = build_initial_state(
+                query_info,
+                user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                graph_type,
+            )
 
-    logger.info(f"Streaming completed. Total chunks: {chunk_count}")
+        config = {"recursion_limit": 50}
+        chunk_count = 0
+
+        graph_to_use = selected_graph
+        async for chunk in graph_to_use.astream(initial_state, config=config, stream_mode="custom"):
+            chunk_count += 1
+            if isinstance(chunk, dict) and "event" in chunk:
+                event_type = chunk.get('event', 'unknown')
+                data = chunk.get('data', {})
+                yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+            else:
+                logger.warning(f"Unexpected chunk format: {type(chunk)}")
+
+        logger.info(f"Streaming completed. Total chunks: {chunk_count}")
+    except Exception as e:
+        logger.error(f"Error in stream_response: {e}", exc_info=True)
+        yield f"event: error\ndata: {json.dumps({'message': str(e), 'type': 'stream_error'})}\n\n"
 
 
 @router.post("/agent-chat-stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
@@ -800,15 +1096,28 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
 
         return StreamingResponse(
             stream_response(
-                query_info.model_dump(), enriched_user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info
+                query_info.model_dump(),
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
             ),
             media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
         services["logger"].error(f"Error in askAIStream: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ============================================================================
@@ -876,7 +1185,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error creating template: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 @router.get("/template/list", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -901,7 +1210,7 @@ async def get_agent_templates(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error getting templates: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -929,7 +1238,7 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
         raise
     except Exception as e:
         services["logger"].error(f"Error getting template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/share-template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -961,7 +1270,7 @@ async def share_agent_template(request: Request, template_id: str) -> JSONRespon
         raise
     except Exception as e:
         services["logger"].error(f"Error sharing template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/template/{template_id}/clone", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -986,7 +1295,7 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
         raise
     except Exception as e:
         services["logger"].error(f"Error cloning template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.delete("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1010,7 +1319,7 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         raise
     except Exception as e:
         services["logger"].error(f"Error deleting template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.put("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1035,7 +1344,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
         raise
     except Exception as e:
         services["logger"].error(f"Error updating template: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ============================================================================
@@ -1073,8 +1382,8 @@ async def create_agent(request: Request) -> JSONResponse:
             )
 
         # Parse toolsets and knowledge BEFORE starting transaction
-        toolsets_with_tools = _parse_toolsets(body.get("toolsets", []), logger)
-        knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []), logger)
+        toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+        knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         share_with_org = body.get("shareWithOrg", False)
@@ -1199,14 +1508,15 @@ async def create_agent(request: Request) -> JSONResponse:
                     await graph_provider.batch_upsert_nodes(toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction_id)
 
                 # Create agent -> toolset edges
-                agent_toolset_edges = []
-                for toolset_name, toolset_info in toolset_mapping.items():
-                    agent_toolset_edges.append({
+                agent_toolset_edges = [
+                    {
                         "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
                         "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
                         "createdAtTimestamp": time,
                         "updatedAtTimestamp": time,
-                    })
+                    }
+                    for toolset_info in toolset_mapping.values()
+                ]
                 if agent_toolset_edges:
                     await graph_provider.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction_id)
 
@@ -1215,7 +1525,7 @@ async def create_agent(request: Request) -> JSONResponse:
                 tool_nodes = []
                 toolset_tool_edges = []
 
-                for toolset_name, toolset_info in toolset_mapping.items():
+                for toolset_info in toolset_mapping.values():
                     for tool_data in toolset_info["tools"]:
                         tool_name = tool_data["name"]
                         full_name = tool_data["fullName"]
@@ -1257,7 +1567,7 @@ async def create_agent(request: Request) -> JSONResponse:
                     await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction_id)
 
                 # Build response for created toolsets
-                for toolset_name, toolset_info in toolset_mapping.items():
+                for toolset_info in toolset_mapping.values():
                     created_tools = []
                     for tool_data in toolset_info["tools"]:
                         full_name = tool_data["fullName"]
@@ -1310,24 +1620,27 @@ async def create_agent(request: Request) -> JSONResponse:
                     await graph_provider.batch_upsert_nodes(knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction_id)
 
                 # Create agent -> knowledge edges
-                agent_knowledge_edges = []
-                for connector_id, knowledge_info in knowledge_mapping.items():
-                    agent_knowledge_edges.append({
+                agent_knowledge_edges = [
+                    {
                         "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
                         "_to": f"{CollectionNames.AGENT_KNOWLEDGE.value}/{knowledge_info['key']}",
                         "createdAtTimestamp": time,
                         "updatedAtTimestamp": time,
-                    })
+                    }
+                    for knowledge_info in knowledge_mapping.values()
+                ]
                 if agent_knowledge_edges:
                     await graph_provider.batch_create_edges(agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction_id)
 
                 # Build response for created knowledge
-                for connector_id, knowledge_info in knowledge_mapping.items():
-                    created_knowledge.append({
+                created_knowledge.extend(
+                    {
                         "connectorId": connector_id,
                         "key": knowledge_info["key"],
-                        "filters": knowledge_info["filters"]
-                    })
+                        "filters": knowledge_info["filters"],
+                    }
+                    for knowledge_info in knowledge_mapping.values()
+                )
 
                 logger.debug(f"Created {len(created_knowledge)} knowledge source(s) for agent: {agent_key}")
 
@@ -1349,7 +1662,7 @@ async def create_agent(request: Request) -> JSONResponse:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to create agent: {str(e)}"
-            )
+            ) from e
 
         # Build response
         response_agent = {
@@ -1375,7 +1688,7 @@ async def create_agent(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error creating agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 @router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -1407,7 +1720,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error getting agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -1436,7 +1749,7 @@ async def get_agents(request: Request) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error getting agents: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.put("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1518,7 +1831,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         # Update toolsets if provided in request (even if empty array - means delete all)
         if "toolsets" in body:
             # Parse toolsets first to validate before deletion
-            toolsets_with_tools = _parse_toolsets(body.get("toolsets", []), logger)
+            toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
 
             # Use transaction for atomic delete-then-create operation
             graph_provider = services["graph_provider"]
@@ -1652,7 +1965,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 raise HTTPException(
                     status_code=500,
                     detail=f"Failed to delete toolset nodes and edges: {str(e)}"
-                )
+                ) from e
 
             # Create new toolset nodes, tool nodes, and edges only if there are toolsets to create
             if toolsets_with_tools:
@@ -1674,14 +1987,14 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     raise HTTPException(
                         status_code=500,
                         detail=f"Failed to create toolset edges: {str(e)}"
-                    )
+                    ) from e
             else:
                 logger.info(f"All toolsets removed for agent {agent_id}")
 
         # Update knowledge if provided in request (even if empty array - means delete all)
         if "knowledge" in body:
             # Parse knowledge sources first to validate before deletion
-            knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []), logger)
+            knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
 
             # Use transaction for atomic delete-then-create operation
             graph_provider = services["graph_provider"]
@@ -1767,7 +2080,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 raise HTTPException(
                     status_code=500,
                     detail=f"Failed to delete knowledge nodes and edges: {str(e)}"
-                )
+                ) from e
 
             # Create new knowledge nodes and edges only if there are knowledge sources to create
             if knowledge_sources:
@@ -1784,7 +2097,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     raise HTTPException(
                         status_code=500,
                         detail=f"Failed to create knowledge edges: {str(e)}"
-                    )
+                    ) from e
             else:
                 logger.info(f"All knowledge sources removed for agent {agent_id}")
 
@@ -1796,7 +2109,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         logger.error(f"Error updating agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 @router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
@@ -1881,7 +2194,7 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
                 services["logger"].warning(f"⚠️ Failed to rollback transaction {txn_id}: {rb_err}")
         if services is not None:
             services["logger"].error(f"Error deleting agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ============================================================================
@@ -1921,7 +2234,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error sharing agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/{agent_id}/unshare", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -1957,7 +2270,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         raise
     except Exception as e:
         services["logger"].error(f"Error unsharing agent: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/{agent_id}/permissions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
@@ -1986,7 +2299,7 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
         raise
     except Exception as e:
         services["logger"].error(f"Error getting permissions: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.put("/{agent_id}/permissions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
@@ -2019,7 +2332,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
         raise
     except Exception as e:
         services["logger"].error(f"Error updating permission: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ============================================================================
@@ -2111,23 +2424,40 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "instructions": agent.get("instructions"),
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
+            "conversationId": chat_query.conversationId,
         }
+        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
-        # Execute graph
-        initial_state = build_initial_state(
-            query_info,
-            enriched_user_info,
-            llm,
-            logger,
-            retrieval_service,
-            graph_provider,
-            reranker_service,
-            config_service,
-            org_info,
-        )
+        if selected_graph == deep_agent_graph:
+            initial_state = build_deep_agent_state(
+                query_info,
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+            )
+        else:
+            graph_type = "react" if selected_graph == modern_agent_graph else "legacy"
+            initial_state = build_initial_state(
+                query_info,
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
+                graph_type,
+            )
 
+        graph_to_use = selected_graph
         config = {"recursion_limit": 50}
-        final_state = await agent_graph.ainvoke(initial_state, config=config)
+        final_state = await graph_to_use.ainvoke(initial_state, config=config)
 
         # Handle errors
         if final_state.get("error"):
@@ -2148,7 +2478,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         raise
     except Exception as e:
         logger.error(f"Error in chat: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/{agent_id}/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
@@ -2391,14 +2721,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 filters["kb"] = kb_record_groups
             logger.info(f"Filters: {filters}")
 
-        # Narrow agent_knowledge to only the connectors present in filters["apps"]
-        # so the query_info knowledge list stays consistent with the resolved filters.
-        enabled_apps_set = set(filters.get("apps", []))
-        if enabled_apps_set:
-            agent_knowledge = [
-                k for k in agent_knowledge
-                if isinstance(k, dict) and k.get("connectorId") in enabled_apps_set
-            ]
+        agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
+
+        if not filters.get("kb"):
+            filters["kb"] = [NO_KB_SELECTED_FILTER]
 
         logger.info(f"Filters: {filters}")
 
@@ -2419,16 +2745,30 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "toolsets": agent_toolsets,
             "knowledge": agent_knowledge,
             "toolsetConfigs": toolset_configs,
+            "conversationId": chat_query.conversationId,
         }
 
         return StreamingResponse(
             stream_response(
-                query_info, enriched_user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info
+                query_info,
+                enriched_user_info,
+                llm,
+                logger,
+                retrieval_service,
+                graph_provider,
+                reranker_service,
+                config_service,
+                org_info,
             ),
             media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
         )
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error in chat_stream: {e}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e

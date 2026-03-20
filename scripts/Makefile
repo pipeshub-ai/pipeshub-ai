@@ -9,7 +9,8 @@
 	setup-frontend implode-setup-frontend frontend clean-env setup-all clean-all \
 	dev-docker-menu prod-docker-menu dev-docker-up dev-docker-down dev-docker-stop dev-docker-clean dev-docker-hard-clean \
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
-	check-and-kill-ports
+	check-and-kill-ports \
+	lint lint-python lint-python-ruff lint-python-pyright lint-nodejs
 
 # ==============================================================================
 # Configuration
@@ -92,6 +93,13 @@ help: ## Show this help message
 	@echo "$(GREEN)Environment Cleanup:$(NC)"
 	@echo "  make clean-env            - Remove all .env files"
 	@echo "  make check-and-kill-ports - Check and kill ports"
+	@echo ""
+	@echo "$(GREEN)Linting (changed files only):$(NC)"
+	@echo "  make lint                 - Lint all changed files (Python + Node.js)"
+	@echo "  make lint-python          - Lint changed Python files (ruff + pyright)"
+	@echo "  make lint-python-ruff     - Run ruff on changed Python files"
+	@echo "  make lint-python-pyright  - Run pyright on changed Python files"
+	@echo "  make lint-nodejs          - Run ESLint on changed TypeScript files"
 	@echo ""
 	@echo "$(GREEN)Complete Setup:$(NC)"
 	@echo "  make setup-all            - Setup all services (Node.js, Python, Frontend)"
@@ -622,6 +630,57 @@ check-and-kill-ports: ## Check for running processes on required ports and ask t
 		fi; \
 	else \
 		echo "$(GREEN)No conflicting processes found on required ports.$(NC)"; \
+	fi
+
+# ==============================================================================
+# Linting (changed files only — same as CI)
+# ==============================================================================
+
+lint: lint-python lint-nodejs ## Lint all changed files (Python + Node.js)
+	@echo "$(GREEN)All linting complete!$(NC)"
+
+lint-python: lint-python-ruff lint-python-pyright ## Lint changed Python files (ruff + pyright)
+	@echo "$(GREEN)Python linting complete!$(NC)"
+
+lint-python-ruff: ## Run ruff on changed Python files
+	@echo "$(BLUE)Running ruff on changed Python files...$(NC)"
+	@MERGE_BASE=$$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1); \
+	CHANGED_FILES=$$(git diff --name-only $$MERGE_BASE -- 'backend/python/**/*.py' 2>/dev/null || true); \
+	if [ -n "$$CHANGED_FILES" ]; then \
+		echo "$$CHANGED_FILES" | head -5; \
+		TOTAL=$$(echo "$$CHANGED_FILES" | wc -l | tr -d ' '); \
+		if [ "$$TOTAL" -gt 5 ]; then echo "... and $$(( $$TOTAL - 5 )) more files"; fi; \
+		cd $(ROOT_DIR)/backend/python && echo "$$CHANGED_FILES" | sed 's|^backend/python/||' | xargs ruff check; \
+	else \
+		echo "$(YELLOW)No changed Python files found$(NC)"; \
+	fi
+
+lint-python-pyright: ## Run pyright on changed Python files
+	@echo "$(BLUE)Running pyright on changed Python files...$(NC)"
+	@MERGE_BASE=$$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1); \
+	CHANGED_FILES=$$(git diff --name-only $$MERGE_BASE -- 'backend/python/**/*.py' 2>/dev/null || true); \
+	CHANGED_FILES=$$(echo "$$CHANGED_FILES" | grep -v 'code-generator/' | grep -v 'example\.py$$' | sed 's|^backend/python/||' || true); \
+	if [ -n "$$CHANGED_FILES" ]; then \
+		echo "$$CHANGED_FILES" | head -5; \
+		TOTAL=$$(echo "$$CHANGED_FILES" | wc -l | tr -d ' '); \
+		if [ "$$TOTAL" -gt 5 ]; then echo "... and $$(( $$TOTAL - 5 )) more files"; fi; \
+		cd $(ROOT_DIR)/backend/python && source venv/bin/activate && echo "$$CHANGED_FILES" | xargs pyright; \
+	else \
+		echo "$(YELLOW)No changed Python files found$(NC)"; \
+	fi
+
+lint-nodejs: ## Run ESLint on changed TypeScript files
+	@echo "$(BLUE)Running ESLint on changed TypeScript files...$(NC)"
+	@MERGE_BASE=$$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD~1); \
+	CHANGED_FILES=$$(git diff --name-only $$MERGE_BASE -- 'backend/nodejs/apps/src/**/*.ts' 2>/dev/null || true); \
+	if [ -n "$$CHANGED_FILES" ]; then \
+		echo "$$CHANGED_FILES" | head -5; \
+		TOTAL=$$(echo "$$CHANGED_FILES" | wc -l | tr -d ' '); \
+		if [ "$$TOTAL" -gt 5 ]; then echo "... and $$(( $$TOTAL - 5 )) more files"; fi; \
+		RELATIVE_FILES=$$(echo "$$CHANGED_FILES" | sed 's|^backend/nodejs/apps/||'); \
+		cd $(ROOT_DIR)/backend/nodejs/apps && npx eslint $$RELATIVE_FILES; \
+	else \
+		echo "$(YELLOW)No changed TypeScript files found$(NC)"; \
 	fi
 
 # ==============================================================================

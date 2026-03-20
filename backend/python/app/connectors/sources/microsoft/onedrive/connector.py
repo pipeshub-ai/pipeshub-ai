@@ -15,7 +15,7 @@ from msgraph.generated.models.group import Group
 from msgraph.generated.models.subscription import Subscription
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import MimeTypes, OriginTypes
+from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -34,6 +34,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -55,7 +56,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -144,7 +144,7 @@ class OneDriveCredentials:
             default_value=True
         ))
         .add_conditional_display("redirectUri", "hasAdminConsent", "equals", False)
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
@@ -591,7 +591,7 @@ class OneDriveConnector(BaseConnector):
                         shared_disabled = record_update.record.is_shared and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
 
                         if files_disabled or shared_disabled:
-                            record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                            record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
 
                         yield (record_update.record, record_update.new_permissions or [], record_update)

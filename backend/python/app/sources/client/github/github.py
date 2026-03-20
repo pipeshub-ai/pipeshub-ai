@@ -95,6 +95,42 @@ class GitHubClient(IClient):
         return cls(client)
 
     @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: Dict[str, Any],
+        logger: logging.Logger,
+    ) -> "GitHubClient":
+        """Build GitHubClient from toolset configuration (new architecture).
+
+        Toolset configs are stored per-user at:
+        /services/toolsets/{user_id}/{toolset_type}
+
+        Args:
+            toolset_config: Toolset configuration dictionary from etcd
+            logger: Logger instance
+
+        Returns:
+            GitHubClient instance
+        """
+        try:
+            if not toolset_config:
+                raise ValueError("Toolset config is required for GitHub client")
+
+            credentials_config = toolset_config.get("credentials", {}) or {}
+            token = credentials_config.get("access_token", "")
+            if not token:
+                raise ValueError("Access token required for GitHub client (OAuth)")
+
+            client = GitHubClientViaToken(token=token, per_page=30)
+            client.create_client()
+            logger.info("Built GitHub client from toolset config")
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build GitHub client from toolset config: {str(e)}")
+            raise
+
+    @classmethod
     async def build_from_services(
         cls,
         logger: logging.Logger,

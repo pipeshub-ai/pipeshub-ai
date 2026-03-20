@@ -260,7 +260,6 @@ class MimeTypes(Enum):
     SVG = "image/svg+xml"
     HEIC = "image/heic"
     HEIF = "image/heif"
-    TEXT = "text/plain"
     ZIP = "application/zip"
     GIF = "image/gif"
 
@@ -275,7 +274,6 @@ class ProgressStatus(Enum):
     EMPTY = "EMPTY"
     ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
     QUEUED = "QUEUED"
-    CONNECTOR_DISABLED = "CONNECTOR_DISABLED"
 
 
 class RecordTypes(Enum):
@@ -336,6 +334,11 @@ class AccountType(Enum):
 class ConnectorScopes(Enum):
     PERSONAL = "personal"
     TEAM = "team"
+
+class AppStatus(Enum):
+    IDLE = "IDLE"
+    FULL_SYNCING = "FULL_SYNCING"
+    SYNCING = "SYNCING"
 
 RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,

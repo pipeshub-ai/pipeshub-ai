@@ -6,6 +6,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { RecordRelationService } from '../services/kb.relation.service';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -148,6 +149,39 @@ interface ConnectorInfo {
 interface ActiveConnectorsResponse {
   connectors: ConnectorInfo[];
 }
+
+const LOCK_MESSAGES: Record<string, string> = {
+  FULL_SYNCING: 'A full sync is in progress. Please wait and try again.',
+  SYNCING: 'A sync is already in progress. Please wait and try again.',
+};
+
+interface ConnectorInstanceLock {
+  connector?: { isLocked?: boolean; status?: string };
+}
+
+const validateConnectorNotLocked = async (
+  connectorId: string,
+  appConfig: AppConfig,
+  headers: Record<string, string>,
+): Promise<void> => {
+  const response = await executeConnectorCommand(
+    `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+    HttpMethod.GET,
+    headers,
+  );
+
+  const data = response.data as ConnectorInstanceLock | undefined;
+  if (response.statusCode !== 200 || !data?.connector) {
+    return;
+  }
+
+  const connector = data.connector;
+  if (connector.isLocked) {
+    const status = connector.status ?? '';
+    const message = LOCK_MESSAGES[status] ?? 'Another operation is in progress. Please wait and try again.';
+    throw new ConflictError(message);
+  }
+};
 
 const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
@@ -2764,10 +2798,22 @@ export const getRecordBuffer =
       console.error('Error fetching record buffer:', error);
       if (!res.headersSent) {
         if (error.response) {
-          // Forward status code and error from FastAPI
-          res.status(error.response.status).json({
-            error: error.response.data || 'Error from AI backend',
-          });
+          let errorMessage = 'Error from AI backend';
+          try {
+            const chunks: Buffer[] = [];
+            await new Promise<void>((resolve, reject) => {
+              error.response.data.on('data', (chunk: Buffer) => chunks.push(chunk));
+              error.response.data.on('end', resolve);
+              error.response.data.on('error', reject);
+            });
+            const body = Buffer.concat(chunks).toString('utf8');
+            const parsed = JSON.parse(body);
+            errorMessage = parsed.detail || parsed.error || body;
+          } catch (parseError) {
+            logger.error('Failed to parse error response from AI backend', { error: parseError });
+          }
+          res.status(error.response.status).json({ error: errorMessage });
+          return;
         } else {
           // Don't throw here to avoid uncaughtException shutdown during streams
           res.status(500).json({ error: 'Failed to retrieve record data' });
@@ -2795,6 +2841,12 @@ export const reindexFailedRecords =
       }
 
       await validateActiveConnector(
+        connectorId,
+        appConfig,
+        req.headers as Record<string, string>,
+      );
+
+      await validateConnectorNotLocked(
         connectorId,
         appConfig,
         req.headers as Record<string, string>,
@@ -2839,6 +2891,12 @@ export const resyncConnectorRecords =
       }
 
       await validateActiveConnector(
+        connectorId,
+        appConfig,
+        req.headers as Record<string, string>,
+      );
+
+      await validateConnectorNotLocked(
         connectorId,
         appConfig,
         req.headers as Record<string, string>,
