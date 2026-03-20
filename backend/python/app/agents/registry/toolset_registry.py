@@ -392,6 +392,7 @@ class ToolsetRegistry:
             'app.agents.actions.jira.jira',
             'app.agents.actions.confluence.confluence',
             'app.agents.actions.github.github',
+            'app.agents.actions.mariadb.mariadb',
             # 'app.agents.actions.gitlab.gitlab',
             # 'app.agents.actions.linear.linear',
             # 'app.agents.actions.notion.notion',

@@ -393,6 +393,7 @@ async def _deep_respond_impl(
         "blob_store": blob_store,
         "graph_provider": graph_provider,
         "org_id": state.get("org_id", ""),
+        "conversation_id": state.get("conversation_id"),
     }
 
     # Construct all_queries — prefer decomposed_queries from planner,
@@ -450,6 +451,7 @@ async def _deep_respond_impl(
             target_words_per_chunk=1,
             mode="json",
             is_agent=True,
+            conversation_id=state.get("conversation_id"),
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})

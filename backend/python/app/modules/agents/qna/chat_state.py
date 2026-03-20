@@ -56,6 +56,7 @@ class ChatState(TypedDict):
     user_id: str
     user_email: str
     send_user_info: bool
+    conversation_id: str | None
 
     # Enhanced features
     system_prompt: str | None  # User-defined system prompt
@@ -141,7 +142,6 @@ class ChatState(TypedDict):
 
     # Multi-step iteration tracking (separate from error retries)
     iteration_count: int  # Current iteration count for multi-step tasks (starts at 0)
-    max_iterations: int  # Maximum iterations allowed for multi-step tasks (default 3)
     is_continue: bool  # Whether this is a continue iteration (multi-step task)
     tool_validation_retry_count: int  # Retry count for tool validation in planner
 
@@ -416,6 +416,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "user_id": user_info.get("userId", ""),
         "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
+        "conversation_id": chat_query.get("conversationId"),
         "llm": llm,
         "logger": logger,
         "retrieval_service": retrieval_service,

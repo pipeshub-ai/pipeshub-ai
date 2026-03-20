@@ -2338,6 +2338,78 @@ GITHUB_GUIDANCE = r"""
 
 """
 
+MARIADB_GUIDANCE = r"""
+## MariaDB-Specific Guidance
+
+### Core Rules
+- Use MariaDB tools when the user asks for database data, table details, SQL results, or table definitions.
+- Prefer read-safe operations (`SELECT`, metadata introspection tools).
+- Do not run destructive SQL (`DROP`, `TRUNCATE`, `DELETE`, `ALTER`) unless the user explicitly asks.
+- If table/column context is unclear, discover structure first before executing SQL.
+- In multi-step tasks, execute in a strict tool loop: one tool call, inspect result, then choose next tool.
+
+### Tool Action Loop (MANDATORY)
+For MariaDB work, follow this loop every time:
+1. Choose exactly one next best tool.
+2. Call that tool with concrete parameters (no placeholders).
+3. Read the returned data/errors.
+4. Decide the next single tool call.
+5. Repeat until the task is complete.
+- Never guess columns/table names when schema tools can confirm them.
+- If a step fails, recover with introspection tools (`list_tables`, `fetch_db_schema`, `get_tables_schema`) before retrying SQL.
+
+### Recommended Tool Order by Scenario
+
+#### Case A: User asks a data question but table/column context is unknown
+1. `mariadb.fetch_db_schema`
+2. `mariadb.execute_query` (final SQL)
+
+#### Case B: User gives table name but not columns
+1. `mariadb.get_tables_schema`
+2. `mariadb.execute_query`
+
+#### Case C: User asks for table structure / DDL
+1. `mariadb.get_table_ddl` (single table)
+
+#### Case D: User asks "show full DB structure"
+1. `mariadb.fetch_db_schema`
+2. Optionally narrow with `mariadb.get_tables_schema` for key tables
+
+#### Case E: User asks "list what exists"
+1. `mariadb.list_tables`
+
+### SQL Construction Guidance
+- Select only needed columns; avoid `SELECT *` unless user explicitly wants all fields.
+- Add sensible limits for exploratory reads (for example `LIMIT 50`), unless user requests full result.
+- Use discovered column names/types from schema tools before writing joins/filters.
+- For time-based requests, use explicit date predicates and clear sorting.
+
+### Error Recovery (MariaDB)
+- If SQL fails due to missing table/column:
+    1. Run `mariadb.list_tables`
+    2. Run `mariadb.get_tables_schema`
+    3. Retry `mariadb.execute_query` with corrected identifiers
+- If results are empty:
+    1. Verify filters/date range
+    2. Re-check columns/types via `mariadb.get_tables_schema`
+    3. Retry with adjusted query
+- If permissions fail, report clearly and stop retry loops.
+
+### Planning Examples (one tool after another)
+
+Example 1: "Show total orders by status for last 30 days"
+1. `mariadb.fetch_db_schema`
+2. `mariadb.get_tables_schema(tables=["orders"])`
+3. `mariadb.execute_query(query="SELECT status, COUNT(*) AS total_orders FROM orders WHERE created_at >= NOW() - INTERVAL 30 DAY GROUP BY status ORDER BY total_orders DESC")`
+
+Example 2: "What columns are in invoice?"
+1. `mariadb.get_tables_schema(tables=["invoice"])`
+2. Optional follow-up: `mariadb.execute_query` only if user asks for row data
+
+Example 3: "Give me the DDL for invoice"
+1. `mariadb.get_table_ddl(table="invoice")`
+"""
+
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
 
 ## Core Planning Logic - Understanding User Intent
@@ -2703,6 +2775,7 @@ Generate:
 {outlook_guidance}
 {teams_guidance}
 {github_guidance}
+{mariadb_guidance}
 
 ## Planning Best Practices
 
@@ -3511,6 +3584,7 @@ async def planner_node(
     outlook_guidance = OUTLOOK_GUIDANCE if _has_outlook_tools(state) else ""
     teams_guidance = TEAMS_GUIDANCE if _has_teams_tools(state) else ""
     github_guidance = GITHUB_GUIDANCE if _has_github_tools(state) else ""
+    mariadb_guidance = MARIADB_GUIDANCE if _has_mariadb_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
@@ -3520,7 +3594,8 @@ async def planner_node(
         onedrive_guidance=onedrive_guidance,
         outlook_guidance=outlook_guidance,
         teams_guidance=teams_guidance,
-        github_guidance=github_guidance
+        github_guidance=github_guidance,
+        mariadb_guidance=mariadb_guidance
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -4563,6 +4638,11 @@ def _has_github_tools(state: ChatState) -> bool:
     """Check if GitHub tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "github" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+def _has_mariadb_tools(state: ChatState) -> bool:
+    """Check if MariaDB tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "mariadb" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
@@ -6199,6 +6279,7 @@ async def respond_node(
             "blob_store": blob_store,
             "graph_provider": graph_provider,
             "org_id": org_id,
+            "conversation_id": state.get("conversation_id"),
         }
 
         answer_text = ""
@@ -6224,6 +6305,7 @@ async def respond_node(
             target_words_per_chunk=1,
             mode="json",
             is_agent=True,  # Use agent schemas (with referenceData support)
+            conversation_id=state.get("conversation_id"),
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -6591,8 +6673,19 @@ async def _generate_fast_api_response(
         content = r.get("result", "")
         _extract_urls_for_reference_data(content, reference_data)
 
+    answer_text = full_content.strip()
+    conversation_id = state.get("conversation_id")
+    if conversation_id:
+        try:
+            from app.utils.conversation_tasks import await_and_collect_results
+            from app.utils.streaming import _append_task_markers
+            task_results = await await_and_collect_results(conversation_id)
+            answer_text = _append_task_markers(answer_text, task_results)
+        except Exception as e:
+            log.warning("Fast-path: conversation tasks failed: %s", e)
+
     completion_data = {
-        "answer": full_content.strip(),
+        "answer": answer_text,
         "citations": [],
         "confidence": "High",
         "answerMatchType": "Derived From Tool Execution",
@@ -6601,7 +6694,7 @@ async def _generate_fast_api_response(
         completion_data["referenceData"] = reference_data
 
     safe_stream_write(writer, {"event": "complete", "data": completion_data}, config)
-    state["response"] = full_content.strip()
+    state["response"] = answer_text
     state["completion_data"] = completion_data
     return True
 
@@ -7721,6 +7814,9 @@ Use this decision tree to choose the right approach:
 
     if _has_outlook_tools(state):
         base_prompt += "\n" + OUTLOOK_GUIDANCE
+
+    if _has_mariadb_tools(state):
+        base_prompt += "\n" + MARIADB_GUIDANCE
 
     # ── Multi-step workflow patterns ─────────────────────────────────────────
     workflow_patterns = _build_workflow_patterns(state)
