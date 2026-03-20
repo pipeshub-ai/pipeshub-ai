@@ -30,6 +30,7 @@ from msgraph.generated.models.list_item import ListItem
 from msgraph.generated.models.site import Site
 from msgraph.generated.models.site_page import SitePage
 from msgraph.generated.models.subscription import Subscription
+from msgraph.generated.drives.item.root.root_request_builder import RootRequestBuilder
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -431,7 +432,7 @@ class SharePointConnector(BaseConnector):
         }
 
     async def init(self) -> bool:
-        logging.getLogger("azure").setLevel(logging.ERROR)
+        logging.getLogger("azure").setLevel(logging.WARNING)
         logging.getLogger("httpx").setLevel(logging.WARNING)
 
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
@@ -2691,39 +2692,72 @@ class SharePointConnector(BaseConnector):
             self.logger.warning(f"⚠️ Failed to expand M365 Group {group_id}: {e}")
             return users # Return whatever we found so far
 
-    async def _get_drive_permissions(self, site_id: str, drive_id: str) -> tuple[List[Permission], bool]:
+    async def _get_drive_permissions(self, site_id: str, drive_id: str, session: Optional[aiohttp.ClientSession] = None) -> tuple[List['Permission'], bool]:
         """Get permissions for a document library via its Root Folder."""
         try:
-            permissions = []
-            should_inherit = True
-
+            # 1. Get the root item to extract sharepointIds and root item ID
             async with self.rate_limiter:
-                # 1. Define the base drive client
                 drive_client = self.client.drives.by_drive_id(drive_id)
-
-                # 2. Step 1: Get the Root Item first to find its real ID
-                # The 'root' builder has .get() but lacks .permissions in the SDK
+                request_config = RootRequestBuilder.RootRequestBuilderGetRequestConfiguration(
+                    query_parameters=RootRequestBuilder.RootRequestBuilderGetQueryParameters(
+                        select=["id", "sharepointIds"]
+                    )
+                )
                 root_item = await self._safe_api_call(
-                    drive_client.root.get()
+                    drive_client.root.get(request_configuration=request_config)
                 )
 
-                if not root_item or not root_item.id:
-                    self.logger.warning(f"⚠️ Could not find root item for drive {drive_id}")
+            if not root_item or not root_item.sharepoint_ids:
+                self.logger.debug(f"Could not find root item or sharepoint_ids for drive {drive_id}")
+                return [], True
+
+            sp = root_item.sharepoint_ids
+            has_unique_url = f"{sp.site_url}/_api/web/lists('{sp.list_id}')?$select=Id,HasUniqueRoleAssignments"
+
+            headers = {
+                "Authorization": f"Bearer {await self._get_sharepoint_access_token()}",
+                "Accept": "application/json;odata=verbose"
+            }
+
+            owned_session = None
+            if session is None:
+                owned_session = aiohttp.ClientSession()
+                session = owned_session
+
+            try:
+                # 2. Check HasUniqueRoleAssignments via SharePoint REST API
+                async with self.rate_limiter:
+                    async with session.get(has_unique_url, headers=headers) as resp:
+                        if resp.status != HTTPStatus.OK:
+                            resp_text = await resp.text()
+                            self.logger.debug(
+                                f"Failed to check unique permissions for drive {drive_id}: "
+                                f"status={resp.status}, response={resp_text[:500]}"
+                            )
+                            return [], True
+                        data = await resp.json()
+                        has_unique = data.get('d', {}).get('HasUniqueRoleAssignments', False)
+
+                # 3. If inheriting, exit early
+                if not has_unique:
+                    self.logger.debug(f"Drive {drive_id} inherits permissions from site")
                     return [], True
 
-                # 3. Step 2: Use the 'items' accessor with the ID we just found
-                # The 'items' builder correctly has the .permissions property
-                perms_response = await self._safe_api_call(
-                    drive_client.items.by_drive_item_id(root_item.id).permissions.get()
-                )
+                # 4. If unique, fetch the permissions using the root item ID via Graph API
+                permissions = []
+                async with self.rate_limiter:
+                    perms_response = await self._safe_api_call(
+                        drive_client.items.by_drive_item_id(root_item.id).permissions.get()
+                    )
 
-            if perms_response and perms_response.value:
-                should_inherit = self._check_should_inherit(perms_response.value)
-                if should_inherit:
-                    return [], True
-                permissions = await self._convert_to_permissions(perms_response.value, site_id)
+                if perms_response and perms_response.value:
+                    permissions = await self._convert_to_permissions(perms_response.value, site_id)
 
-            return permissions, should_inherit
+                return permissions, False
+                
+            finally:
+                if owned_session:
+                    await owned_session.close()
 
         except Exception as e:
             self.logger.warning(f"❌ Could not get drive permissions for {drive_id}: {e}")
@@ -3244,8 +3278,10 @@ class SharePointConnector(BaseConnector):
             if owned_session is not None:
                 await owned_session.close()
 
-        # Add organization permission if "Everyone except external users" was found
-        if has_org_permission:
+        # Add organization permission if "Everyone except external users" was found,
+        # but only when no org permission was already added (e.g. from an organization share link)
+        has_org_in_list = any(p.entity_type == EntityType.ORG for p in permissions)
+        if has_org_permission and not has_org_in_list:
             self.logger.info(f"🌍 Adding organization permission for site {site_id}")
             permissions.append(Permission(
                 type=PermissionType.READ,

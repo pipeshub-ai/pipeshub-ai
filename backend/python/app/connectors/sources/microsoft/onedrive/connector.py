@@ -178,7 +178,7 @@ class OneDriveConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
 
     async def init(self) -> bool:
-        logging.getLogger("azure").setLevel(logging.ERROR)
+        logging.getLogger("azure").setLevel(logging.WARNING)
 
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
         if not config:
