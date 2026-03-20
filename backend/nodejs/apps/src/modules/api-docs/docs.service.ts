@@ -182,7 +182,7 @@ export class ApiDocsService {
         description: 'Knowledge base and folder management',
         version: '1.0.0',
         basePath: '/api/v1/knowledgeBase',
-        tags: ['Knowledge Bases', 'Folders', 'Records', 'Permissions', 'Upload', 'Connector'],
+        tags: ['Knowledge Bases', 'Knowledge Hub', 'Folders', 'Records', 'Permissions', 'Upload', 'Connector'],
         source: 'nodejs',
         order: 5,
       },

@@ -2,6 +2,27 @@ import logging
 import os
 import sys
 
+
+class ColoredFormatter(logging.Formatter):
+    """Formatter that adds colors for WARNING (yellow) and ERROR (red) in console output."""
+
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
+    RESET = "\033[0m"
+
+    COLORS = {
+        logging.WARNING: YELLOW,
+        logging.ERROR: RED,
+        logging.CRITICAL: RED,
+    }
+
+    def format(self, record) -> str:
+        formatted = super().format(record)
+        color = self.COLORS.get(record.levelno)
+        if color:
+            return f"{color}{formatted}{self.RESET}"
+        return formatted
+
 # Ensure log directory exists
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
@@ -21,6 +42,12 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s",
     encoding="utf-8",
 )
+
+# Suppress Neo4j notification warnings (missing labels, etc.)
+data_store = os.getenv("DATA_STORE", "arangodb").lower()
+if data_store == "neo4j":
+    neo4j_notifications_logger = logging.getLogger("neo4j.notifications")
+    neo4j_notifications_logger.setLevel(logging.ERROR)  # Only show errors, suppress warnings
 
 
 def create_logger(service_name: str) -> logging.Logger:
@@ -47,9 +74,9 @@ def create_logger(service_name: str) -> logging.Logger:
         )
         file_handler.setFormatter(logging.Formatter(log_format))
 
-        # Console handler with enhanced format
+        # Console handler with colored format
         console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(logging.Formatter(log_format))
+        console_handler.setFormatter(ColoredFormatter(log_format))
 
         # Add handlers
         logger.addHandler(file_handler)

@@ -136,6 +136,16 @@ ENV/
 env.bak/
 venv.bak/
 
+# Integration tests — env files with secrets (templates .env.example, .env.local.example, .env.prod.example are committed)
+.env.local
+.env.prod
+integration-tests/.env
+integration-tests/.env.local
+integration-tests/.env.prod
+integration-tests/reports/
+integration-tests/.integration-test-cache/
+.integration-test-cache/
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -184,3 +194,5 @@ backend/python/cleanup.ps1
 pyrightconfig.json
 .claude/settings.local.json
 CLAUDE.md
+nul
+backend/python/requirements.txt

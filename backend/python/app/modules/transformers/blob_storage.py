@@ -14,17 +14,52 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.transformers.transformer import TransformContext, Transformer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class BlobStorage(Transformer):
-    def __init__(self,logger,config_service, arango_service: BaseArangoService = None) -> None:
+    def __init__(self,logger,config_service, graph_provider: IGraphDBProvider = None) -> None:
         self.logger = logger
         self.config_service = config_service
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
 
+    async def _get_auth_and_config(self, org_id: str) -> tuple[dict, str, str]:
+        """
+        Returns (headers, nodejs_endpoint, storage_type).
+        """
+        payload = {
+            "orgId": org_id,
+            "scopes": [TokenScopes.STORAGE_TOKEN.value],
+        }
+        secret_keys = await self.config_service.get_config(
+            config_node_constants.SECRET_KEYS.value
+        )
+        scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
+        if not scoped_jwt_secret:
+            raise ValueError("Missing scoped JWT secret")
+
+        jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+        headers = {"Authorization": f"Bearer {jwt_token}"}
+
+        endpoints = await self.config_service.get_config(
+            config_node_constants.ENDPOINTS.value
+        )
+        nodejs_endpoint = endpoints.get("cm", {}).get(
+            "endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value
+        )
+        if not nodejs_endpoint:
+            raise ValueError("Missing CM endpoint configuration")
+
+        storage = await self.config_service.get_config(
+            config_node_constants.STORAGE.value
+        )
+        storage_type = storage.get("storageType")
+        if not storage_type:
+            raise ValueError("Missing storage type configuration")
+
+        return headers, nodejs_endpoint, storage_type
     def _compress_record(self, record: dict) -> str:
         """
         Compress record data using msgspec (C-based) + zstd.
@@ -346,8 +381,8 @@ class BlobStorage(Transformer):
         record_dict = self._clean_empty_values(record_dict)
         document_id, file_size_bytes = await self.save_record_to_storage(org_id, record_id, virtual_record_id, record_dict)
 
-        # Store the mapping if we have both IDs and arango_service is available
-        if document_id and self.arango_service:
+        # Store the mapping if we have both IDs and graph_provider is available
+        if document_id and self.graph_provider:
             await self.store_virtual_record_mapping(virtual_record_id, document_id, file_size_bytes)
 
         ctx.record = record
@@ -404,6 +439,37 @@ class BlobStorage(Transformer):
             raise
         except Exception as e:
             self.logger.error("❌ Unexpected error uploading to signed URL: %s", str(e))
+            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+
+    async def _upload_raw_to_signed_url(
+        self,
+        session: aiohttp.ClientSession,
+        signed_url: str,
+        content: bytes,
+        content_type: str,
+    ) -> None:
+        """Upload raw bytes to a pre-signed URL (for CSV, images, etc.)."""
+        try:
+            async with session.put(
+                signed_url,
+                data=content,
+                headers={"Content-Type": content_type},
+            ) as response:
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    response_text = (await response.text())[:200]
+                    self.logger.error(
+                        "❌ Failed to upload raw content. Status: %d, Response: %s",
+                        response.status,
+                        response_text,
+                    )
+                    raise aiohttp.ClientError(
+                        f"Failed to upload with status {response.status}"
+                    )
+                self.logger.debug("✅ Successfully uploaded raw content to signed URL")
+        except aiohttp.ClientError:
+            raise
+        except Exception as e:
+            self.logger.error("❌ Unexpected error uploading raw content: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
     async def _create_placeholder(self, session, url, data, headers) -> dict | None:
@@ -658,26 +724,38 @@ class BlobStorage(Transformer):
         Returns:
             tuple[str | None, int | None]: (document_id, file_size_bytes) if found, else (None, None).
         """
-        if not self.arango_service:
-            self.logger.error("❌ ArangoService not initialized, cannot get document ID by virtual record ID.")
-            raise Exception("ArangoService not initialized, cannot get document ID by virtual record ID.")
+        if not self.graph_provider:
+            self.logger.error("❌ GraphProvider not initialized, cannot get document ID by virtual record ID.")
+            raise Exception("GraphProvider not initialized, cannot get document ID by virtual record ID.")
 
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-            query = 'FOR doc IN @@collection FILTER doc.virtualRecordId == @virtualRecordId OR doc._key == @virtualRecordId RETURN {documentId: doc.documentId, fileSizeBytes: doc.fileSizeBytes}'
-            bind_vars = {
-                '@collection': collection_name,
-                'virtualRecordId': virtual_record_id
-            }
-            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
 
-            # Check if cursor has any results before calling next()
-            results = list(cursor)
-            if results:
-                result = results[0]
-                document_id = result.get('documentId')
-                file_size_bytes = result.get('fileSizeBytes')
-                return document_id, file_size_bytes
+            # Try to find by virtualRecordId field first
+            nodes = await self.graph_provider.get_nodes_by_filters(
+                collection_name,
+                {"virtualRecordId": virtual_record_id}
+            )
+            # If not found, try to find by _key/id
+            if not nodes:
+                # Try getting document by key/id
+                doc = await self.graph_provider.get_document(
+                    virtual_record_id,
+                    collection_name
+                )
+                if doc:
+                    nodes = [doc]
+
+            if nodes:
+                # Return documentId and fileSizeBytes from the first matching node
+                document_id = nodes[0].get("documentId")
+                file_size_bytes = nodes[0].get("fileSizeBytes")
+
+                if document_id:
+                    return document_id, file_size_bytes
+                else:
+                    self.logger.warning("Found mapping document but no documentId field for virtual record ID: %s", virtual_record_id)
+                    return None, None
             else:
                 self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
                 return None, None
@@ -685,7 +763,7 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Error getting document ID by virtual record ID: %s", str(e))
             raise e
 
-    async def get_record_from_storage(self, virtual_record_id: str, org_id: str) -> str:
+    async def get_record_from_storage(self, virtual_record_id: str, org_id: str) -> dict | None:
             """
             Retrieve a record's content from blob storage using the virtual_record_id.
             Returns:
@@ -870,7 +948,7 @@ class BlobStorage(Transformer):
 
     async def store_virtual_record_mapping(self, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
         """
-        Stores the mapping between virtual_record_id and document_id in ArangoDB.
+        Stores the mapping between virtual_record_id and document_id in graph database.
         Args:
             virtual_record_id: The virtual record ID
             document_id: The document ID
@@ -886,7 +964,7 @@ class BlobStorage(Transformer):
             mapping_key = virtual_record_id
 
             mapping_document = {
-                "_key": mapping_key,
+                "id": mapping_key,
                 "documentId": document_id,
                 "updatedAt": get_epoch_timestamp_in_ms()
             }
@@ -895,7 +973,7 @@ class BlobStorage(Transformer):
             if file_size_bytes is not None:
                 mapping_document["fileSizeBytes"] = file_size_bytes
 
-            success = await self.arango_service.batch_upsert_nodes(
+            success = await self.graph_provider.batch_upsert_nodes(
                 [mapping_document],
                 collection_name
             )
@@ -912,5 +990,147 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Failed to store virtual record mapping: %s", str(e))
             self.logger.exception("Detailed error trace:")
             raise e
+
+                
+    async def save_conversation_file_to_storage(
+        self,
+        org_id: str,
+        conversation_id: str,
+        file_name: str,
+        file_bytes: bytes,
+        content_type: str = "text/csv",
+    ) -> dict:
+        """Save a file (CSV, etc.) under a conversation path and return download info.
+
+        Args:
+            org_id: Organisation ID (used for auth / routing).
+            conversation_id: Conversation this file belongs to.
+            file_name: Human-readable file name **with** extension
+                       (e.g. ``query_result_1709640000.csv``).
+            file_bytes: Raw file content.
+            content_type: MIME type for the upload.
+
+        Returns:
+            dict with ``documentId``, ``fileName``, and either ``signedUrl``
+            (S3) or ``downloadUrl`` (local).
+        """
+        import os
+
+        try:
+            headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+
+            document_path = f"conversations/{conversation_id}"
+            doc_name_no_ext = os.path.splitext(file_name)[0]
+            extension = os.path.splitext(file_name)[1].lstrip(".")
+
+            if storage_type == "local":
+                async with aiohttp.ClientSession() as session:
+                    form_data = aiohttp.FormData()
+                    form_data.add_field(
+                        "file", file_bytes,
+                        filename=file_name,
+                        content_type=content_type,
+                    )
+                    form_data.add_field("documentName", doc_name_no_ext)
+                    form_data.add_field("documentPath", document_path)
+                    form_data.add_field("isVersionedFile", "false")
+
+                    upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
+                    async with session.post(upload_url, data=form_data, headers=headers) as response:
+                        if response.status != HttpStatusCode.SUCCESS.value:
+                            try:
+                                error_body = await response.json()
+                                self.logger.error(
+                                    "❌ Conversation file upload failed. Status: %d, Error: %s",
+                                    response.status, error_body,
+                                )
+                            except Exception:
+                                error_text = await response.text()
+                                self.logger.error(
+                                    "❌ Conversation file upload failed. Status: %d, Response: %s",
+                                    response.status, error_text[:500],
+                                )
+                            raise Exception(f"Local upload failed with status {response.status}")
+                        response_data = await response.json()
+                        document_id = response_data.get("_id")
+                        if not document_id:
+                            raise Exception("No document ID in local upload response")
+
+                    download_url = (
+                        f"{nodejs_endpoint}"
+                        f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+                    )
+                    self.logger.info("✅ Conversation file saved (local): %s", document_id)
+                    return {
+                        "documentId": document_id,
+                        "downloadUrl": download_url,
+                        "fileName": file_name,
+                    }
+            else:
+                placeholder_data = {
+                    "documentName": doc_name_no_ext,
+                    "documentPath": document_path,
+                    "extension": extension,
+                    "isVersionedFile": False,
+                }
+
+                async with aiohttp.ClientSession() as session:
+                    placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
+                    document = await self._create_placeholder(
+                        session, placeholder_url, placeholder_data, headers,
+                    )
+                    document_id = document.get("_id")
+                    if not document_id:
+                        raise Exception("No document ID in placeholder response")
+
+                    upload_url = (
+                        f"{nodejs_endpoint}"
+                        f"{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
+                    )
+                    upload_result = await self._get_signed_url(session, upload_url, {}, headers)
+                    signed_url = upload_result.get("signedUrl")
+                    if not signed_url:
+                        raise Exception("No signed URL for conversation file upload")
+
+                    await self._upload_raw_to_signed_url(
+                        session,
+                        signed_url,
+                        file_bytes,
+                        content_type,
+                    )
+
+                    download_api = (
+                        f"{nodejs_endpoint}"
+                        f"{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+                    )
+                    async with session.get(download_api, headers=headers) as resp:
+                        if resp.status == HttpStatusCode.SUCCESS.value:
+                            data = await resp.json()
+                            download_signed_url = data.get("signedUrl")
+                            if download_signed_url:
+                                self.logger.info(
+                                    "✅ Conversation file saved (S3): %s", document_id,
+                                )
+                                return {
+                                    "documentId": document_id,
+                                    "signedUrl": download_signed_url,
+                                    "fileName": file_name,
+                                }
+
+                    self.logger.info(
+                        "✅ Conversation file saved (fallback URL): %s", document_id,
+                    )
+                    download_url_external = (
+                        f"{nodejs_endpoint}"
+                        f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+                    )
+                    return {
+                        "documentId": document_id,
+                        "downloadUrl": download_url_external,
+                        "fileName": file_name,
+                    }
+        except Exception as e:
+            self.logger.error("❌ Error saving conversation file: %s", str(e))
+            raise
 
 

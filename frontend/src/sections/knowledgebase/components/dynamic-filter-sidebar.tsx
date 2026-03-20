@@ -92,6 +92,7 @@ const getFilterOptionIcon = (filterId: string): any => {
     
     // Origins
     KB: folderMultipleIcon,
+    COLLECTION: folderMultipleIcon,
     CONNECTOR: connectionIcon,
     
     // Indexing Status

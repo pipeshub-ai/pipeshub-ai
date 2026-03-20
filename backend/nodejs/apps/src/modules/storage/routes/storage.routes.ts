@@ -26,6 +26,8 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { StorageController } from '../controllers/storage.controller';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
+import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const logger = Logger.getInstance({ service: 'StorageRoutes' });
 
@@ -41,6 +43,7 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/upload',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
     metricsMiddleware(container),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
@@ -99,6 +102,7 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/placeholder',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(CreateDocumentSchema),
     async (
@@ -142,6 +146,7 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/:documentId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (
@@ -177,6 +182,7 @@ export function createStorageRouter(container: Container): Router {
   router.delete(
     '/:documentId/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_DELETE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (
@@ -212,6 +218,7 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/:documentId/download',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParamsWithVersion),
     async (
@@ -247,6 +254,7 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/:documentId/buffer',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(GetBufferSchema),
     async (
@@ -284,6 +292,7 @@ export function createStorageRouter(container: Container): Router {
   router.put(
     '/:documentId/buffer',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
     metricsMiddleware(container),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
@@ -339,6 +348,7 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/:documentId/uploadNextVersion',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: Object.values(extensionToMimeType),
@@ -400,6 +410,7 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/:documentId/rollBack',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(RollBackToPreviousVersionSchema),
     async (
@@ -445,6 +456,7 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/:documentId/directUpload',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(DirectUploadSchema),
     async (
@@ -481,6 +493,7 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/:documentId/isModified',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.DOCUMENT_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (

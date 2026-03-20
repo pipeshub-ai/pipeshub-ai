@@ -20,6 +20,7 @@ from app.config.constants.arangodb import (
     ExtensionTypes,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -39,6 +40,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -59,7 +61,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -135,7 +136,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
             description="Sync files with specific extensions",
-            default_value=[],
             option_source_type=OptionSourceType.STATIC,
             options=[
                 FilterOption(id=MimeTypes.GOOGLE_DOCS.value, label="google docs"),
@@ -163,7 +163,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             default_value=True
         ))
         .with_webhook_config(False, [])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
         .with_sync_support(True)
@@ -847,8 +847,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                 perm.email == user_email for perm in permissions
             )
 
-            self.logger.info(f"\n\n\nUser already has permission: {user_already_has_permission}")
-
             if not user_already_has_permission:
                 fallback_permission = Permission(
                     email=user_email,
@@ -1496,6 +1494,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
                 is_shared_with_me=is_shared_with_me,
+                shared_with_me_record_group_id=f"0S:{user_email}" if is_shared_with_me else None,
             )
 
             if existing_record and not content_changed:
@@ -1505,12 +1504,6 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             if is_shared_with_me:
                 file_record.external_record_group_id = None
-
-                async with self.data_store_provider.transaction() as tx_store:
-                    shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=self.connector_id, external_id=f"0S:{user_email}")
-                    if not shared_with_me_record_group:
-                        raise ValueError("Create a shared with me record group first")
-                    await tx_store.create_record_group_relation(file_record.id, shared_with_me_record_group.id)
 
             # Handle Permissions - fetch new permissions
             new_permissions = []
@@ -1594,7 +1587,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     shared_disabled = record_update.record.is_shared and not record_update.record.is_shared_with_me and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
                     shared_with_me_disabled = record_update.record.is_shared_with_me and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED_WITH_ME, default=True)
                     if files_disabled or shared_disabled or shared_with_me_disabled:
-                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     yield (record_update.record, record_update.new_permissions or [], record_update)
                 await asyncio.sleep(0)

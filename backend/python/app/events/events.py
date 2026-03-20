@@ -1,4 +1,5 @@
 import hashlib
+import os
 from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
 
@@ -13,15 +14,16 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class EventProcessor:
-    def __init__(self, logger, processor, arango_service, config_service: ConfigurationService = None) -> None:
+    def __init__(self, logger, processor, graph_provider: IGraphDBProvider, config_service: ConfigurationService = None) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing EventProcessor")
         self.processor = processor
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.config_service = config_service
 
 
@@ -41,7 +43,7 @@ class EventProcessor:
             )
 
             docs = [doc]
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 docs, CollectionNames.RECORDS.value
             )
 
@@ -54,7 +56,7 @@ class EventProcessor:
                 f"to {status.value}: {repr(e)}"
             )
             if status == ProgressStatus.EMPTY:
-                raise Exception(f"Failed to mark record status to EMPTY: {repr(e)}")
+                raise Exception(f"Failed to mark record status to EMPTY: {repr(e)}") from e
 
 
 
@@ -85,16 +87,16 @@ class EventProcessor:
             md5_checksum = hashlib.md5(content).hexdigest()
             doc.update({"md5Checksum": md5_checksum})
             self.logger.info(f"🚀 Calculated md5_checksum: {md5_checksum} for record type: {record_type}")
-            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
 
         if not md5_checksum:
             return False
 
-        duplicate_records = await self.arango_service.find_duplicate_records(
-            doc.get('_key'),
-            md5_checksum,
-            record_type,
-            size_in_bytes
+        duplicate_records = await self.graph_provider.find_duplicate_records(
+            record_key=doc.get('_key'),
+            md5_checksum=md5_checksum,
+            record_type=record_type,
+            size_in_bytes=size_in_bytes
         )
 
         duplicate_records = [r for r in duplicate_records if r is not None]
@@ -122,12 +124,11 @@ class EventProcessor:
                 "extractionStatus": processed_duplicate.get("extractionStatus"),
                 "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
             })
-            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-
+            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
             # Copy all relationships from the processed duplicate to this document
-            await self.arango_service.copy_document_relationships(
+            await self.graph_provider.copy_document_relationships(
                 processed_duplicate.get("_key"),
-                doc.get("_key")
+                doc.get("_key") or doc.get("id")
             )
             return True  # Duplicate handled
 
@@ -144,7 +145,7 @@ class EventProcessor:
             doc.update({
                 "indexingStatus": ProgressStatus.QUEUED.value,
             })
-            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
             return True  # Marked as queued
 
         self.logger.info(f"🚀 No duplicate found, proceeding with processing for {doc.get('_key')}")
@@ -183,7 +184,7 @@ class EventProcessor:
                 self.logger.error("❌ No record ID provided in event data")
                 return
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
 
@@ -335,14 +336,14 @@ class EventProcessor:
                         ocr_pages = [OCRStrategy.needs_ocr(page, self.logger) for page in temp_doc]
                         needs_ocr = sum(ocr_pages) >= len(ocr_pages) * 0.5 if ocr_pages else False
 
-                    self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using Docling'}")
+                    self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser'}")
                 except Exception as e:
-                    self.logger.warning(f"⚠️ Error checking OCR need: {str(e)}, defaulting to Docling")
+                    self.logger.warning(f"⚠️ Error checking OCR need: {str(e)}, defaulting to layout parser")
                     needs_ocr = False
 
                 if needs_ocr:
                     # Skip docling and use OCR handler directly
-                    self.logger.info("🤖 PDF needs OCR, skipping Docling")
+                    self.logger.info("🤖 PDF needs OCR, skipping layout parser")
                     async for event in self.processor.process_pdf_document_with_ocr(
                         recordName=record_name,
                         recordId=record_id,
@@ -354,30 +355,54 @@ class EventProcessor:
                     ):
                         yield event
                 else:
+                    use_pymupdf = os.environ.get("ENABLE_PYMUPDF_PROCESSOR", "false").lower() == "true"
+                    if use_pymupdf:
+                        self.logger.info("📄 Using PyMuPDF+OpenCV processor (ENABLE_PYMUPDF_PROCESSOR=true)")
+                        try:
+                            async for event in self.processor.process_pdf_with_pymupdf(
+                                recordName=record_name,
+                                recordId=record_id,
+                                pdf_binary=file_content,
+                                virtual_record_id=virtual_record_id
+                            ):
+                                yield event
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ PyMuPDF+OpenCV processing failed, falling back to OCR: {e}")
+                            async for event in self.processor.process_pdf_document_with_ocr(
+                                recordName=record_name,
+                                recordId=record_id,
+                                version=record_version,
+                                source=connector,
+                                orgId=org_id,
+                                pdf_binary=file_content,
+                                virtual_record_id=virtual_record_id
+                            ):
+                                yield event
+                    else:
                     # Use docling for PDFs that don't need OCR
-                    docling_failed = False
-                    async for event in self.processor.process_pdf_with_docling(
-                        recordName=record_name,
-                        recordId=record_id,
-                        pdf_binary=file_content,
-                        virtual_record_id=virtual_record_id
-                    ):
-                        if event.get("event") == "docling_failed":
-                            docling_failed = True
-                        else:
-                            yield event
-
-                    if docling_failed:
-                        async for event in self.processor.process_pdf_document_with_ocr(
+                        docling_failed = False
+                        async for event in self.processor.process_pdf_with_docling(
                             recordName=record_name,
                             recordId=record_id,
-                            version=record_version,
-                            source=connector,
-                            orgId=org_id,
                             pdf_binary=file_content,
                             virtual_record_id=virtual_record_id
                         ):
-                            yield event
+                            if event.get("event") == "docling_failed":
+                                docling_failed = True
+                            else:
+                                yield event
+
+                        if docling_failed:
+                            async for event in self.processor.process_pdf_document_with_ocr(
+                                recordName=record_name,
+                                recordId=record_id,
+                                version=record_version,
+                                source=connector,
+                                orgId=org_id,
+                                pdf_binary=file_content,
+                                virtual_record_id=virtual_record_id
+                            ):
+                                yield event
 
             elif extension == ExtensionTypes.DOCX.value or mime_type == MimeTypes.DOCX.value:
                 async for event in self.processor.process_docx_document(

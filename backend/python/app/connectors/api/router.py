@@ -1,22 +1,22 @@
 import asyncio
 import base64
+import contextlib
 import io
 import json
+import logging
 import mimetypes
 import os
 import tempfile
 import time
-from datetime import datetime, timedelta, timezone
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Union
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import google.oauth2.credentials
 import jwt
 from dependency_injector.wiring import Provide, inject
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     HTTPException,
@@ -24,23 +24,27 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import Response, StreamingResponse
-from google.oauth2 import service_account
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import HttpRequest, MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
+from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AppStatus,
     CollectionNames,
     Connectors,
-    EventTypes,
     MimeTypes,
+    OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.connectors.api.middleware import WebhookAuthVerifier
+from app.config.constants.service import (
+    DefaultEndpoints,
+    OAuthScopes,
+    config_node_constants,
+)
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
@@ -48,29 +52,13 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.services.kafka_service import KafkaService
-from app.connectors.sources.google.admin.admin_webhook_handler import (
-    AdminWebhookHandler,
-)
-from app.connectors.sources.google.common.google_token_handler import (
-    CredentialKeys,
-)
-from app.connectors.sources.google.common.scopes import (
-    GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
-)
-from app.connectors.sources.google.gmail.gmail_webhook_handler import (
-    AbstractGmailWebhookHandler,
-)
-from app.connectors.sources.google.google_drive.drive_webhook_handler import (
-    AbstractDriveWebhookHandler,
-)
 from app.containers.connector import ConnectorAppContainer
+from app.core.signed_url import SignedUrlHandler
 from app.models.entities import Record
-from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
-from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
-from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.services.featureflag.config.config import CONFIG
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
@@ -110,7 +98,7 @@ def get_mime_type_from_record(record: Record) -> str:
     return "application/octet-stream"
 
 
-async def _stream_google_api_request(request, error_context: str = "download") -> AsyncGenerator[bytes, None]:
+async def _stream_google_api_request(request: HttpRequest, error_context: str = "download") -> AsyncGenerator[bytes, None]:
     """
     Helper function to stream data from a Google API request using MediaIoBaseDownload.
 
@@ -147,19 +135,19 @@ async def _stream_google_api_request(request, error_context: str = "download") -
                 raise HTTPException(
                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                     detail=f"Error during {error_context}: {str(http_error)}",
-                )
+                ) from http_error
             except Exception as chunk_error:
                 logger.error(f"Error during {error_context} chunk: {str(chunk_error)}")
                 raise HTTPException(
                     status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                     detail=f"Error during {error_context}",
-                )
+                ) from chunk_error
     except Exception as stream_error:
         logger.error(f"Error in {error_context} stream: {str(stream_error)}")
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error setting up {error_context} stream",
-        )
+        ) from stream_error
     finally:
         buffer.close()
 
@@ -172,7 +160,7 @@ class ReindexFailedRequest(BaseModel):
 async def get_validated_connector_instance(
     connector_id: str,
     request: Request,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     FastAPI dependency to validate user authentication, retrieve connector instance,
     check beta access, and verify permissions.
@@ -252,26 +240,103 @@ async def get_validated_connector_instance(
     return instance
 
 
-async def get_arango_service(request: Request) -> BaseArangoService:
-    container: ConnectorAppContainer = request.app.container
-    arango_service = await container.arango_service()
-    return arango_service
+async def get_graph_provider(request: Request) -> IGraphDBProvider:
+    """Return graph DB provider from app state (set at startup)."""
+    return request.app.state.graph_provider
 
 async def get_kafka_service(request: Request) -> KafkaService:
     container: ConnectorAppContainer = request.app.container
-    kafka_service = container.kafka_service()
-    return kafka_service
+    return container.kafka_service()
 
-async def get_drive_webhook_handler(request: Request) -> Optional[AbstractDriveWebhookHandler]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        drive_webhook_handler = container.drive_webhook_handler()
-        return drive_webhook_handler
-    except Exception as e:
-        logger.warning(f"Failed to get drive webhook handler: {str(e)}")
-        return None
 
-def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
+_LOCK_STATUS_MESSAGES: dict[str, str] = {
+    AppStatus.FULL_SYNCING.value: "A full sync is in progress. Please wait and try again.",
+    AppStatus.SYNCING.value: "A sync is already in progress. Please wait and try again.",
+}
+
+
+def _check_connector_not_locked(instance: dict[str, Any]) -> None:
+    """Raise 409 if the connector instance is currently locked (isLocked=True).
+
+    Picks a descriptive message based on the current app status so the user
+    understands exactly what is blocking their operation.
+    """
+    if instance.get("isLocked"):
+        status = instance.get("status", "")
+        detail = _LOCK_STATUS_MESSAGES.get(
+            status,
+            "Another operation is in progress. Please wait and try again.",
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=detail,
+        )
+
+
+async def require_connector_not_locked(
+    connector_id: str,
+    request: Request,
+) -> None:
+    """FastAPI dependency that raises 409 if the connector instance is currently locked.
+
+    Fetches the connector instance using the authenticated user context (populated
+    by the global authMiddleware) and delegates to _check_connector_not_locked.
+    If the instance is not found, this dependency does nothing — the route handler
+    is responsible for its own 404 check.
+    """
+    connector_registry = request.app.state.connector_registry
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+    )
+
+    if instance:
+        _check_connector_not_locked(instance)
+
+
+async def require_connector_not_locked_for_record(
+    record_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Raise 409 if the record's connector is locked. Used by reindex record route."""
+    record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+    if not record:
+        return
+    if record.get("origin") != OriginTypes.CONNECTOR.value:
+        return
+    connector_id = record.get("connectorId")
+    if not connector_id:
+        return
+    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if app_doc:
+        _check_connector_not_locked(app_doc)
+
+
+async def require_connector_not_locked_for_record_group(
+    record_group_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Raise 409 if the record group's connector is locked. Used by reindex record group route."""
+    record_group = await graph_provider.get_document(
+        record_group_id, CollectionNames.RECORD_GROUPS.value
+    )
+    if not record_group:
+        return
+    connector_id = record_group.get("connectorId")
+    if not connector_id:
+        return
+    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if app_doc:
+        _check_connector_not_locked(app_doc)
+
+
+def _parse_comma_separated_str(value: str | None) -> list[str] | None:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
     if not value:
         return None
@@ -282,9 +347,10 @@ def _sanitize_app_name(app_name: str) -> str:
 
 
 def _trim_config_values(
-    obj: Union[str, int, float, bool, None, List[Any], Dict[str, Any]],
-    path: str = ""
-) -> Union[str, int, float, bool, None, List[Any], Dict[str, Any]]:
+    *,
+    obj: str | int | float | bool | None | list[Any] | dict[str, Any],
+    path: str = "",
+) -> str | int | float | bool | None | list[Any] | dict[str, Any]:
     """
     Recursively trims leading and trailing whitespace from string values in a configuration object.
     Skips certain fields that may contain intentional whitespace (like certificates, keys, etc.)
@@ -322,14 +388,14 @@ def _trim_config_values(
 
     # If it's a list, recursively trim each element
     if isinstance(obj, list):
-        return [_trim_config_values(item, f"{path}[{i}]") for i, item in enumerate(obj)]
+        return [_trim_config_values(obj=item, path=f"{path}[{i}]") for i, item in enumerate(obj)]
 
     # If it's a dict, recursively trim each property
     if isinstance(obj, dict):
         trimmed = {}
         for key, value in obj.items():
             new_path = f"{path}.{key}" if path else key
-            trimmed[key] = _trim_config_values(value, new_path)
+            trimmed[key] = _trim_config_values(obj=value, path=new_path)
         return trimmed
 
     # Preserve all other types as-is:
@@ -340,7 +406,7 @@ def _trim_config_values(
     return obj
 
 
-def _trim_connector_config(config: Dict[str, Any]) -> Dict[str, Any]:
+def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
     """
     Trims whitespace from connector configuration before saving.
     This ensures consistent data without leading/trailing spaces.
@@ -358,141 +424,18 @@ def _trim_connector_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
     for section in ["auth", "sync", "filters"]:
         if section in trimmed_config and isinstance(trimmed_config[section], dict):
-            trimmed_config[section] = _trim_config_values(trimmed_config[section], section)
+            trimmed_config[section] = _trim_config_values(obj=trimmed_config[section], path=section)
 
     return trimmed_config
 
-@router.post("/drive/webhook")
-@inject
-async def handle_drive_webhook(request: Request, background_tasks: BackgroundTasks) -> dict:
-    """Handle incoming webhook notifications from Google Drive"""
-    try:
-
-        verifier = WebhookAuthVerifier(logger)
-        if not await verifier.verify_request(request):
-            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Unauthorized webhook request")
-
-        drive_webhook_handler = await get_drive_webhook_handler(request)
-
-        if drive_webhook_handler is None:
-            logger.warning(
-                "Drive webhook handler not yet initialized - skipping webhook processing"
-            )
-            return {
-                "status": "skipped",
-                "message": "Webhook handler not yet initialized",
-            }
-
-        # Log incoming request details
-        headers = dict(request.headers)
-        logger.info("📥 Incoming webhook request")
-
-        # Get important headers
-        resource_state = (
-            headers.get("X-Goog-Resource-State")
-            or headers.get("x-goog-resource-state")
-            or headers.get("X-GOOG-RESOURCE-STATE")
-        )
-
-        logger.info("Resource state: %s", resource_state)
-
-        # Process notification in background
-        if resource_state != "sync":
-            background_tasks.add_task(
-                drive_webhook_handler.process_notification, headers
-            )
-            return {"status": "accepted"}
-        else:
-            logger.info("Received sync verification request")
-            return {"status": "sync_verified"}
-
-    except Exception as e:
-        logger.error("Error processing webhook: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
-
-
-async def get_gmail_webhook_handler(request: Request) -> Optional[AbstractGmailWebhookHandler]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        gmail_webhook_handler = container.gmail_webhook_handler()
-        return gmail_webhook_handler
-    except Exception as e:
-        logger.warning(f"Failed to get gmail webhook handler: {str(e)}")
-        return None
-
-
-@router.get("/gmail/webhook")
-@router.post("/gmail/webhook")
-@inject
-async def handle_gmail_webhook(request: Request, background_tasks: BackgroundTasks) -> dict:
-    """Handles incoming Pub/Sub messages"""
-    try:
-        gmail_webhook_handler = await get_gmail_webhook_handler(request)
-
-        if gmail_webhook_handler is None:
-            logger.warning(
-                "Gmail webhook handler not yet initialized - skipping webhook processing"
-            )
-            return {
-                "status": "skipped",
-                "message": "Webhook handler not yet initialized",
-            }
-
-        body = await request.json()
-        logger.info("Received webhook request: %s", body)
-
-        # Get the message from the body
-        message = body.get("message")
-        if not message:
-            logger.warning("No message found in webhook body")
-            return {"status": "error", "message": "No message found"}
-
-        # Decode the message data
-        data = message.get("data", "")
-        if data:
-            try:
-                decoded_data = base64.b64decode(data).decode("utf-8")
-                notification = json.loads(decoded_data)
-
-                # Process the notification
-                background_tasks.add_task(
-                    gmail_webhook_handler.process_notification,
-                    request.headers,
-                    notification,
-                )
-
-                return {"status": "ok"}
-            except Exception as e:
-                logger.error("Error processing message data: %s", str(e))
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail=f"Invalid message data format: {str(e)}",
-                )
-        else:
-            logger.warning("No data found in message")
-            return {"status": "error", "message": "No data found"}
-
-    except json.JSONDecodeError as e:
-        logger.error("Invalid JSON in webhook body: %s", str(e))
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail=f"Invalid JSON format: {str(e)}",
-        )
-    except Exception as e:
-        logger.error("Error processing webhook: %s", str(e))
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)
-        )
-
-
-@router.get("/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl")
+@router.get("/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_signed_url(
     org_id: str,
     user_id: str,
     connector: str,
     record_id: str,
-    signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
+    signed_url_handler: SignedUrlHandler = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
 ) -> dict:
     """Get signed URL for a record"""
     try:
@@ -509,45 +452,15 @@ async def get_signed_url(
         return {"signedUrl": signed_url}
     except Exception as e:
         logger.error(f"Error getting signed URL: {repr(e)}")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e))
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
 
-
-async def get_google_docs_parser(request: Request) -> Optional[GoogleDocsParser]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        google_docs_parser = container.google_docs_parser()
-        return google_docs_parser
-    except Exception as e:
-        logger.warning(f"Failed to get google docs parser: {str(e)}")
-        return None
-
-
-async def get_google_sheets_parser(request: Request) -> Optional[GoogleSheetsParser]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        google_sheets_parser = container.google_sheets_parser()
-        return google_sheets_parser
-    except Exception as e:
-        logger.warning(f"Failed to get google sheets parser: {str(e)}")
-        return None
-
-
-async def get_google_slides_parser(request: Request) -> Optional[GoogleSlidesParser]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        google_slides_parser = container.google_slides_parser()
-        return google_slides_parser
-    except Exception as e:
-        logger.warning(f"Failed to get google slides parser: {str(e)}")
-        return None
-
-@router.delete("/api/v1/delete/record/{record_id}")
+@router.delete("/api/v1/delete/record/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 @inject
 async def handle_record_deletion(
-    record_id: str, arango_service=Depends(Provide[ConnectorAppContainer.arango_service])
-) -> Optional[dict]:
+    record_id: str, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict | None:
     try:
-        response = await arango_service.delete_records_and_relations(
+        response = await graph_provider.delete_records_and_relations(
             record_id, hard_delete=True
         )
         if not response:
@@ -566,16 +479,16 @@ async def handle_record_deletion(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Internal server error while deleting record: {str(e)}",
-        )
+        ) from e
 
 @router.get("/api/v1/internal/stream/record/{record_id}/", response_model=None)
 @inject
 async def stream_record_internal(
     request: Request,
     record_id: str,
-    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Optional[dict | StreamingResponse]:
+) -> dict | StreamingResponse | None:
     """
     Stream a record to the client.
     """
@@ -598,16 +511,28 @@ async def stream_record_internal(
         # TODO: Validate scopes ["connector:signedUrl"]
 
         org_id = payload.get("orgId")
-        org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
-        record_task = arango_service.get_record_by_id(
-            record_id
-        )
-        org, record = await asyncio.gather(org_task, record_task)
+        if not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="Missing orgId in token"
+            )
 
-        if not org:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+        record_task = graph_provider.get_record_by_id(record_id)
+        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        record, org = await asyncio.gather(record_task, org_task)
+
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
+        # Prefer the org_id stored on the record itself — the JWT org_id may differ
+        # if the token was issued for a slightly different context.
+        effective_org_id = record.org_id or org_id
+        if not org:
+            # Retry with the record's own org_id in case it differs from the JWT claim
+            if effective_org_id != org_id:
+                org = await graph_provider.get_document(effective_org_id, CollectionNames.ORGS.value)
+            if not org:
+                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
@@ -618,7 +543,7 @@ async def stream_record_internal(
             storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
             buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
             jwt_payload  = {
-                "orgId": org_id,
+                "orgId": effective_org_id,
                 "scopes": ["storage:token"],
             }
             token = await generate_jwt(config_service, jwt_payload)
@@ -636,24 +561,40 @@ async def stream_record_internal(
             return Response(content=buffer or b'', media_type=mime_type)
 
         connector_id = record.connector_id
-        connector = container.connectors_map[connector_id]
-        if not connector:
+        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not connector_instance:
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector '{connector_name}' not found"
+                detail="The connector for this document no longer exists or was deleted. The document cannot be streamed.",
             )
-        buffer = await connector.stream_record(record)
-        return buffer
+
+        connector_display_name = (
+            connector_instance.get("name") or connector_instance.get("type") or record.connector_name.value or "Connector"
+        )
+
+        connector_obj: BaseConnector = container.connectors_map.get(connector_id)
+        if not connector_obj:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNHEALTHY.value,
+                detail=f"The connector '{connector_display_name}' is currently Disabled. Enable it from Connector Settings and try again.",
+            )
+
+        if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
+            return await connector_obj.stream_record(record, payload.get("userId"))
+        else:
+            return await connector_obj.stream_record(record)
 
     except JWTError as e:
         logger.error("JWT validation error: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token")
+        raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token") from e
     except ValidationError as e:
         logger.error("Payload validation error: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload")
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload") from e
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error("Unexpected error during token validation: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
+        logger.error("Unexpected error in stream_record_internal: %s", str(e), exc_info=True)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error streaming record") from e
 
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject
@@ -663,9 +604,9 @@ async def download_file(
     record_id: str,
     connector: str,
     token: str,
-    signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
-    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
-) -> Optional[dict | StreamingResponse]:
+    signed_url_handler: SignedUrlHandler = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict | StreamingResponse | None:
     try:
         logger.info(f"Downloading file {record_id} with connector {connector}")
         # Verify signed URL using the handler
@@ -684,32 +625,39 @@ async def download_file(
             )
 
         # Get org details to determine account type
-        org = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
+        org = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         # Get record details
-        record = await arango_service.get_record_by_id(
+        record = await graph_provider.get_record_by_id(
             record_id
         )
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
         connector_id = record.connector_id
-        # Get connector instance to check scope
-        connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
-        connector_type = connector_instance.get("type", None)
-        if connector_type is None:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Connector not found")
+        # Get connector instance to check scope and existence
+        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        connector_type = connector_instance.get("type", None) if connector_instance else None
+        if not connector_instance or connector_type is None:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
+            )
+
+        connector_display_name = (
+            connector_instance.get("name") or connector_instance.get("type") or record.connector_name.value or "Connector"
+        )
 
         # Handle KB separately - fetch from storage service
         container: ConnectorAppContainer = request.app.container
         try:
-            connector_obj: BaseConnector = container.connectors_map[connector_id]
+            connector_obj: BaseConnector = container.connectors_map.get(connector_id)
             if not connector_obj:
                 raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail=f"Connector '{connector_id}' not found"
+                    status_code=HttpStatusCode.UNHEALTHY.value,
+                    detail=f"The connector '{connector_display_name}' is currently Disabled. Enable it from Connector Settings and try again.",
                 )
 
             if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
@@ -719,29 +667,31 @@ async def download_file(
 
             return buffer
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
-            )
+            ) from e
 
     except HTTPException as e:
         logger.error("HTTPException: %s", str(e))
         raise e
     except Exception as e:
         logger.error("Error downloading file: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file") from e
 
 
-@router.get("/api/v1/stream/record/{record_id}", response_model=None)
+@router.get("/api/v1/stream/record/{record_id}", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def stream_record(
     request: Request,
     record_id: str,
     convertTo: str = Query(None, description="Convert file to this format"),
-    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Optional[dict | StreamingResponse]:
+) -> dict | StreamingResponse | None:
     """
     Stream a record to the client.
     """
@@ -767,20 +717,19 @@ async def stream_record(
             user_id = payload.get("userId")
         except JWTError as e:
             logger.error("JWT validation error: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token")
+            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token") from e
         except ValidationError as e:
             logger.error("Payload validation error: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload")
+            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload") from e
         except Exception as e:
             logger.error("Unexpected error during token validation: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
+            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token") from e
 
-        org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
-        record_task = arango_service.get_record_by_id(
+        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        record_task = graph_provider.get_record_by_id(
             record_id
         )
         org, record = await asyncio.gather(org_task, record_task)
-
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
         if not record:
@@ -790,13 +739,13 @@ async def stream_record(
         if record and record.org_id and record.org_id != org_id:
             logger.warning(f"OrgId mismatch: JWT has {org_id}, but record has {record.org_id}. Using record's org_id.")
             org_id = record.org_id
-            org = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
+            org = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
             if not org:
                 raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
-        access_check = await arango_service.check_record_access_with_details(user_id, org_id, record_id)
+        access_check = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
         if not access_check:
             logger.warning(f"User {user_id} does not have access to record {record_id}")
             raise HTTPException(
@@ -807,18 +756,29 @@ async def stream_record(
         connector_name = record.connector_name.value.lower().replace(" ", "")
         connector_id = record.connector_id
         logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
-        # Different auth handling based on account type and connector scope
+
+        # Check if the connector still exists in the graph (not deleted)
+        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not connector_instance:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="The connector for this record no longer exists or was deleted. The record cannot be streamed.",
+            )
+
+        connector_display_name = (
+            connector_instance.get("name") or connector_instance.get("type") or record.connector_name.value or "Connector"
+        )
 
         container: ConnectorAppContainer = request.app.container
 
         try:
             logger.info("Stream Record called at router")
             logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
-            connector_obj: BaseConnector = container.connectors_map[connector_id]
+            connector_obj: BaseConnector = container.connectors_map.get(connector_id)
             if not connector_obj:
                 raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail=f"Connector '{connector_id}' not found"
+                    status_code=HttpStatusCode.UNHEALTHY.value,
+                    detail=f"The connector '{connector_display_name}' is currently Disabled. Enable it from Connector Settings and try again.",
                 )
 
             # Get the buffer from connector (without passing convertTo)
@@ -856,23 +816,27 @@ async def stream_record(
                         raise HTTPException(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                             detail="Failed to convert file to PDF"
-                        )
+                        ) from e
 
             return buffer
+        except HTTPException:
+            # Re-raise HTTPExceptions from connectors unchanged so the original
+            # status code (403, 404, etc.) is preserved and reaches the client.
+            raise
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}", exc_info=True)
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Error downloading file: {str(e)}"
-            )
+            ) from e
 
     except HTTPException as e:
         raise e
     except Exception as e:
         logger.error("Error downloading file: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file") from e
 
 
-@router.post("/api/v1/record/buffer/convert")
+@router.post("/api/v1/record/buffer/convert", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_record_stream(request: Request, file: UploadFile = File(...)) -> StreamingResponse:
     request.query_params.get("from")
     to_format = request.query_params.get("to")
@@ -904,7 +868,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                         conversion_output, conversion_error = await asyncio.wait_for(
                             process.communicate(), timeout=30.0
                         )
-                    except asyncio.TimeoutError:
+                    except asyncio.TimeoutError as te:
                         process.terminate()
                         try:
                             await asyncio.wait_for(process.wait(), timeout=5.0)
@@ -915,7 +879,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                         )
                         raise HTTPException(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out"
-                        )
+                        ) from te
 
                     pdf_filename = file.filename.rsplit(".", 1)[0] + ".pdf"
                     pdf_path = os.path.join(tmpdir, pdf_filename)
@@ -941,7 +905,7 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
                             raise HTTPException(
                                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                                 detail="Error reading converted PDF file",
-                            )
+                            ) from e
 
                     return create_stream_record_response(
                         file_iterator(),
@@ -952,85 +916,16 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
 
                 except FileNotFoundError as e:
                     logger.error(str(e))
-                    raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e))
+                    raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
                 except Exception as e:
                     logger.error(f"Conversion error: {str(e)}")
                     raise HTTPException(
                         status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Conversion error: {str(e)}"
-                    )
+                    ) from e
         finally:
             await file.close()
 
     raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid conversion request")
-
-
-async def get_admin_webhook_handler(request: Request) -> Optional[AdminWebhookHandler]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        admin_webhook_handler = container.admin_webhook_handler()
-        return admin_webhook_handler
-    except Exception as e:
-        logger.warning(f"Failed to get admin webhook handler: {str(e)}")
-        return None
-
-
-@router.post("/admin/webhook")
-@inject
-async def handle_admin_webhook(request: Request, background_tasks: BackgroundTasks) -> Optional[Dict[str, Any]]:
-    """Handle incoming webhook notifications from Google Workspace Admin"""
-    try:
-        verifier = WebhookAuthVerifier(logger)
-        if not await verifier.verify_request(request):
-            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Unauthorized webhook request")
-
-        admin_webhook_handler = await get_admin_webhook_handler(request)
-
-        if admin_webhook_handler is None:
-            logger.warning(
-                "Admin webhook handler not yet initialized - skipping webhook processing"
-            )
-            return {
-                "status": "skipped",
-                "message": "Webhook handler not yet initialized",
-            }
-
-        # Try to get the request body, handle empty body case
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            # This might be a verification request
-            logger.info(
-                "Received request with empty/invalid JSON body - might be verification request"
-            )
-            return {"status": "accepted", "message": "Verification request received"}
-
-        logger.info("📥 Incoming admin webhook request: %s", body)
-
-        # Get the event type from the events array
-        events = body.get("events", [])
-        if not events:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value, detail="No events found in webhook body"
-            )
-
-        event_type = events[0].get("name")  # We'll process the first event
-        if not event_type:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value, detail="Missing event name in webhook body"
-            )
-
-        # Process notification in background
-        background_tasks.add_task(
-            admin_webhook_handler.process_notification, event_type, body
-        )
-        return {"status": "accepted"}
-
-    except Exception as e:
-        logger.error("Error processing webhook: %s", str(e))
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)
-        )
-
 
 async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
     """
@@ -1069,7 +964,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
             conversion_output, conversion_error = await asyncio.wait_for(
                 process.communicate(), timeout=30.0
             )
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as te:
             process.terminate()
             try:
                 await asyncio.wait_for(process.wait(), timeout=5.0)
@@ -1079,7 +974,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail="PDF conversion timed out"
-            )
+            ) from te
 
         if process.returncode != 0:
             error_msg = conversion_error.decode('utf-8', errors='replace')
@@ -1104,13 +999,13 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Error converting file to PDF"
-        )
+        ) from e
 
 
 async def convert_buffer_to_pdf_stream(
-    buffer: Union[StreamingResponse, Response, bytes, io.IOBase],
+    buffer: StreamingResponse | Response | bytes | io.IOBase,
     record_name: str,
-    file_extension: Optional[str] = None
+    file_extension: str | None = None
 ) -> StreamingResponse:
     """
     Convert a file buffer to PDF and return as a streaming response.
@@ -1197,179 +1092,25 @@ async def convert_buffer_to_pdf_stream(
             fallback_filename="converted_file.pdf"
         )
 
-
-async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container,connector: str, connector_id: str) -> google.oauth2.credentials.Credentials:
-    """Helper function to get service account credentials"""
-    try:
-        service_creds_lock = container.service_creds_lock()
-
-        async with service_creds_lock:
-            if not hasattr(container, 'service_creds_cache'):
-                container.service_creds_cache = {}
-                logger.info("Created service credentials cache")
-
-            # Get user email
-            user = await arango_service.get_user_by_user_id(user_id)
-            if not user:
-                raise Exception(f"User not found: {user_id}")
-
-            cache_key = f"{org_id}_{user_id}_{connector_id}"
-            logger.info(f"Service account cache key: {cache_key}")
-
-            if cache_key in container.service_creds_cache:
-                logger.info(f"Service account cache hit: {cache_key}")
-                credentials = container.service_creds_cache[cache_key]
-                cached_email = credentials._subject
-
-                if cached_email == user["email"]:
-                    logger.info(f"Cached credentials are valid for {cache_key}")
-                    return container.service_creds_cache[cache_key]
-                else:
-                    # Remove expired credentials from cache
-                    logger.info(f"Removing expired credentials from cache: {cache_key}")
-                    container.service_creds_cache.pop(cache_key, None)
-
-            # Cache miss - create new credentials
-            logger.info(f"Service account cache miss: {cache_key}. Creating new credentials.")
-
-            # Create new credentials
-            SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-            credentials_json = await google_token_handler.get_enterprise_token(connector_id=connector_id)
-            credentials = service_account.Credentials.from_service_account_info(
-                credentials_json, scopes=SCOPES
-            )
-            credentials = credentials.with_subject(user["email"])
-
-            # Cache the credentials
-            container.service_creds_cache[cache_key] = credentials
-            logger.info(f"Cached new service credentials for {cache_key}")
-
-            return credentials
-
-    except Exception as e:
-        logger.error(f"Error getting service account credentials: {str(e)}")
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing service account credentials"
-        )
-
-async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container,connector: str, connector_id: str) -> google.oauth2.credentials.Credentials:
-    """Helper function to get cached user credentials"""
-    try:
-        cache_key = f"{org_id}_{user_id}_{connector_id}"
-        user_creds_lock = container.user_creds_lock()
-
-        async with user_creds_lock:
-            if not hasattr(container, 'user_creds_cache'):
-                container.user_creds_cache = {}
-                logger.info("Created user credentials cache")
-
-            logger.info(f"User credentials cache key: {cache_key}")
-
-            if cache_key in container.user_creds_cache:
-                creds = container.user_creds_cache[cache_key]
-                logger.info(f"Expiry time: {creds.expiry}")
-                expiry = creds.expiry
-
-                try:
-                    now = datetime.now(timezone.utc).replace(tzinfo=None)
-                    # Add 5 minute buffer before expiry to ensure we refresh early
-                    buffer_time = timedelta(minutes=5)
-
-                    if expiry and (expiry - buffer_time) > now:
-                        logger.info(f"User credentials cache hit: {cache_key}")
-                        return creds
-                    else:
-                        logger.info(f"User credentials expired or expiring soon for {cache_key}")
-                        # Remove expired credentials from cache
-                        container.user_creds_cache.pop(cache_key, None)
-                except Exception as e:
-                    logger.error(f"Failed to check credentials for {cache_key}: {str(e)}")
-                    container.user_creds_cache.pop(cache_key, None)
-            # Cache miss or expired - create new credentials
-            logger.info(f"User credentials cache miss: {cache_key}. Creating new credentials.")
-
-            # Create new credentials
-            SCOPES = await google_token_handler.get_account_scopes(connector_id=connector_id)
-            # Refresh token
-            await google_token_handler.refresh_token(connector_id=connector_id)
-            creds_data = await google_token_handler.get_individual_token(connector_id=connector_id)
-
-            if not creds_data.get("access_token"):
-                raise HTTPException(
-                    status_code=HttpStatusCode.UNAUTHORIZED.value,
-                    detail="Invalid credentials. Access token not found",
-                )
-
-            required_keys = {
-                CredentialKeys.ACCESS_TOKEN.value: "Access token not found",
-                CredentialKeys.REFRESH_TOKEN.value: "Refresh token not found",
-                CredentialKeys.CLIENT_ID.value: "Client ID not found",
-                CredentialKeys.CLIENT_SECRET.value: "Client secret not found",
-            }
-
-            for key, error_detail in required_keys.items():
-                if not creds_data.get(key):
-                    logger.error(f"Missing {key} in credentials")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.UNAUTHORIZED.value,
-                        detail=f"Invalid credentials. {error_detail}",
-                    )
-
-            access_token = creds_data.get(CredentialKeys.ACCESS_TOKEN.value)
-            refresh_token = creds_data.get(CredentialKeys.REFRESH_TOKEN.value)
-            client_id = creds_data.get(CredentialKeys.CLIENT_ID.value)
-            client_secret = creds_data.get(CredentialKeys.CLIENT_SECRET.value)
-
-            new_creds = google.oauth2.credentials.Credentials(
-                token=access_token,
-                refresh_token=refresh_token,
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=client_id,
-                client_secret=client_secret,
-                scopes=SCOPES,
-            )
-
-            # Update token expiry time - make it timezone-naive for Google client compatibility
-            token_expiry = datetime.fromtimestamp(
-                creds_data.get("access_token_expiry_time", 0) / 1000, timezone.utc
-            ).replace(tzinfo=None)  # Convert to naive UTC for Google client compatibility
-            new_creds.expiry = token_expiry
-
-            # Cache the credentials
-            container.user_creds_cache[cache_key] = new_creds
-            logger.info(f"Cached new user credentials for {cache_key} with expiry: {new_creds.expiry}")
-
-            return new_creds
-
-    except Exception as e:
-        logger.error(f"Error getting user credentials: {str(e)}")
-        # Remove from cache if there's an error
-        if hasattr(container, 'user_creds_cache'):
-            container.user_creds_cache.pop(cache_key, None)
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing user credentials"
-        )
-
-
-@router.get("/api/v1/records")
+@router.get("/api/v1/records", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_records(
     request:Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     limit: int = Query(20, ge=1, le=100, description="Number of items per page"),
-    search: Optional[str] = None,
-    record_types: Optional[str] = Query(None, description="Comma-separated list of record types"),
-    origins: Optional[str] = Query(None, description="Comma-separated list of origins"),
-    connectors: Optional[str] = Query(None, description="Comma-separated list of connectors"),
-    indexing_status: Optional[str] = Query(None, description="Comma-separated list of indexing statuses"),
-    permissions: Optional[str] = Query(None, description="Comma-separated list of permissions"),
-    date_from: Optional[int] = None,
-    date_to: Optional[int] = None,
+    search: str | None = None,
+    record_types: str | None = Query(None, description="Comma-separated list of record types"),
+    origins: str | None = Query(None, description="Comma-separated list of origins"),
+    connectors: str | None = Query(None, description="Comma-separated list of connectors"),
+    indexing_status: str | None = Query(None, description="Comma-separated list of indexing statuses"),
+    permissions: str | None = Query(None, description="Comma-separated list of permissions"),
+    date_from: int | None = None,
+    date_to: int | None = None,
     sort_by: str = "createdAtTimestamp",
     sort_order: str = "desc",
     source: str = "all",
-) -> Optional[Dict]:
+) -> dict | None:
     """
     List all records the user can access (from all KBs, folders, and direct connector permissions), with filters.
     """
@@ -1381,7 +1122,7 @@ async def get_records(
         org_id = request.state.user.get("orgId")
 
         logger.info(f"Looking up user by user_id: {user_id}")
-        user = await arango_service.get_user_by_user_id(user_id=user_id)
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
 
         if not user:
             logger.warning(f"⚠️ User not found for user_id: {user_id}")
@@ -1405,7 +1146,7 @@ async def get_records(
         parsed_indexing_status = _parse_comma_separated_str(indexing_status)
         parsed_permissions = _parse_comma_separated_str(permissions)
 
-        records, total_count, available_filters = await arango_service.get_records(
+        records, total_count, available_filters = await graph_provider.get_records(
             user_id=user_key,
             org_id=org_id,
             skip=skip,
@@ -1459,13 +1200,13 @@ async def get_records(
             "error": str(e),
         }
 
-@router.get("/api/v1/records/{record_id}")
+@router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_record_by_id(
     record_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Optional[Dict]:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict | None:
     """
     Check if the current user has access to a specific record
     """
@@ -1475,7 +1216,7 @@ async def get_record_by_id(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        has_access = await arango_service.check_record_access_with_details(
+        has_access = await graph_provider.check_record_access_with_details(
             user_id=user_id,
             org_id=org_id,
             record_id=record_id,
@@ -1489,15 +1230,16 @@ async def get_record_by_id(
             )
     except Exception as e:
         logger.error(f"Error checking record access: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to check record access")
+        raise HTTPException(status_code=500, detail="Failed to check record access") from e
 
-@router.delete("/api/v1/records/{record_id}")
+@router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 @inject
 async def delete_record(
     record_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> dict:
     """
     Delete a specific record with permission validation
     """
@@ -1507,12 +1249,27 @@ async def delete_record(
         user_id = request.state.user.get("userId")
         logger.info(f"🗑️ Attempting to delete record {record_id}")
 
-        result = await arango_service.delete_record(
+        result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id
         )
 
         if result["success"]:
+            # Publish deletion event
+            event_data = result.get("eventData")
+            if event_data and event_data.get("payload"):
+                try:
+                    timestamp = get_epoch_timestamp_in_ms()
+                    event = {
+                        "eventType": event_data["eventType"],
+                        "timestamp": timestamp,
+                        "payload": event_data["payload"]
+                    }
+                    await kafka_service.publish_event(event_data["topic"], event)
+                    logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+
             logger.info(f"✅ Successfully deleted record {record_id}")
             return {
                 "success": True,
@@ -1535,15 +1292,16 @@ async def delete_record(
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error while deleting record: {str(e)}"
-        )
+        ) from e
 
-@router.post("/api/v1/records/{record_id}/reindex")
+@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked_for_record)])
 @inject
 async def reindex_single_record(
     record_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    kafka_service: KafkaService = Depends(get_kafka_service),
+) -> dict:
     """
     Reindex a single record with permission validation.
 
@@ -1558,18 +1316,17 @@ async def reindex_single_record(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        # Parse optional depth from request body
-        depth = 0  # Default: only this record
+        # Parse optional depth from request body (0 = only this record; 100/full from all-records tree)
+        depth = 0
         try:
             request_body = await request.json()
             depth = request_body.get("depth", 0)
-        except json.JSONDecodeError:
-            # No body or invalid JSON - use default depth
-            pass
+        except (json.JSONDecodeError, TypeError):
+            depth = 0
 
         logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
 
-        result = await arango_service.reindex_single_record(
+        result = await graph_provider.reindex_single_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
@@ -1578,6 +1335,21 @@ async def reindex_single_record(
         )
 
         if result["success"]:
+            # Publish event in router
+            event_data = result.get("eventData")
+            if event_data:
+                try:
+                    timestamp = get_epoch_timestamp_in_ms()
+                    event = {
+                        "eventType": event_data["eventType"],
+                        "timestamp": timestamp,
+                        "payload": event_data["payload"]
+                    }
+                    await kafka_service.publish_event(event_data["topic"], event)
+                    logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to publish event: {str(e)}")
+
             logger.info(f"✅ Successfully initiated reindex for record {record_id} with depth {depth}")
             return {
                 "success": True,
@@ -1585,7 +1357,7 @@ async def reindex_single_record(
                 "recordId": result.get("recordId"),
                 "recordName": result.get("recordName"),
                 "connector": result.get("connector"),
-                "eventPublished": result.get("eventPublished"),
+                "eventPublished": event_data is not None,
                 "userRole": result.get("userRole"),
                 "depth": depth
             }
@@ -1603,17 +1375,17 @@ async def reindex_single_record(
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error while reindexing record: {str(e)}"
-        )
+        ) from e
 
-@router.get("/api/v1/stats")
+@router.get("/api/v1/stats", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_stats_endpoint(
     request: Request,
     org_id: str,
     connector_id: str,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-)-> Dict[str, Any]:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+)-> dict[str, Any]:
     try:
-        result = await arango_service.get_connector_stats(org_id, connector_id)
+        result = await graph_provider.get_connector_stats(org_id, connector_id)
         logger = request.app.container.logger()
         if result["success"]:
              return {"success": True, "data": result["data"]}
@@ -1623,16 +1395,16 @@ async def get_connector_stats_endpoint(
         raise
     except Exception as e:
         logger.error(f"Error getting connector stats: {str(e)}")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}") from e
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex")
+@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked_for_record_group)])
 @inject
 async def reindex_record_group(
     record_group_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     kafka_service: KafkaService = Depends(get_kafka_service),
-) -> Dict:
+) -> dict:
     """
     Reindex all records in a record group up to a specified depth
     """
@@ -1654,7 +1426,7 @@ async def reindex_record_group(
         logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
 
         # Get record group data and validate permissions (does not publish events)
-        result = await arango_service.reindex_record_group_records(
+        result = await graph_provider.reindex_record_group_records(
             record_group_id=record_group_id,
             depth=depth,
             user_id=user_id,
@@ -1671,6 +1443,7 @@ async def reindex_record_group(
         # Publish reindex event (router is responsible for event publishing)
         connector_id = result.get("connectorId")
         connector_name = result.get("connectorName")
+        user_key = result.get("userKey")
         depth = result.get("depth", depth)
 
         try:
@@ -1681,7 +1454,8 @@ async def reindex_record_group(
                 "orgId": org_id,
                 "recordGroupId": record_group_id,
                 "depth": depth,
-                "connectorId": connector_id
+                "connectorId": connector_id,
+                "userKey": user_key
             }
 
             # Publish event directly using KafkaService
@@ -1707,7 +1481,7 @@ async def reindex_record_group(
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to publish reindex event: {str(event_error)}"
-            )
+            ) from event_error
 
     except HTTPException:
         raise
@@ -1716,13 +1490,14 @@ async def reindex_record_group(
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error while reindexing record group: {str(e)}"
-        )
+        ) from e
 
 def _validate_connector_deletion_permissions(
-    instance: Dict[str, Any],
+    instance: dict[str, Any],
     user_id: str,
+    *,
     is_admin: bool,
-    logger
+    logger: logging.Logger,
 ) -> None:
     """
     Validate that the user has permission to delete the connector instance.
@@ -1822,13 +1597,12 @@ def _encode_state_with_instance(state: str, connector_id: str) -> str:
         "state": state,
         "connector_id": connector_id
     }
-    encoded = base64.urlsafe_b64encode(
+    return base64.urlsafe_b64encode(
         json.dumps(state_data).encode()
     ).decode()
-    return encoded
 
 
-def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
+def _decode_state_with_instance(encoded_state: str) -> dict[str, str]:
     """
     Decode OAuth state to extract original state and connector_id.
     Args:
@@ -1842,10 +1616,9 @@ def _decode_state_with_instance(encoded_state: str) -> Dict[str, str]:
     """
     try:
         decoded = base64.urlsafe_b64decode(encoded_state.encode()).decode()
-        state_data = json.loads(decoded)
-        return state_data
+        return json.loads(decoded)
     except Exception as e:
-        raise ValueError(f"Invalid state format: {e}")
+        raise ValueError(f"Invalid state format: {e}") from e
 
 
 def _get_config_path_for_instance(connector_id: str) -> str:
@@ -1861,18 +1634,18 @@ def _get_config_path_for_instance(connector_id: str) -> str:
     return f"/services/connectors/{connector_id}/config"
 
 
-async def _get_settings_base_path(arango_service: BaseArangoService) -> str:
+async def _get_settings_base_path(graph_provider: IGraphDBProvider) -> str:
     """
     Determine frontend settings base path based on organization account type.
 
     Args:
-        arango_service: ArangoDB service instance
+        graph_provider: Graph DB provider instance
 
     Returns:
         Settings base path URL
     """
     try:
-        organizations = await arango_service.get_all_documents(
+        organizations = await graph_provider.get_all_documents(
             CollectionNames.ORGS.value
         )
 
@@ -1894,14 +1667,14 @@ async def _get_settings_base_path(arango_service: BaseArangoService) -> str:
 # Registry & Instance Endpoints
 # ============================================================================
 
-@router.get("/api/v1/connectors/registry")
+@router.get("/api/v1/connectors/registry", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_registry(
     request: Request,
-    scope: Optional[str] = Query(None, description="personal | team"),
+    scope: str | None = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by name/group/description"),
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search by name/group/description"),
+) -> dict[str, Any]:
     """
     Get all available connector types from registry.
 
@@ -1920,7 +1693,7 @@ async def get_connector_registry(
     connector_registry = request.app.state.connector_registry
     container = request.app.container
     logger = container.logger()
-    arango_service = await get_arango_service(request)
+    graph_provider = request.app.state.graph_provider
 
     try:
         # Validate scope
@@ -1936,7 +1709,7 @@ async def get_connector_registry(
         try:
             user = getattr(request.state, 'user', None)
             if user and user.get("orgId"):
-                account_type = await arango_service.get_account_type(user.get("orgId"))
+                account_type = await graph_provider.get_account_type(user.get("orgId"))
         except Exception as e:
             # If we can't get account type, log but don't fail (fail-open)
             logger.debug(f"Could not get account type: {e}")
@@ -1969,18 +1742,18 @@ async def get_connector_registry(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting connector registry: {str(e)}"
-        )
+        ) from e
 
 
 
-@router.get("/api/v1/connectors/")
+@router.get("/api/v1/connectors/", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instances(
     request: Request,
-    scope: Optional[str] = Query(None, description="personal | team"),
+    scope: str | None = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by instance name/type/group"),
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search by instance name/type/group"),
+) -> dict[str, Any]:
     """
     Get all configured connector instances.
 
@@ -2036,11 +1809,11 @@ async def get_connector_instances(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting connector instances: {str(e)}"
-        )
+        ) from e
 
 
-@router.get("/api/v1/connectors/active")
-async def get_active_connector_instances(request: Request) -> Dict[str, Any]:
+@router.get("/api/v1/connectors/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+async def get_active_connector_instances(request: Request) -> dict[str, Any]:
     """
     Get all active connector instances.
 
@@ -2079,11 +1852,11 @@ async def get_active_connector_instances(request: Request) -> Dict[str, Any]:
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get active connector instances: {str(e)}"
-        )
+        ) from e
 
 
-@router.get("/api/v1/connectors/inactive")
-async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
+@router.get("/api/v1/connectors/inactive", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+async def get_inactive_connector_instances(request: Request) -> dict[str, Any]:
     """
     Get all inactive connector instances.
 
@@ -2121,17 +1894,17 @@ async def get_inactive_connector_instances(request: Request) -> Dict[str, Any]:
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get inactive connector instances: {str(e)}"
-        )
+        ) from e
 
 
-@router.get("/api/v1/connectors/configured")
+@router.get("/api/v1/connectors/configured", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_configured_connector_instances(
     request: Request,
-    scope: Optional[str] = Query(None, description="personal | team"),
+    scope: str | None = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by instance name/type/group"),
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search by instance name/type/group"),
+) -> dict[str, Any]:
     """
     Get all configured connector instances.
 
@@ -2183,7 +1956,7 @@ async def get_configured_connector_instances(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting configured connector instances: {str(e)}"
-        )
+        ) from e
 
 # ============================================================================
 # Instance Configuration Endpoints
@@ -2191,17 +1964,18 @@ async def get_configured_connector_instances(
 
 async def _handle_oauth_config_creation(
     connector_type: str,
-    auth_config: Dict[str, Any],
+    auth_config: dict[str, Any],
     instance_name: str,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
     config_service: ConfigurationService,
-    oauth_config_id: Optional[str],
+    oauth_config_id: str | None,
     auth_type: str,
     base_url: str,
-    logger
-) -> Optional[str]:
+    logger: logging.Logger,
+) -> str | None:
     """
     Handle OAuth config creation or update for a new connector instance.
 
@@ -2316,19 +2090,20 @@ async def _handle_oauth_config_creation(
 
 
 async def _prepare_connector_config(
-    config: Dict[str, Any],
+    config: dict[str, Any],
     connector_type: str,
     scope: str,
-    oauth_config_id: Optional[str],
-    metadata: Dict[str, Any],
+    oauth_config_id: str | None,
+    metadata: dict[str, Any],
     selected_auth_type: str,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
     config_service: ConfigurationService,
     base_url: str,
-    logger
-) -> Dict[str, Any]:
+    logger: logging.Logger,
+) -> dict[str, Any]:
     """
     Prepare connector configuration for storage in etcd.
 
@@ -2455,11 +2230,11 @@ async def _prepare_connector_config(
     return prepared_config
 
 
-@router.post("/api/v1/connectors/")
+@router.post("/api/v1/connectors/", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def create_connector_instance(
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
     """
     Create a new connector instance.
 
@@ -2470,7 +2245,7 @@ async def create_connector_instance(
 
     Args:
         request: FastAPI request object
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with created instance details including connector_id
@@ -2536,7 +2311,7 @@ async def create_connector_instance(
         # ============================================================
         account_type = None
         try:
-            account_type = await arango_service.get_account_type(org_id)
+            account_type = await graph_provider.get_account_type(org_id)
         except Exception as e:
             logger.debug(f"Could not get account type: {e}")
 
@@ -2578,12 +2353,15 @@ async def create_connector_instance(
             logger.info(f"Using auto-selected auth type: {selected_auth_type}")
 
         # Validate auth type compatibility
-        if supported_auth_types and selected_auth_type not in supported_auth_types:
-            if not (selected_auth_type.upper() == "NONE" and len(supported_auth_types) == 0):
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail=f"Auth type '{selected_auth_type}' is not supported. Supported: {', '.join(supported_auth_types)}"
-                )
+        if (
+            supported_auth_types
+            and selected_auth_type not in supported_auth_types
+            and not (selected_auth_type.upper() == "NONE" and len(supported_auth_types) == 0)
+        ):
+            raise HTTPException(
+                status_code=HttpStatusCode.BAD_REQUEST.value,
+                detail=f"Auth type '{selected_auth_type}' is not supported. Supported: {', '.join(supported_auth_types)}"
+            )
 
         # ============================================================
         # 7. Pre-validate OAuth Config (if applicable)
@@ -2652,7 +2430,7 @@ async def create_connector_instance(
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=str(e)
-            )
+            ) from e
 
         if not instance:
             raise HTTPException(
@@ -2751,14 +2529,14 @@ async def create_connector_instance(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to create connector instance: {str(e)}"
-        )
+        ) from e
 
 
-@router.get("/api/v1/connectors/{connector_id}")
+@router.get("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instance(
     connector_id: str,
     request: Request
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get a specific connector instance by its key.
 
@@ -2816,13 +2594,13 @@ async def get_connector_instance(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting connector instance: {str(e)}"
-        )
+        ) from e
 
-@router.get("/api/v1/connectors/{connector_id}/config")
+@router.get("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instance_config(
     connector_id: str,
     request: Request
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get configuration for a specific connector instance.
 
@@ -2936,15 +2714,15 @@ async def get_connector_instance_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get connector configuration: {str(e)}"
-        )
+        ) from e
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/auth")
+@router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_auth_config(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
     """
     Update authentication configuration for a connector instance.
 
@@ -3202,7 +2980,7 @@ async def update_connector_instance_auth_config(
             new_config["auth"].update(oauth_updates)
 
         if not new_config["auth"].get("connectorScope"):
-            connector_doc = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
+            connector_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
             new_config["auth"]["connectorScope"] = connector_doc.get("scope", "")
 
         # Save configuration
@@ -3257,14 +3035,15 @@ async def update_connector_instance_auth_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector authentication configuration: {str(e)}"
-        )
+        ) from e
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/filters-sync")
+@router.put("/api/v1/connectors/{connector_id}/config/filters-sync", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_filters_sync_config(
     connector_id: str,
     request: Request,
-) -> Dict[str, Any]:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> dict[str, Any]:
     """
     Update filters and sync configuration for a connector instance.
 
@@ -3330,6 +3109,9 @@ async def update_connector_instance_filters_sync_config(
         # Only update sections that are provided in the request
         new_config = existing_config.copy() if existing_config else {}
 
+        # Snapshot old sync filters before merge
+        old_sync_filters = existing_config.get("filters", {}).get("sync", {})
+
         # Update sync section if provided
         if "sync" in body and isinstance(body["sync"], dict):
             if "sync" in new_config and isinstance(new_config["sync"], dict):
@@ -3348,9 +3130,19 @@ async def update_connector_instance_filters_sync_config(
                 if key in body["filters"]:
                     new_config["filters"][key] = body["filters"][key]
 
+        # Only delete sync points and edges when sync filters change
+        new_sync_filters = new_config.get("filters", {}).get("sync", {})
+        first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
+        sync_filters_changed = old_sync_filters != new_sync_filters
+        needs_full_resync = sync_filters_changed or first_time_sync_filters
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated filters-sync config for instance {connector_id}")
+
+        if needs_full_resync:
+            logger.info(f"Sync filters changed for connector {connector_id}; frontend will trigger full resync")
+        else:
+            logger.info(f"No sync filter change for connector {connector_id}")
 
         # For filters/sync updates, keep connector status as is
         # Only update the timestamp
@@ -3376,7 +3168,8 @@ async def update_connector_instance_filters_sync_config(
         return {
             "success": True,
             "config": new_config,
-            "message": "Filters and sync configuration saved successfully."
+            "message": "Filters and sync configuration saved successfully.",
+            "syncFiltersChanged": needs_full_resync,
         }
 
     except HTTPException:
@@ -3386,14 +3179,14 @@ async def update_connector_instance_filters_sync_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector filters and sync configuration: {str(e)}"
-        )
+        ) from e
 
 
-@router.put("/api/v1/connectors/{connector_id}/config")
+@router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_config(
     connector_id: str,
     request: Request,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Update configuration for a connector instance.
 
@@ -3425,6 +3218,7 @@ async def update_connector_instance_config(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         connector_type = instance.get("type", "")
+
         body = await request.json()
         base_url = body.get("baseUrl", "")
         oauth_config_id = body.get("oauthConfigId")  # Reference to stored OAuth config
@@ -3551,7 +3345,7 @@ async def update_connector_instance_config(
                         raise HTTPException(
                             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                             detail=f"Failed to fetch OAuth configuration: {str(e)}"
-                        )
+                        ) from e
 
                 metadata = await connector_registry.get_connector_metadata(connector_type)
                 auth_metadata = metadata.get("config", {}).get("auth", {})
@@ -3651,17 +3445,14 @@ async def update_connector_instance_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector configuration: {str(e)}"
-        )
+        ) from e
 
-
-
-
-@router.put("/api/v1/connectors/{connector_id}/name")
+@router.put("/api/v1/connectors/{connector_id}/name", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_name(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
     """
     Update the display name for a connector instance.
 
@@ -3749,7 +3540,7 @@ async def update_connector_instance_name(
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=str(e)
-            )
+            ) from e
 
         if not updated:
             logger.error(f"Failed to update {instance.get('name')} connector instance name")
@@ -3775,14 +3566,14 @@ async def update_connector_instance_name(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector instance name: {str(e)}"
-        )
+        ) from e
 
 
 # ============================================================================
 # Common Helper Functions
 # ============================================================================
 
-def _get_user_context(request: Request) -> Dict[str, Any]:
+def _get_user_context(request: Request) -> dict[str, Any]:
     """
     Extract and validate user authentication context from request.
 
@@ -3812,7 +3603,7 @@ def _get_user_context(request: Request) -> Dict[str, Any]:
     }
 
 
-def _validate_admin_only(is_admin: bool, action: str = "perform this action") -> None:
+def _validate_admin_only(*, is_admin: bool, action: str = "perform this action") -> None:
     """
     Validate that user is an administrator.
 
@@ -3831,8 +3622,9 @@ def _validate_admin_only(is_admin: bool, action: str = "perform this action") ->
 
 
 def _validate_connector_permissions(
-    instance: Dict[str, Any],
+    instance: dict[str, Any],
     user_id: str,
+    *,
     is_admin: bool,
     action: str = "access"
 ) -> None:
@@ -3877,10 +3669,10 @@ def _validate_connector_permissions(
 
 async def _get_and_validate_connector_instance(
     connector_id: str,
-    user_context: Dict[str, Any],
-    connector_registry,
-    logger
-) -> Dict[str, Any]:
+    user_context: dict[str, Any],
+    connector_registry: ConnectorRegistry,
+    logger: logging.Logger,
+) -> dict[str, Any]:
     """
     Retrieve connector instance and validate access.
 
@@ -3914,11 +3706,11 @@ async def _get_and_validate_connector_instance(
 
 
 async def _find_oauth_config_in_list(
-    oauth_configs: List[Dict[str, Any]],
+    oauth_configs: list[dict[str, Any]],
     config_id: str,
     org_id: str,
-    logger
-) -> tuple[Optional[Dict[str, Any]], Optional[int]]:
+    logger: logging.Logger,
+) -> tuple[dict[str, Any] | None, int | None]:
     """
     Find OAuth config by ID in list with access control.
 
@@ -3941,10 +3733,10 @@ async def _find_oauth_config_in_list(
 
 
 def _check_oauth_name_conflict(
-    oauth_configs: List[Dict[str, Any]],
+    oauth_configs: list[dict[str, Any]],
     name: str,
     org_id: str,
-    exclude_index: Optional[int] = None
+    exclude_index: int | None = None
 ) -> None:
     """
     Check if OAuth config name conflicts with existing configs.
@@ -3971,7 +3763,7 @@ def _check_oauth_name_conflict(
 
 
 async def _update_oauth_infrastructure_fields(
-    oauth_config: Dict[str, Any],
+    oauth_config: dict[str, Any],
     connector_type: str,
     config_service: ConfigurationService,
     base_url: str
@@ -4041,12 +3833,12 @@ async def _update_oauth_infrastructure_fields(
 # ============================================================================
 
 async def _build_oauth_flow_config(
-    auth_config: Dict[str, Any],
+    auth_config: dict[str, Any],
     connector_type: str,
     org_id: str,
     config_service: ConfigurationService,
-    logger
-) -> Dict[str, Any]:
+    logger: logging.Logger,
+) -> dict[str, Any]:
     """
     Build OAuth flow configuration from either shared OAuth config or direct auth config.
 
@@ -4144,13 +3936,13 @@ async def _build_oauth_flow_config(
     return oauth_flow_config
 
 
-@router.get("/api/v1/connectors/{connector_id}/oauth/authorize")
+@router.get("/api/v1/connectors/{connector_id}/oauth/authorize", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def get_oauth_authorization_url(
     connector_id: str,
     request: Request,
-    base_url: Optional[str] = Query(None),
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
+    base_url: str | None = Query(None),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
     """
     Get OAuth authorization URL for a connector instance.
 
@@ -4158,7 +3950,7 @@ async def get_oauth_authorization_url(
         connector_id: Unique instance key
         request: FastAPI request object
         base_url: Optional base URL for redirect
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with authorization URL and encoded state
@@ -4315,18 +4107,18 @@ async def get_oauth_authorization_url(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to generate OAuth URL: {str(e)}"
-        )
+        ) from e
 
 
-@router.get("/api/v1/connectors/oauth/callback")
+@router.get("/api/v1/connectors/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 async def handle_oauth_callback(
     request: Request,
-    code: Optional[str] = Query(None),
-    state: Optional[str] = Query(None),
-    error: Optional[str] = Query(None),
-    base_url: Optional[str] = Query(None),
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
+    code: str | None = Query(None),
+    state: str | None = Query(None),
+    error: str | None = Query(None),
+    base_url: str | None = Query(None),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
     """
     Handle OAuth callback and exchange code for tokens.
 
@@ -4339,7 +4131,7 @@ async def handle_oauth_callback(
         state: Encoded state containing connector_id
         error: OAuth error if any
         base_url: Optional base URL for redirects
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with redirect URL and status
@@ -4349,7 +4141,7 @@ async def handle_oauth_callback(
     config_service = container.config_service()
     connector_registry = request.app.state.connector_registry
 
-    settings_base_path = await _get_settings_base_path(arango_service)
+    settings_base_path = await _get_settings_base_path(graph_provider)
     connector_id = None  # For error handling
 
     try:
@@ -4541,7 +4333,7 @@ async def handle_oauth_callback(
                 from app.connectors.core.base.token_service.token_refresh_service import (
                     TokenRefreshService,
                 )
-                temp_service = TokenRefreshService(config_service, arango_service)
+                temp_service = TokenRefreshService(config_service, graph_provider)
                 await temp_service.schedule_token_refresh(connector_id, connector_type, token)
                 logger.info("✅ Scheduled token refresh using temporary service")
         except Exception as sched_err:
@@ -4599,10 +4391,10 @@ async def handle_oauth_callback(
 
 async def _get_connector_filter_options_from_config(
     connector_type: str,
-    connector_config: Dict[str, Any],
-    token_or_credentials: Dict[str, Any],
-    config_service: Dict[str, Any]
-) -> Dict[str, Any]:
+    connector_config: dict[str, Any],
+    token_or_credentials: dict[str, Any],
+    config_service: dict[str, Any]
+) -> dict[str, Any]:
     """
     Get filter options for a connector by calling dynamic endpoints.
 
@@ -4658,9 +4450,9 @@ async def _get_connector_filter_options_from_config(
 async def _fetch_filter_options_from_api(
     endpoint: str,
     filter_type: str,
-    token_or_credentials: Dict[str, Any],
+    token_or_credentials: dict[str, Any],
     connector_type: str
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """
     Fetch filter options from a dynamic API endpoint.
 
@@ -4705,10 +4497,10 @@ async def _fetch_filter_options_from_api(
 
 
 def _parse_filter_response(
-    data: Dict[str, Any],
+    data: dict[str, Any],
     filter_type: str,
     connector_type: str
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """
     Parse API response to extract filter options.
 
@@ -4727,46 +4519,29 @@ def _parse_filter_response(
 
         if connector_upper == "GMAIL" and filter_type == "labels":
             labels = data.get("labels", [])
-            for label in labels:
-                if label.get("type") == "user":
-                    options.append({
-                        "value": label["id"],
-                        "label": label["name"]
-                    })
+            options.extend(
+                [{"value": label["id"], "label": label["name"]} for label in labels if label.get("type") == "user"]
+            )
 
         elif connector_upper == "DRIVE" and filter_type == "folders":
             files = data.get("files", [])
-            for file in files:
-                options.append({
-                    "value": file["id"],
-                    "label": file["name"]
-                })
+            options.extend([{"value": f["id"], "label": f["name"]} for f in files])
 
         elif connector_upper == "ONEDRIVE" and filter_type == "folders":
             items = data.get("value", [])
-            for item in items:
-                if item.get("folder"):
-                    options.append({
-                        "value": item["id"],
-                        "label": item["name"]
-                    })
+            options.extend(
+                [{"value": item["id"], "label": item["name"]} for item in items if item.get("folder")]
+            )
 
         elif connector_upper == "SLACK" and filter_type == "channels":
             channels = data.get("channels", [])
-            for channel in channels:
-                if not channel.get("is_archived"):
-                    options.append({
-                        "value": channel["id"],
-                        "label": f"#{channel['name']}"
-                    })
+            options.extend(
+                [{"value": ch["id"], "label": f"#{ch['name']}"} for ch in channels if not ch.get("is_archived")]
+            )
 
         elif connector_upper == "CONFLUENCE" and filter_type == "spaces":
             spaces = data.get("results", [])
-            for space in spaces:
-                options.append({
-                    "value": space["key"],
-                    "label": space["name"]
-                })
+            options.extend([{"value": space["key"], "label": space["name"]} for space in spaces])
 
     except Exception as e:
         logger.error(f"Error parsing {filter_type} response: {e}")
@@ -4777,7 +4552,7 @@ def _parse_filter_response(
 async def _get_static_filter_options(
     connector_type: str,
     filter_type: str
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """
     Get static filter options for connectors.
 
@@ -4810,7 +4585,7 @@ async def _get_static_filter_options(
 
 async def _get_fallback_filter_options(
     connector_type: str
-) -> Dict[str, List[Dict[str, str]]]:
+) -> dict[str, list[dict[str, str]]]:
     """
     Get hardcoded fallback filter options when dynamic fetching fails.
 
@@ -4867,19 +4642,19 @@ async def _get_fallback_filter_options(
     return fallback_options.get(connector_type.upper(), {})
 
 
-@router.get("/api/v1/connectors/{connector_id}/filters")
+@router.get("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_instance_filters(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
     """
     Get filter options for a connector instance.
 
     Args:
         connector_id: Unique instance key
         request: FastAPI request object
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with available filter options
@@ -4905,8 +4680,9 @@ async def get_connector_instance_filters(
 
         # Validate permissions
         _validate_connector_permissions(
-            instance, user_context["user_id"], user_context["is_admin"],
-            "get filter options for"
+            instance, user_context["user_id"],
+            is_admin=user_context["is_admin"],
+            action="get filter options for"
         )
 
         # Get connector metadata
@@ -4971,19 +4747,19 @@ async def get_connector_instance_filters(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get filter options: {str(e)}"
-        )
+        ) from e
 
-@router.get("/api/v1/connectors/{connector_id}/filters/{filter_key}/options")
+@router.get("/api/v1/connectors/{connector_id}/filters/{filter_key}/options", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_filter_field_options(
     connector_id: str,
     filter_key: str,
     request: Request,
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
-    search: Optional[str] = Query(None, description="Search text to filter options"),
-    cursor: Optional[str] = Query(None, description="Cursor for cursor-based pagination (API-specific)"),
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search text to filter options"),
+    cursor: str | None = Query(None, description="Cursor for cursor-based pagination (API-specific)"),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
     """
     Get dynamic options for a specific filter field with pagination support.
 
@@ -4997,7 +4773,7 @@ async def get_filter_field_options(
         page: Page number for pagination (default: 1)
         limit: Number of items per page (default: 20, max: 100)
         search: Optional search text to filter options
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with options and pagination info:
@@ -5039,8 +4815,9 @@ async def get_filter_field_options(
 
         # Validate permissions
         _validate_connector_permissions(
-            instance, user_context["user_id"], user_context["is_admin"],
-            "access filter options for"
+            instance, user_context["user_id"],
+            is_admin=user_context["is_admin"],
+            action="access filter options for"
         )
 
         # Get connector metadata
@@ -5077,7 +4854,7 @@ async def get_filter_field_options(
                 connector_id=connector_id,
                 connector_type=connector_type,
                 connector_registry=connector_registry,
-                arango_service=arango_service,
+                graph_provider=graph_provider,
                 user_id=user_context["user_id"],
                 org_id=user_context["org_id"],
                 is_admin=user_context["is_admin"],
@@ -5112,10 +4889,10 @@ async def get_filter_field_options(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get filter options: {str(e)}"
-        )
+        ) from e
 
 
-def _get_connector_from_container(container, connector_id: str) -> Optional[BaseConnector]:
+def _get_connector_from_container(container: ConnectorAppContainer, connector_id: str) -> BaseConnector | None:
     """
     Get connector instance from app_container.
     """
@@ -5130,9 +4907,9 @@ def _get_connector_from_container(container, connector_id: str) -> Optional[Base
 
 
 def _find_filter_field_config(
-    metadata: Dict[str, Any],
+    metadata: dict[str, Any],
     filter_key: str
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Find filter field configuration in connector metadata."""
     filters_config = metadata.get("config", {}).get("filters", {})
 
@@ -5147,19 +4924,19 @@ def _find_filter_field_config(
     return None
 
 
-@router.post("/api/v1/connectors/{connector_id}/filters")
+@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def save_connector_instance_filters(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
     """
     Save filter selections for a connector instance.
 
     Args:
         connector_id: Unique instance key
         request: FastAPI request object
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with success status
@@ -5194,8 +4971,9 @@ async def save_connector_instance_filters(
 
         # Validate permissions
         _validate_connector_permissions(
-            instance, user_context["user_id"], user_context["is_admin"],
-            "save filter options for"
+            instance, user_context["user_id"],
+            is_admin=user_context["is_admin"],
+            action="save filter options for"
         )
         # Get current config
         config_service = container.config_service()
@@ -5230,20 +5008,21 @@ async def save_connector_instance_filters(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to save filter selections: {str(e)}"
-        )
+        ) from e
 
 
 async def _ensure_connector_initialized(
     container: ConnectorAppContainer,
     connector_id: str,
     connector_type: str,
-    connector_registry,
-    arango_service: BaseArangoService,
+    connector_registry: ConnectorRegistry,
+    graph_provider: IGraphDBProvider,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
-    logger
-) -> Optional[BaseConnector]:
+    logger: logging.Logger,
+) -> BaseConnector | None:
     """
     Ensure connector is initialized in container. If not, initialize it.
 
@@ -5252,7 +5031,7 @@ async def _ensure_connector_initialized(
         connector_id: Connector instance ID
         connector_type: Connector type (e.g., "ONEDRIVE", "SHAREPOINT ONLINE")
         connector_registry: Connector registry instance
-        arango_service: ArangoDB service
+        graph_provider: Graph DB provider
         user_id: User ID
         org_id: Organization ID
         is_admin: Whether user is admin
@@ -5278,8 +5057,9 @@ async def _ensure_connector_initialized(
     logger.info(f"Initializing connector {connector_id} before use")
     try:
         config_service = container.config_service()
-        # Use the container's data store (GraphDataStore with graph_provider)
-        data_store_provider = await container.data_store()
+        # Create data_store manually using already-resolved graph_provider to avoid coroutine reuse
+        from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+        data_store_provider = GraphDataStore(logger, graph_provider)
 
         connector_type = connector_type.replace(" ", "").lower()
 
@@ -5307,10 +5087,8 @@ async def _ensure_connector_initialized(
             error_msg = "Failed to initialize connector. Please check your credentials and configuration."
             logger.error(f"❌ {error_msg}")
             # Cleanup on failure
-            try:
+            with contextlib.suppress(Exception):
                 await connector.cleanup()
-            except Exception:
-                pass
             raise HTTPException(
                 status_code=HttpStatusCode.BAD_REQUEST.value,
                 detail=error_msg
@@ -5324,10 +5102,8 @@ async def _ensure_connector_initialized(
                 error_msg = "Connection test failed. Please verify your credentials have proper access."
                 logger.error(f"❌ {error_msg}")
                 # Cleanup on failure
-                try:
+                with contextlib.suppress(Exception):
                     await connector.cleanup()
-                except Exception:
-                    pass
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_REQUEST.value,
                     detail=error_msg
@@ -5338,14 +5114,12 @@ async def _ensure_connector_initialized(
             error_msg = f"Connection test failed: {str(test_error)}"
             logger.error(f"❌ {error_msg}", exc_info=True)
             # Cleanup on failure
-            try:
+            with contextlib.suppress(Exception):
                 await connector.cleanup()
-            except Exception:
-                pass
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
                 detail=error_msg
-            )
+            ) from test_error
 
         # Success! Store connector in container
         logger.info(f"✅ Successfully initialized and tested {connector_type} connector")
@@ -5372,26 +5146,26 @@ async def _ensure_connector_initialized(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=error_msg
-        )
+        ) from e
 
 
 # ============================================================================
 # Connector Toggle Endpoint
 # ============================================================================
 
-@router.post("/api/v1/connectors/{connector_id}/toggle")
+@router.post("/api/v1/connectors/{connector_id}/toggle", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked)])
 async def toggle_connector_instance(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
-) -> Dict[str, Any]:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
     """
     Toggle connector instance active status and trigger sync events.
 
     Args:
         connector_id: Unique instance key
         request: FastAPI request object
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with success status
@@ -5413,6 +5187,7 @@ async def toggle_connector_instance(
     try:
         body = await request.json()
         toggle_type = body.get("type")
+        full_sync = body.get("fullSync", False)
         if not toggle_type or toggle_type not in ["sync", "agent"]:
             logger.error(f"Toggle type is required and must be 'sync' or 'agent'. Got {toggle_type}")
             raise HTTPException(
@@ -5424,7 +5199,7 @@ async def toggle_connector_instance(
 
 
         # Get organization
-        org = await arango_service.get_document(
+        org = await graph_provider.get_document(
             user_info["orgId"],
             CollectionNames.ORGS.value
         )
@@ -5538,7 +5313,7 @@ async def toggle_connector_instance(
                 connector_id=connector_id,
                 connector_type=connector_type,
                 connector_registry=connector_registry,
-                arango_service=arango_service,
+                graph_provider=graph_provider,
                 user_id=user_id,
                 org_id=org_id,
                 is_admin=is_admin,
@@ -5597,7 +5372,8 @@ async def toggle_connector_instance(
                 "apps": [connector_type.replace(" ", "").lower()],
                 "connectorId": connector_id,
                 "syncAction": "immediate",
-                "scope": instance.get("scope")
+                "scope": instance.get("scope"),
+                "fullSync": full_sync,
             }
 
             message = {
@@ -5606,9 +5382,18 @@ async def toggle_connector_instance(
                 "timestamp": get_epoch_timestamp_in_ms()
             }
 
-            # Send message to sync-events topic
-            logger.info(f"Sending message to sync-events topic: {message}")
             await producer.send_message(topic="entity-events", message=message)
+
+            # When disabling sync, remove connector from map and cleanup so re-enable does full init
+            if not target_status and hasattr(container, "connectors_map") and connector_id in container.connectors_map:
+                logger.info(f"Removing connector {connector_id} from connectors_map after toggle off")
+                existing_connector = container.connectors_map.pop(connector_id)
+                try:
+                    if hasattr(existing_connector, "cleanup"):
+                        await existing_connector.cleanup()
+                    logger.info(f"Cleaned up connector instance {connector_id}")
+                except Exception as cleanup_err:
+                    logger.error(f"Error cleaning up connector {connector_id} after toggle off: {cleanup_err}")
 
         return {
             "success": True,
@@ -5622,48 +5407,31 @@ async def toggle_connector_instance(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to toggle connector instance {connector_id} {toggle_type}: {str(e)}"
-        )
+        ) from e
 
 
-@router.delete("/api/v1/connectors/{connector_id}")
+@router.delete("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE)), Depends(require_connector_not_locked)])
 async def delete_connector_instance(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
-) -> Dict[str, Any]:
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> JSONResponse:
     """
-    Delete a connector instance and all its related data.
+    Initiate async deletion of a connector instance.
 
-    This is a destructive operation that:
-    1. Stops any active sync services for this connector
-    2. Deletes all records, record groups, roles, groups, drives for this connector
-    3. Deletes all edges (permissions, relations, classifications)
-    4. Publishes event to delete embeddings from Qdrant
-    5. Deletes the connector app itself
-    6. Cleans up connector credentials from configuration store
+    Marks the connector as DELETING, sends an appDisabled event to stop
+    active sync, then publishes a connectorType.delete event to the
+    sync-events Kafka topic and returns 202 immediately.  The actual
+    graph-DB deletion and Qdrant cleanup run in the sync consumer.
 
-    Classification nodes (departments, categories, topics, languages) are NOT deleted
-    as they are shared resources across connectors.
-    Users are NOT deleted - only userAppRelation edges are removed.
-
-    Args:
-        connector_id: Unique connector instance key
-        request: FastAPI request object
-        arango_service: Injected ArangoDB service
-
-    Returns:
-        Dictionary with deletion statistics
-
-    Raises:
-        HTTPException: 401 if not authenticated, 403 if not authorized,
-                      404 if connector not found, 500 for internal errors
+    Returns 409 if a deletion is already in progress for this connector.
     """
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
 
     try:
-        # 1. Get and validate user context
+        # 1. Validate user context
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
@@ -5675,7 +5443,7 @@ async def delete_connector_instance(
                 detail="User not authenticated"
             )
 
-        # 2. Get and validate connector instance
+        # 2. Fetch and validate connector instance
         instance = await connector_registry.get_connector_instance(
             connector_id=connector_id,
             user_id=user_id,
@@ -5695,124 +5463,96 @@ async def delete_connector_instance(
         # Check beta connector access
         await check_beta_connector_access(connector_type, request)
 
-        # 3. Check permissions - only creator or admin can delete
-        _validate_connector_deletion_permissions(instance, user_id, is_admin, logger)
+        # 3. Permission check — only creator or admin can delete
+        _validate_connector_deletion_permissions(instance, user_id, is_admin=is_admin, logger=logger)
 
-        logger.info(f"🗑️ Starting deletion of connector instance {connector_id} by user {user_id}")
+        # 4. Guard against duplicate deletion requests
+        if instance.get("status") == "DELETING":
+            raise HTTPException(
+                status_code=HttpStatusCode.CONFLICT.value,
+                detail="Connector deletion is already in progress"
+            )
 
-        # 4. Stop any active sync services for this connector (send appDisabled event)
+        logger.info(f"🗑️ Initiating async deletion of connector {connector_id} by user {user_id}")
+
+        producer = container.messaging_producer
+
+        # 5. Stop any running sync for this connector
         try:
-            producer = container.messaging_producer
-            disable_payload = {
-                "orgId": org_id,
-                "appGroup": instance.get("appGroup"),
-                "appGroupId": instance.get("appGroupId"),
-                "connectorId": connector_id,
-                "apps": [connector_type.replace(" ", "").lower()],  # Normalize for appDisabled event
-                "scope": instance.get("scope")
-            }
             disable_message = {
                 "eventType": "appDisabled",
-                "payload": disable_payload,
-                "timestamp": get_epoch_timestamp_in_ms()
+                "payload": {
+                    "orgId": org_id,
+                    "appGroup": instance.get("appGroup"),
+                    "appGroupId": instance.get("appGroupId"),
+                    "connectorId": connector_id,
+                    "apps": [connector_type.replace(" ", "").lower()],
+                    "scope": instance.get("scope"),
+                },
+                "timestamp": get_epoch_timestamp_in_ms(),
             }
             await producer.send_message(topic="entity-events", message=disable_message)
             logger.info(f"✅ Sent appDisabled event for connector {connector_id}")
         except Exception as e:
             logger.error(
                 f"❌ Failed to send appDisabled event for connector {connector_id}: {e}. "
-                f"This is critical - sync services may continue running. Manual intervention may be required. "
-                f"Continuing with data deletion..."
-            )
-            # Continue with deletion - data cleanup is more important than event publishing
-            # Manual cleanup of sync services may be needed if this event fails
-
-        # 5. Delete from ArangoDB (returns records for Qdrant cleanup)
-        deletion_result = await arango_service.delete_connector_instance(
-            connector_id=connector_id,
-            org_id=org_id
-        )
-
-        if not deletion_result.get("success"):
-            logger.error(f"Failed to delete connector data: {deletion_result.get('error')}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=deletion_result.get("error", "Failed to delete connector data")
+                f"Sync services may continue running. Proceeding with deletion event."
             )
 
-        # 6. Publish BULK_DELETE_RECORDS event to Kafka for Qdrant cleanup
-        virtual_record_ids = deletion_result.get("virtual_record_ids", [])
-        if virtual_record_ids:
-            try:
-                bulk_delete_payload = {
-                    "orgId": org_id,
-                    "connectorId": connector_id,
-                    "virtualRecordIds": virtual_record_ids,
-                    "totalRecords": len(virtual_record_ids)
-                }
-                bulk_delete_message = {
-                    "eventType": EventTypes.BULK_DELETE_RECORDS.value,
-                    "payload": bulk_delete_payload,
-                    "timestamp": get_epoch_timestamp_in_ms()
-                }
-
-                # Publish bulk delete event using messaging producer for consistency
-                await producer.send_message(topic="record-events", message=bulk_delete_message)
-                logger.info(f"✅ Published bulk delete event for {len(virtual_record_ids)} records")
-            except Exception as e:
-                logger.error(
-                    f"❌ Failed to publish bulk delete event for connector {connector_id}: {e}. "
-                    f"This is critical - embeddings may persist in Qdrant. Manual cleanup may be required. "
-                    f"Continuing with deletion completion..."
-                )
-                # Continue with deletion - ArangoDB cleanup is complete
-                # Qdrant cleanup can be triggered manually if needed
-
-        # 7. Clean up connector credentials from etcd/config store
-        try:
-            config_service = container.config_service()
-            config_path = f"connectors/{connector_id}"
-            await config_service.delete_config(config_path)
-            logger.info(f"✅ Deleted config for connector {connector_id}")
-        except Exception as e:
-            logger.error(
-                f"❌ Failed to delete config for connector {connector_id}: {e}. "
-                f"Orphaned configuration may remain in etcd."
-            )
-            # Don't re-raise - config cleanup failure is less critical than data deletion
-
-        logger.info(
-            f"✅ Successfully deleted connector instance {connector_id}. "
-            f"Records: {deletion_result.get('deleted_records_count', 0)}, "
-            f"Embeddings queued for deletion: {len(virtual_record_ids)}"
-        )
-
-        return {
-            "success": True,
-            "message": f"Connector instance {connector_id} deleted successfully",
-            "deletedRecords": deletion_result.get("deleted_records_count", 0),
-            "deletedRecordGroups": deletion_result.get("deleted_record_groups_count", 0),
-            "deletedRoles": deletion_result.get("deleted_roles_count", 0),
-            "deletedGroups": deletion_result.get("deleted_groups_count", 0),
-            "deletedDrives": deletion_result.get("deleted_drives_count", 0),
-            "embeddingsQueuedForDeletion": len(virtual_record_ids)
+        # 6. Publish the async deletion event — consumed by the sync consumer (before status update so a failed publish cannot leave the connector stuck in DELETING)
+        event_type = f"{connector_type.replace(' ', '').lower()}.delete"
+        delete_message = {
+            "eventType": event_type,
+            "payload": {
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "connectorType": connector_type,
+                "appGroup": instance.get("appGroup"),
+                "appGroupId": instance.get("appGroupId"),
+                "scope": instance.get("scope"),
+                "previousIsActive": instance.get("isActive", False),
+                "initiatedBy": user_id,
+            },
+            "timestamp": get_epoch_timestamp_in_ms(),
         }
+        await producer.send_message(topic="sync-events", message=delete_message)
+        logger.info(f"✅ Published {event_type} deletion event for connector {connector_id}")
+
+        # 7. Mark connector as DELETING in the graph DB so the UI can reflect it
+        await graph_provider.batch_upsert_nodes(
+            [{
+                "id": connector_id,
+                "status": "DELETING",
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }],
+            CollectionNames.APPS.value
+        )
+
+        return JSONResponse(
+            status_code=202,
+            content={
+                "success": True,
+                "message": "Connector deletion initiated",
+                "connectorId": connector_id,
+                "status": "DELETING",
+            },
+        )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Failed to delete connector instance {connector_id}: {e}", exc_info=True)
+        logger.error(f"❌ Failed to initiate deletion for connector {connector_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Failed to delete connector instance. Please try again."
-        )
+            detail="Failed to initiate connector deletion. Please try again."
+        ) from e
 
 
 # ============================================================================
 # Schema Endpoint
 # ============================================================================
 
-def _clean_schema_for_response(schema: Dict[str, Any]) -> Dict[str, Any]:
+def _clean_schema_for_response(schema: dict[str, Any]) -> dict[str, Any]:
     """
     Clean schema response by removing internal/redundant fields.
 
@@ -5858,11 +5598,11 @@ def _clean_schema_for_response(schema: Dict[str, Any]) -> Dict[str, Any]:
     return cleaned
 
 
-@router.get("/api/v1/connectors/registry/{connector_type}/schema")
+@router.get("/api/v1/connectors/registry/{connector_type}/schema", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_connector_schema(
     connector_type: str,
     request: Request
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get connector schema from registry.
 
@@ -5905,16 +5645,16 @@ async def get_connector_schema(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get connector schema: {str(e)}"
-        )
+        ) from e
 
-@router.get("/api/v1/connectors/agents/active")
+@router.get("/api/v1/connectors/agents/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_active_agent_instances(
     request: Request,
-    scope: Optional[str] = Query(None, description="personal | team"),
+    scope: str | None = Query(None, description="personal | team"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by instance name/type/group")
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search by instance name/type/group")
+) -> dict[str, Any]:
     """
     Get all active agent instances for the current user.
 
@@ -5967,20 +5707,20 @@ async def get_active_agent_instances(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get active agent instances: {str(e)}"
-        )
+        ) from e
 
 
 # ============================================================================
 # OAuth Config Management Endpoints
 # ============================================================================
 
-@router.get("/api/v1/oauth/registry")
+@router.get("/api/v1/oauth/registry", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_oauth_config_registry(
     request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by name/group/description"),
-) -> Dict[str, Any]:
+    search: str | None = Query(None, description="Search by name/group/description"),
+) -> dict[str, Any]:
     """
     Get all available connector/toolset types that have OAuth configurations registered.
 
@@ -6029,14 +5769,14 @@ async def get_oauth_config_registry(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting OAuth config registry: {str(e)}"
-        )
+        ) from e
 
 
-@router.get("/api/v1/oauth/registry/{connector_type}")
+@router.get("/api/v1/oauth/registry/{connector_type}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_oauth_config_registry_by_type(
     connector_type: str,
     request: Request,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get OAuth registry information for a specific connector type.
 
@@ -6087,18 +5827,18 @@ async def get_oauth_config_registry_by_type(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Error getting OAuth config registry: {str(e)}"
-        )
+        ) from e
 
 
-@router.get("/api/v1/oauth")
+@router.get("/api/v1/oauth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_all_oauth_configs(
     request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by instance name/group/description"),
+    search: str | None = Query(None, description="Search by instance name/group/description"),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get all OAuth configurations across all connector types with pagination and search.
 
@@ -6151,7 +5891,7 @@ async def get_all_oauth_configs(
 
         # Fetch OAuth configs for all connector types in PARALLEL
         # This is the key optimization - all etcd calls happen concurrently
-        async def fetch_configs_for_type(connector_type: str) -> List[Dict[str, Any]]:
+        async def fetch_configs_for_type(connector_type: str) -> list[dict[str, Any]]:
             """Fetch and filter configs for a single connector type"""
             try:
                 oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
@@ -6230,7 +5970,7 @@ async def get_all_oauth_configs(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get all OAuth configurations: {str(e)}"
-        )
+        ) from e
 
 
 def _get_oauth_config_path(connector_type: str) -> str:
@@ -6253,7 +5993,7 @@ def _generate_oauth_config_id() -> str:
     return str(uuid.uuid4())
 
 
-def _get_oauth_field_names_from_registry(connector_type: str) -> List[str]:
+def _get_oauth_field_names_from_registry(connector_type: str) -> list[str]:
     """
     Get OAuth field names from the OAuth config registry for a connector type.
     This makes the code generic and maintainable - no hardcoded field names.
@@ -6277,8 +6017,7 @@ def _get_oauth_field_names_from_registry(connector_type: str) -> List[str]:
             return ["clientId", "clientSecret"]
 
         # Extract field names from auth_fields
-        field_names = [field.name for field in oauth_config.auth_fields]
-        return field_names
+        return [field.name for field in oauth_config.auth_fields]
     except Exception:
         # Fallback to common OAuth fields if registry lookup fails
         return ["clientId", "clientSecret"]
@@ -6286,16 +6025,17 @@ def _get_oauth_field_names_from_registry(connector_type: str) -> List[str]:
 
 async def _create_or_update_oauth_config(
     connector_type: str,
-    auth_config: Dict[str, Any],
+    auth_config: dict[str, Any],
     instance_name: str,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
     config_service: ConfigurationService,
     base_url: str,
-    oauth_app_id: Optional[str] = None,
-    logger = None
-) -> Optional[str]:
+    oauth_app_id: str | None = None,
+    logger: logging.Logger | None = None,
+) -> str | None:
     """
     Create or update an OAuth config based on auth_config fields.
     This is a reusable function that extracts OAuth fields dynamically from the registry.
@@ -6413,7 +6153,7 @@ async def _create_or_update_oauth_config(
 async def _get_oauth_configs_from_etcd(
     connector_type: str,
     config_service: ConfigurationService
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Get OAuth configs from etcd for a connector type.
     Optimized to use cache when available.
@@ -6431,7 +6171,7 @@ async def _get_oauth_configs_from_etcd(
     return oauth_configs if isinstance(oauth_configs, list) else []
 
 
-def _extract_essential_oauth_fields(oauth_config: Dict[str, Any], connector_type: str) -> Dict[str, Any]:
+def _extract_essential_oauth_fields(oauth_config: dict[str, Any], connector_type: str) -> dict[str, Any]:
     """
     Extract only essential, non-sensitive fields from an OAuth config.
     Returns camelCase for frontend consistency.
@@ -6457,10 +6197,10 @@ def _extract_essential_oauth_fields(oauth_config: Dict[str, Any], connector_type
 
 
 def _find_oauth_config_by_id(
-    oauth_configs: List[Dict[str, Any]],
+    oauth_configs: list[dict[str, Any]],
     config_id: str,
     org_id: str
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """
     Find an OAuth config by ID within the same organization.
 
@@ -6480,13 +6220,13 @@ def _find_oauth_config_by_id(
     return None
 
 
-@router.post("/api/v1/oauth/{connector_type}")
+@router.post("/api/v1/oauth/{connector_type}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def create_oauth_config(
     connector_type: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Create a new OAuth configuration for a connector type (Admin only).
 
@@ -6511,7 +6251,7 @@ async def create_oauth_config(
     try:
         # Get and validate user context (admin only)
         user_context = _get_user_context(request)
-        _validate_admin_only(user_context["is_admin"], "create OAuth configurations")
+        _validate_admin_only(is_admin=user_context["is_admin"], action="create OAuth configurations")
 
         body = await request.json()
         oauth_instance_name = (body.get("oauthInstanceName") or "").strip()
@@ -6605,19 +6345,19 @@ async def create_oauth_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to create OAuth configuration: {str(e)}"
-        )
+        ) from e
 
 
-@router.get("/api/v1/oauth/{connector_type}")
+@router.get("/api/v1/oauth/{connector_type}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def list_oauth_configs(
     connector_type: str,
     request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=200),
-    search: Optional[str] = Query(None, description="Search by instance name/group/description"),
+    search: str | None = Query(None, description="Search by instance name/group/description"),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     List all OAuth configurations for a connector type with pagination and search.
 
@@ -6682,17 +6422,17 @@ async def list_oauth_configs(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to list OAuth configurations: {str(e)}"
-        )
+        ) from e
 
 
-@router.get("/api/v1/oauth/{connector_type}/{config_id}")
+@router.get("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_oauth_config_by_id(
     connector_type: str,
     config_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get a specific OAuth configuration by ID.
 
@@ -6768,17 +6508,17 @@ async def get_oauth_config_by_id(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to get OAuth configuration: {str(e)}"
-        )
+        ) from e
 
 
-@router.put("/api/v1/oauth/{connector_type}/{config_id}")
+@router.put("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def update_oauth_config(
     connector_type: str,
     config_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Update an existing OAuth configuration.
 
@@ -6804,7 +6544,7 @@ async def update_oauth_config(
     try:
         # Get and validate user context (admin only)
         user_context = _get_user_context(request)
-        _validate_admin_only(user_context["is_admin"], "update OAuth configurations")
+        _validate_admin_only(is_admin=user_context["is_admin"], action="update OAuth configurations")
 
         body = await request.json()
         new_name = body.get("oauthInstanceName")
@@ -6875,17 +6615,17 @@ async def update_oauth_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update OAuth configuration: {str(e)}"
-        )
+        ) from e
 
 
-@router.delete("/api/v1/oauth/{connector_type}/{config_id}")
+@router.delete("/api/v1/oauth/{connector_type}/{config_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
 @inject
 async def delete_oauth_config(
     connector_type: str,
     config_id: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Delete an OAuth configuration.
 
@@ -6907,7 +6647,7 @@ async def delete_oauth_config(
     try:
         # Get and validate user context (admin only)
         user_context = _get_user_context(request)
-        _validate_admin_only(user_context["is_admin"], "delete OAuth configurations")
+        _validate_admin_only(is_admin=user_context["is_admin"], action="delete OAuth configurations")
 
         # Get OAuth configs for this connector type
         oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
@@ -6952,4 +6692,4 @@ async def delete_oauth_config(
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to delete OAuth configuration: {str(e)}"
-        )
+        ) from e

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 from app.config.constants.arangodb import CollectionNames
-from app.connectors.services.base_arango_service import BaseArangoService
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # In-memory cache for user/org info (using OrderedDict for O(1) LRU eviction)
 _user_info_cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
@@ -19,7 +19,7 @@ MAX_CACHE_SIZE = 1000  # Maximum number of cached entries
 
 
 async def get_cached_user_info(
-    arango_service: BaseArangoService,
+    graph_provider: IGraphDBProvider,
     user_id: str,
     org_id: str
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
@@ -27,7 +27,7 @@ async def get_cached_user_info(
     Get user and org info with caching to reduce database calls.
 
     Args:
-        arango_service: ArangoDB service instance
+        graph_provider: Graph database provider instance
         user_id: User ID
         org_id: Organization ID
 
@@ -55,8 +55,8 @@ async def get_cached_user_info(
     # Use asyncio.gather for parallel fetching
     try:
         user_info, org_info = await asyncio.gather(
-            arango_service.get_user_by_user_id(user_id),
-            arango_service.get_document(org_id, CollectionNames.ORGS.value),
+            graph_provider.get_user_by_user_id(user_id),
+            graph_provider.get_document(org_id, CollectionNames.ORGS.value),
             return_exceptions=True
         )
 

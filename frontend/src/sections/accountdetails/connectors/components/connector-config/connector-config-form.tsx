@@ -16,6 +16,7 @@ import {
   Chip,
   Stack,
 } from '@mui/material';
+import { ConfirmDialog } from 'src/components/custom-dialog';
 import { Iconify } from 'src/components/iconify';
 import { useAccountType } from 'src/hooks/use-account-type';
 import closeIcon from '@iconify-icons/mdi/close';
@@ -56,6 +57,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showTopFade, setShowTopFade] = useState(false);
   const [showBottomFade, setShowBottomFade] = useState(false);
+  const [confirmSyncOpen, setConfirmSyncOpen] = useState(false);
   
   // Refs for scrolling to error sections
   const authSectionRef = createRef<HTMLDivElement>();
@@ -149,6 +151,41 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       connectorConfig?.config?.filters?.indexing?.schema?.fields?.length
     ]
   );
+
+  // True if user has selected at least one *sync* filter with a value (indexing filters are not considered – only sync filters affect what gets synced)
+  const hasAnySyncFiltersSelected = useMemo(() => {
+    if (!connectorConfig?.config?.filters || !formData.filters) return false;
+    const hasMeaningfulValue = (
+      field: { name: string; filterType?: string },
+      f: { operator?: string; value?: unknown }
+    ): boolean => {
+      if (!f?.operator) return false;
+      if (field.filterType === 'boolean') return true;
+      if (Array.isArray(f.value)) return f.value.length > 0;
+      // Datetime: value is { start, end } – only count if at least one is non-empty
+      if (field.filterType === 'datetime' && f.value && typeof f.value === 'object' && !Array.isArray(f.value)) {
+        const d = f.value as { start?: string; end?: string };
+        return (d.start != null && d.start !== '') || (d.end != null && d.end !== '');
+      }
+      return f.value !== undefined && f.value !== null && f.value !== '';
+    };
+    const checkFields = (fields: { name: string; filterType?: string }[] | undefined) => {
+      if (!fields || fields.length === 0) return false;
+      return fields.some((field) => {
+        const f = formData.filters[field.name];
+        return f && hasMeaningfulValue(field, f);
+      });
+    };
+    const syncFields = connectorConfig.config.filters.sync?.schema?.fields;
+    return checkFields(syncFields);
+  }, [connectorConfig?.config?.filters, formData.filters]);
+
+  // Manual indexing enabled = user turned ON "enable_manual_sync" in Filters (indexing filters)
+  const isManualIndexingEnabled = useMemo(
+    () => formData.filters?.enable_manual_sync?.value === true,
+    [formData.filters?.enable_manual_sync?.value]
+  );
+
   const steps = useMemo(
     () => {
       // Auth only mode: only authentication
@@ -1164,7 +1201,18 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             <Button
                 variant="contained"
                 color="primary"
-                onClick={handleSave}
+                onClick={
+                  enableMode
+                    ? () => {
+                        // Always show modal when manual indexing is enabled; otherwise only when no sync filters selected
+                        if (isManualIndexingEnabled || !hasAnySyncFiltersSelected) {
+                          setConfirmSyncOpen(true);
+                        } else {
+                          handleSave();
+                        }
+                      }
+                    : handleSave
+                }
                 disabled={saving}
                 startIcon={
                   saving ? (
@@ -1219,6 +1267,32 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           )}
         </Box>
       </DialogActions>
+
+      {/* Confirmation modal when saving filters and enabling sync */}
+      <ConfirmDialog
+        open={confirmSyncOpen}
+        onClose={() => setConfirmSyncOpen(false)}
+        title="Start sync process?"
+        content={
+          isManualIndexingEnabled
+            ? 'You have enabled Manual indexing for this connector. Records will be synced but won\'t be searchable by AI until you index them. You can select which records to index manually from All records. Do you want to proceed?'
+            : 'This process could sync a large number of records. Are you sure you want to start the sync? Consider adding filters through the Filters section to reduce the number of records to sync.'
+        }
+        sx={{ zIndex: 1400 }}
+        action={
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={() => {
+              setConfirmSyncOpen(false);
+              handleSave();
+            }}
+            sx={{ textTransform: 'none' }}
+          >
+            Start sync
+          </Button>
+        }
+      />
     </Dialog>
   );
 };

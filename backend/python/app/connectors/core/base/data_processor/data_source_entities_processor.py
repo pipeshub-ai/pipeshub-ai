@@ -8,6 +8,7 @@ from app.config.constants.arangodb import (
     EntityRelations,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
     RecordRelations,
 )
 from app.config.constants.service import config_node_constants
@@ -21,8 +22,8 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     CommentRecord,
+    Connectors,
     FileRecord,
-    IndexingStatus,
     LinkPublicStatus,
     LinkRecord,
     MailRecord,
@@ -165,6 +166,7 @@ class DataSourceEntitiesProcessor:
         # Map RecordType to appropriate Record class
         if parent_record_type == RecordType.FILE:
             file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
+
             return FileRecord(
                 **file_params,
                 is_file=False,
@@ -357,20 +359,31 @@ class DataSourceEntitiesProcessor:
 
         return None
 
-    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore) -> None:
+    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Optional[Record] = None) -> None:
         """
         Create edges between record and record group.
         This should be called AFTER saving the record (when record.id is available).
         """
 
-        if not record.id or not record_group_id:
-            return
+        if existing_record and existing_record.record_group_id and existing_record.record_group_id != record_group_id:
+            await tx_store.delete_edge(existing_record.id, CollectionNames.RECORDS.value, existing_record.record_group_id, CollectionNames.RECORD_GROUPS.value, CollectionNames.BELONGS_TO.value)
+            await tx_store.delete_inherit_permissions_relation_record_group(existing_record.id, existing_record.record_group_id)
 
-        # Create a edge between the record and the record group if it doesn't exist
-        await tx_store.create_record_group_relation(record.id, record_group_id)
+        if record.id and record_group_id:
+            # Create a edge between the record and the record group if it doesn't exist
+            await tx_store.create_record_group_relation(record.id, record_group_id)
 
-        if record.inherit_permissions:
-            await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
+            if record.inherit_permissions:
+                await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
+            else:
+                await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
+
+        if record.is_shared_with_me and record.shared_with_me_record_group_id is not None:
+            shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id, external_id=record.shared_with_me_record_group_id)
+            if shared_with_me_record_group:
+                await tx_store.create_record_group_relation(record.id, shared_with_me_record_group.id)
+            else:
+                self.logger.warning(f"Shared with me record group with external ID {record.shared_with_me_record_group_id} not found in database")
 
     async def _prepare_ticket_user_edge(
         self,
@@ -549,14 +562,10 @@ class DataSourceEntitiesProcessor:
             self.logger.warning(f"Failed to create LEAD_BY edge for project {project.id}: {str(e)}")
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
-        # Set org_id for the record
-        record.org_id = self.org_id
         self.logger.info("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
 
     async def _handle_updated_record(self, record: Record, existing_record: Record, tx_store: TransactionStore) -> None:
-        # Set org_id for the record
-        record.org_id = self.org_id
         self.logger.info("Updating existing record: %s, version %d -> %d",
         record.record_name, existing_record.version, record.version)
 
@@ -717,8 +726,12 @@ class DataSourceEntitiesProcessor:
             raise
 
     async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:
+        self.logger.info(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
+
+        # Set org_id for the record
+        record.org_id = self.org_id
 
         # Prepare record group BEFORE saving (so record_group_id is included in first save)
         record_group_id = await self._handle_record_group(record, tx_store)
@@ -734,8 +747,8 @@ class DataSourceEntitiesProcessor:
                 await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
-        if record_group_id:
-            await self._link_record_to_group(record, record_group_id, tx_store)
+        if record_group_id or record.is_shared_with_me:
+            await self._link_record_to_group(record, record_group_id, tx_store, existing_record)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
@@ -783,14 +796,14 @@ class DataSourceEntitiesProcessor:
             current_status = record.indexing_status
 
             # Only reset if not already QUEUED or EMPTY
-            if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+            if current_status in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
 
             # Update indexing status to QUEUED
             status_doc = {
                 "_key": record_id,
-                "indexingStatus": IndexingStatus.QUEUED.value,
+                "indexingStatus": ProgressStatus.QUEUED.value,
             }
 
             await tx_store.batch_upsert_nodes([status_doc], CollectionNames.RECORDS.value)
@@ -817,7 +830,7 @@ class DataSourceEntitiesProcessor:
             if records_to_publish:
                 for record in records_to_publish:
                     # Skip publishing indexing events for records with AUTO_INDEX_OFF status
-                    if hasattr(record, 'indexing_status') and record.indexing_status == IndexingStatus.AUTO_INDEX_OFF.value:
+                    if hasattr(record, 'indexing_status') and record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                         self.logger.debug(
                             f"Skipping automatic indexing event for record {record.id} "
                             f"with AUTO_INDEX_OFF status"
@@ -839,7 +852,7 @@ class DataSourceEntitiesProcessor:
             processed_record = await self._process_record(record, [], tx_store)
 
             # Skip publishing update events for records with AUTO_INDEX_OFF status
-            if hasattr(processed_record, 'indexing_status') and processed_record.indexing_status == IndexingStatus.AUTO_INDEX_OFF.value:
+            if hasattr(processed_record, 'indexing_status') and processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
                 self.logger.debug(
                     f"Skipping content update event for record {record.id} with AUTO_INDEX_OFF status"
                 )
@@ -847,7 +860,7 @@ class DataSourceEntitiesProcessor:
 
             # Reset indexing status to QUEUED before sending update event
             current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
-            if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+            if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
                 await self._reset_indexing_status_to_queued(record.id, tx_store)
 
             await self.messaging_producer.send_message(
@@ -887,7 +900,7 @@ class DataSourceEntitiesProcessor:
                 for record in records:
                     current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
                     # Only reset if not already QUEUED or EMPTY
-                    if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                    if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
                         await self._reset_indexing_status_to_queued(record.id, tx_store)
 
             # Now send the reindex events
@@ -1156,7 +1169,7 @@ class DataSourceEntitiesProcessor:
                     user_group.org_id = self.org_id
 
                     self.logger.info(f"Processing user group: {user_group.name} with id {user_group.id}")
-                    self.logger.info(f"Processing user group permissions: {members}")
+                    self.logger.debug(f"Processing user group permissions: {members}")
 
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(
@@ -1324,8 +1337,7 @@ class DataSourceEntitiesProcessor:
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
         async with self.data_store_provider.transaction() as tx_store:
-            record = await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
-            return record
+            return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
 
     async def on_user_group_member_removed(
         self,
@@ -1554,9 +1566,9 @@ class DataSourceEntitiesProcessor:
         """
         # If no transaction provided, create one and recursively call with it
         if tx_store is None:
-            async with self.data_store_provider.transaction() as tx_store:
+            async with self.data_store_provider.transaction() as new_tx_store:
                 return await self.migrate_group_permissions_to_user(
-                    group_id, user_email, connector_id, tx_store
+                    group_id, user_email, connector_id, new_tx_store
                 )
 
         # Get the user object
@@ -1897,6 +1909,12 @@ class DataSourceEntitiesProcessor:
             else:
                 self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
 
+    async def get_app_creator_user(self, connector_id: str) -> Optional[User]:
+        """
+        Fetch the creator user for a connector/app by connectorId.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_app_creator_user(connector_id)
     #IMPORTANT: DO NOT USE THIS METHOD
     #TODO: When an user is delelted from a connetor we need to delete the userAppRelation b/w the app and user
     # async def on_user_removed(

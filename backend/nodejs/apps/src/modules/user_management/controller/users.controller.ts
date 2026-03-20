@@ -49,12 +49,58 @@ export class UserController {
     @inject('Logger') private logger: Logger,
     @inject('EntitiesEventProducer')
     private eventService: EntitiesEventProducer,
-  ) {}
+  ) { }
 
   async getAllUsers(
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
+    const { blocked } = req.query;
+    if (blocked === 'true') {
+
+      const blockedUsers = await UserCredentials.aggregate([
+        {
+          $match: {
+            orgId: req.user?.orgId,
+            isBlocked: true,
+            isDeleted: false,
+          },
+        },
+        {
+          $lookup: {
+            from: 'users',
+            let: { credUserId: '$userId' },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $eq: ['$_id', { $toObjectId: '$$credUserId' }],
+                  },
+                },
+              },
+            ],
+            as: 'userProfile',
+          },
+        },
+        { $unwind: '$userProfile' },
+        {
+          $project: {
+            _id: '$userProfile._id',
+            email: '$userProfile.email',
+            orgId: '$userProfile.orgId',
+            fullName: '$userProfile.fullName',
+            hasLoggedIn: '$userProfile.hasLoggedIn',
+            slug: '$userProfile.slug',
+            createdAt: '$userProfile.createdAt',
+            updatedAt: '$userProfile.updatedAt',
+          },
+        },
+      ]);
+
+      res.status(200).json(blockedUsers);
+      return;
+    }
+
     const users = await Users.find({
       orgId: req.user?.orgId,
       isDeleted: false,
@@ -160,6 +206,56 @@ export class UserController {
       next(error);
     }
   }
+
+  async unblockUser(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const userId = req.params.id;
+      const orgId = req.user?.orgId;
+
+      if (!userId) {
+        throw new BadRequestError(
+          'userId must be provided',
+        );
+      }
+
+      if (!orgId) {
+        throw new BadRequestError(
+          'orgId must be provided',
+        );
+      }
+
+      const credential = await UserCredentials.findOneAndUpdate(
+        {
+          userId,
+          orgId,
+          isBlocked: true,
+          isDeleted: false,
+        },
+        { $set: { isBlocked: false, wrongCredentialCount: 0 } },
+        { new: true }
+      );
+
+      if (!credential) {
+        throw new BadRequestError(
+          'User not found or not blocked',
+        );
+
+      }
+
+      res.status(200).json({
+        message: "User unblocked successfully",
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+
+
 
   async getUserEmailByUserId(
     req: AuthenticatedUserRequest,

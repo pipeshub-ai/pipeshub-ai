@@ -55,6 +55,7 @@ import {
 } from '../services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
+import { Users } from '../../user_management/schema/users.schema';
 import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
 import { Users } from '../../user_management/schema/users.schema';
@@ -82,6 +83,52 @@ export class UserAccountController {
     @inject('Logger') private logger: Logger,
     @inject('JitProvisioningService') private jitProvisioningService: JitProvisioningService,
   ) {}
+
+  /**
+   * If the verified token contains an 'email' claim (e.g. the mail attribute in Entra ID)
+   * that differs from the stored/session email (which may be the UPN), correct it.
+   * When a userId is provided the DB record is updated; the in-memory object is always mutated.
+   */
+  private async correctEmailFromToken(
+    decodedToken: Record<string, any>,
+    target: Record<string, any>,
+    context: string,
+  ): Promise<void> {
+    const tokenEmail: string | undefined = decodedToken?.email;
+    if (!tokenEmail || tokenEmail.toLowerCase() === target.email?.toLowerCase()) {
+      return;
+    }
+    if (target._id) {
+      try {
+        await Users.updateOne(
+          { _id: target._id },
+          { $set: { email: tokenEmail.toLowerCase() } },
+        );
+        this.logger.info(`${context}: Corrected user email from UPN to mail attribute`, {
+          userId: target._id,
+          oldEmail: target.email,
+          newEmail: tokenEmail.toLowerCase(),
+        });
+      } catch (emailUpdateError) {
+        // Email update may fail if another user already has this email (unique constraint).
+        // Log and continue — the user can still log in with their current email.
+        this.logger.warn(`${context}: Could not correct user email`, {
+          userId: target._id,
+          oldEmail: target.email,
+          newEmail: tokenEmail.toLowerCase(),
+          error: emailUpdateError,
+        });
+        return;
+      }
+    } else {
+      this.logger.info(`${context}: Using email from token instead of login email`, {
+        loginEmail: target.email,
+        tokenEmail,
+      });
+    }
+    target.email = tokenEmail.toLowerCase();
+  }
+
   async generateHashedOTP() {
     const otp = generateOtp();
     const hashedOTP = await bcrypt.hash(otp, SALT_ROUNDS);
@@ -1008,7 +1055,7 @@ export class UserAccountController {
           lastLogin: Date.now(),
           ipAddress: req.ip,
         },
-      }, {new: true, upsert: true});
+      }, { new: true, upsert: true });
 
       if (!userCredential) {
         throw new NotFoundError('User credentials not found');
@@ -1217,7 +1264,8 @@ export class UserAccountController {
       );
     const { tenantId } = configManagerResponse.data;
 
-    await validateAzureAdUser(credentials, tenantId);
+    const decodedToken = await validateAzureAdUser(credentials, tenantId);
+    await this.correctEmailFromToken(decodedToken, user, 'Microsoft auth');
 
     await UserActivities.create({
       email: user.email,
@@ -1240,7 +1288,8 @@ export class UserAccountController {
         this.config.scopedJwtSecret,
       );
     const { tenantId } = configManagerResponse.data;
-    await validateAzureAdUser(credentials, tenantId);
+    const decodedToken = await validateAzureAdUser(credentials, tenantId);
+    await this.correctEmailFromToken(decodedToken, user, 'Azure AD auth');
 
     await UserActivities.create({
       email: user.email,
@@ -1426,6 +1475,7 @@ export class UserAccountController {
             );
             const { tenantId } = configManagerResponse.data;
             const decodedToken = await validateAzureAdUser(credentials, tenantId);
+            await this.correctEmailFromToken(decodedToken, sessionInfo, 'Microsoft JIT');
             userDetails = this.jitProvisioningService.extractMicrosoftUserDetails(decodedToken, sessionInfo.email);
             break;
           }
@@ -1439,6 +1489,7 @@ export class UserAccountController {
             );
             const { tenantId } = configManagerResponse.data;
             const decodedToken = await validateAzureAdUser(credentials, tenantId);
+            await this.correctEmailFromToken(decodedToken, sessionInfo, 'Azure AD JIT');
             userDetails = this.jitProvisioningService.extractMicrosoftUserDetails(decodedToken, sessionInfo.email);
             break;
           }

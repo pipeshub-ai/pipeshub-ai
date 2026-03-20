@@ -6,6 +6,7 @@ class config_node_constants(Enum):
 
     # Service paths
     ARANGODB = "/services/arangodb"
+    NEO4J = "/services/neo4j"
     QDRANT = "/services/qdrant"
     REDIS = "/services/redis"
     AI_MODELS = "/services/aiModels"
@@ -19,7 +20,7 @@ class config_node_constants(Enum):
     # LOG_LEVEL = "/logLevel"
 
 class TokenScopes(Enum):
-    """Constants for token scopes"""
+    """Constants for internal scoped token scopes"""
 
     SEND_MAIL = "mail:send"
     FETCH_CONFIG = "fetch:config"
@@ -27,6 +28,41 @@ class TokenScopes(Enum):
     USER_LOOKUP = "user:lookup"
     TOKEN_REFRESH = "token:refresh"
     STORAGE_TOKEN = "storage:token"
+
+
+class OAuthScopes(str, Enum):
+    """OAuth scopes for external API access control"""
+
+    # Semantic Search
+    SEMANTIC_WRITE = "semantic:write"
+    SEMANTIC_READ = "semantic:read"
+    SEMANTIC_DELETE = "semantic:delete"
+
+    # Conversations
+    CONVERSATION_READ = "conversation:read"
+    CONVERSATION_WRITE = "conversation:write"
+    CONVERSATION_CHAT = "conversation:chat"
+
+    # Agents
+    AGENT_READ = "agent:read"
+    AGENT_WRITE = "agent:write"
+    AGENT_EXECUTE = "agent:execute"
+
+    # Knowledge Base
+    KB_READ = "kb:read"
+    KB_WRITE = "kb:write"
+    KB_DELETE = "kb:delete"
+    KB_UPLOAD = "kb:upload"
+
+    # Connectors
+    CONNECTOR_READ = "connector:read"
+    CONNECTOR_WRITE = "connector:write"
+    CONNECTOR_SYNC = "connector:sync"
+    CONNECTOR_DELETE = "connector:delete"
+
+    # Teams
+    TEAM_READ = "team:read"
+    TEAM_WRITE = "team:write"
 
 
 class DefaultEndpoints(Enum):
@@ -37,7 +73,7 @@ class DefaultEndpoints(Enum):
     QUERY_ENDPOINT = "http://localhost:8000"
     NODEJS_ENDPOINT = "http://localhost:3000"
     FRONTEND_ENDPOINT = "http://localhost:3001"
-    STORAGE_ENDPOINT = "http://localhost:3000"
+    STORAGE_ENDPOINT = "http://localhost:3000"  # noqa: PIE796
 
 class Routes(Enum):
     """Constants for routes"""
@@ -57,7 +93,7 @@ class Routes(Enum):
     STORAGE_DIRECT_UPLOAD = "/api/v1/document/internal/{documentId}/directUpload"
     STORAGE_UPLOAD = "/api/v1/document/internal/upload"
     STORAGE_DOWNLOAD = "/api/v1/document/internal/{documentId}/download"
-
+    STORAGE_DOWNLOAD_EXTERNAL = "/api/v1/document/{documentId}/download"
 
 class WebhookConfig(Enum):
     """Constants for webhook configuration"""
@@ -81,7 +117,7 @@ class CeleryConfig(Enum):
     """Constants for celery configuration"""
 
     TASK_SERIALIZER = "json"
-    RESULT_SERIALIZER = "json"
+    RESULT_SERIALIZER = "json"  # noqa: PIE796
     ACCEPT_CONTENT = ["json"]
     TIMEZONE = "UTC"
     ENABLE_UTC = True

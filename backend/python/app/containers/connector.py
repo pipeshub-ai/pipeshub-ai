@@ -1,3 +1,5 @@
+import os
+
 from dependency_injector import containers, providers
 
 from app.config.configuration_service import ConfigurationService
@@ -6,15 +8,16 @@ from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
-from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.connectors.sources.localKB.handlers.migration_service import run_kb_migration
-from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
 from app.migrations.connector_migration_service import ConnectorMigrationService
+from app.migrations.delete_old_agents_templates_migration import (
+    run_delete_old_agents_templates_migration,
+)
 from app.migrations.drive_to_drive_workspace_migration import (
     run_drive_to_drive_workspace_migration,
 )
@@ -52,15 +55,20 @@ class ConnectorAppContainer(BaseAppContainer):
     )
 
     # Core Services
-    rate_limiter = providers.Singleton(GoogleAPIRateLimiter)
     kafka_service = providers.Singleton(
         KafkaService, logger=logger, config_service=config_service
     )
 
     # First create an async factory for the connected BaseArangoService
     @staticmethod
-    async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService:
+    async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService | None:
         """Async factory to create and connect BaseArangoService (with schema init allowed)"""
+        # Skip ArangoDB service creation if using a different graph database
+        data_store = os.getenv("DATA_STORE", "arangodb").lower()
+        if data_store != "arangodb":
+            logger.info(f"⏭️ Skipping ArangoDB service creation (DATA_STORE={data_store})")
+            return None
+
         service = BaseArangoService(
             logger,
             arango_client,
@@ -107,13 +115,9 @@ class ConnectorAppContainer(BaseAppContainer):
         graph_provider=graph_provider,
     )
 
-    kb_service = providers.Singleton(
-        KnowledgeBaseService,
-        logger= logger,
-        arango_service= arango_service,
-        kafka_service= kafka_service
-    )
-
+    # Note: KnowledgeBaseService is created in the router's get_kb_service() using
+    # request.app.state.graph_provider and container.kafka_service (async Resource
+    # does not inject well into Singleton). graph_provider no longer depends on kafka_service.
     # Note: KnowledgeHubService is created manually in the router's get_knowledge_hub_service()
     # helper function because it depends on async graph_provider which doesn't work well
     # with dependency_injector's Factory/Resource providers.
@@ -162,12 +166,12 @@ async def run_connector_migration(container) -> bool:
         logger.info("🔍 Checking if Connector UUID migration is needed...")
 
         # Get required services
-        arango_service = await container.arango_service()
+        graph_provider = await container.graph_provider()
         config_service = container.config_service()
 
         # Create migration service instance
         migration_service = ConnectorMigrationService(
-            arango_service=arango_service,
+            graph_provider=graph_provider,
             config_service=config_service,
             logger=logger
         )
@@ -198,12 +202,12 @@ async def run_files_to_records_migration_wrapper(container) -> bool:
         logger.info("🔍 Checking if Files to Records MD5/Size migration is needed...")
 
         # Get required services
-        arango_service = await container.arango_service()
+        graph_provider = await container.graph_provider()
         config_service = container.config_service()
 
         # Run the migration
         migration_result = await run_files_to_records_migration(
-            arango_service=arango_service,
+            graph_provider=graph_provider,
             config_service=config_service,
             logger=logger
         )
@@ -247,12 +251,12 @@ async def run_drive_to_drive_workspace_migration_wrapper(container) -> bool:
         logger.info("🔍 Checking if Drive to Drive Workspace migration is needed...")
 
         # Get required services
-        arango_service = await container.arango_service()
+        graph_provider = await container.graph_provider()
         config_service = container.config_service()
 
         # Run the migration
         migration_result = await run_drive_to_drive_workspace_migration(
-            arango_service=arango_service,
+            graph_provider=graph_provider,
             config_service=config_service,
             logger=logger
         )
@@ -333,15 +337,38 @@ async def initialize_container(container) -> bool:
     try:
         await Health.system_health_check(container)
 
-        logger.info("Ensuring ArangoDB service is initialized")
-        arango_service = await container.arango_service()
-        if not arango_service:
-            raise Exception("Failed to initialize ArangoDB service")
-        logger.info("✅ ArangoDB service initialized")
+        # Conditionally initialize ArangoDB service based on DATA_STORE
+        data_store = os.getenv("DATA_STORE", "arangodb").lower()
+        if data_store == "arangodb":
+            logger.info("Ensuring ArangoDB service is initialized")
+            # Arango_service is needed for migrations
+            arango_service = await container.arango_service()
+            if not arango_service:
+                raise Exception("Failed to initialize ArangoDB service")
+            logger.info("✅ ArangoDB service initialized")
+        else:
+            logger.info(f"⏭️ Skipping ArangoDB service init (DATA_STORE={data_store})")
+            arango_service = None
+
+        logger.info("Ensuring graph database provider is initialized")
+        data_store = await container.data_store()
+        if not data_store:
+            raise Exception("Failed to initialize data store")
+        logger.info("✅ Data store initialized")
+
+        # Schema init: collections, graph, departments seed
+        await data_store.graph_provider.ensure_schema()
+        logger.info("✅ Schema ensured")
 
         logger.info("✅ Container initialization completed successfully")
 
         migration_state = await get_migration_state()
+
+        # Skip all migrations if Neo4j is configured (migrations are ArangoDB-specific)
+        if data_store != "arangodb":
+            logger.info(f"⏭️ Skipping all migrations (DATA_STORE={data_store}, migrations are ArangoDB-specific)")
+            return True
+
 
         if migration_completed(migration_state, "knowledgeBase"):
             logger.info("⏭️ Knowledge Base migration already completed, skipping.")
@@ -399,6 +426,8 @@ async def initialize_container(container) -> bool:
 
         if migration_completed(migration_state, "permissionsEdge"):
             logger.info("⏭️ Permissions Edge migration already completed, skipping.")
+        elif arango_service is None:
+            logger.info("⏭️ Skipping Permissions Edge migration (ArangoDB service not initialized)")
         else:
             logger.info("🔄 Running Permissions Edge migration...")
             result_permissions_migration = await run_permissions_edge_migration(
@@ -415,6 +444,8 @@ async def initialize_container(container) -> bool:
 
         if migration_completed(migration_state, "permissionsToKb"):
             logger.info("⏭️ Permissions To KB migration already completed, skipping.")
+        elif arango_service is None:
+            logger.info("⏭️ Skipping Permissions To KB migration (ArangoDB service not initialized)")
         else:
             logger.info("🔄 Running Permissions To KB migration...")
             result_permissions_to_kb_migration = await run_permissions_to_kb_migration(
@@ -431,6 +462,8 @@ async def initialize_container(container) -> bool:
 
         if migration_completed(migration_state, "folderHierarchy"):
             logger.info("⏭️ Folder Hierarchy migration already completed, skipping.")
+        elif arango_service is None:
+            logger.info("⏭️ Skipping Folder Hierarchy migration (ArangoDB service not initialized)")
         else:
             logger.info("🔄 Running Folder Hierarchy migration...")
             result_folder_hierarchy_migration = await run_folder_hierarchy_migration(
@@ -473,9 +506,27 @@ async def initialize_container(container) -> bool:
                 error_msg = result_rg_app_edge.get("message", "Unknown error")
                 logger.error(f"❌ Record Group -> App edge migration failed: {error_msg}")
 
+        if migration_completed(migration_state, "deleteOldAgentsTemplates"):
+            logger.info("⏭️ Delete Old Agents and Templates migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Delete Old Agents and Templates migration...")
+            result_delete_agents_templates = await run_delete_old_agents_templates_migration(container)
+            if result_delete_agents_templates.get("success"):
+                agents_deleted = result_delete_agents_templates.get("agents_deleted", 0)
+                templates_deleted = result_delete_agents_templates.get("templates_deleted", 0)
+                total_edges_deleted = result_delete_agents_templates.get("total_edges_deleted", 0)
+                logger.info(
+                    f"✅ Delete Old Agents and Templates migration completed: "
+                    f"{agents_deleted} agents, {templates_deleted} templates, "
+                    f"{total_edges_deleted} edges deleted"
+                )
+                await mark_migration_completed("deleteOldAgentsTemplates", result_delete_agents_templates)
+            else:
+                error_msg = result_delete_agents_templates.get("message", "Unknown error")
+                logger.error(f"❌ Delete Old Agents and Templates migration failed: {error_msg}")
+
         return True
 
     except Exception as e:
         logger.error(f"❌ Container initialization failed: {str(e)}")
         raise
-

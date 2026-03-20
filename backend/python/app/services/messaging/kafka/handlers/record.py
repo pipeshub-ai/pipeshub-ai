@@ -21,8 +21,6 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.events.events import EventProcessor
 from app.exceptions.indexing_exceptions import IndexingError
 from app.services.messaging.kafka.handlers.entity import BaseEventService
-
-# from app.connectors.sources.google.common.arango_service import ArangoService
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
@@ -44,7 +42,7 @@ class RecordEventHandler(BaseEventService):
             self.logger.info(f"🔍 Looking for next queued duplicate for record {record_id}")
 
             # Find the next queued duplicate
-            next_queued_record = await self.event_processor.arango_service.find_next_queued_duplicate(record_id)
+            next_queued_record = await self.event_processor.graph_provider.find_next_queued_duplicate(record_id)
 
             if not next_queued_record:
                 self.logger.info(f"✅ No queued duplicates found for record {record_id}")
@@ -56,25 +54,25 @@ class RecordEventHandler(BaseEventService):
             # Get file record for the queued duplicate
             file_record = None
             if next_queued_record.get("recordType") == RecordTypes.FILE.value:
-                file_record = await self.event_processor.arango_service.get_document(
+                file_record = await self.event_processor.graph_provider.get_document(
                     next_record_id, CollectionNames.FILES.value
                 )
 
             # Create event payload for the queued record
-            payload = await self.event_processor.arango_service._create_reindex_event_payload(
+            payload = await self.event_processor.graph_provider._create_reindex_event_payload(
                 next_queued_record,
                 file_record,
             )
 
             # Publish the event to trigger indexing
-            await self.event_processor.arango_service._publish_record_event("newRecord", payload)
+            await self.event_processor.graph_provider._publish_record_event("newRecord", payload)
 
             self.logger.info(f"✅ Successfully triggered indexing for queued duplicate: {next_record_id}")
 
         except Exception as e:
             self.logger.warning(f"Failed to trigger next queued duplicate: {str(e)}")
             try:
-                await self.event_processor.arango_service.update_queued_duplicates_status(record_id, ProgressStatus.FAILED.value, virtual_record_id)
+                await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, ProgressStatus.FAILED.value, virtual_record_id)
             except Exception as e:
                 self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
 
@@ -126,7 +124,7 @@ class RecordEventHandler(BaseEventService):
                 self.logger.error(f"Missing record_id in message {payload}")
                 return
 
-            record = await self.event_processor.arango_service.get_document(
+            record = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
 
@@ -167,7 +165,7 @@ class RecordEventHandler(BaseEventService):
                 connector_id = record.get("connectorId")
                 origin = record.get("origin")
                 if connector_id and origin == OriginTypes.CONNECTOR.value:
-                    connector_instance = await self.event_processor.arango_service.get_document(
+                    connector_instance = await self.event_processor.graph_provider.get_document(
                         connector_id, CollectionNames.APPS.value
                     )
                     if not connector_instance:
@@ -183,11 +181,12 @@ class RecordEventHandler(BaseEventService):
                             f"⏭️ Skipping indexing for record {record_id}: "
                             f"connector instance {connector_id} is inactive."
                         )
-                        # Update status to CONNECTOR_DISABLED
+                        # Update status to MANUAL_INDEXING and reson to connector is inactive
                         await self.__update_document_status(
                             record_id=record_id,
-                            indexing_status=ProgressStatus.CONNECTOR_DISABLED.value,
-                            extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value)
+                            indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
+                            extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
+                            reason="Connector is inactive"
                         )
                         yield {"event": "parsing_complete", "data": {"record_id": record_id}}
                         yield {"event": "indexing_complete", "data": {"record_id": record_id}}
@@ -277,7 +276,7 @@ class RecordEventHandler(BaseEventService):
                     }
                 )
                 docs = [doc]
-                await self.event_processor.arango_service.batch_upsert_nodes(
+                await self.event_processor.graph_provider.batch_upsert_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
 
@@ -358,17 +357,17 @@ class RecordEventHandler(BaseEventService):
                 except Exception as e:
                     error_occurred = True
                     error_msg = str(e)
-                    raise Exception(error_msg)
+                    raise Exception(error_msg) from e
         except IndexingError as e:
             error_occurred = True
             error_msg = str(e)
             self.logger.error(error_msg, exc_info=True)
-            raise Exception(error_msg)
+            raise Exception(error_msg) from e
         except Exception as e:
             error_occurred = True
             error_msg = str(e)
             self.logger.error(error_msg, exc_info=True)
-            raise Exception(error_msg)
+            raise Exception(error_msg) from e
         finally:
             processing_time = (datetime.now() - start_time).total_seconds()
             self.logger.info(
@@ -386,29 +385,22 @@ class RecordEventHandler(BaseEventService):
                 virtual_record_id = record.get("virtualRecordId") if record else None
                 self.logger.info(f"🔄 Current record {record_id} has failed, triggering next queued duplicate")
                 await self._trigger_next_queued_duplicate(record_id,virtual_record_id)
-                return
-
-            if record is None:
-                return
-
-            # Update queued duplicates for ALL record types (not just FILE)
-            if event_type != EventTypes.DELETE_RECORD.value:
-                record = await self.event_processor.arango_service.get_document(
+            elif record is not None and event_type != EventTypes.DELETE_RECORD.value:
+                # Update queued duplicates for ALL record types (not just FILE)
+                record = await self.event_processor.graph_provider.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
-
-                if record is None:
+                if record is not None:
+                    indexing_status = record.get("indexingStatus")
+                    virtual_record_id = record.get("virtualRecordId")
+                    if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
+                        await self.event_processor.graph_provider.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
+                    elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
+                        # Find and trigger indexing for the next queued duplicate
+                        self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
+                        await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
+                else:
                     self.logger.warning(f"Record {record_id} not found in database")
-                    return
-
-                indexing_status = record.get("indexingStatus")
-                virtual_record_id = record.get("virtualRecordId")
-                if indexing_status == ProgressStatus.COMPLETED.value or indexing_status == ProgressStatus.EMPTY.value:
-                    await self.event_processor.arango_service.update_queued_duplicates_status(record_id, indexing_status, virtual_record_id)
-                elif indexing_status == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
-                    # Find and trigger indexing for the next queued duplicate
-                    self.logger.info(f"🔄 Current record {record_id} has status {indexing_status}, triggering next queued duplicate")
-                    await self._trigger_next_queued_duplicate(record_id, virtual_record_id)
 
     async def __update_document_status(
         self,
@@ -417,9 +409,9 @@ class RecordEventHandler(BaseEventService):
         extraction_status: str,
         reason: Optional[str] = None,
     ) -> dict|None:
-        """Update document status in Arango"""
+        """Update document status in database"""
         try:
-            record = await self.event_processor.arango_service.get_document(
+            record = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
             if not record:
@@ -440,7 +432,7 @@ class RecordEventHandler(BaseEventService):
                 doc["reason"] = reason
 
             docs = [doc]
-            await self.event_processor.arango_service.batch_upsert_nodes(
+            await self.event_processor.graph_provider.batch_upsert_nodes(
                 docs, CollectionNames.RECORDS.value
             )
             self.logger.info(f"✅ Updated document status for record {record_id}")
@@ -510,7 +502,7 @@ class RecordEventHandler(BaseEventService):
                             except IOError as io_err:
                                 raise aiohttp.ClientError(
                                     f"IO error during chunk download: {str(io_err)}"
-                                )
+                                ) from io_err
 
                             file_content = file_buffer.getvalue()
                             self.logger.info(
@@ -519,9 +511,9 @@ class RecordEventHandler(BaseEventService):
                             return file_content
 
                     except aiohttp.ServerDisconnectedError as sde:
-                        raise aiohttp.ClientError(f"Server disconnected: {str(sde)}")
+                        raise aiohttp.ClientError(f"Server disconnected: {str(sde)}") from sde
                     except aiohttp.ClientConnectorError as cce:
-                        raise aiohttp.ClientError(f"Connection error: {str(cce)}")
+                        raise aiohttp.ClientError(f"Connection error: {str(cce)}") from cce
 
             except (aiohttp.ClientError, asyncio.TimeoutError, IOError) as e:
                 error_type = type(e).__name__
@@ -538,7 +530,7 @@ class RecordEventHandler(BaseEventService):
                     raise Exception(
                         f"Download failed after {max_retries} attempts. "
                         f"Error: {error_type} - {str(e)}. File id: {record_id}"
-                    )
+                    ) from e
                 await asyncio.sleep(delay)
             finally:
                 if not file_buffer.closed:

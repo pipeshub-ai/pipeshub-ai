@@ -87,7 +87,7 @@ export class KnowledgeBaseAPI {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       console.error('Error downloading document:', err);
-      throw new Error('Failed to download document');
+      throw err;
     }
   }
 
@@ -170,7 +170,7 @@ export class KnowledgeBaseAPI {
     folderId?: string,
     params?: any
   ): Promise<FolderContents> {
-    const url = folderId ? `${API_BASE}/${kbId}/folder/${folderId}` : `${API_BASE}/${kbId}/records`;
+    const url = folderId ? `${API_BASE}/${kbId}/folder/${folderId}/children` : `${API_BASE}/${kbId}/children`;
     const debugUrl_ALlRecords = `${API_BASE}/records`;
     const response = await axios.get(url, { params });
     if (!response.data) throw new Error('Failed to fetch folder contents');
@@ -366,11 +366,7 @@ export class KnowledgeBaseAPI {
     recordId: string,
     fileName: string
   ): Promise<void> {
-    try {
-      await this.streamDocument(recordId, fileName);
-    } catch (error) {
-      throw new Error('Failed to download document');
-    }
+    await this.streamDocument(recordId, fileName);
   }
 
   static async getRecordDetails(recordId: string): Promise<RecordDetailsResponse> {

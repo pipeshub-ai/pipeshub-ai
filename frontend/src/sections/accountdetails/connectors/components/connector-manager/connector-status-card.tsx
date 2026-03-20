@@ -7,6 +7,7 @@ import {
   Tooltip,
   Stack,
   Chip,
+  Alert,
   alpha,
   useTheme,
 } from '@mui/material';
@@ -19,7 +20,7 @@ interface ConnectorStatusCardProps {
   connector: Connector;
   isAuthenticated: boolean;
   isEnablingWithFilters: boolean;
-  onToggle: (enabled: boolean, type: 'sync' | 'agent') => void;
+  onToggle: (enabled: boolean, type: 'sync') => void;
   hideAuthenticate?: boolean;
 }
 
@@ -34,7 +35,7 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
   const isDark = theme.palette.mode === 'dark';
   const isConfigured = connector.isConfigured || false;
   const isActive = connector.isActive || false;
-  const isAgentActive = connector.isAgentActive || false;
+  const isDeleting = connector.status === 'DELETING';
   const authType = (connector.authType || '').toUpperCase();
   const isOauth = authType === 'OAUTH';
   const canEnable = isActive
@@ -45,32 +46,14 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
         : isAuthenticated
       : isConfigured;
 
-  const canEnableAgent = isAgentActive
-    ? true
-    : isOauth
-      ? hideAuthenticate
-        ? isConfigured
-        : isAuthenticated
-      : isConfigured;
   const enableBlocked = !isActive && !canEnable;
-  const enableAgentBlocked = !isAgentActive && !canEnableAgent;
   const supportsSync = connector.supportsSync || false;
-  const supportsAgent = connector.supportsAgent || false;
 
   const getTooltipMessage = () => {
-    if (!isActive && !canEnable) {
-      if (isOauth) {
-        return hideAuthenticate
-          ? `${connector.name} needs to be configured before it can be enabled`
-          : `Authenticate ${connector.name} before enabling`;
-      }
-      return `${connector.name} needs to be configured before it can be enabled`;
+    if (isDeleting) {
+      return 'Connector deletion is in progress';
     }
-    return '';
-  };
-
-  const getAgentTooltipMessage = () => {
-    if (!isAgentActive && !canEnableAgent) {
+    if (!isActive && !canEnable) {
       if (isOauth) {
         return hideAuthenticate
           ? `${connector.name} needs to be configured before it can be enabled`
@@ -112,6 +95,20 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
             boxShadow: `0 0 0 2px ${theme.palette.background.paper}`,
           }}
         />
+      )}
+
+      {/* Deletion in progress banner */}
+      {isDeleting && (
+        <Alert
+          severity="warning"
+          sx={{
+            mb: 2,
+            borderRadius: 1,
+            fontSize: '0.8125rem',
+          }}
+        >
+          Deletion in progress — this connector is being removed and will disappear shortly.
+        </Alert>
       )}
 
       {/* Connector Info */}
@@ -288,13 +285,14 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
               title={getTooltipMessage()}
               placement="top"
               arrow
-              disableHoverListener={!enableBlocked}
+              disableHoverListener={!isDeleting && !enableBlocked}
             >
               <div>
                 <Switch
                   key='sync-switch'
                   checked={isActive}
                   onChange={(e) => {
+                    if (isDeleting) return;
                     const next = e.target.checked;
                     if (next && !canEnable) {
                       // Block enabling if prerequisites not met
@@ -302,79 +300,7 @@ const ConnectorStatusCard: React.FC<ConnectorStatusCardProps> = ({
                     }
                     onToggle(next, 'sync');
                   }}
-                  disabled={!isActive && !canEnable}
-                  color="primary"
-                  size="medium"
-                  sx={{
-                    '& .MuiSwitch-switchBase.Mui-checked': {
-                      color: theme.palette.primary.main,
-                      '&:hover': {
-                        backgroundColor: isDark
-                          ? alpha(theme.palette.primary.main, 0.9)
-                          : alpha(theme.palette.primary.main, 0.1),
-                      },
-                    },
-                    '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                      backgroundColor: isDark
-                        ? theme.palette.primary.main
-                        : theme.palette.primary.main,
-                    },
-                  }}
-                />
-              </div>
-            </Tooltip>
-          </Stack>
-        </Box>
-      )}
-
-      {supportsAgent && (
-        <Box
-          sx={{
-            p: 2,
-            mt: 2,
-            borderRadius: 1,
-            bgcolor:
-              theme.palette.mode === 'dark'
-                ? isDark
-                  ? alpha(theme.palette.background.default, 0.3)
-                  : alpha(theme.palette.background.default, 0.3)
-                : alpha(theme.palette.grey[50], 0.5),
-            border: `1px solid ${theme.palette.divider}`,
-          }}
-        >
-          <Stack direction="row" alignItems="center" justifyContent="space-between">
-            <Box>
-              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
-                Enable Agent
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
-                {isAgentActive
-                  ? 'Active and agent is enabled'
-                  : isConfigured
-                    ? 'Configured but agent is disabled'
-                    : 'Needs configuration to enable agent'}
-              </Typography>
-            </Box>
-
-            <Tooltip
-              title={getAgentTooltipMessage()}
-              placement="top"
-              arrow
-              disableHoverListener={!enableAgentBlocked}
-            >
-              <div>
-                <Switch
-                key='agent-switch'
-                  checked={isAgentActive}
-                  onChange={(e) => {
-                    const next = e.target.checked;
-                    if (next && !canEnableAgent) {
-                      // Block enabling if prerequisites not met
-                      return;
-                    }
-                    onToggle(next, 'agent');
-                  }}
-                  disabled={!isAgentActive && !canEnableAgent}
+                  disabled={isDeleting || (!isActive && !canEnable)}
                   color="primary"
                   size="medium"
                   sx={{

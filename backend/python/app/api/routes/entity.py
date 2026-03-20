@@ -1,12 +1,13 @@
-import asyncio
 import json
 import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.service import OAuthScopes
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
@@ -16,17 +17,17 @@ async def get_services(request: Request) -> Dict[str, Any]:
     container = request.app.container
 
     # Get services
-    arango_service = await container.arango_service()
+    graph_provider = request.app.state.graph_provider
     logger = container.logger()
 
     return {
-        "arango_service": arango_service,
+        "graph_provider": graph_provider,
         "logger": logger,
     }
 
 
 async def _validate_owner_removal(
-    arango_service,
+    graph_provider,
     team_id: str,
     user_ids_to_remove: list,
     logger
@@ -38,37 +39,14 @@ async def _validate_owner_removal(
     if not user_ids_to_remove:
         return
 
-    # Single optimized query: Check Owners being removed and total owner count
-    removal_validation_query = f"""
-    LET owners_being_removed = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            FILTER permission.role == 'OWNER'
-            RETURN SPLIT(permission._from, '/')[1]
+    # Get owner removal info using graph provider
+    validation_data = await graph_provider.get_team_owner_removal_info(
+        team_id=team_id,
+        user_ids=user_ids_to_remove
     )
-    LET total_owner_count = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER permission.role == 'OWNER'
-            COLLECT WITH COUNT INTO count
-            RETURN count
-    )
-    RETURN {{
-        ownersBeingRemoved: owners_being_removed,
-        totalOwnerCount: LENGTH(total_owner_count) > 0 ? total_owner_count[0] : 0
-    }}
-    """
-    validation_result = arango_service.db.aql.execute(
-        removal_validation_query,
-        bind_vars={
-            "userIds": user_ids_to_remove,
-            "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
-        }
-    )
-    validation_data = next(validation_result, {})
-    owners_being_removed = validation_data.get("ownersBeingRemoved", [])
-    total_owner_count = validation_data.get("totalOwnerCount", 0)
+
+    owners_being_removed = validation_data.get("owners_being_removed", [])
+    total_owner_count = validation_data.get("total_owner_count", 0)
 
     if owners_being_removed:
         remaining_owners = total_owner_count - len(owners_being_removed)
@@ -81,7 +59,7 @@ async def _validate_owner_removal(
 
 
 async def _validate_and_filter_owner_updates(
-    arango_service,
+    graph_provider,
     team_id: str,
     valid_user_roles: list,
     logger
@@ -91,46 +69,18 @@ async def _validate_and_filter_owner_updates(
     Returns (filtered_updates, total_owner_count).
     Raises HTTPException if validation fails.
     """
-    # Single optimized query: Get team info, current permissions, and owner count in one go
+    # Get team info, current permissions, and owner count using graph provider
     user_ids_to_check = [ur.get("userId") for ur in valid_user_roles]
-    team_and_permissions_query = f"""
-    LET team = DOCUMENT(@teamId)
-    LET current_perms = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            RETURN {{
-                userId: SPLIT(permission._from, '/')[1],
-                role: permission.role
-            }}
+    result_data = await graph_provider.get_team_permissions_and_owner_count(
+        team_id=team_id,
+        user_ids=user_ids_to_check
     )
-    LET owner_count = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER permission.role == 'OWNER'
-            COLLECT WITH COUNT INTO count
-            RETURN count
-    )
-    RETURN {{
-        team: team,
-        permissions: current_perms,
-        ownerCount: LENGTH(owner_count) > 0 ? owner_count[0] : 0
-    }}
-    """
-    result_cursor = arango_service.db.aql.execute(
-        team_and_permissions_query,
-        bind_vars={
-            "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
-            "userIds": user_ids_to_check
-        }
-    )
-    result_data = next(result_cursor, None)
 
     if not result_data or not result_data.get("team"):
         raise HTTPException(status_code=404, detail="Team not found")
 
-    current_permissions = {perm["userId"]: perm["role"] for perm in result_data.get("permissions", [])}
-    total_owner_count = result_data.get("ownerCount", 0)
+    current_permissions = result_data.get("permissions", {})
+    total_owner_count = result_data.get("owner_count", 0)
 
     # Filter out unchanged Owners and validate
     filtered_updates = []
@@ -179,11 +129,11 @@ async def _validate_and_filter_owner_updates(
     return filtered_updates, total_owner_count
 
 
-@router.post("/team")
+@router.post("/team", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def create_team(request: Request) -> JSONResponse:
     """Create a team"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     body = await request.body()
@@ -194,7 +144,7 @@ async def create_team(request: Request) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     # Generate a unique key for the team
@@ -223,8 +173,10 @@ async def create_team(request: Request) -> JSONResponse:
 
     # First, ensure creator always gets OWNER role
     creator_permission = {
-        "_from": f"{CollectionNames.USERS.value}/{creator_key}",
-        "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
+        "from_id": creator_key,
+        "from_collection": CollectionNames.USERS.value,
+        "to_id": team_key,
+        "to_collection": CollectionNames.TEAMS.value,
         "type": "USER",
         "role": "OWNER",
         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -240,17 +192,20 @@ async def create_team(request: Request) -> JSONResponse:
             continue
         if user_id != creator_key:  # Skip creator as they already have OWNER role
             user_team_edges.append({
-                "_from": f"{CollectionNames.USERS.value}/{user_id}",
-                "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
+                "from_id": user_id,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": team_key,
+                "to_collection": CollectionNames.TEAMS.value,
                 "type": "USER",
                 "role": role,
                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             })
     logger.info(f"User team edges: {user_team_edges}")
-    transaction = None
+    transaction_id = None
     try:
-        transaction = arango_service.db.begin_transaction(
+        transaction_id = await graph_provider.begin_transaction(
+            read=[],
             write=[
                 CollectionNames.TEAMS.value,
                 CollectionNames.PERMISSION.value,
@@ -258,23 +213,23 @@ async def create_team(request: Request) -> JSONResponse:
         )
 
         # Create the team first
-        result = await arango_service.batch_upsert_nodes([team_body], CollectionNames.TEAMS.value, transaction)
+        result = await graph_provider.batch_upsert_nodes([team_body], CollectionNames.TEAMS.value, transaction=transaction_id)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create team")
-        result = await arango_service.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value, transaction)
+        result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value, transaction=transaction_id)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create creator permissions")
 
-        await asyncio.to_thread(lambda: transaction.commit_transaction())
+        await graph_provider.commit_transaction(transaction_id)
         logger.info(f"Team created successfully: {team_body}")
 
         # Fetch the created team with users and permissions
-        team_with_users = await get_team_with_users(arango_service, team_key, user['_key'])
+        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, user_key=user['_key'])
 
     except Exception as e:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
-        if transaction:
-            await asyncio.to_thread(lambda: transaction.abort_transaction())
+        if transaction_id:
+            await graph_provider.rollback_transaction(transaction_id)
         raise HTTPException(status_code=500, detail=str(e))
 
     return JSONResponse(
@@ -286,7 +241,7 @@ async def create_team(request: Request) -> JSONResponse:
         }
     )
 
-@router.get("/team/list")
+@router.get("/team/list", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_teams(
     request: Request,
     search: Optional[str] = Query(None, description="Search teams by name"),
@@ -295,7 +250,7 @@ async def get_teams(
 ) -> JSONResponse:
     """Get all teams for the current user's organization with pagination and search"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
@@ -303,93 +258,19 @@ async def get_teams(
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Calculate offset
-    offset = (page - 1) * limit
-
-    # Build search filter
-    search_filter = ""
-    if search:
-        search_filter = "FILTER team.name LIKE CONCAT('%', @search, '%')"
-
-    # Query to get teams with current user's permission and team members
-    teams_query = f"""
-    FOR team IN {CollectionNames.TEAMS.value}
-    FILTER team.orgId == @orgId
-    {search_filter}
-    LET current_user_permission = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._from == @currentUserId AND permission._to == team._id
-        RETURN permission
-    )
-    LET team_members = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._to == team._id
-        LET user = DOCUMENT(permission._from)
-        RETURN {{
-            "id": user._key,
-            "userId": user.userId,
-            "userName": user.fullName,
-            "userEmail": user.email,
-            "role": permission.role,
-            "joinedAt": permission.createdAtTimestamp,
-            "isOwner": permission.role == "OWNER"
-        }}
-    )
-    LET user_count = LENGTH(team_members)
-    SORT team.createdAtTimestamp DESC
-    LIMIT @offset, @limit
-    RETURN {{
-        "id": team._key,
-        "name": team.name,
-        "description": team.description,
-        "createdBy": team.createdBy,
-        "orgId": team.orgId,
-        "createdAtTimestamp": team.createdAtTimestamp,
-        "updatedAtTimestamp": team.updatedAtTimestamp,
-        "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
-        "members": team_members,
-        "memberCount": user_count,
-        "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
-        "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-        "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
-    }}
-    """
-
-    # Count total teams for pagination
-    count_query = f"""
-    FOR team IN {CollectionNames.TEAMS.value}
-    FILTER team.orgId == @orgId
-    {search_filter}
-    COLLECT WITH COUNT INTO total_count
-    RETURN total_count
-    """
-
     try:
-        count_params = {"orgId": user_info.get("orgId")}
-        # Get total count
-        if search:
-            count_params["search"] = search
-
-        count_result = arango_service.db.aql.execute(count_query, bind_vars=count_params)
-        count_list = list(count_result)
-        total_count = count_list[0] if count_list else 0
-
-        # Get teams with pagination
-        teams_params = {
-            "orgId": user_info.get("orgId"),
-            "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "offset": offset,
-            "limit": limit
-        }
-        if search:
-            teams_params["search"] = search
-
-        result = arango_service.db.aql.execute(teams_query, bind_vars=teams_params)
-        result_list = list(result)
+        # Use interface method to get teams
+        result_list, total_count = await graph_provider.get_teams(
+            org_id=user_info.get("orgId"),
+            user_key=user['_key'],
+            search=search,
+            page=page,
+            limit=limit
+        )
 
         if not result_list:
             return JSONResponse(
@@ -430,75 +311,23 @@ async def get_teams(
         logger.error(f"Error in get_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch teams")
 
-async def get_team_with_users(arango_service, team_key: str, user_key: str) -> Optional[Dict]:
-    """Helper function to get team with users and permissions"""
-    team_query = f"""
-    FOR team IN {CollectionNames.TEAMS.value}
-    FILTER team._key == @teamId
-    LET current_user_permission = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._from == @currentUserId AND permission._to == team._id
-        RETURN permission
-    )
-    LET team_members = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._to == team._id
-        LET user = DOCUMENT(permission._from)
-        RETURN {{
-            "id": user._key,
-            "userId": user.userId,
-            "userName": user.fullName,
-            "userEmail": user.email,
-            "role": permission.role,
-            "joinedAt": permission.createdAtTimestamp,
-            "isOwner": permission.role == "OWNER"
-        }}
-    )
-    LET user_count = LENGTH(team_members)
-    RETURN {{
-        "id": team._key,
-        "name": team.name,
-        "description": team.description,
-        "createdBy": team.createdBy,
-        "orgId": team.orgId,
-        "createdAtTimestamp": team.createdAtTimestamp,
-        "updatedAtTimestamp": team.updatedAtTimestamp,
-        "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
-        "members": team_members,
-        "memberCount": user_count,
-        "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
-        "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-        "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
-    }}
-    """
-
-    result = arango_service.db.aql.execute(
-        team_query,
-        bind_vars={
-            "teamId": team_key,
-            "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
-        }
-    )
-    result_list = list(result)
-    return result_list[0] if result_list else None
-
-@router.get("/team/{team_id}")
+@router.get("/team/{team_id}", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_team(request: Request, team_id: str) -> JSONResponse:
     """Get a specific team with its users and permissions"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     try:
-        # Query to get team with current user's permission and team members (same structure as get_teams)
-        result = await get_team_with_users(arango_service, team_id, user['_key'])
+        # Use interface method to get team with users
+        result = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -516,26 +345,27 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in get_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team")
 
-
-@router.put("/team/{team_id}")
+@router.put("/team/{team_id}", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def update_team(request: Request, team_id: str) -> JSONResponse:
     """Update a team - OWNER role. Supports updating name, description, and managing members"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     # Check if user has permission to update the team
-    permission = await arango_service.get_edge(
-        f"{CollectionNames.USERS.value}/{user['_key']}",
-        f"{CollectionNames.TEAMS.value}/{team_id}",
+    permission = await graph_provider.get_edge(
+        user['_key'],
+        CollectionNames.USERS.value,
+        team_id,
+        CollectionNames.TEAMS.value,
         CollectionNames.PERMISSION.value
     )
     if not permission:
@@ -560,7 +390,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
 
     try:
         # Update team basic info (always update timestamp)
-        result = await arango_service.update_node(team_id, updates, CollectionNames.TEAMS.value)
+        result = await graph_provider.update_node(team_id, CollectionNames.TEAMS.value, updates)
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -574,23 +404,11 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
 
         # Remove users if specified
         if remove_user_ids:
-            await _validate_owner_removal(arango_service, team_id, remove_user_ids, logger)
-
-            delete_query = f"""
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            REMOVE permission IN {CollectionNames.PERMISSION.value}
-            RETURN OLD
-            """
-            deleted_permissions = arango_service.db.aql.execute(
-                delete_query,
-                bind_vars={
-                    "userIds": remove_user_ids,
-                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
-                }
+            await _validate_owner_removal(graph_provider, team_id, remove_user_ids, logger)
+            deleted_list = await graph_provider.delete_team_member_edges(
+                team_id=team_id,
+                user_ids=remove_user_ids
             )
-            deleted_list = list(deleted_permissions)
             if deleted_list:
                 logger.info(f"Removed {len(deleted_list)} users from team {team_id}")
 
@@ -608,34 +426,17 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
             else:
                 # Validate and filter owner updates using shared helper
                 filtered_updates, total_owner_count = await _validate_and_filter_owner_updates(
-                    arango_service, team_id, valid_user_roles, logger
+                    graph_provider, team_id, valid_user_roles, logger
                 )
 
                 # Process filtered updates
                 if filtered_updates:
-                    batch_update_query = f"""
-                    FOR user_role IN @update_user_roles
-                        LET user_id = user_role.userId
-                        LET new_role = user_role.role
-                        FOR permission IN {CollectionNames.PERMISSION.value}
-                            FILTER permission._to == @teamId
-                            FILTER SPLIT(permission._from, '/')[1] == user_id
-                            UPDATE permission WITH {{
-                                role: new_role,
-                                updatedAtTimestamp: @timestamp
-                            }} IN {CollectionNames.PERMISSION.value}
-                            RETURN NEW
-                    """
                     try:
-                        cursor = arango_service.db.aql.execute(
-                            batch_update_query,
-                            bind_vars={
-                                "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
-                                "update_user_roles": filtered_updates,
-                                "timestamp": get_epoch_timestamp_in_ms()
-                            }
+                        updated_permissions = await graph_provider.batch_update_team_member_roles(
+                            team_id=team_id,
+                            user_roles=filtered_updates,
+                            timestamp=get_epoch_timestamp_in_ms()
                         )
-                        updated_permissions = list(cursor)
                         logger.info(f"Updated {len(updated_permissions)} user roles in batch")
                     except Exception as e:
                         logger.error(f"Error updating user roles in batch: {str(e)}")
@@ -652,8 +453,10 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                 # Skip if trying to add creator - they already have OWNER role
                 if user_id != user['_key']:
                     user_team_edges.append({
-                        "_from": f"{CollectionNames.USERS.value}/{user_id}",
-                        "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
+                        "from_id": user_id,
+                        "from_collection": CollectionNames.USERS.value,
+                        "to_id": team_id,
+                        "to_collection": CollectionNames.TEAMS.value,
                         "type": "USER",
                         "role": role,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -661,12 +464,12 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                     })
 
             if user_team_edges:
-                result = await arango_service.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
+                result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
                 if result:
                     logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -682,11 +485,11 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in update_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update team")
 
-@router.post("/team/{team_id}/users")
+@router.post("/team/{team_id}/users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
     """Add users to a team - OWNER role"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
@@ -694,12 +497,12 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     # Check if user has permission to update the team
-    permission = await arango_service.get_edge(f"{CollectionNames.USERS.value}/{user['_key']}", f"{CollectionNames.TEAMS.value}/{team_id}", CollectionNames.PERMISSION.value)
+    permission = await graph_provider.get_edge(user['_key'], CollectionNames.USERS.value, team_id, CollectionNames.TEAMS.value, CollectionNames.PERMISSION.value)
     if not permission:
         raise HTTPException(status_code=403, detail="User does not have permission to update this team")
 
@@ -734,8 +537,10 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
             logger.info(f"Skipping creator {creator_key} - they already have OWNER role")
             continue
         user_team_edges.append({
-            "_from": f"{CollectionNames.USERS.value}/{user_id}",
-            "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
+            "from_id": user_id,
+            "from_collection": CollectionNames.USERS.value,
+            "to_id": team_id,
+            "to_collection": CollectionNames.TEAMS.value,
             "type": "USER",
             "role": role,
             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -744,7 +549,7 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
 
     if not user_team_edges:
         # If only creator was in the list, just return the team
-        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
         return JSONResponse(
             status_code=200,
             content={
@@ -755,12 +560,12 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
         )
 
     try:
-        result = await arango_service.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
+        result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to add users to team")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -776,12 +581,11 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in add_users_to_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to add users to team")
 
-
-@router.delete("/team/{team_id}/users")
+@router.delete("/team/{team_id}/users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
     """Remove a user from a team - OWNER role"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     body = await request.body()
@@ -797,14 +601,16 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     # Check if user has permission to delete the team members
-    permission = await arango_service.get_edge(
-        f"{CollectionNames.USERS.value}/{user['_key']}",
-        f"{CollectionNames.TEAMS.value}/{team_id}",
+    permission = await graph_provider.get_edge(
+        user['_key'],
+        CollectionNames.USERS.value,
+        team_id,
+        CollectionNames.TEAMS.value,
         CollectionNames.PERMISSION.value
     )
     if not permission:
@@ -817,34 +623,20 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
 
     try:
         # Validate owner removal using shared helper
-        await _validate_owner_removal(arango_service, team_id, user_ids, logger)
+        await _validate_owner_removal(graph_provider, team_id, user_ids, logger)
 
-        # Delete permissions in a single atomic AQL operation
-        delete_query = f"""
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._to == @teamId
-        FILTER SPLIT(permission._from, '/')[1] IN @userIds
-        REMOVE permission IN {CollectionNames.PERMISSION.value}
-        RETURN OLD
-        """
-
-        deleted_permissions = arango_service.db.aql.execute(
-            delete_query,
-            bind_vars={
-                "userIds": user_ids,
-                "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
-            }
+        # Delete permissions using interface method
+        deleted_list = await graph_provider.delete_team_member_edges(
+            team_id=team_id,
+            user_ids=user_ids
         )
-
-        # Convert cursor to list if needed
-        deleted_list = list(deleted_permissions)
         if not deleted_list:
             raise HTTPException(status_code=404, detail="No users found in team to remove")
 
         logger.info(f"Successfully removed {len(deleted_list)} users from team {team_id}")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id,user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -860,11 +652,11 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in remove_user_from_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to remove user from team")
 
-@router.put("/team/{team_id}/users/permissions")
+@router.put("/team/{team_id}/users/permissions", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def update_user_permissions(request: Request, team_id: str) -> JSONResponse:
     """Update user permissions in a team - requires OWNER role"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
@@ -872,14 +664,16 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     # Check if user has permission to update the team
-    permission = await arango_service.get_edge(
-        f"{CollectionNames.USERS.value}/{user['_key']}",
-        f"{CollectionNames.TEAMS.value}/{team_id}",
+    permission = await graph_provider.get_edge(
+        user['_key'],
+        CollectionNames.USERS.value,
+        team_id,
+        CollectionNames.TEAMS.value,
         CollectionNames.PERMISSION.value
     )
     if not permission:
@@ -916,12 +710,13 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
 
         # Validate and filter owner updates using shared helper
         filtered_updates, total_owner_count = await _validate_and_filter_owner_updates(
-            arango_service, team_id, valid_user_roles, logger
+            graph_provider, team_id, valid_user_roles, logger
         )
 
         # Early exit if no updates needed
         if not filtered_updates:
-            updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+            updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
+
             return JSONResponse(
                 status_code=200,
                 content={
@@ -931,35 +726,12 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
                 }
             )
 
-        # Batch update all user roles in a single query
-        batch_update_query = f"""
-        FOR user_role IN @user_roles
-            LET user_id = user_role.userId
-            LET new_role = user_role.role
-            FOR permission IN {CollectionNames.PERMISSION.value}
-                FILTER permission._to == @team_id
-                FILTER SPLIT(permission._from, '/')[1] == user_id
-                UPDATE permission WITH {{
-                    role: new_role,
-                    updatedAtTimestamp: @timestamp
-                }} IN {CollectionNames.PERMISSION.value}
-                RETURN {{
-                    _key: NEW._key,
-                    _from: NEW._from,
-                    role: NEW.role,
-                    updatedAt: NEW.updatedAtTimestamp
-                }}
-        """
-
-        cursor = arango_service.db.aql.execute(
-            batch_update_query,
-            bind_vars={
-                "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
-                "user_roles": filtered_updates,
-                "timestamp": timestamp
-            }
+        # Batch update all user roles using interface method
+        updated_permissions = await graph_provider.batch_update_team_member_roles(
+            team_id=team_id,
+            user_roles=filtered_updates,
+            timestamp=timestamp
         )
-        updated_permissions = list(cursor)
 
         if not updated_permissions:
             raise HTTPException(status_code=404, detail="No user permissions found to update")
@@ -967,7 +739,7 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
         logger.info(f"Updated {len(updated_permissions)} user permissions")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -984,26 +756,27 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
         logger.error(f"Error in update_user_permissions: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update user permissions")
 
-
-@router.delete("/team/{team_id}")
+@router.delete("/team/{team_id}", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def delete_team(request: Request, team_id: str) -> JSONResponse:
     """Delete a team and all its permissions - requires OWNER role"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     # Check if user has permission to delete the team (OWNER only)
-    permission = await arango_service.get_edge(
-        f"{CollectionNames.USERS.value}/{user['_key']}",
-        f"{CollectionNames.TEAMS.value}/{team_id}",
+    permission = await graph_provider.get_edge(
+        user['_key'],
+        CollectionNames.USERS.value,
+        team_id,
+        CollectionNames.TEAMS.value,
         CollectionNames.PERMISSION.value
     )
     if not permission:
@@ -1015,22 +788,11 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     logger.info(f"Deleting team: {team_id}")
 
     try:
-        # First delete all permission edges
-        delete_query = f"""
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._to == @teamId
-        REMOVE permission IN {CollectionNames.PERMISSION.value}
-        RETURN OLD
-        """
-
-        permissions = arango_service.db.aql.execute(
-            delete_query,
-            bind_vars={"teamId": f"{CollectionNames.TEAMS.value}/{team_id}"}
-        )
-        permissions = list(permissions)
+        # Delete all permission edges using interface method
+        await graph_provider.delete_all_team_permissions(team_id=team_id)
 
         # Delete the team
-        result = await arango_service.delete_nodes([team_id], CollectionNames.TEAMS.value)
+        result = await graph_provider.delete_nodes([team_id], CollectionNames.TEAMS.value)
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -1047,8 +809,7 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in delete_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete team")
 
-
-@router.get("/user/teams")
+@router.get("/user/teams", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_user_teams(
     request: Request,
     search: Optional[str] = Query(None, description="Search teams by name"),
@@ -1057,7 +818,7 @@ async def get_user_teams(
 ) -> JSONResponse:
     """Get all teams that the current user is a member of"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
@@ -1065,98 +826,18 @@ async def get_user_teams(
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Calculate offset
-    offset = (page - 1) * limit
-
-    # Build search filter
-    search_filter = ""
-    if search:
-        search_filter = "FILTER (team.name LIKE CONCAT('%', @search, '%') OR team.description LIKE CONCAT('%', @search, '%'))"
-
-    # Query to get all teams user is a member of with pagination
-    user_teams_query = f"""
-    FOR permission IN @@permission_collection
-    FILTER permission._from == @userId
-    LET team = DOCUMENT(permission._to)
-    FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
-    {search_filter}
-    SORT team.createdAtTimestamp DESC
-    LIMIT @offset, @limit
-    LET team_members = (
-        FOR member_permission IN @@permission_collection
-        FILTER member_permission._to == team._id
-        LET member_user = DOCUMENT(member_permission._from)
-        FILTER member_user != null
-        RETURN {{
-            "id": member_user._key,
-            "userId": member_user.userId,
-            "userName": member_user.fullName,
-            "userEmail": member_user.email,
-            "role": member_permission.role,
-            "joinedAt": member_permission.createdAtTimestamp,
-            "isOwner": member_permission.role == "OWNER"
-        }}
-    )
-    LET member_count = LENGTH(team_members)
-    RETURN {{
-        "id": team._key,
-        "name": team.name,
-        "description": team.description,
-        "createdBy": team.createdBy,
-        "orgId": team.orgId,
-        "createdAtTimestamp": team.createdAtTimestamp,
-        "updatedAtTimestamp": team.updatedAtTimestamp,
-        "currentUserPermission": permission,
-        "members": team_members,
-        "memberCount": member_count,
-        "canEdit": permission.role IN ["OWNER"],
-        "canDelete": permission.role == "OWNER",
-        "canManageMembers": permission.role IN ["OWNER"]
-    }}
-    """
-
-    # Count query for pagination
-    count_query = f"""
-    FOR permission IN @@permission_collection
-    FILTER permission._from == @userId
-    LET team = DOCUMENT(permission._to)
-    FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
-    {search_filter}
-    COLLECT WITH COUNT INTO total_count
-    RETURN total_count
-    """
-
     try:
-        # Get total count
-        count_params = {
-            "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "@permission_collection": CollectionNames.PERMISSION.value,
-            "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
-        }
-        if search:
-            count_params["search"] = search
-
-        count_result = arango_service.db.aql.execute(count_query, bind_vars=count_params)
-        count_list = list(count_result)
-        total_count = count_list[0] if count_list else 0
-
-        # Get teams with pagination
-        teams_params = {
-            "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "@permission_collection": CollectionNames.PERMISSION.value,
-            "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
-            "offset": offset,
-            "limit": limit
-        }
-        if search:
-            teams_params["search"] = search
-
-        result = arango_service.db.aql.execute(user_teams_query, bind_vars=teams_params)
-        result_list = list(result)
+        # Use interface method to get user teams
+        result_list, total_count = await graph_provider.get_user_teams(
+            user_key=user['_key'],
+            search=search,
+            page=page,
+            limit=limit
+        )
 
         if not result_list:
             return JSONResponse(
@@ -1197,7 +878,7 @@ async def get_user_teams(
         logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user teams")
 
-@router.get("/user/teams/created")
+@router.get("/user/teams/created", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_user_created_teams(
     request: Request,
     search: Optional[str] = Query(None, description="Search teams by name"),
@@ -1206,7 +887,7 @@ async def get_user_created_teams(
 ) -> JSONResponse:
     """Get all teams created by the current user"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
@@ -1214,136 +895,19 @@ async def get_user_created_teams(
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Calculate offset
-    offset = (page - 1) * limit
-
-    # Build search filter
-    search_filter = ""
-    if search:
-        search_filter = "FILTER (team.name LIKE CONCAT('%', @search, '%') OR team.description LIKE CONCAT('%', @search, '%'))"
-
-    # Optimized query: Batch fetch team members instead of per-team DOCUMENT() calls
-    # Recommended indexes:
-    # - teams collection: [ "orgId", "createdBy" ] (persistent index)
-    # - permission collection: [ "_to" ] (persistent index)
-    # - permission collection: [ "_from", "_to" ] (persistent index)
-    created_teams_query = f"""
-    // Get teams first
-    LET teams = (
-        FOR team IN {CollectionNames.TEAMS.value}
-            FILTER team.orgId == @orgId
-            FILTER team.createdBy == @userKey
-            {search_filter}
-            SORT team.createdAtTimestamp DESC
-            LIMIT @offset, @limit
-            RETURN team
-    )
-
-    // Batch fetch all team IDs
-    LET team_ids = teams[*]._id
-
-    // Batch fetch all permissions for these teams
-    LET all_permissions = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to IN team_ids
-            RETURN permission
-    )
-
-    // Batch fetch all user IDs from permissions
-    LET user_ids = UNIQUE(all_permissions[* FILTER STARTS_WITH(CURRENT._from, "users/")]._from)
-
-    // Batch fetch all users
-    LET all_users = (
-        FOR user_id IN user_ids
-            LET user = DOCUMENT(user_id)
-            FILTER user != null
-            RETURN {{
-                _id: user._id,
-                _key: user._key,
-                userId: user.userId,
-                fullName: user.fullName,
-                email: user.email
-            }}
-    )
-
-    // Build result with members grouped by team
-    FOR team IN teams
-        LET current_user_permission = FIRST(
-            FOR perm IN all_permissions
-                FILTER perm._from == @currentUserId AND perm._to == team._id
-                RETURN perm
-        )
-        LET team_members = (
-            FOR permission IN all_permissions
-                FILTER permission._to == team._id
-                LET user = FIRST(FOR u IN all_users FILTER u._id == permission._from RETURN u)
-                FILTER user != null
-                RETURN {{
-                    "id": user._key,
-                    "userId": user.userId,
-                    "userName": user.fullName,
-                    "userEmail": user.email,
-                    "role": permission.role,
-                    "joinedAt": permission.createdAtTimestamp,
-                    "isOwner": permission.role == "OWNER"
-                }}
-        )
-        RETURN {{
-            "id": team._key,
-            "name": team.name,
-            "description": team.description,
-            "createdBy": team.createdBy,
-            "orgId": team.orgId,
-            "createdAtTimestamp": team.createdAtTimestamp,
-            "updatedAtTimestamp": team.updatedAtTimestamp,
-            "currentUserPermission": current_user_permission,
-            "members": team_members,
-            "memberCount": LENGTH(team_members),
-            "canEdit": true,
-            "canDelete": true,
-            "canManageMembers": true
-        }}
-    """
-
-    # Count total teams for pagination
-    count_query = f"""
-    FOR team IN {CollectionNames.TEAMS.value}
-    FILTER team.orgId == @orgId
-    FILTER team.createdBy == @userKey
-    {search_filter}
-    COLLECT WITH COUNT INTO total_count
-    RETURN total_count
-    """
-
     try:
-        count_params = {
-            "orgId": user_info.get("orgId"),
-            "userKey": user['_key']
-        }
-        if search:
-            count_params["search"] = search
-
-        count_result = arango_service.db.aql.execute(count_query, bind_vars=count_params)
-        count_list = list(count_result)
-        total_count = count_list[0] if count_list else 0
-
-        # Get teams with pagination
-        teams_params = {
-            "orgId": user_info.get("orgId"),
-            "userKey": user['_key'],
-            "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "offset": offset,
-            "limit": limit
-        }
-        if search:
-            teams_params["search"] = search
-
-        result = arango_service.db.aql.execute(created_teams_query, bind_vars=teams_params)
-        result_list = list(result)
+        # Use interface method to get user created teams
+        result_list, total_count = await graph_provider.get_user_created_teams(
+            org_id=user_info.get("orgId"),
+            user_key=user['_key'],
+            search=search,
+            page=page,
+            limit=limit
+        )
 
         if not result_list:
             return JSONResponse(
@@ -1384,7 +948,7 @@ async def get_user_created_teams(
         logger.error(f"Error in get_user_created_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user created teams")
 
-@router.get("/user/list")
+@router.get("/user/list", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_users(
     request: Request,
     search: Optional[str] = Query(None, description="Search users by name or email"),
@@ -1393,7 +957,7 @@ async def get_users(
 ) -> JSONResponse:
     """Get all users in the current user's organization with pagination and search"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
@@ -1401,73 +965,14 @@ async def get_users(
         "orgId": request.state.user.get("orgId"),
     }
 
-    # Calculate offset
-    offset = (page - 1) * limit
-
-    # Build search filter
-    search_filter = ""
-    if search:
-        search_filter = """
-        FILTER user.fullName LIKE CONCAT('%', @search, '%')
-        OR user.email LIKE CONCAT('%', @search, '%')
-        """
-
-    # Query to get users with their team memberships
-    users_query = f"""
-    FOR edge IN belongsTo
-    FILTER edge._to == CONCAT('organizations/', @orgId)
-    AND edge.entityType == 'ORGANIZATION'
-    LET user = DOCUMENT(edge._from)
-    FILTER user!=null
-    FILTER user.isActive == true
-    {search_filter}
-    SORT user.fullName ASC
-    LIMIT @offset, @limit
-    RETURN {{
-        "id": user._key,
-        "userId": user.userId,
-        "name": user.fullName,
-        "email": user.email,
-        "isActive": user.isActive,
-        "createdAtTimestamp": user.createdAtTimestamp,
-        "updatedAtTimestamp": user.updatedAtTimestamp
-    }}
-    """
-
-    # Count total users for pagination
-    count_query = f"""
-    FOR edge IN belongsTo
-    FILTER edge._to == CONCAT('organizations/', @orgId)
-    AND edge.entityType == 'ORGANIZATION'
-    LET user = DOCUMENT(edge._from)
-    FILTER user!=null
-    FILTER user.isActive == true
-    {search_filter}
-    COLLECT WITH COUNT INTO total_count
-    RETURN total_count
-    """
-
     try:
-        # Get total count
-        count_params = {"orgId": user_info.get("orgId")}
-        if search:
-            count_params["search"] = search
-
-        count_result = arango_service.db.aql.execute(count_query, bind_vars=count_params)
-        count_list = list(count_result)
-        total_count = count_list[0] if count_list else 0
-
-        # Get users with pagination
-        users_params = {
-            "orgId": user_info.get("orgId"),
-            "offset": offset,
-            "limit": limit
-        }
-        if search:
-            users_params["search"] = search
-
-        result = arango_service.db.aql.execute(users_query, bind_vars=users_params)
-        result_list = list(result)
+        # Use interface method to get organization users
+        result_list, total_count = await graph_provider.get_organization_users(
+            org_id=user_info.get("orgId"),
+            search=search,
+            page=page,
+            limit=limit
+        )
         if not result_list:
             return JSONResponse(
                 status_code=200,
@@ -1507,11 +1012,11 @@ async def get_users(
         logger.error(f"Error in get_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch users")
 
-@router.get("/team/{team_id}/users")
+@router.get("/team/{team_id}/users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_team_users(request: Request, team_id: str) -> JSONResponse:
     """Get all users in a specific team - requires MEMBER role"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
@@ -1519,62 +1024,17 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        # Query to get team users with current user's permission (flat structure)
-        team_users_query = f"""
-        FOR team IN {CollectionNames.TEAMS.value}
-        FILTER team._key == @teamId AND team.orgId == @orgId
-        LET current_user_permission = (
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._from == @currentUserId AND permission._to == team._id
-            RETURN permission
+        # Use interface method to get team users
+        result = await graph_provider.get_team_users(
+            team_id=team_id,
+            org_id=user_info.get("orgId"),
+            user_key=user['_key']
         )
-        LET team_members = (
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == team._id
-            LET user = DOCUMENT(permission._from)
-            RETURN {{
-                "id": user._key,
-                "userId": user.userId,
-                "userName": user.fullName,
-                "userEmail": user.email,
-                "role": permission.role,
-                "joinedAt": permission.createdAtTimestamp,
-                "isOwner": permission.role == "OWNER"
-            }}
-        )
-        LET user_count = LENGTH(team_members)
-        RETURN {{
-            "id": team._key,
-            "name": team.name,
-            "description": team.description,
-            "createdBy": team.createdBy,
-            "orgId": team.orgId,
-            "createdAtTimestamp": team.createdAtTimestamp,
-            "updatedAtTimestamp": team.updatedAtTimestamp,
-            "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
-            "members": team_members,
-            "memberCount": user_count,
-            "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
-            "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-            "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
-        }}
-        """
-
-        result = arango_service.db.aql.execute(
-            team_users_query,
-            bind_vars={
-                "teamId": team_id,
-                "orgId": user_info.get("orgId"),
-                "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}"
-            }
-        )
-        result_list = list(result)
-        result = result_list[0] if result_list else None
 
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
@@ -1593,11 +1053,11 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team users")
 
-@router.post("/team/{team_id}/bulk-users")
+@router.post("/team/{team_id}/bulk-users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse:
     """Bulk add/remove users from a team -OWNER role"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
@@ -1605,7 +1065,7 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -1627,18 +1087,10 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
 
         # Remove users if specified
         if remove_user_ids:
-            delete_query = f"""
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            REMOVE permission IN {CollectionNames.PERMISSION.value}
-            RETURN OLD
-            """
-            permissions = arango_service.db.aql.execute(
-                delete_query,
-                {"teamId": f"{CollectionNames.TEAMS.value}/{team_id}", "userIds": remove_user_ids}
+            permissions = await graph_provider.delete_team_member_edges(
+                team_id=team_id,
+                user_ids=remove_user_ids
             )
-            permissions = list(permissions)
             if not permissions:
                 raise HTTPException(status_code=404, detail="No users found in team to remove")
             logger.info(f"Successfully removed {len(permissions)} users from team {team_id}")
@@ -1648,21 +1100,23 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
             user_team_edges = []
             for user_id in add_user_ids:
                 user_team_edges.append({
-                    "_from": f"{CollectionNames.USERS.value}/{user_id}",
-                    "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
+                    "from_id": user_id,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": team_id,
+                    "to_collection": CollectionNames.TEAMS.value,
                     "type": "USER",
                     "role": role,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 })
             logger.info(f"Adding {len(add_user_ids)} users to team {team_id}")
-            result = await arango_service.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
+            result = await graph_provider.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
             if not result:
                 raise HTTPException(status_code=500, detail="Failed to add users to team")
             logger.info(f"Successfully added {len(add_user_ids)} users to team {team_id}")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -1680,11 +1134,11 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
         logger.error(f"Error in bulk_manage_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update team users")
 
-@router.get("/team/search")
+@router.get("/team/search", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def search_teams(request: Request) -> JSONResponse:
     """Search teams by name or description"""
     services = await get_services(request)
-    arango_service = services["arango_service"]
+    graph_provider = services["graph_provider"]
     logger = services["logger"]
 
     user_info = {
@@ -1692,7 +1146,7 @@ async def search_teams(request: Request) -> JSONResponse:
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -1705,62 +1159,14 @@ async def search_teams(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="Search query is required")
 
     try:
-        # Search teams by name or description with current user's permission
-        search_query = f"""
-        FOR team IN {CollectionNames.TEAMS.value}
-        FILTER team.orgId == @orgId
-        FILTER team.name LIKE CONCAT("%", @query, "%") OR team.description LIKE CONCAT("%", @query, "%")
-        LET current_user_permission = (
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._from == @currentUserId AND permission._to == team._id
-            RETURN permission
+        # Use interface method to search teams
+        result = await graph_provider.search_teams(
+            org_id=user_info.get("orgId"),
+            user_key=user['_key'],
+            query=query,
+            limit=limit,
+            offset=offset
         )
-        LET team_members = (
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == team._id
-            LET user = DOCUMENT(permission._from)
-            RETURN {{
-                "id": user._key,
-                "userId": user.userId,
-                "userName": user.fullName,
-                "userEmail": user.email,
-                "role": permission.role,
-                "joinedAt": permission.createdAtTimestamp,
-                "isOwner": user._key == team.createdBy
-            }}
-        )
-        LET user_count = LENGTH(team_members)
-        LIMIT @offset, @limit
-        RETURN {{
-            "team": {{
-                "id": team._key,
-                "name": team.name,
-                "description": team.description,
-                "createdBy": team.createdBy,
-                "orgId": team.orgId,
-                "createdAtTimestamp": team.createdAtTimestamp,
-                "updatedAtTimestamp": team.updatedAtTimestamp
-            }},
-            "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
-            "members": team_members,
-            "memberCount": user_count,
-            "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
-            "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-            "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
-        }}
-        """
-
-        result = arango_service.db.aql.execute(
-            search_query,
-            bind_vars={
-                "orgId": user_info.get("orgId"),
-                "query": query,
-                "limit": limit,
-                "offset": offset,
-                "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}"
-            }
-        )
-        result = list(result)
         return JSONResponse(
             status_code=200,
             content={

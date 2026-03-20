@@ -35,7 +35,14 @@ class OneDriveResponse:
         self.message = message
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        result: Dict[str, Any] = {"success": self.success}
+        if self.data is not None:
+            result["data"] = self.data
+        if self.error is not None:
+            result["error"] = self.error
+        if self.message is not None:
+            result["message"] = self.message
+        return result
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
@@ -199,7 +206,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -273,7 +280,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -349,7 +356,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -423,7 +430,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -501,7 +508,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -579,7 +586,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -657,7 +664,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -733,7 +740,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -755,6 +762,8 @@ class OneDriveDataSource:
                 config.headers['ConsistencyLevel'] = 'eventual'
 
             response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).delete(request_configuration=config)
+            if response is None:
+                return OneDriveResponse(success=True, message="Item deleted successfully")
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
@@ -811,7 +820,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -887,7 +896,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -963,7 +972,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1039,7 +1048,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1061,6 +1070,8 @@ class OneDriveDataSource:
                 config.headers['ConsistencyLevel'] = 'eventual'
 
             response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).checkin.post(body=request_body, request_configuration=config)
+            if response is None:
+                return OneDriveResponse(success=True, message="Item checked in successfully")
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
@@ -1113,7 +1124,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1135,6 +1146,8 @@ class OneDriveDataSource:
                 config.headers['ConsistencyLevel'] = 'eventual'
 
             response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).checkout.post(request_configuration=config)
+            if response is None:
+                return OneDriveResponse(success=True, message="Item checked out successfully")
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
@@ -1193,14 +1206,11 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
                 query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
-
             # Create proper typed request configuration
             config = DrivesRequestBuilder.DrivesRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
@@ -1273,7 +1283,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1349,7 +1359,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1371,6 +1381,8 @@ class OneDriveDataSource:
                 config.headers['ConsistencyLevel'] = 'eventual'
 
             response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).copy.post(body=request_body, request_configuration=config)
+            if response is None:
+                return OneDriveResponse(success=True, message="Item copied successfully")
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
@@ -1423,7 +1435,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1497,7 +1509,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1583,7 +1595,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1661,7 +1673,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1741,7 +1753,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1819,7 +1831,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1893,7 +1905,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1915,6 +1927,8 @@ class OneDriveDataSource:
                 config.headers['ConsistencyLevel'] = 'eventual'
 
             response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).permanent_delete.post(request_configuration=config)
+            if response is None:
+                return OneDriveResponse(success=True, message="Item permanently deleted successfully")
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
@@ -1969,7 +1983,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -1991,6 +2005,8 @@ class OneDriveDataSource:
                 config.headers['ConsistencyLevel'] = 'eventual'
 
             response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(driveItem_id).restore.post(body=request_body, request_configuration=config)
+            if response is None:
+                return OneDriveResponse(success=True, message="Version restored successfully")
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
@@ -2049,7 +2065,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2127,7 +2143,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2207,7 +2223,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2285,7 +2301,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2361,7 +2377,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2435,7 +2451,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2515,7 +2531,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2593,7 +2609,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2673,7 +2689,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2751,7 +2767,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2827,7 +2843,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2905,7 +2921,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -2979,7 +2995,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3055,7 +3071,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3129,7 +3145,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3207,7 +3223,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3283,7 +3299,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3361,7 +3377,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3437,7 +3453,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3513,7 +3529,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3591,7 +3607,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3667,7 +3683,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3745,7 +3761,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3821,7 +3837,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3901,7 +3917,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -3979,7 +3995,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4059,7 +4075,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4137,7 +4153,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4215,7 +4231,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4295,7 +4311,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4373,7 +4389,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4449,7 +4465,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4527,7 +4543,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4603,7 +4619,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4681,7 +4697,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4757,7 +4773,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4837,7 +4853,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -4923,7 +4939,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5001,7 +5017,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5081,7 +5097,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5161,7 +5177,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5239,7 +5255,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5319,7 +5335,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5397,7 +5413,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5475,7 +5491,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5555,7 +5571,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5633,7 +5649,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5709,7 +5725,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5787,7 +5803,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5865,7 +5881,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -5941,7 +5957,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6019,7 +6035,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6095,7 +6111,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6173,7 +6189,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6249,7 +6265,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6327,7 +6343,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6403,7 +6419,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6477,7 +6493,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6553,7 +6569,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6631,7 +6647,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6709,7 +6725,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6785,7 +6801,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6863,7 +6879,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -6941,7 +6957,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7019,7 +7035,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7097,7 +7113,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7177,7 +7193,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7257,7 +7273,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7337,7 +7353,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7419,7 +7435,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7501,7 +7517,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7581,7 +7597,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7661,7 +7677,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7741,7 +7757,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7823,7 +7839,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7903,7 +7919,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -7985,7 +8001,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8065,7 +8081,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8149,7 +8165,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8231,7 +8247,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8315,7 +8331,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8397,7 +8413,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8479,7 +8495,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8563,7 +8579,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8645,7 +8661,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8725,7 +8741,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8807,7 +8823,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8887,7 +8903,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -8969,7 +8985,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9049,7 +9065,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9133,7 +9149,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9223,7 +9239,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9305,7 +9321,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9389,7 +9405,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9473,7 +9489,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9555,7 +9571,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9639,7 +9655,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9721,7 +9737,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9803,7 +9819,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9887,7 +9903,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -9969,7 +9985,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10047,7 +10063,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10123,7 +10139,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10199,7 +10215,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10277,7 +10293,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10353,7 +10369,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10429,7 +10445,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10507,7 +10523,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10583,7 +10599,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10661,7 +10677,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10737,7 +10753,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10815,7 +10831,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10891,7 +10907,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -10969,7 +10985,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11045,7 +11061,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11119,7 +11135,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11195,7 +11211,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11269,7 +11285,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11343,7 +11359,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11419,7 +11435,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11495,7 +11511,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11573,7 +11589,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11649,7 +11665,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11725,7 +11741,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11797,7 +11813,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11869,7 +11885,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -11945,7 +11961,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12023,7 +12039,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12101,7 +12117,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12179,7 +12195,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12259,7 +12275,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12339,7 +12355,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12417,7 +12433,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12495,7 +12511,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12573,7 +12589,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12653,7 +12669,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12731,7 +12747,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12811,7 +12827,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12889,7 +12905,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -12971,7 +12987,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13051,7 +13067,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13133,7 +13149,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13213,7 +13229,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13293,7 +13309,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13375,7 +13391,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13455,7 +13471,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13533,7 +13549,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13613,7 +13629,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13691,7 +13707,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13771,7 +13787,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13849,7 +13865,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -13931,7 +13947,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14019,7 +14035,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14099,7 +14115,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14181,7 +14197,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14261,7 +14277,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14343,7 +14359,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14423,7 +14439,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14503,7 +14519,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14585,7 +14601,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14665,7 +14681,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14743,7 +14759,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14819,7 +14835,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14897,7 +14913,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -14977,7 +14993,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15055,7 +15071,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15135,7 +15151,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15213,7 +15229,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15293,7 +15309,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15371,7 +15387,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15447,7 +15463,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15525,7 +15541,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15601,7 +15617,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15677,7 +15693,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15755,7 +15771,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15833,7 +15849,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15913,7 +15929,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -15991,7 +16007,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16069,7 +16085,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16143,7 +16159,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16217,7 +16233,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16293,7 +16309,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16371,7 +16387,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16445,7 +16461,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16521,7 +16537,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16599,7 +16615,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16679,7 +16695,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16755,7 +16771,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16831,7 +16847,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16905,7 +16921,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -16981,7 +16997,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17059,7 +17075,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17133,7 +17149,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17211,7 +17227,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17291,7 +17307,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17367,7 +17383,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17443,7 +17459,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17517,7 +17533,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17591,7 +17607,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17669,7 +17685,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17751,7 +17767,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17835,7 +17851,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17915,7 +17931,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -17995,7 +18011,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18069,7 +18085,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18141,7 +18157,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18217,7 +18233,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18297,7 +18313,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18379,7 +18395,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18457,7 +18473,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18535,7 +18551,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18611,7 +18627,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18685,7 +18701,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18763,7 +18779,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18841,7 +18857,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18921,7 +18937,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -18995,7 +19011,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19071,7 +19087,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19145,7 +19161,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19221,7 +19237,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19299,7 +19315,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19375,7 +19391,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19453,7 +19469,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19531,7 +19547,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19607,7 +19623,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19685,7 +19701,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19759,7 +19775,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19835,7 +19851,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19909,7 +19925,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -19983,7 +19999,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20061,7 +20077,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20137,7 +20153,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20215,7 +20231,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20291,7 +20307,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20367,7 +20383,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20445,7 +20461,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20521,7 +20537,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20595,7 +20611,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20673,7 +20689,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20751,7 +20767,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20831,7 +20847,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20907,7 +20923,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -20985,7 +21001,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21061,7 +21077,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21137,7 +21153,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21215,7 +21231,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21295,7 +21311,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21371,7 +21387,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21451,7 +21467,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21529,7 +21545,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21609,7 +21625,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21687,7 +21703,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21765,7 +21781,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21845,7 +21861,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21923,7 +21939,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -21999,7 +22015,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22077,7 +22093,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22153,7 +22169,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22231,7 +22247,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22307,7 +22323,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22387,7 +22403,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22473,7 +22489,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22551,7 +22567,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22631,7 +22647,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22707,7 +22723,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22787,7 +22803,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22865,7 +22881,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -22945,7 +22961,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23023,7 +23039,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23101,7 +23117,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23181,7 +23197,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23259,7 +23275,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23335,7 +23351,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23413,7 +23429,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23487,7 +23503,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23565,7 +23581,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23641,7 +23657,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23719,7 +23735,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23795,7 +23811,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23869,7 +23885,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -23947,7 +23963,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24023,7 +24039,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24101,7 +24117,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24177,7 +24193,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24251,7 +24267,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24327,7 +24343,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24403,7 +24419,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24479,7 +24495,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24557,7 +24573,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24635,7 +24651,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24711,7 +24727,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24791,7 +24807,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24869,7 +24885,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -24949,7 +24965,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25027,7 +25043,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25107,7 +25123,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25185,7 +25201,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25265,7 +25281,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25347,7 +25363,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25429,7 +25445,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25507,7 +25523,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25587,7 +25603,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25665,7 +25681,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25745,7 +25761,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25766,7 +25782,7 @@ class OneDriveDataSource:
                     config.headers = {}
                 config.headers['ConsistencyLevel'] = 'eventual'
 
-            response = await self.client.drives.by_drive_id(drive_id).search.get(request_configuration=config)
+            response = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id('root').search_with_q(q).get(request_configuration=config)
             return self._handle_onedrive_response(response)
         except Exception as e:
             return OneDriveResponse(
@@ -25827,7 +25843,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25911,7 +25927,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -25991,7 +26007,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:
@@ -26073,7 +26089,7 @@ class OneDriveDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
+                query_params.orderby = orderby if isinstance(orderby, list) else [orderby]
             if search:
                 query_params.search = search
             if top is not None:

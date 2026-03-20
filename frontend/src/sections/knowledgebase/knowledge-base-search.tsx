@@ -162,7 +162,7 @@ export default function KnowledgeBaseSearch() {
     (records: PipesHub.Record[]): Record<string, PipesHub.Record> =>
       records.reduce(
         (acc, record) => {
-          const recordKey = record._key || 'unknown';
+          const recordKey = record.id || record._key || 'unknown';
           acc[recordKey] = record;
           return acc;
         },
@@ -376,12 +376,13 @@ export default function KnowledgeBaseSearch() {
         } else {
           throw new Error('Empty buffer received');
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('Error downloading document:', err);
+        const message = err?.message || 'Failed to load preview.';
         setSnackbar({
           open: true,
-          message: 'Failed to load preview. Redirecting to the original document shortly...',
-          severity: 'info',
+          message,
+          severity: err?.statusCode === 503 ? 'warning' : 'error',
         });
 
         let webUrl = record?.webUrl;
@@ -396,27 +397,15 @@ export default function KnowledgeBaseSearch() {
           webUrl = baseUrl + webUrl;
         }
 
-        setTimeout(() => {
-          if (webUrl) {
+        if (webUrl) {
+          setTimeout(() => {
             try {
               window.open(webUrl, '_blank', 'noopener,noreferrer');
             } catch (openError) {
               console.error('Error opening new tab:', openError);
-              setSnackbar({
-                open: true,
-                message: 'Failed to automatically open the document. Please check your browser pop-up settings.',
-                severity: 'error',
-              });
             }
-          } else {
-            console.error('Cannot redirect: No webUrl found for the record.');
-            setSnackbar({
-              open: true,
-              message: 'Failed to load preview and cannot redirect (document URL not found).',
-              severity: 'error',
-            });
-          }
-        }, 2500);
+          }, 2500);
+        }
 
         return;
       }

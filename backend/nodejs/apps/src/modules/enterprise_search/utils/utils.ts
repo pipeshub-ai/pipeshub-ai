@@ -42,12 +42,20 @@ const logger = new Logger({
 export const extractModelInfo = (
   body: any,
   defaultChatMode: string = 'quick',
-): IAIModel => ({
-  modelKey: body.modelKey || undefined,
-  modelName: body.modelName || undefined,
-  modelProvider: body.modelProvider || undefined,
-  chatMode: body.chatMode || defaultChatMode,
-});
+): IAIModel => {
+  // Use modelFriendlyName if provided and not empty, otherwise fallback to modelName for backward compatibility
+  const modelFriendlyName = body.modelFriendlyName && body.modelFriendlyName.trim() 
+    ? body.modelFriendlyName.trim() 
+    : (body.modelName || undefined);
+  
+  return {
+    modelKey: body.modelKey || undefined,
+    modelName: body.modelName || undefined,
+    modelProvider: body.modelProvider || undefined,
+    chatMode: body.chatMode || defaultChatMode,
+    modelFriendlyName: modelFriendlyName,
+  };
+};
 
 export const buildUserQueryMessage = (query: string): IMessage => ({
   messageType: 'user_query',
@@ -121,8 +129,12 @@ export const buildAIResponseMessage = (
 
   // Include referenceData if present (IDs for follow-up queries)
   // This stores technical IDs that were in the response for later reference
+  // Filter out invalid items (must have name and at least key or id)
   if (aiResponse.data.referenceData && Array.isArray(aiResponse.data.referenceData)) {
-    message.referenceData = aiResponse.data.referenceData;
+    message.referenceData = aiResponse.data.referenceData.filter((item) => {
+      // Ensure item has name and at least one of key or id (id can be optional)
+      return item && item.name;
+    });
   }
 
   return message;

@@ -14,7 +14,7 @@ const {
 } = userActivitiesType;
 
 // 🔹 Define TypeScript Interfaces
-interface IUserActivity extends Document {
+export interface IUserActivity extends Document {
   email: string;
   userId: Types.ObjectId;
   orgId?: Types.ObjectId;

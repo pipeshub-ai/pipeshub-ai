@@ -29,6 +29,21 @@ export const SidebarKnowledgeSection: React.FC<SidebarKnowledgeSectionProps> = (
           onToggle={() => onAppToggle('app')}
           dragType={kbGroupNode.type}
           borderColor={theme.palette.info.main}
+          dragData={{
+            selectedApps: Object.values(groupedConnectorInstances)
+              .flatMap(data => data.instances)
+              .map(instance => instance._key),
+            appDetails: Object.values(groupedConnectorInstances)
+              .flatMap(data => data.instances)
+              .map(instance => ({
+                id: instance._key,
+                name: instance.name,
+                type: instance.type,
+                displayName: instance.name,
+                scope: instance.scope,
+                iconPath: instance.iconPath,
+              })),
+          }}
         >
           <Box sx={{ pl: 0.5 }}>
             {Object.entries(groupedConnectorInstances).map(([connectorType, data]) => {
@@ -195,16 +210,25 @@ export const SidebarKnowledgeSection: React.FC<SidebarKnowledgeSectionProps> = (
         </SidebarCategory>
       )}
 
-      {/* Knowledge Bases group with dropdown */}
+      {/* Collections group with dropdown */}
       {kbGroupNode && (
         <SidebarCategory
-          groupLabel="Knowledge Bases"
-          groupIcon="/assets/icons/connectors/database.svg"
+          groupLabel="Collections"
+          groupIcon="/assets/icons/connectors/collections-gray.svg"
           itemCount={individualKBs.length}
           isExpanded={expandedApps['knowledge-bases'] || false}
           onToggle={() => onAppToggle('knowledge-bases')}
           dragType="kb-group"
           borderColor={theme.palette.warning.main}
+          dragData={{
+            selectedKBs: individualKBs.map(kb => kb.defaultConfig?.kbId).filter(Boolean),
+            kbConnectorIds: individualKBs.reduce((acc, kb) => {
+              if (kb.defaultConfig?.kbId && kb.defaultConfig?.connectorInstanceId) {
+                acc[kb.defaultConfig.kbId] = kb.defaultConfig.connectorInstanceId;
+              }
+              return acc;
+            }, {} as Record<string, string>),
+          }}
         >
           <Box
             sx={{

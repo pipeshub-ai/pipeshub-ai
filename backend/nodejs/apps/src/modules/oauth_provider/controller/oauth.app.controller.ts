@@ -58,7 +58,7 @@ export class OAuthAppController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
-      const userId = req.user!.id
+      const userId = req.user!.userId
       const data: CreateOAuthAppRequest = req.body
 
       const app = await this.oauthAppService.createApp(orgId, userId, data)
@@ -138,7 +138,7 @@ export class OAuthAppController {
   ): Promise<void> {
     try {
       const orgId = req.user!.orgId
-      const userId = req.user!.id
+      const userId = req.user!.userId
       const appId = req.params.appId!
 
       // Revoke all tokens first

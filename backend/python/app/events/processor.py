@@ -32,9 +32,11 @@ from app.models.entities import Record, RecordType
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
+from app.modules.parsers.pdf.pymupdf_opencv_processor import PyMuPDFOpenCVProcessor
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
@@ -57,10 +59,10 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
     except ValueError:
         origin = OriginTypes.UPLOAD
 
-    mime_type = record_dict.get("mimeType", None)
+    mime_type = record_dict.get("mimeType")
 
-    record = Record(
-        id=record_dict.get("_key"),
+    return Record(
+        id=record_dict.get("_key") or record_dict.get("id"),
         org_id=record_dict.get("orgId"),
         record_name=record_dict.get("recordName"),
         record_type=RecordType(record_dict.get("recordType", "FILE")),
@@ -80,7 +82,6 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
         is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
         connector_id=record_dict.get("connectorId"),
     )
-    return record
 
 class Processor:
     def __init__(
@@ -88,7 +89,7 @@ class Processor:
         logger,
         config_service,
         indexing_pipeline,
-        arango_service,
+        graph_provider: IGraphDBProvider,
         parsers,
         document_extractor,
         sink_orchestrator,
@@ -96,7 +97,7 @@ class Processor:
         self.logger = logger
         self.logger.info("🚀 Initializing Processor")
         self.indexing_pipeline = indexing_pipeline
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.parsers = parsers
         self.config_service = config_service
         self.document_extraction = document_extractor
@@ -113,7 +114,7 @@ class Processor:
             if not content:
                 raise Exception("No image data provided")
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
             if record is None:
@@ -137,7 +138,7 @@ class Processor:
                         })
 
                     docs = [record]
-                    success = await self.arango_service.batch_upsert_nodes(
+                    success = await self.graph_provider.batch_upsert_nodes(
                         docs, CollectionNames.RECORDS.value
                     )
                     if not success:
@@ -157,7 +158,7 @@ class Processor:
                         "Error updating record status: " + str(e),
                         doc_id=record_id,
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             mime_type = record.get("mimeType")
             if mime_type is None:
@@ -215,6 +216,54 @@ class Processor:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
             raise
 
+    async def process_pdf_with_pymupdf(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process PDF using PyMuPDF+OpenCV processor, yielding phase completion events."""
+        self.logger.info(f"🚀 Starting PDF document processing for record: {recordId}")
+        try:
+            self.logger.debug("📄 Processing PDF binary content using PyMuPDF+OpenCV processor")
+
+            record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
+
+            processor = PyMuPDFOpenCVProcessor(
+                logger=self.logger,
+                config=self.config_service,
+            )
+
+            # Phase 1: Parse PDF layout (no LLM calls)
+            parsed_data = await processor.parse_document(record_name, pdf_binary)
+
+            # Signal parsing complete
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+            # Phase 2: Create blocks (involves LLM calls for tables)
+            block_containers = await processor.create_blocks(parsed_data)
+
+            record = await self.graph_provider.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
+
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+
+            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using PyMuPDF+OpenCV processor")
+            return
+        except Exception as e:
+            self.logger.error(f"❌ Error processing PDF document with PyMuPDF+OpenCV: {str(e)}")
+            raise
+
     async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PDF with Docling, yielding phase completion events."""
         self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
@@ -241,7 +290,7 @@ class Processor:
                 self.logger.error(f"❌ External Docling service failed to create blocks for {recordName}")
                 raise Exception(f"External Docling service failed to create blocks for {recordName}")
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
 
@@ -433,7 +482,7 @@ class Processor:
                 self.logger.info(f"📦 Combined {len(all_blocks)} blocks and {len(all_block_groups)} block groups from all pages")
 
                 # Get record and run indexing pipeline
-                record = await self.arango_service.get_document(recordId, CollectionNames.RECORDS.value)
+                record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value)
                 if record is None:
                     self.logger.error(f"❌ Record {recordId} not found in database")
                     yield {"event": "indexing_complete", "data": {"record_id": recordId}}
@@ -510,7 +559,7 @@ class Processor:
                     block_group.children = BlockGroupChildren.from_indices(block_indices=block_indices)
                 else:
                     block_group.children = None
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
             if record is None:
@@ -584,7 +633,7 @@ class Processor:
             block_containers = await processor.create_blocks(conv_res)
 
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
 
@@ -804,7 +853,7 @@ class Processor:
             await self._enhance_tables_with_llm(block_containers)
 
             # Get record from database
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
 
@@ -919,7 +968,7 @@ class Processor:
                 caption = block.image_metadata.captions
                 if caption:
                     caption = caption[0] if isinstance(caption, list) else caption
-                    if caption in caption_map and caption_map[caption]:
+                    if caption_map.get(caption):
                         if block.data is None:
                             block.data = {}
                         if isinstance(block.data, dict):
@@ -1349,7 +1398,7 @@ class Processor:
             # Phase 2: Create blocks (involves LLM calls for summaries)
             blocks_containers = await parser.create_blocks(llm)
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
             if record is None:
@@ -1468,7 +1517,7 @@ class Processor:
             tables = parser.find_tables_in_csv(all_rows)
             self.logger.info(f"🔍 Detected {len(tables)} table(s) in delimited file")
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
             if record is None:
@@ -1504,7 +1553,7 @@ class Processor:
 
 
     async def _mark_record(self, record_id, indexing_status: ProgressStatus) -> None:
-        record = await self.arango_service.get_document(
+        record = await self.graph_provider.get_document(
                         record_id, CollectionNames.RECORDS.value
                     )
         if not record:
@@ -1526,14 +1575,13 @@ class Processor:
 
         docs = [doc]
 
-        success = await self.arango_service.batch_upsert_nodes(
+        success = await self.graph_provider.batch_upsert_nodes(
             docs, CollectionNames.RECORDS.value
         )
         if not success:
             raise DocumentProcessingError(
                 "Failed to update indexing status", doc_id=record_id
             )
-        return
 
     async def process_html_document(
         self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id
@@ -1640,7 +1688,7 @@ class Processor:
                         "Error updating record status: " + str(e),
                         doc_id=recordId,
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
@@ -1648,11 +1696,9 @@ class Processor:
 
             modified_markdown, images = parser.extract_and_replace_images(markdown)
             caption_map = {}
-            urls_to_convert = []
 
             # Collect all image URLs
-            for image in images:
-                urls_to_convert.append(image["url"])
+            urls_to_convert = [image["url"] for image in images]
 
             # Convert URLs to base64 if there are any images
             if urls_to_convert:
@@ -1678,7 +1724,7 @@ class Processor:
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
             if record is None:
@@ -1694,7 +1740,7 @@ class Processor:
                     caption = block.image_metadata.captions
                     if caption:
                         caption = caption[0]
-                        if caption in caption_map and caption_map[caption]:
+                        if caption_map.get(caption):
                             if block.data is None:
                                 block.data = {}
                             if isinstance(block.data, dict):
@@ -1796,7 +1842,7 @@ class Processor:
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
             if record is None:

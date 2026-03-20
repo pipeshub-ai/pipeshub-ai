@@ -4,6 +4,14 @@ import { z } from 'zod';
 // Regular expression for MongoDB ObjectId validation
 const objectIdRegex = /^[0-9a-fA-F]{24}$/;
 
+// Allow UUID or Collection app ID: knowledgeBase_<orgId>
+const appOrKbIdSchema = z.string().refine(
+  (val) =>
+    z.string().uuid().safeParse(val).success ||
+    /^knowledgeBase_[a-zA-Z0-9_-]+$/.test(val),
+  { message: 'Must be a valid UUID or knowledgeBase_<orgId> format' },
+);
+
 export const enterpriseSearchCreateSchema = z.object({
   body: z.object({
     query: z
@@ -28,8 +36,8 @@ export const enterpriseSearchCreateSchema = z.object({
       .optional(),
     filters: z
       .object({
-        apps: z.array(z.string().uuid()).optional(),
-        kb: z.array(z.string().uuid()).optional(),
+        apps: z.array(appOrKbIdSchema).optional(),
+        kb: z.array(appOrKbIdSchema).optional(),
       })
       .optional(),
     modelKey: z
@@ -43,6 +51,10 @@ export const enterpriseSearchCreateSchema = z.object({
     chatMode: z
       .string()
       .min(1, { message: 'Chat mode is required' })
+      .optional(),
+    modelFriendlyName: z
+      .string()
+      .min(1, { message: 'Model friendly name is required' })
       .optional(),
   }),
 });
@@ -82,8 +94,8 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
     query: z.string().min(1, { message: 'Query is required' }),
     filters: z
       .object({
-        apps: z.array(z.string().uuid()).optional(),
-        kb: z.array(z.string().uuid()).optional(),
+        apps: z.array(appOrKbIdSchema).optional(),
+        kb: z.array(appOrKbIdSchema).optional(),
       })
       .optional(),
     modelKey: z
@@ -97,6 +109,10 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
     chatMode: z
       .string()
       .min(1, { message: 'Chat mode is required' })
+      .optional(),
+    modelFriendlyName: z
+      .string()
+      .min(1, { message: 'Model friendly name is required' })
       .optional(),
   }),
 });
@@ -121,8 +137,8 @@ export const regenerateAnswersParamsSchema = z.object({
   body: z.object({
     filters: z
       .object({
-        apps: z.array(z.string().uuid()).optional(),
-        kb: z.array(z.string().uuid()).optional(),
+        apps: z.array(appOrKbIdSchema).optional(),
+        kb: z.array(appOrKbIdSchema).optional(),
       })
       .optional(),
     modelKey: z
@@ -136,6 +152,10 @@ export const regenerateAnswersParamsSchema = z.object({
     chatMode: z
       .string()
       .min(1, { message: 'Chat mode is required' })
+      .optional(),
+    modelFriendlyName: z
+      .string()
+      .min(1, { message: 'Model friendly name is required' })
       .optional(),
   }),
 });
@@ -154,12 +174,8 @@ export const regenerateAgentAnswersParamsSchema =
     body: z.object({
       filters: z
         .object({
-          apps: z
-            .array(
-              z.string().uuid(),
-            )
-            .optional(),
-          kb: z.array(z.string().uuid()).optional(),
+          apps: z.array(appOrKbIdSchema).optional(),
+          kb: z.array(appOrKbIdSchema).optional(),
         })
         .optional(),
       modelKey: z
@@ -173,6 +189,10 @@ export const regenerateAgentAnswersParamsSchema =
       chatMode: z
         .string()
         .min(1, { message: 'Chat mode is required' })
+        .optional(),
+      modelFriendlyName: z
+        .string()
+        .min(1, { message: 'Model friendly name is required' })
         .optional(),
     }),
   });
@@ -223,10 +243,8 @@ export const enterpriseSearchSearchSchema = z.object({
     query: z.string().min(1, { message: 'Search query is required' }),
     filters: z
       .object({
-        apps: z
-          .array(z.string().uuid())
-          .optional(),
-        kb: z.array(z.string().uuid()).optional(),
+        apps: z.array(appOrKbIdSchema).optional(),
+        kb: z.array(appOrKbIdSchema).optional(),
       })
       .optional(),
     limit: z
@@ -243,6 +261,10 @@ export const enterpriseSearchSearchSchema = z.object({
     chatMode: z
       .string()
       .min(1, { message: 'Chat mode is required' })
+      .optional(),
+    modelFriendlyName: z
+      .string()
+      .min(1, { message: 'Model friendly name is required' })
       .optional(),
   }),
 });

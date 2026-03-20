@@ -2,7 +2,8 @@
 ClickHouse SDK DataSource - Auto-generated API wrapper
 
 Generated from clickhouse-connect SDK method signatures.
-Uses the clickhouse-connect SDK for direct ClickHouse interactions.
+Uses the clickhouse-connect SDK for direct ClickHouse interactions
+and HTTP REST calls for ClickHouse Cloud Organization APIs.
 All methods have explicit parameter signatures - NO Any type for params, NO **kwargs.
 """
 
@@ -13,6 +14,9 @@ from app.sources.client.clickhouse.clickhouse import (
     ClickHouseClient,
     ClickHouseResponse,
 )
+from app.sources.client.http.http_request import HTTPRequest
+
+CLICKHOUSE_CLOUD_API_BASE_URL = 'https://api.clickhouse.cloud'
 
 logger = logging.getLogger(__name__)
 
@@ -27,22 +31,27 @@ class ClickHouseDataSource:
     - Command execution (DDL/DML via command)
     - Raw data operations (raw_query, raw_insert, raw_stream)
     - Context and utility methods
+    - Cloud Organization API operations (list/get/update orgs, activities, BYOC)
 
     All methods have explicit parameter signatures - NO **kwargs.
     Methods that return structured results return ClickHouseResponse objects.
     Methods that return DataFrames, Arrow tables, or streams return raw SDK results.
+    Org API methods are async and use the HTTP client for Cloud Control Plane calls.
     """
 
-    def __init__(self, client: ClickHouseClient) -> None:
+    def __init__(self, client: ClickHouseClient, cloud_api_base_url: str = CLICKHOUSE_CLOUD_API_BASE_URL) -> None:
         """Initialize with ClickHouseClient.
 
         Args:
             client: ClickHouseClient instance with configured authentication
+            cloud_api_base_url: Base URL for ClickHouse Cloud API (default: https://api.clickhouse.cloud)
         """
         self._client = client
         self._sdk = client.get_sdk()
         if self._sdk is None:
             raise ValueError('ClickHouse SDK client is not initialized')
+        self._http_client = client.get_http_client()
+        self._cloud_api_base_url = cloud_api_base_url
 
     def get_data_source(self) -> 'ClickHouseDataSource':
         """Return the data source instance."""
@@ -1388,3 +1397,375 @@ class ClickHouseDataSource:
             )
         except Exception as e:
             return ClickHouseResponse(success=False, error=str(e), message='Failed to execute close')
+
+    # ================================================================================
+    # CLOUD ORGANIZATION API METHODS (async, HTTP-based)
+    # ================================================================================
+
+    async def list_organizations(
+        self
+    ) -> ClickHouseResponse:
+        """List organizations associated with the API key
+
+        Returns:
+            ClickHouseResponse with operation result
+        """
+        query_params = {}
+
+        url = f"{self._cloud_api_base_url}/v1/organizations"
+
+        request = HTTPRequest(
+            url=url,
+            method='GET',
+            query=query_params,
+        )
+
+        try:
+            response = await self._http_client.execute(request)
+            response.raise_for_status()
+            data = response.json()
+            return ClickHouseResponse(
+                success=True,
+                data=data.get('result', data),
+                message='Successfully called list_organizations'
+            )
+        except Exception as e:
+            return ClickHouseResponse(success=False, error=str(e), message='Failed to call list_organizations')
+
+    async def get_organization(
+        self,
+        organization_id: str
+    ) -> ClickHouseResponse:
+        """Get organization details by ID
+
+        Args:
+            organization_id: Organization ID
+
+        Returns:
+            ClickHouseResponse with operation result
+        """
+        path_params = {'organizationId': organization_id}
+        query_params = {}
+
+        url = self._cloud_api_base_url + '/v1/organizations/{organizationId}'
+        url = url.format(**path_params)
+
+        request = HTTPRequest(
+            url=url,
+            method='GET',
+            query=query_params,
+        )
+
+        try:
+            response = await self._http_client.execute(request)
+            response.raise_for_status()
+            data = response.json()
+            return ClickHouseResponse(
+                success=True,
+                data=data.get('result', data),
+                message='Successfully called get_organization'
+            )
+        except Exception as e:
+            return ClickHouseResponse(success=False, error=str(e), message='Failed to call get_organization')
+
+    async def update_organization(
+        self,
+        organization_id: str,
+        name: Optional[str] = None,
+        private_endpoints: Optional[object] = None,
+        core_dumps: Optional[object] = None
+    ) -> ClickHouseResponse:
+        """Update organization name, private endpoints, or core dumps settings
+
+        Args:
+            organization_id: Organization ID
+            name: New organization name
+            private_endpoints: Private endpoints configuration
+            core_dumps: Core dumps configuration
+
+        Returns:
+            ClickHouseResponse with operation result
+        """
+        path_params = {'organizationId': organization_id}
+        query_params = {}
+        body = {}
+        if name is not None:
+            body['name'] = name
+        if private_endpoints is not None:
+            body['private_endpoints'] = private_endpoints
+        if core_dumps is not None:
+            body['core_dumps'] = core_dumps
+
+        url = self._cloud_api_base_url + '/v1/organizations/{organizationId}'
+        url = url.format(**path_params)
+
+        request = HTTPRequest(
+            url=url,
+            method='PATCH',
+            query=query_params,
+            body=body if body else None,
+        )
+
+        try:
+            response = await self._http_client.execute(request)
+            response.raise_for_status()
+            data = response.json()
+            return ClickHouseResponse(
+                success=True,
+                data=data.get('result', data),
+                message='Successfully called update_organization'
+            )
+        except Exception as e:
+            return ClickHouseResponse(success=False, error=str(e), message='Failed to call update_organization')
+
+    async def list_organization_activities(
+        self,
+        organization_id: str,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None
+    ) -> ClickHouseResponse:
+        """List activities for an organization with optional date filters
+
+        Args:
+            organization_id: Organization ID
+            from_date: Start date filter (ISO 8601 format)
+            to_date: End date filter (ISO 8601 format)
+
+        Returns:
+            ClickHouseResponse with operation result
+        """
+        path_params = {'organizationId': organization_id}
+        query_params = {}
+        if from_date is not None:
+            query_params['from'] = from_date
+        if to_date is not None:
+            query_params['to'] = to_date
+
+        url = self._cloud_api_base_url + '/v1/organizations/{organizationId}/activities'
+        url = url.format(**path_params)
+
+        request = HTTPRequest(
+            url=url,
+            method='GET',
+            query=query_params,
+        )
+
+        try:
+            response = await self._http_client.execute(request)
+            response.raise_for_status()
+            data = response.json()
+            return ClickHouseResponse(
+                success=True,
+                data=data.get('result', data),
+                message='Successfully called list_organization_activities'
+            )
+        except Exception as e:
+            return ClickHouseResponse(success=False, error=str(e), message='Failed to call list_organization_activities')
+
+    async def get_organization_activity(
+        self,
+        organization_id: str,
+        activity_id: str
+    ) -> ClickHouseResponse:
+        """Get a single organization activity by ID
+
+        Args:
+            organization_id: Organization ID
+            activity_id: Activity ID
+
+        Returns:
+            ClickHouseResponse with operation result
+        """
+        path_params = {'organizationId': organization_id, 'activityId': activity_id}
+        query_params = {}
+
+        url = self._cloud_api_base_url + '/v1/organizations/{organizationId}/activities/{activityId}'
+        url = url.format(**path_params)
+
+        request = HTTPRequest(
+            url=url,
+            method='GET',
+            query=query_params,
+        )
+
+        try:
+            response = await self._http_client.execute(request)
+            response.raise_for_status()
+            data = response.json()
+            return ClickHouseResponse(
+                success=True,
+                data=data.get('result', data),
+                message='Successfully called get_organization_activity'
+            )
+        except Exception as e:
+            return ClickHouseResponse(success=False, error=str(e), message='Failed to call get_organization_activity')
+
+    async def get_private_endpoint_config(
+        self,
+        organization_id: str
+    ) -> ClickHouseResponse:
+        """Get private endpoint configuration for an organization (deprecated)
+
+        .. deprecated:: This endpoint is deprecated.
+
+        Args:
+            organization_id: Organization ID
+
+        Returns:
+            ClickHouseResponse with operation result
+        """
+        path_params = {'organizationId': organization_id}
+        query_params = {}
+
+        url = self._cloud_api_base_url + '/v1/organizations/{organizationId}/privateEndpointConfig'
+        url = url.format(**path_params)
+
+        request = HTTPRequest(
+            url=url,
+            method='GET',
+            query=query_params,
+        )
+
+        try:
+            response = await self._http_client.execute(request)
+            response.raise_for_status()
+            data = response.json()
+            return ClickHouseResponse(
+                success=True,
+                data=data.get('result', data),
+                message='Successfully called get_private_endpoint_config'
+            )
+        except Exception as e:
+            return ClickHouseResponse(success=False, error=str(e), message='Failed to call get_private_endpoint_config')
+
+    async def create_byoc_infrastructure(
+        self,
+        organization_id: str,
+        cloud_provider: Optional[str] = None,
+        region: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None
+    ) -> ClickHouseResponse:
+        """Create a BYOC (Bring Your Own Cloud) infrastructure for an organization
+
+        Args:
+            organization_id: Organization ID
+            cloud_provider: Cloud provider (e.g. aws, gcp, azure)
+            region: Cloud region for the infrastructure
+            config: BYOC infrastructure configuration
+
+        Returns:
+            ClickHouseResponse with operation result
+        """
+        path_params = {'organizationId': organization_id}
+        query_params = {}
+        body = {}
+        if cloud_provider is not None:
+            body['cloud_provider'] = cloud_provider
+        if region is not None:
+            body['region'] = region
+        if config is not None:
+            body['config'] = config
+
+        url = self._cloud_api_base_url + '/v1/organizations/{organizationId}/byocInfrastructure'
+        url = url.format(**path_params)
+
+        request = HTTPRequest(
+            url=url,
+            method='POST',
+            query=query_params,
+            body=body if body else None,
+        )
+
+        try:
+            response = await self._http_client.execute(request)
+            response.raise_for_status()
+            data = response.json()
+            return ClickHouseResponse(
+                success=True,
+                data=data.get('result', data),
+                message='Successfully called create_byoc_infrastructure'
+            )
+        except Exception as e:
+            return ClickHouseResponse(success=False, error=str(e), message='Failed to call create_byoc_infrastructure')
+
+    async def delete_byoc_infrastructure(
+        self,
+        organization_id: str,
+        byoc_infrastructure_id: str
+    ) -> ClickHouseResponse:
+        """Delete a BYOC infrastructure from an organization
+
+        Args:
+            organization_id: Organization ID
+            byoc_infrastructure_id: BYOC infrastructure ID
+
+        Returns:
+            ClickHouseResponse with operation result
+        """
+        path_params = {'organizationId': organization_id, 'byocInfrastructureId': byoc_infrastructure_id}
+        query_params = {}
+
+        url = self._cloud_api_base_url + '/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}'
+        url = url.format(**path_params)
+
+        request = HTTPRequest(
+            url=url,
+            method='DELETE',
+            query=query_params,
+        )
+
+        try:
+            response = await self._http_client.execute(request)
+            response.raise_for_status()
+            data = response.json()
+            return ClickHouseResponse(
+                success=True,
+                data=data.get('result', data),
+                message='Successfully called delete_byoc_infrastructure'
+            )
+        except Exception as e:
+            return ClickHouseResponse(success=False, error=str(e), message='Failed to call delete_byoc_infrastructure')
+
+    async def update_byoc_infrastructure(
+        self,
+        organization_id: str,
+        byoc_infrastructure_id: str,
+        config: Optional[Dict[str, Any]] = None
+    ) -> ClickHouseResponse:
+        """Update a BYOC infrastructure configuration
+
+        Args:
+            organization_id: Organization ID
+            byoc_infrastructure_id: BYOC infrastructure ID
+            config: Updated BYOC infrastructure configuration
+
+        Returns:
+            ClickHouseResponse with operation result
+        """
+        path_params = {'organizationId': organization_id, 'byocInfrastructureId': byoc_infrastructure_id}
+        query_params = {}
+        body = {}
+        if config is not None:
+            body['config'] = config
+
+        url = self._cloud_api_base_url + '/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}'
+        url = url.format(**path_params)
+
+        request = HTTPRequest(
+            url=url,
+            method='PATCH',
+            query=query_params,
+            body=body if body else None,
+        )
+
+        try:
+            response = await self._http_client.execute(request)
+            response.raise_for_status()
+            data = response.json()
+            return ClickHouseResponse(
+                success=True,
+                data=data.get('result', data),
+                message='Successfully called update_byoc_infrastructure'
+            )
+        except Exception as e:
+            return ClickHouseResponse(success=False, error=str(e), message='Failed to call update_byoc_infrastructure')

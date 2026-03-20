@@ -421,16 +421,33 @@ export const useConnectorConfig = ({
       initializeFilterFields(indexingFilters.schema, config.config.filters?.indexing?.values);
     }
 
+    // Build sync data from saved values first
+    const syncData: Record<string, any> = {
+      selectedStrategy:
+        config.config.sync?.selectedStrategy ||
+        config.config.sync?.supportedStrategies?.[0] ||
+        'MANUAL',
+      scheduledConfig: config.config.sync?.scheduledConfig || {},
+      ...(config.config.sync?.values || config.config.sync || {}),
+    };
+
+    // Seed sync customField defaults for fields not yet saved
+    // (mirrors the same pattern used for auth fields above)
+    const syncCustomFields: any[] = config.config.sync?.customFields || [];
+    syncCustomFields.forEach((field: any) => {
+      if (field.defaultValue !== undefined && syncData[field.name] === undefined) {
+        if (field.fieldType === 'BOOLEAN') {
+          // Backend may send defaultValue as string "true"/"false" — normalise to boolean
+          syncData[field.name] = field.defaultValue === true || field.defaultValue === 'true';
+        } else {
+          syncData[field.name] = field.defaultValue;
+        }
+      }
+    });
+
     return {
       auth: authData,
-      sync: {
-        selectedStrategy:
-          config.config.sync?.selectedStrategy ||
-          config.config.sync?.supportedStrategies?.[0] ||
-          'MANUAL',
-        scheduledConfig: config.config.sync?.scheduledConfig || {},
-        ...(config.config.sync?.values || config.config.sync || {}),
-      },
+      sync: syncData,
       filters: filtersData,
     };
   }, []);
@@ -773,6 +790,8 @@ export const useConnectorConfig = ({
     privateKeyError,
   ]);
 
+  const appCategoriesKey = (connector.appCategories ?? []).join(',');
+
   // Load connector configuration - simplified with proper dependency management
   useEffect(() => {
     // Skip if account type is still loading
@@ -914,7 +933,7 @@ export const useConnectorConfig = ({
     connector.authType,
     connector.supportsRealtime,
     connector.appDescription,
-    connector.appCategories,
+    appCategoriesKey,
     connector.iconPath,
     connector._key,
     isCreateMode,
@@ -1701,7 +1720,7 @@ export const useConnectorConfig = ({
         const syncToSave = prepareSyncConfig();
 
         // Save filters and sync using new endpoint
-        await ConnectorApiService.updateConnectorInstanceFiltersSyncConfig(connector._key, {
+        const filtersSyncResponse = await ConnectorApiService.updateConnectorInstanceFiltersSyncConfig(connector._key, {
           filters: filtersPayload,
           sync: syncToSave,
         });
@@ -1709,7 +1728,13 @@ export const useConnectorConfig = ({
         // If enableMode, toggle connector to enable it
         let connectorWillBeActive = connector.isActive;
         if (enableMode) {
-          await ConnectorApiService.toggleConnectorInstance(connector._key, 'sync');
+          // Pass fullSync so the toggle's immediate sync event carries the flag,
+          // avoiding a separate resync API call
+          await ConnectorApiService.toggleConnectorInstance(
+            connector._key,
+            'sync',
+            filtersSyncResponse?.syncFiltersChanged ?? false,
+          );
           connectorWillBeActive = true; // After toggling, connector will be active
         }
 
