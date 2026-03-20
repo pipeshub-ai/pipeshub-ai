@@ -3,10 +3,10 @@ Enhanced wrapper to adapt registry tools to LangChain format with proper client 
 """
 
 import asyncio
+import contextlib
 import inspect
 import json
 from collections.abc import Callable
-from typing import Optional
 
 from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
@@ -269,7 +269,7 @@ class ToolInstanceCreator:
             # For other errors, fall back to legacy creation
             return self._fallback_creation(action_class)
 
-    def _get_toolset_config(self, tool_full_name: str) -> Optional[dict]:
+    def _get_toolset_config(self, tool_full_name: str) -> dict | None:
         """Get toolset config for a tool from state.
 
         Args:
@@ -372,10 +372,12 @@ class RegistryToolWrapper(BaseTool):
             state: Chat state
             **kwargs: Additional arguments
         """
-        base_description = getattr(
-            registry_tool,
-            'description',
-            f"Tool: {app_name}.{tool_name}"
+        # Prefer llm_description (includes when_to_use/when_not_to_use guidance)
+        # over description (short user-facing text)
+        base_description = (
+            getattr(registry_tool, 'llm_description', None)
+            or getattr(registry_tool, 'description', None)
+            or f"Tool: {app_name}.{tool_name}"
         )
         full_description = self._build_description(base_description, registry_tool)
 
@@ -653,10 +655,8 @@ class RegistryToolWrapper(BaseTool):
                 # Teardown background resources if the action provides shutdown()
                 shutdown = getattr(instance, 'shutdown', None)
                 if callable(shutdown):
-                    try:
+                    with contextlib.suppress(Exception):
                         shutdown()
-                    except Exception:
-                        pass
 
         except Exception as e:
             raise RuntimeError(

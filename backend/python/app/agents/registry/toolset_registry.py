@@ -7,10 +7,10 @@ import importlib
 import inspect
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    pass
+    from app.agents.tools.config import ToolMetadata
 
 from app.connectors.core.registry.tool_builder import ToolDefinition, ToolsetCategory
 
@@ -23,9 +23,9 @@ def Toolset(
     supported_auth_types: str | list[str],  # Supported auth types (user selects one during creation)
     description: str = "",
     category: ToolsetCategory = ToolsetCategory.APP,
-    config: Optional[dict[str, Any]] = None,
-    tools: Optional[list[ToolDefinition]] = None,
-    internal: bool = False  # If True, toolset is internal and not sent to frontend
+    config: dict[str, Any] | None = None,
+    tools: list[ToolDefinition] | None = None,
+    internal: bool = False,  # If True, toolset is internal and not sent to frontend
 ) -> Callable[[type], type]:
     """
     Decorator to register a toolset with metadata and configuration schema.
@@ -68,15 +68,14 @@ def Toolset(
         # Convert tools to dict format
         tools_dict = []
         if tools:
-            for tool in tools:
-                tools_dict.append({
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                    "returns": tool.returns,
-                    "examples": tool.examples,
-                    "tags": tool.tags
-                })
+            tools_dict.extend({
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+                "returns": tool.returns,
+                "examples": tool.examples,
+                "tags": tool.tags
+            } for tool in tools)
 
         # Store metadata in the class (no authType - it comes from etcd/database when toolset is created)
         # Safely extract category value
@@ -154,7 +153,7 @@ class ToolsetRegistry:
 
             # Convert discovered tools to dict format for frontend API
             tools = []
-            for tool_name, func in discovered_tools.items():
+            for func in discovered_tools.values():
                 tool_metadata = func._tool_metadata
 
                 # Convert to dict format (same as old tools list format)
@@ -247,7 +246,7 @@ class ToolsetRegistry:
 
         # Use inspect.getmembers to properly discover methods (including instance methods)
         # This is more reliable than dir() for decorated methods
-        for attr_name, attr in inspect.getmembers(toolset_class, predicate=inspect.isfunction):
+        for _attr_name, attr in inspect.getmembers(toolset_class, predicate=inspect.isfunction):
             try:
                 # Check if the attribute has _tool_metadata (set by @tool decorator)
                 if hasattr(attr, '_tool_metadata'):
@@ -280,7 +279,7 @@ class ToolsetRegistry:
 
         return tools
 
-    def _convert_parameters_to_dict(self, tool_metadata) -> list[dict[str, Any]]:
+    def _convert_parameters_to_dict(self, tool_metadata: "ToolMetadata") -> list[dict[str, Any]]:
         """
         Convert tool parameters to dict format for frontend API.
 
@@ -323,7 +322,7 @@ class ToolsetRegistry:
 
         return parameters
 
-    def _map_pydantic_type_to_parameter_type(self, type_hint) -> str:
+    def _map_pydantic_type_to_parameter_type(self, type_hint: type) -> str:
         """Map Pydantic/Python type hint to parameter type string"""
         import typing
         from typing import get_args, get_origin
@@ -378,6 +377,7 @@ class ToolsetRegistry:
             'app.agents.actions.retrieval.retrieval',
             'app.agents.actions.calculator.calculator',
             'app.agents.actions.calculator.date_calculator',
+            'app.agents.actions.knowledge_hub.knowledge_hub',
             # Google toolsets
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',
@@ -416,7 +416,7 @@ class ToolsetRegistry:
         self.discover_toolsets(standard_paths)
         logger.info(f"Auto-discovered {len(self._toolsets)} toolsets with in-memory registry")
 
-    def get_toolset_metadata(self, toolset_name: str, serialize: bool = True) -> Optional[dict[str, Any]]:
+    def get_toolset_metadata(self, toolset_name: str, serialize: bool = True) -> dict[str, Any] | None:
         """
         Get metadata for a toolset.
 
@@ -587,8 +587,8 @@ class ToolsetRegistry:
         self,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        include_tools: bool = True
+        search: str | None = None,
+        include_tools: bool = True,
     ) -> dict[str, Any]:
         """
         Get all registered toolsets with pagination and search.
@@ -611,16 +611,17 @@ class ToolsetRegistry:
             # Build tools list for frontend (ensure all data is serializable)
             tools = []
             if include_tools:
-                for tool_def in serialized_metadata.get('tools', []):
-                    # Ensure tool_def is a dict and all values are serializable
-                    if isinstance(tool_def, dict):
-                        tools.append({
-                            'name': tool_def.get('name', ''),
-                            'fullName': f"{normalized_name}.{tool_def.get('name', '')}",
-                            'description': tool_def.get('description', ''),
-                            'parameters': tool_def.get('parameters', []),
-                            'tags': tool_def.get('tags', [])
-                        })
+                tools.extend(
+                    {
+                        'name': tool_def.get('name', ''),
+                        'fullName': f"{normalized_name}.{tool_def.get('name', '')}",
+                        'description': tool_def.get('description', ''),
+                        'parameters': tool_def.get('parameters', []),
+                        'tags': tool_def.get('tags', []),
+                    }
+                    for tool_def in serialized_metadata.get('tools', [])
+                    if isinstance(tool_def, dict)
+                )
 
             toolset_info = {
                 'name': serialized_metadata['name'],
@@ -669,7 +670,7 @@ class ToolsetRegistry:
             }
         }
 
-    def get_toolset_config(self, toolset_name: str) -> Optional[dict[str, Any]]:
+    def get_toolset_config(self, toolset_name: str) -> dict[str, Any] | None:
         """Get configuration schema for a toolset"""
         metadata = self.get_toolset_metadata(toolset_name)
         if not metadata:

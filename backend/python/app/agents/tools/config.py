@@ -4,7 +4,7 @@ Centralizes all configuration to make the system easier to maintain and extend.
 """
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -60,7 +60,7 @@ class AppConfiguration(BaseModel):
     app_name: str
     enabled: bool = True
     subdirectories: list[str] = Field(default_factory=list)
-    client_builder: Optional[str] = None
+    client_builder: str | None = None
     service_configs: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -97,6 +97,9 @@ class ToolDiscoveryConfig:
         ),
         "retrieval": AppConfiguration(
             app_name="retrieval",
+        ),
+        "knowledge_hub": AppConfiguration(
+            app_name="knowledge_hub",
         ),
         "google": AppConfiguration(
             app_name="google",
@@ -209,7 +212,7 @@ class ToolDiscoveryConfig:
     SKIP_FILES: set[str] = {"__init__.py", "config.py", "base.py"}
 
     @classmethod
-    def get_app_config(cls, app_name: str) -> Optional[AppConfiguration]:
+    def get_app_config(cls, app_name: str) -> AppConfiguration | None:
         """
         Get configuration for a specific app.
 
