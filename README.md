@@ -184,10 +184,10 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 
 ## RoadMap
 
-- Code Search
+- Code Indexing (Local filesystem, Github, Gitlab, Bitbucket)
+- Agent Builder Enhancements (Trigger Point, MCP Servers, Skills, Natural Text to Agent)
+- Workflow Builder
 - Workplace AI Agents
-- MCP
-- APIs and SDKs
 - Personalized Search
 - Highly available and scalable Kubernetes deployment
 - PageRank
