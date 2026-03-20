@@ -6,7 +6,7 @@ to avoid circular dependencies.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Literal, Optional
 
 
 @dataclass
@@ -22,6 +22,7 @@ class AuthField:
     min_length: int = 1
     max_length: int = 1000
     is_secret: bool = False
+    usage: Literal["CONFIGURE", "AUTHENTICATE", "BOTH"] = "BOTH"
 
 
 @dataclass
@@ -33,7 +34,7 @@ class CustomField:
     description: str = ""
     required: bool = False
     default_value: Any = ""
-    options: List[str] = field(default_factory=list)
+    options: list[str] = field(default_factory=list)
     min_length: Optional[int] = None
     max_length: Optional[int] = None
     is_secret: bool = False

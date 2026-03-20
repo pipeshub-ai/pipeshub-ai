@@ -4,7 +4,7 @@ Centralizes all configuration to make the system easier to maintain and extend.
 """
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -42,8 +42,8 @@ class ToolMetadata(BaseModel):
     category: ToolCategory
     is_essential: bool = False
     requires_auth: bool = True
-    dependencies: List[str] = Field(default_factory=list)
-    tags: List[str] = Field(default_factory=list)
+    dependencies: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
 
 
 class AppConfiguration(BaseModel):
@@ -59,9 +59,9 @@ class AppConfiguration(BaseModel):
     """
     app_name: str
     enabled: bool = True
-    subdirectories: List[str] = Field(default_factory=list)
-    client_builder: Optional[str] = None
-    service_configs: Dict[str, Any] = Field(default_factory=dict)
+    subdirectories: list[str] = Field(default_factory=list)
+    client_builder: str | None = None
+    service_configs: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolDiscoveryConfig:
@@ -71,7 +71,7 @@ class ToolDiscoveryConfig:
     """
 
     # Application configurations
-    APP_CONFIGS: Dict[str, AppConfiguration] = {
+    APP_CONFIGS: dict[str, AppConfiguration] = {
         "confluence": AppConfiguration(
             app_name="confluence",
             client_builder="ConfluenceClient",
@@ -101,6 +101,9 @@ class ToolDiscoveryConfig:
         ),
         "retrieval": AppConfiguration(
             app_name="retrieval",
+        ),
+        "knowledge_hub": AppConfiguration(
+            app_name="knowledge_hub",
         ),
         "google": AppConfiguration(
             app_name="google",
@@ -145,6 +148,10 @@ class ToolDiscoveryConfig:
         "linear": AppConfiguration(
             app_name="linear",
             client_builder="LinearClient",
+        ),
+        "mariadb": AppConfiguration(
+            app_name="mariadb",
+            client_builder="MariaDBClient",
         ),
         # "linkedin": AppConfiguration(
         #     app_name="linkedin",
@@ -198,7 +205,7 @@ class ToolDiscoveryConfig:
     }
 
     # Essential tools that should always be loaded
-    ESSENTIAL_TOOL_PATTERNS: Set[str] = {
+    ESSENTIAL_TOOL_PATTERNS: set[str] = {
         "calculator.",
         "web_search",
         "get_current_datetime",
@@ -206,10 +213,10 @@ class ToolDiscoveryConfig:
     }
 
     # Files to skip during discovery
-    SKIP_FILES: Set[str] = {"__init__.py", "config.py", "base.py"}
+    SKIP_FILES: set[str] = {"__init__.py", "config.py", "base.py"}
 
     @classmethod
-    def get_app_config(cls, app_name: str) -> Optional[AppConfiguration]:
+    def get_app_config(cls, app_name: str) -> AppConfiguration | None:
         """
         Get configuration for a specific app.
 
@@ -268,7 +275,7 @@ class ToolDiscoveryConfig:
             cls.APP_CONFIGS[app_name].enabled = True
 
     @classmethod
-    def get_enabled_apps(cls) -> List[str]:
+    def get_enabled_apps(cls) -> list[str]:
         """
         Get list of enabled app names.
 

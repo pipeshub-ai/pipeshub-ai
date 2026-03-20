@@ -103,6 +103,17 @@ interface ToolsetSchema {
   [key: string]: any;
 }
 
+const filterFieldsByUsage = (fields: any[], mode: 'CONFIGURE' | 'AUTHENTICATE'): any[] => {
+  if (!Array.isArray(fields)) return [];
+
+  return fields.filter((field: any) => {
+    const usage = String(field?.usage || 'BOTH').toUpperCase();
+    if (usage === 'BOTH') return true;
+    if (mode === 'CONFIGURE') return usage !== 'AUTHENTICATE';
+    return usage !== 'CONFIGURE';
+  });
+};
+
 // ============================================================================
 // Note: Auth fields are now dynamically loaded from schema (no hardcoded fields)
 // ============================================================================
@@ -457,7 +468,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
       schema = firstSchemaKey ? schemas[firstSchemaKey] : { fields: [] };
     }
     return {
-      fields: schema.fields || [],
+      fields: filterFieldsByUsage(schema.fields || [], 'CONFIGURE'),
       redirectUri: schema.redirectUri || authConfig.redirectUri || '',
       displayRedirectUri: schema.displayRedirectUri !== undefined
         ? schema.displayRedirectUri
@@ -510,8 +521,35 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
     const authConfig = toolsetData.config?.auth || toolsetData.auth || {};
     const authSchemas = authConfig.schemas || {};
     
-    return authSchemas[manageAuthType] || { fields: [] };
+    const rawSchema = authSchemas[manageAuthType] || { fields: [] };
+    return {
+      ...rawSchema,
+      fields: filterFieldsByUsage(rawSchema.fields || [], 'AUTHENTICATE'),
+    };
   }, [toolsetSchema, manageAuthType, isManageMode]);
+
+  useEffect(() => {
+  if (!isManageMode || manageAuthType === 'OAUTH' || manageAuthType === 'NONE') {
+    return;
+  }
+
+  const existingAuth = manageToolset?.auth;
+  if (!existingAuth || typeof existingAuth !== 'object') return;
+
+  const hydrated: Record<string, any> = {};
+  (manageAuthSchema.fields || []).forEach((field: any) => {
+    const value = existingAuth[field.name];
+    if (value !== undefined && value !== null) {
+      hydrated[field.name] = Array.isArray(value) ? value.join(',') : value;
+    }
+  });
+
+  if (Object.keys(hydrated).length > 0) {
+    setFormData((prev) => ({ ...hydrated, ...prev }));
+  }
+
+}, [isManageMode, manageAuthType, manageToolset, manageAuthSchema.fields]);
+
 
   const [showRedirectUri, setShowRedirectUri] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -828,7 +866,12 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
         return;
       }
 
-      await ToolsetApiService.authenticateToolsetInstance(instanceId, formData);
+      if (isAuthenticated){
+        await ToolsetApiService.updateToolsetCredentials(instanceId, formData);
+      }else{
+        await ToolsetApiService.authenticateToolsetInstance(instanceId, formData);
+      }
+
       setIsAuthenticated(true);
       setConfigSaved(true);
 
@@ -2024,14 +2067,14 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                   </Button>
                 )}
 
-                {/* Save credentials (non-OAuth) */}
+                {/* Update credentials (non-OAuth) */}
                 {manageAuthType !== 'OAUTH' && manageAuthType !== 'NONE' && (
                   <Button
                     onClick={handleAuthenticateCredentials}
                     variant="contained"
                     disabled={isAnyActionInProgress}
                     startIcon={
-                      saving ? (
+                      saving ? (  
                         <CircularProgress size={14} sx={{ color: 'inherit' }} />
                       ) : (
                         <Iconify icon={saveIcon} width={16} height={16} />
@@ -2045,7 +2088,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                       '&:hover': { boxShadow: 'none' },
                     }}
                   >
-                    {saving ? 'Saving...' : 'Save Credentials'}
+                    {saving ? 'Saving...' : 'Update Credentials'}
                   </Button>
                 )}
               </>
