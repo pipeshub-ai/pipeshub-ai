@@ -16629,6 +16629,44 @@ paths:
           description: Instance not found
 
   /toolsets/instances/{instanceId}/credentials:
+    put:
+      tags:
+        - Toolset Instances
+      summary: Update toolset credentials
+      operationId: updateToolsetCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                auth:
+                  type: object
+                  properties:
+                    apiToken:
+                      type: string
+                    username:
+                      type: string
+                    password:
+                      type: string
+      responses:
+        '200':
+          description: Credentials updated successfully
+        '400':
+          description: Invalid credentials payload
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
     delete:
       tags:
         - Toolset Instances
