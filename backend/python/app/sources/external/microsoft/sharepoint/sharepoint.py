@@ -1,10 +1,12 @@
+import contextlib
 import io
 import json
 import logging
 import re
 import zipfile
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Optional
 from urllib.parse import quote
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
@@ -16,16 +18,20 @@ from msgraph.generated.models.drive_item import DriveItem  # type: ignore
 from msgraph.generated.models.drive_item_collection_response import (  # type: ignore
     DriveItemCollectionResponse,
 )
+from msgraph.generated.models.entity_type import EntityType  # type: ignore
 from msgraph.generated.models.notebook import Notebook  # type: ignore
+from msgraph.generated.models.o_data_errors.o_data_error import (
+    ODataError,  # type: ignore
+)
 from msgraph.generated.models.onenote_page import OnenotePage  # type: ignore
 from msgraph.generated.models.onenote_section import OnenoteSection  # type: ignore
-from msgraph.generated.models.entity_type import EntityType  # type: ignore
-from msgraph.generated.models.o_data_errors.o_data_error import ODataError  # type: ignore
-from msgraph.generated.models.site_page import SitePage  # type: ignore
 from msgraph.generated.models.search_query import SearchQuery  # type: ignore
 from msgraph.generated.models.search_request import SearchRequest  # type: ignore
+from msgraph.generated.models.site_page import SitePage  # type: ignore
 from msgraph.generated.models.sort_property import SortProperty  # type: ignore
-from msgraph.generated.search.query.query_post_request_body import QueryPostRequestBody  # type: ignore
+from msgraph.generated.search.query.query_post_request_body import (
+    QueryPostRequestBody,  # type: ignore
+)
 from msgraph.generated.sites.item.columns.columns_request_builder import (  # type: ignore
     ColumnsRequestBuilder,
 )
@@ -50,17 +56,24 @@ from app.sources.client.microsoft.microsoft import MSGraphClient
 class SharePointResponse:
     """Standardized SharePoint API response wrapper."""
     success: bool
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
 
-    def __init__(self, success: bool, data: Optional[Dict[str, Any]] = None, error: Optional[str] = None, message: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        *,
+        success: bool,
+        data: Optional[dict[str, Any]] = None,
+        error: Optional[str] = None,
+        message: Optional[str] = None,
+    ) -> None:
         self.success = success
         self.data = data
         self.error = error
         self.message = message
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "success": self.success,
             "data": self.data,
@@ -239,17 +252,17 @@ class SharePointDataSource:
                 sort_prop.name = sort_field
                 sort_prop.is_descending = is_descending
                 search_request.sort_properties = [sort_prop]
-            
+
             request_body.requests = [search_request]
 
             # Execute search
             response = await self.client.search.query.post(request_body)
-            
+
             # Parse results
             if response and hasattr(response, 'value') and response.value:
                 for search_response in response.value:
                     hits_containers = getattr(search_response, 'hits_containers', None)
-                    
+
                     if hits_containers:
                         for container in hits_containers:
                             if hasattr(container, 'hits') and container.hits:
@@ -336,7 +349,7 @@ class SharePointDataSource:
 
             response = await self.client.search.query.post(request_body)
 
-            pages: List[Dict[str, Any]] = []
+            pages: list[dict[str, Any]] = []
             if response and hasattr(response, "value") and response.value:
                 for search_response in response.value:
                     hits_containers = getattr(search_response, "hits_containers", None)
@@ -364,7 +377,7 @@ class SharePointDataSource:
                 error_msg = e.error.message
             return SharePointResponse(success=False, error=error_msg)
 
-    def _serialize_page_from_list_item(self, resource) -> Dict[str, Any]:
+    def _serialize_page_from_list_item(self, resource: object) -> dict[str, Any]:
         """Extract page metadata from a listItem search hit resource.
 
         Expected resource shape (from Postman / Graph API):
@@ -453,12 +466,12 @@ class SharePointDataSource:
 
     # ========== DOCUMENT / FILE OPERATIONS ==========
 
-    def _serialize_drive(self, drive) -> Dict[str, Any]:
+    def _serialize_drive(self, drive: object) -> dict[str, Any]:
         """Serialize a Graph SDK Drive object to a plain dict."""
         if isinstance(drive, dict):
             return drive
 
-        result: Dict[str, Any] = {}
+        result: dict[str, Any] = {}
         # Pull from additional_data first (Kiota backing store)
         additional = getattr(drive, "additional_data", None) or {}
         if isinstance(additional, dict):
@@ -484,23 +497,21 @@ class SharePointDataSource:
         # Quota
         quota = getattr(drive, "quota", None)
         if quota and "quota" not in result:
-            try:
+            with contextlib.suppress(Exception):
                 result["quota"] = {
                     "used": getattr(quota, "used", None),
                     "remaining": getattr(quota, "remaining", None),
                     "total": getattr(quota, "total", None),
                 }
-            except Exception:
-                pass
 
         return result
 
-    def _serialize_drive_item(self, item) -> Dict[str, Any]:
+    def _serialize_drive_item(self, item: object) -> dict[str, Any]:
         """Serialize a Graph SDK DriveItem to a plain dict suitable for agents."""
         if isinstance(item, dict):
             return item
 
-        result: Dict[str, Any] = {}
+        result: dict[str, Any] = {}
         additional = getattr(item, "additional_data", None) or {}
         if isinstance(additional, dict):
             result.update(additional)
@@ -585,7 +596,7 @@ class SharePointDataSource:
             )
             response = await self.client.sites.by_site_id(site_id).drives.get(request_configuration=config)
 
-            drives: List[Dict[str, Any]] = []
+            drives: list[dict[str, Any]] = []
             if response and hasattr(response, "value") and response.value:
                 drives = [self._serialize_drive(d) for d in response.value]
             elif response and isinstance(response, dict):
@@ -628,8 +639,8 @@ class SharePointDataSource:
         try:
             capped_top = min(top, 50)
             capped_depth = max(depth, 1)
-            items: List[Dict[str, Any]] = []
-            folder_queue: List[tuple[Optional[str], int]] = [(folder_id, 1)]
+            items: list[dict[str, Any]] = []
+            folder_queue: list[tuple[Optional[str], int]] = [(folder_id, 1)]
             queue_index = 0
             visited_folders = set()
 
@@ -664,7 +675,7 @@ class SharePointDataSource:
                     ri, DriveItemCollectionResponse, {}
                 )
 
-                current_items: List[Dict[str, Any]] = []
+                current_items: list[dict[str, Any]] = []
                 if response and hasattr(response, "value") and response.value:
                     current_items = [self._serialize_drive_item(i) for i in response.value]
 
@@ -734,7 +745,7 @@ class SharePointDataSource:
             request_body.requests = [search_request]
             response = await self.client.search.query.post(request_body)
 
-            files: List[Dict[str, Any]] = []
+            files: list[dict[str, Any]] = []
             if response and hasattr(response, "value") and response.value:
                 for search_response in response.value:
                     hits_containers = getattr(search_response, "hits_containers", None)
@@ -766,7 +777,7 @@ class SharePointDataSource:
                 error_msg = e.error.message
             return SharePointResponse(success=False, error=error_msg)
 
-    def _serialize_file_from_search_hit(self, resource) -> Dict[str, Any]:
+    def _serialize_file_from_search_hit(self, resource: object) -> dict[str, Any]:
         """Extract file metadata from a Graph Search DriveItem hit resource."""
         if isinstance(resource, dict):
             parent_ref = resource.get("parentReference") or {}
@@ -1032,7 +1043,7 @@ class SharePointDataSource:
     ) -> SharePointResponse:
         """Move a SharePoint drive item to another folder in the same drive."""
         try:
-            patch_data: Dict[str, Any] = {
+            patch_data: dict[str, Any] = {
                 "parentReference": {
                     "id": destination_folder_id,
                 }
@@ -1116,7 +1127,7 @@ class SharePointDataSource:
                 if onenote_web:
                     notebook_web_url = getattr(onenote_web, "href", None)
 
-            result: Dict[str, Any] = {
+            result: dict[str, Any] = {
                 "notebook_id": notebook_id,
                 "notebook_name": name,
                 "notebook_web_url": notebook_web_url,
@@ -1198,7 +1209,7 @@ class SharePointDataSource:
             logger.error(f"❌ create_onenote_notebook failed: {e}")
             return SharePointResponse(success=False, error=str(e))
 
-    def _onenote_web_url_from_links(self, links: Any) -> Optional[str]:
+    def _onenote_web_url_from_links(self, links: object) -> Optional[str]:
         """Extract web URL from notebook/section/page links object."""
         if not links:
             return None
@@ -1210,7 +1221,7 @@ class SharePointDataSource:
             return w.get("href") if isinstance(w, dict) else None
         return None
 
-    def _serialize_onenote_notebook(self, notebook: Any, site_id: str) -> Dict[str, Any]:
+    def _serialize_onenote_notebook(self, notebook: object, site_id: str) -> dict[str, Any]:
         """Convert Graph Notebook to snake_case dict for action layer."""
         if isinstance(notebook, dict):
             links = notebook.get("links")
@@ -1227,7 +1238,7 @@ class SharePointDataSource:
             "site_id": site_id,
         }
 
-    def _serialize_onenote_section(self, section: Any, notebook_id: str) -> Dict[str, Any]:
+    def _serialize_onenote_section(self, section: object, notebook_id: str) -> dict[str, Any]:
         """Convert Graph OnenoteSection to snake_case dict."""
         if isinstance(section, dict):
             return {
@@ -1243,7 +1254,7 @@ class SharePointDataSource:
             "web_url": self._onenote_web_url_from_links(getattr(section, "links", None)),
         }
 
-    def _serialize_onenote_page(self, page: Any, section_id: str) -> Dict[str, Any]:
+    def _serialize_onenote_page(self, page: object, section_id: str) -> dict[str, Any]:
         """Convert Graph OnenotePage to snake_case dict."""
         if isinstance(page, dict):
             return {
@@ -1301,7 +1312,7 @@ class SharePointDataSource:
                 )
             payload = json.loads(raw.decode("utf-8"))
             value = payload.get("value") or []
-            notebooks: List[Dict[str, Any]] = [
+            notebooks: list[dict[str, Any]] = [
                 self._serialize_onenote_notebook(nb, site_id) for nb in value
             ]
             logger.info(f"✅ list_onenote_notebooks: {len(notebooks)} for site {site_id}")
@@ -1346,10 +1357,12 @@ class SharePointDataSource:
                 .onenote.notebooks.by_notebook_id(notebook_id)
                 .sections.get(request_configuration=config)
             )
-            sections: List[Dict[str, Any]] = []
+            sections: list[dict[str, Any]] = []
             if response and getattr(response, "value", None):
-                for sec in response.value:
-                    sections.append(self._serialize_onenote_section(sec, notebook_id))
+                sections.extend(
+                    self._serialize_onenote_section(sec, notebook_id)
+                    for sec in response.value
+                )
             logger.info(f"✅ list_onenote_sections: {len(sections)} for notebook {notebook_id}")
             return SharePointResponse(
                 success=True,
@@ -1392,10 +1405,11 @@ class SharePointDataSource:
                 .onenote.sections.by_onenote_section_id(section_id)
                 .pages.get(request_configuration=config)
             )
-            pages: List[Dict[str, Any]] = []
+            pages: list[dict[str, Any]] = []
             if response and getattr(response, "value", None):
-                for pg in response.value:
-                    pages.append(self._serialize_onenote_page(pg, section_id))
+                pages.extend(
+                    self._serialize_onenote_page(pg, section_id) for pg in response.value
+                )
             logger.info(f"✅ list_onenote_pages: {len(pages)} for section {section_id}")
             return SharePointResponse(
                 success=True,
@@ -1420,8 +1434,7 @@ class SharePointDataSource:
         text = re.sub(r"(?i)<br\s*/?>", "\n", text)
         text = re.sub(r"(?i)</(p|div|li|tr|h[1-6])>", "\n", text)
         text = re.sub(r"(?s)<[^>]+>", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        return text
+        return re.sub(r"\s+", " ", text).strip()
 
     async def get_onenote_page_content(
         self,
@@ -1580,26 +1593,26 @@ class SharePointDataSource:
             logger.error(f"❌ get_drive_item_content failed: {e}")
             return SharePointResponse(success=False, error=str(e))
 
-    def _serialize_site(self, site) -> Dict[str, Any]:
+    def _serialize_site(self, site: object) -> dict[str, Any]:
         """Convert a Graph SDK site object to a dictionary."""
         if isinstance(site, dict):
             return site
-        
+
         # Serialize using additional_data (Kiota backing store)
         if hasattr(site, 'additional_data') and isinstance(site.additional_data, dict):
             result = dict(site.additional_data)
-            
+
             # Add common properties (check both camelCase and snake_case)
             prop_map = {
                 'id': 'id',
-                'name': 'name', 
+                'name': 'name',
                 'displayName': 'display_name',
                 'webUrl': 'web_url',
                 'description': 'description',
                 'createdDateTime': 'created_date_time',
                 'lastModifiedDateTime': 'last_modified_date_time',
             }
-            
+
             for camel_case, snake_case in prop_map.items():
                 if camel_case not in result:
                     val = None
@@ -1607,14 +1620,14 @@ class SharePointDataSource:
                         val = getattr(site, camel_case)
                     elif hasattr(site, snake_case):
                         val = getattr(site, snake_case)
-                    
+
                     if val is not None:
                         if isinstance(val, datetime):
                             val = val.isoformat()
                         result[camel_case] = val
-            
+
             return result
-        
+
         # Fallback: extract all non-private attributes
         result = {}
         for attr in dir(site):
@@ -1632,8 +1645,8 @@ class SharePointDataSource:
     async def get_site_by_id(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
     ) -> SharePointResponse:
         """Get a specific SharePoint site by its ID using delegated permissions.
 
@@ -1649,7 +1662,7 @@ class SharePointDataSource:
         """
         try:
             response = await self.client.sites.by_site_id(site_id).get()
-            
+
             if response:
                 site_dict = self._serialize_site(response)
                 logger.info(f"✅ Retrieved site: {site_id}")
@@ -1708,13 +1721,13 @@ class SharePointDataSource:
             logger.error(f"❌ get_site_page_with_canvas failed: {e}")
             return SharePointResponse(success=False, error=str(e))
 
-    def _site_page_post_response_to_dict(self, response: Any) -> Dict[str, Any]:
+    def _site_page_post_response_to_dict(self, response: object) -> dict[str, Any]:
         """Best-effort dict from Kiota SitePage POST response for agents."""
         if response is None:
             return {}
         if isinstance(response, dict):
             return dict(response)
-        out: Dict[str, Any] = {}
+        out: dict[str, Any] = {}
         for attr in ("id", "title", "name"):
             val = getattr(response, attr, None)
             if val is not None:
@@ -1755,6 +1768,7 @@ class SharePointDataSource:
         site_id: str,
         title: str,
         content_html: str,
+        *,
         publish: bool = False,
     ) -> SharePointResponse:
         """Create a modern SitePage with one text web part; optional publish.
@@ -1822,6 +1836,7 @@ class SharePointDataSource:
         page_id: str,
         title: Optional[str] = None,
         content_html: Optional[str] = None,
+        *,
         publish: bool = False,
     ) -> SharePointResponse:
         """PATCH page as microsoft.graph.sitePage; optional publish.
@@ -1835,7 +1850,7 @@ class SharePointDataSource:
                 error="At least one of title or content_html must be provided",
             )
         try:
-            patch_data: Dict[str, Any] = {"@odata.type": "#microsoft.graph.sitePage"}
+            patch_data: dict[str, Any] = {"@odata.type": "#microsoft.graph.sitePage"}
             if title is not None:
                 patch_data["title"] = title
             if content_html is not None:
@@ -1882,7 +1897,7 @@ class SharePointDataSource:
                 else:
                     logger.warning(f"⚠️ update_site_page publish failed: {publish_error}")
 
-            data: Dict[str, Any] = {
+            data: dict[str, Any] = {
                 "page_id": page_id,
                 "published": published,
             }
@@ -1899,15 +1914,15 @@ class SharePointDataSource:
 
     async def sites_add(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action add.
@@ -1971,17 +1986,17 @@ class SharePointDataSource:
 
     async def sites_delta(
         self,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function delta.
@@ -2047,17 +2062,17 @@ class SharePointDataSource:
 
     async def sites_get_all_sites(
         self,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getAllSites.
@@ -2123,15 +2138,15 @@ class SharePointDataSource:
 
     async def sites_remove(
         self,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action remove.
@@ -2196,15 +2211,15 @@ class SharePointDataSource:
     async def sites_site_update_site(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update entity in sites.
@@ -2270,15 +2285,15 @@ class SharePointDataSource:
     async def sites_created_by_user_update_mailbox_settings(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update property mailboxSettings value..
@@ -2344,17 +2359,17 @@ class SharePointDataSource:
     async def sites_created_by_user_list_service_provisioning_errors(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get serviceProvisioningErrors property value.
@@ -2422,17 +2437,17 @@ class SharePointDataSource:
     async def sites_site_get_activities_by_interval_4c35(
         self,
         site_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getActivitiesByInterval.
@@ -2503,17 +2518,17 @@ class SharePointDataSource:
         startDateTime: str,
         endDateTime: str,
         interval: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getActivitiesByInterval.
@@ -2585,14 +2600,14 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getByPath.
@@ -2659,17 +2674,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getActivitiesByInterval.
@@ -2742,17 +2757,17 @@ class SharePointDataSource:
         startDateTime: str,
         endDateTime: str,
         interval: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getActivitiesByInterval.
@@ -2825,17 +2840,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get sites from sites.
@@ -2904,15 +2919,15 @@ class SharePointDataSource:
     async def sites_last_modified_by_user_update_mailbox_settings(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update property mailboxSettings value..
@@ -2978,17 +2993,17 @@ class SharePointDataSource:
     async def sites_last_modified_by_user_list_service_provisioning_errors(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get serviceProvisioningErrors property value.
@@ -3056,17 +3071,17 @@ class SharePointDataSource:
     async def sites_list_sites(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List subsites for a site.
@@ -3135,16 +3150,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         site_id1: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get sites from sites.
@@ -3215,17 +3230,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         listId: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getApplicableContentTypesForList.
@@ -3296,17 +3311,17 @@ class SharePointDataSource:
         site_id: str,
         path: str,
         listId: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getApplicableContentTypesForList.
@@ -3377,17 +3392,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get items from sites.
@@ -3457,15 +3472,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to lists for sites.
@@ -3533,17 +3548,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get lists from sites.
@@ -3612,17 +3627,17 @@ class SharePointDataSource:
     async def sites_list_items(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get items from sites.
@@ -3691,16 +3706,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get items from sites.
@@ -3768,15 +3783,15 @@ class SharePointDataSource:
     async def sites_create_lists(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create a new list.
@@ -3842,17 +3857,17 @@ class SharePointDataSource:
     async def sites_list_lists(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get lists in a site.
@@ -3922,14 +3937,14 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property lists for sites.
@@ -3997,16 +4012,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List operations on a list.
@@ -4075,15 +4090,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property lists in sites.
@@ -4151,15 +4166,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create a columnDefinition in a list.
@@ -4227,17 +4242,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List columnDefinitions in a list.
@@ -4309,14 +4324,14 @@ class SharePointDataSource:
         list_id: str,
         columnDefinition_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property columns for sites.
@@ -4386,16 +4401,16 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columns from sites.
@@ -4466,15 +4481,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         columnDefinition_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property columns in sites.
@@ -4544,16 +4559,16 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get sourceColumn from sites.
@@ -4623,15 +4638,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to contentTypes for sites.
@@ -4699,17 +4714,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List contentTypes in a list.
@@ -4779,15 +4794,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action addCopy.
@@ -4855,15 +4870,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action addCopyFromContentTypeHub.
@@ -4931,17 +4946,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getCompatibleHubContentTypes.
@@ -5013,14 +5028,14 @@ class SharePointDataSource:
         list_id: str,
         contentType_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property contentTypes for sites.
@@ -5090,16 +5105,16 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get contentTypes from sites.
@@ -5170,15 +5185,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property contentTypes in sites.
@@ -5248,15 +5263,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action associateWithHubSites.
@@ -5326,16 +5341,16 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get base from sites.
@@ -5406,17 +5421,17 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get baseTypes from sites.
@@ -5489,16 +5504,16 @@ class SharePointDataSource:
         list_id: str,
         contentType_id: str,
         contentType_id1: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get baseTypes from sites.
@@ -5570,15 +5585,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to columnLinks for sites.
@@ -5648,17 +5663,17 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columnLinks from sites.
@@ -5732,14 +5747,14 @@ class SharePointDataSource:
         contentType_id: str,
         columnLink_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property columnLinks for sites.
@@ -5811,16 +5826,16 @@ class SharePointDataSource:
         list_id: str,
         contentType_id: str,
         columnLink_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columnLinks from sites.
@@ -5893,15 +5908,15 @@ class SharePointDataSource:
         list_id: str,
         contentType_id: str,
         columnLink_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property columnLinks in sites.
@@ -5972,17 +5987,17 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columnPositions from sites.
@@ -6055,16 +6070,16 @@ class SharePointDataSource:
         list_id: str,
         contentType_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columnPositions from sites.
@@ -6136,15 +6151,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to columns for sites.
@@ -6214,17 +6229,17 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columns from sites.
@@ -6298,14 +6313,14 @@ class SharePointDataSource:
         contentType_id: str,
         columnDefinition_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property columns for sites.
@@ -6377,16 +6392,16 @@ class SharePointDataSource:
         list_id: str,
         contentType_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columns from sites.
@@ -6459,15 +6474,15 @@ class SharePointDataSource:
         list_id: str,
         contentType_id: str,
         columnDefinition_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property columns in sites.
@@ -6539,16 +6554,16 @@ class SharePointDataSource:
         list_id: str,
         contentType_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get sourceColumn from sites.
@@ -6620,15 +6635,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action copyToDefaultContentLocation.
@@ -6698,14 +6713,14 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function isPublished.
@@ -6774,14 +6789,14 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action publish.
@@ -6850,14 +6865,14 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action unpublish.
@@ -6925,15 +6940,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update property mailboxSettings value..
@@ -7001,17 +7016,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get serviceProvisioningErrors property value.
@@ -7081,16 +7096,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get drive from sites.
@@ -7159,15 +7174,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create a new item in a list.
@@ -7235,17 +7250,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List items.
@@ -7315,17 +7330,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function delta.
@@ -7396,17 +7411,17 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         token: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function delta.
@@ -7479,14 +7494,14 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete an item from a list.
@@ -7556,16 +7571,16 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get listItem.
@@ -7636,15 +7651,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property items in sites.
@@ -7714,16 +7729,16 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get analytics from sites.
@@ -7794,15 +7809,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action createLink.
@@ -7872,15 +7887,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update property mailboxSettings value..
@@ -7950,17 +7965,17 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get serviceProvisioningErrors property value.
@@ -8032,15 +8047,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create documentSetVersion.
@@ -8110,17 +8125,17 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List documentSetVersions.
@@ -8194,14 +8209,14 @@ class SharePointDataSource:
         listItem_id: str,
         documentSetVersion_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete documentSetVersion.
@@ -8273,16 +8288,16 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get documentSetVersion.
@@ -8355,15 +8370,15 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property documentSetVersions in sites.
@@ -8436,14 +8451,14 @@ class SharePointDataSource:
         listItem_id: str,
         documentSetVersion_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property fields for sites.
@@ -8515,16 +8530,16 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get fields from sites.
@@ -8597,15 +8612,15 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property fields in sites.
@@ -8677,14 +8692,14 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         documentSetVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action restore.
@@ -8754,16 +8769,16 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get driveItem from sites.
@@ -8835,14 +8850,14 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         dollar_format: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get content for the navigation property driveItem from sites.
@@ -8912,15 +8927,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update content for the navigation property driveItem in sites.
@@ -8991,14 +9006,14 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property fields for sites.
@@ -9068,16 +9083,16 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get fields from sites.
@@ -9148,15 +9163,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update listItem.
@@ -9226,17 +9241,17 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getActivitiesByInterval.
@@ -9311,17 +9326,17 @@ class SharePointDataSource:
         startDateTime: str,
         endDateTime: str,
         interval: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getActivitiesByInterval.
@@ -9396,15 +9411,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update property mailboxSettings value..
@@ -9474,17 +9489,17 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get serviceProvisioningErrors property value.
@@ -9556,15 +9571,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         listItem_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to versions for sites.
@@ -9636,14 +9651,14 @@ class SharePointDataSource:
         listItem_id: str,
         listItemVersion_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property versions for sites.
@@ -9715,16 +9730,16 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get a ListItemVersion resource.
@@ -9797,15 +9812,15 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property versions in sites.
@@ -9878,14 +9893,14 @@ class SharePointDataSource:
         listItem_id: str,
         listItemVersion_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property fields for sites.
@@ -9957,16 +9972,16 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get fields from sites.
@@ -10039,15 +10054,15 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property fields in sites.
@@ -10119,14 +10134,14 @@ class SharePointDataSource:
         list_id: str,
         listItem_id: str,
         listItemVersion_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action restoreVersion.
@@ -10195,15 +10210,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update property mailboxSettings value..
@@ -10271,17 +10286,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get serviceProvisioningErrors property value.
@@ -10351,15 +10366,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to operations for sites.
@@ -10427,17 +10442,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get operations from sites.
@@ -10509,14 +10524,14 @@ class SharePointDataSource:
         list_id: str,
         richLongRunningOperation_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property operations for sites.
@@ -10586,16 +10601,16 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         richLongRunningOperation_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get operations from sites.
@@ -10666,15 +10681,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         richLongRunningOperation_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property operations in sites.
@@ -10743,15 +10758,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to subscriptions for sites.
@@ -10819,17 +10834,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         list_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get subscriptions from sites.
@@ -10901,14 +10916,14 @@ class SharePointDataSource:
         list_id: str,
         subscription_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property subscriptions for sites.
@@ -10978,16 +10993,16 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         subscription_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get subscriptions from sites.
@@ -11058,15 +11073,15 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         subscription_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property subscriptions in sites.
@@ -11136,14 +11151,14 @@ class SharePointDataSource:
         site_id: str,
         list_id: str,
         subscription_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action reauthorize.
@@ -11214,16 +11229,16 @@ class SharePointDataSource:
         site_id: str,
         itemActivityStat_id: str,
         itemActivity_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get driveItem from sites.
@@ -11295,14 +11310,14 @@ class SharePointDataSource:
         itemActivityStat_id: str,
         itemActivity_id: str,
         dollar_format: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get content for the navigation property driveItem from sites.
@@ -11372,15 +11387,15 @@ class SharePointDataSource:
         site_id: str,
         itemActivityStat_id: str,
         itemActivity_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update content for the navigation property driveItem in sites.
@@ -11448,16 +11463,16 @@ class SharePointDataSource:
     async def sites_get_drive(
         self,
         site_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get drive from sites.
@@ -11524,17 +11539,17 @@ class SharePointDataSource:
     async def sites_list_drives(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get drives from sites.
@@ -11603,16 +11618,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get drive from sites.
@@ -11681,17 +11696,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get drives from sites.
@@ -11763,15 +11778,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to pages for sites.
@@ -11839,17 +11854,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get pages from sites.
@@ -11918,15 +11933,15 @@ class SharePointDataSource:
     async def sites_create_pages(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create a page in the site pages list of a site.
@@ -11992,17 +12007,17 @@ class SharePointDataSource:
     async def sites_list_pages(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List baseSitePages.
@@ -12070,17 +12085,17 @@ class SharePointDataSource:
     async def sites_list_pages_as_site_page(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get SitePage.
@@ -12150,14 +12165,14 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete baseSitePage.
@@ -12225,16 +12240,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get baseSitePage.
@@ -12303,15 +12318,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property pages in sites.
@@ -12379,15 +12394,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update property mailboxSettings value..
@@ -12455,17 +12470,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get serviceProvisioningErrors property value.
@@ -12535,16 +12550,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get SitePage.
@@ -12614,14 +12629,14 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property canvasLayout for sites.
@@ -12689,16 +12704,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get canvasLayout from sites.
@@ -12767,15 +12782,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property canvasLayout in sites.
@@ -12843,15 +12858,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to horizontalSections for sites.
@@ -12919,17 +12934,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get horizontalSections from sites.
@@ -13001,14 +13016,14 @@ class SharePointDataSource:
         baseSitePage_id: str,
         horizontalSection_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property horizontalSections for sites.
@@ -13078,16 +13093,16 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         horizontalSection_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get horizontalSections from sites.
@@ -13158,15 +13173,15 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         horizontalSection_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property horizontalSections in sites.
@@ -13236,15 +13251,15 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         horizontalSection_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to columns for sites.
@@ -13314,17 +13329,17 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         horizontalSection_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columns from sites.
@@ -13398,14 +13413,14 @@ class SharePointDataSource:
         horizontalSection_id: str,
         horizontalSectionColumn_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property columns for sites.
@@ -13477,16 +13492,16 @@ class SharePointDataSource:
         baseSitePage_id: str,
         horizontalSection_id: str,
         horizontalSectionColumn_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columns from sites.
@@ -13559,15 +13574,15 @@ class SharePointDataSource:
         baseSitePage_id: str,
         horizontalSection_id: str,
         horizontalSectionColumn_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property columns in sites.
@@ -13639,15 +13654,15 @@ class SharePointDataSource:
         baseSitePage_id: str,
         horizontalSection_id: str,
         horizontalSectionColumn_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to webparts for sites.
@@ -13719,17 +13734,17 @@ class SharePointDataSource:
         baseSitePage_id: str,
         horizontalSection_id: str,
         horizontalSectionColumn_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get webparts from sites.
@@ -13805,14 +13820,14 @@ class SharePointDataSource:
         horizontalSectionColumn_id: str,
         webPart_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property webparts for sites.
@@ -13886,16 +13901,16 @@ class SharePointDataSource:
         horizontalSection_id: str,
         horizontalSectionColumn_id: str,
         webPart_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get webparts from sites.
@@ -13970,15 +13985,15 @@ class SharePointDataSource:
         horizontalSection_id: str,
         horizontalSectionColumn_id: str,
         webPart_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property webparts in sites.
@@ -14052,14 +14067,14 @@ class SharePointDataSource:
         horizontalSection_id: str,
         horizontalSectionColumn_id: str,
         webPart_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action getPositionOfWebPart.
@@ -14130,14 +14145,14 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property verticalSection for sites.
@@ -14205,16 +14220,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get verticalSection from sites.
@@ -14283,15 +14298,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property verticalSection in sites.
@@ -14359,15 +14374,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to webparts for sites.
@@ -14435,17 +14450,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get webparts from sites.
@@ -14517,14 +14532,14 @@ class SharePointDataSource:
         baseSitePage_id: str,
         webPart_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property webparts for sites.
@@ -14594,16 +14609,16 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         webPart_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get webparts from sites.
@@ -14674,15 +14689,15 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         webPart_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property webparts in sites.
@@ -14752,14 +14767,14 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         webPart_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action getPositionOfWebPart.
@@ -14827,15 +14842,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update property mailboxSettings value..
@@ -14903,17 +14918,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get serviceProvisioningErrors property value.
@@ -14983,15 +14998,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update property mailboxSettings value..
@@ -15059,17 +15074,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get serviceProvisioningErrors property value.
@@ -15139,15 +15154,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to webParts for sites.
@@ -15215,17 +15230,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get webParts from sites.
@@ -15297,14 +15312,14 @@ class SharePointDataSource:
         baseSitePage_id: str,
         webPart_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete webPart.
@@ -15374,16 +15389,16 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         webPart_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get webParts from sites.
@@ -15454,15 +15469,15 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         webPart_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property webParts in sites.
@@ -15532,14 +15547,14 @@ class SharePointDataSource:
         site_id: str,
         baseSitePage_id: str,
         webPart_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action getPositionOfWebPart.
@@ -15607,15 +15622,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update property mailboxSettings value..
@@ -15683,17 +15698,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         baseSitePage_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get serviceProvisioningErrors property value.
@@ -15764,15 +15779,15 @@ class SharePointDataSource:
     async def sites_create_content_types(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create a content type.
@@ -15838,17 +15853,17 @@ class SharePointDataSource:
     async def sites_list_content_types(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List contentTypes in a site.
@@ -15916,15 +15931,15 @@ class SharePointDataSource:
     async def sites_site_content_types_add_copy(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action addCopy.
@@ -15990,15 +16005,15 @@ class SharePointDataSource:
     async def sites_site_content_types_add_copy_from_content_type_hub(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action addCopyFromContentTypeHub.
@@ -16064,17 +16079,17 @@ class SharePointDataSource:
     async def sites_site_content_types_get_compatible_hub_content_types(
         self,
         site_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function getCompatibleHubContentTypes.
@@ -16144,14 +16159,14 @@ class SharePointDataSource:
         site_id: str,
         contentType_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete contentType.
@@ -16219,16 +16234,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get contentType.
@@ -16297,15 +16312,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update contentType.
@@ -16373,15 +16388,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action associateWithHubSites.
@@ -16449,16 +16464,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get base from sites.
@@ -16527,17 +16542,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get baseTypes from sites.
@@ -16608,16 +16623,16 @@ class SharePointDataSource:
         site_id: str,
         contentType_id: str,
         contentType_id1: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get baseTypes from sites.
@@ -16687,15 +16702,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to columnLinks for sites.
@@ -16763,17 +16778,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columnLinks from sites.
@@ -16845,14 +16860,14 @@ class SharePointDataSource:
         contentType_id: str,
         columnLink_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property columnLinks for sites.
@@ -16922,16 +16937,16 @@ class SharePointDataSource:
         site_id: str,
         contentType_id: str,
         columnLink_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columnLinks from sites.
@@ -17002,15 +17017,15 @@ class SharePointDataSource:
         site_id: str,
         contentType_id: str,
         columnLink_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property columnLinks in sites.
@@ -17079,17 +17094,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columnPositions from sites.
@@ -17160,16 +17175,16 @@ class SharePointDataSource:
         site_id: str,
         contentType_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columnPositions from sites.
@@ -17239,15 +17254,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create a columnDefinition in a content type.
@@ -17315,17 +17330,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List columnDefinitions in a content type.
@@ -17397,14 +17412,14 @@ class SharePointDataSource:
         contentType_id: str,
         columnDefinition_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete columnDefinition.
@@ -17474,16 +17489,16 @@ class SharePointDataSource:
         site_id: str,
         contentType_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columnDefinition.
@@ -17554,15 +17569,15 @@ class SharePointDataSource:
         site_id: str,
         contentType_id: str,
         columnDefinition_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update columnDefinition.
@@ -17632,16 +17647,16 @@ class SharePointDataSource:
         site_id: str,
         contentType_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get sourceColumn from sites.
@@ -17711,15 +17726,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action copyToDefaultContentLocation.
@@ -17787,14 +17802,14 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke function isPublished.
@@ -17861,14 +17876,14 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action publish.
@@ -17935,14 +17950,14 @@ class SharePointDataSource:
         self,
         site_id: str,
         contentType_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action unpublish.
@@ -18009,15 +18024,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to contentTypes for sites.
@@ -18085,17 +18100,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get contentTypes from sites.
@@ -18166,15 +18181,15 @@ class SharePointDataSource:
     async def sites_create_columns(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create a columnDefinition in a site.
@@ -18240,17 +18255,17 @@ class SharePointDataSource:
     async def sites_list_columns(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List columns in a site.
@@ -18320,14 +18335,14 @@ class SharePointDataSource:
         site_id: str,
         columnDefinition_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property columns for sites.
@@ -18395,16 +18410,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columns from sites.
@@ -18473,15 +18488,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         columnDefinition_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property columns in sites.
@@ -18549,16 +18564,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get sourceColumn from sites.
@@ -18626,17 +18641,17 @@ class SharePointDataSource:
     async def sites_list_external_columns(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get externalColumns from sites.
@@ -18705,16 +18720,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         columnDefinition_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get externalColumns from sites.
@@ -18783,15 +18798,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to columns for sites.
@@ -18859,17 +18874,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get columns from sites.
@@ -18939,17 +18954,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get externalColumns from sites.
@@ -19021,15 +19036,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to permissions for sites.
@@ -19097,17 +19112,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get permissions from sites.
@@ -19176,15 +19191,15 @@ class SharePointDataSource:
     async def sites_create_permissions(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create permission.
@@ -19250,17 +19265,17 @@ class SharePointDataSource:
     async def sites_list_permissions(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List permissions.
@@ -19330,14 +19345,14 @@ class SharePointDataSource:
         site_id: str,
         permission_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete permission.
@@ -19405,16 +19420,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         permission_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get permission.
@@ -19483,15 +19498,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         permission_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update permission.
@@ -19559,15 +19574,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         permission_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Invoke action grant.
@@ -19637,14 +19652,14 @@ class SharePointDataSource:
         self,
         site_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property analytics for sites.
@@ -19710,16 +19725,16 @@ class SharePointDataSource:
     async def sites_get_analytics(
         self,
         site_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get analytics from sites.
@@ -19786,15 +19801,15 @@ class SharePointDataSource:
     async def sites_update_analytics(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property analytics in sites.
@@ -19860,16 +19875,16 @@ class SharePointDataSource:
     async def sites_analytics_get_all_time(
         self,
         site_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get allTime from sites.
@@ -19936,15 +19951,15 @@ class SharePointDataSource:
     async def sites_analytics_create_item_activity_stats(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to itemActivityStats for sites.
@@ -20010,17 +20025,17 @@ class SharePointDataSource:
     async def sites_analytics_list_item_activity_stats(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get itemActivityStats from sites.
@@ -20090,14 +20105,14 @@ class SharePointDataSource:
         site_id: str,
         itemActivityStat_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property itemActivityStats for sites.
@@ -20165,16 +20180,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         itemActivityStat_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get itemActivityStats from sites.
@@ -20243,15 +20258,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         itemActivityStat_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property itemActivityStats in sites.
@@ -20319,15 +20334,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         itemActivityStat_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to activities for sites.
@@ -20395,17 +20410,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         itemActivityStat_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get activities from sites.
@@ -20477,14 +20492,14 @@ class SharePointDataSource:
         itemActivityStat_id: str,
         itemActivity_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property activities for sites.
@@ -20554,16 +20569,16 @@ class SharePointDataSource:
         site_id: str,
         itemActivityStat_id: str,
         itemActivity_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get activities from sites.
@@ -20634,15 +20649,15 @@ class SharePointDataSource:
         site_id: str,
         itemActivityStat_id: str,
         itemActivity_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property activities in sites.
@@ -20710,16 +20725,16 @@ class SharePointDataSource:
     async def sites_analytics_get_last_seven_days(
         self,
         site_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get lastSevenDays from sites.
@@ -20788,14 +20803,14 @@ class SharePointDataSource:
         site_id: str,
         path: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property analytics for sites.
@@ -20863,16 +20878,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get analytics from sites.
@@ -20941,15 +20956,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property analytics in sites.
@@ -21019,15 +21034,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to operations for sites.
@@ -21095,17 +21110,17 @@ class SharePointDataSource:
         self,
         site_id: str,
         path: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get operations from sites.
@@ -21174,15 +21189,15 @@ class SharePointDataSource:
     async def sites_create_operations(
         self,
         site_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Create new navigation property to operations for sites.
@@ -21248,17 +21263,17 @@ class SharePointDataSource:
     async def sites_list_operations(
         self,
         site_id: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_orderby: Optional[list[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """List operations on a site.
@@ -21328,14 +21343,14 @@ class SharePointDataSource:
         site_id: str,
         richLongRunningOperation_id: str,
         If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Delete navigation property operations for sites.
@@ -21403,16 +21418,16 @@ class SharePointDataSource:
         self,
         site_id: str,
         richLongRunningOperation_id: str,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        dollar_select: Optional[list[str]] = None,
+        dollar_expand: Optional[list[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Get richLongRunningOperation.
@@ -21481,15 +21496,15 @@ class SharePointDataSource:
         self,
         site_id: str,
         richLongRunningOperation_id: str,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
+        select: Optional[list[str]] = None,
+        expand: Optional[list[str]] = None,
         filter: Optional[str] = None,
         orderby: Optional[str] = None,
         search: Optional[str] = None,
         top: Optional[int] = None,
         skip: Optional[int] = None,
         request_body: Optional[Mapping[str, Any]] = None,
-        headers: Optional[Dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
         **kwargs
     ) -> SharePointResponse:
         """Update the navigation property operations in sites.
