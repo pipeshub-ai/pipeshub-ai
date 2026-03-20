@@ -1,7 +1,7 @@
 name: Integration Tests
 
 on:
-  pull_request:
+  pull_request_target:
     branches:
       - 'main'
   workflow_dispatch:
@@ -28,6 +28,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Build and start services
         working-directory: deployment/docker-compose
