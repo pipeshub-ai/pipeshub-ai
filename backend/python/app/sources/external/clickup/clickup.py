@@ -8,6 +8,7 @@ All methods have explicit parameter signatures.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from app.sources.client.clickup.clickup import ClickUpClient, ClickUpResponse
@@ -15,6 +16,12 @@ from app.sources.client.http.http_request import HTTPRequest
 
 # HTTP status code constant
 HTTP_ERROR_THRESHOLD = 400
+
+# Docs API v3 base URL (Docs endpoints use v3 only; tasks/spaces/lists stay on v2)
+CLICKUP_V3_BASE = "https://api.clickup.com/api/v3"
+
+# ClickUp priority: 1=Urgent, 2=High, 3=Normal, 4=Low, -1=No priority (0 is invalid)
+VALID_PRIORITIES = (1, 2, 3, 4, -1)
 
 
 class ClickUpDataSource:
@@ -554,7 +561,7 @@ class ClickUpDataSource:
             body['due_date'] = due_date
         if due_date_time is not None:
             body['due_date_time'] = due_date_time
-        if priority is not None:
+        if priority is not None and priority in VALID_PRIORITIES:
             body['priority'] = priority
         if assignee is not None:
             body['assignee'] = assignee
@@ -653,7 +660,7 @@ class ClickUpDataSource:
             body['due_date'] = due_date
         if due_date_time is not None:
             body['due_date_time'] = due_date_time
-        if priority is not None:
+        if priority is not None and priority in VALID_PRIORITIES:
             body['priority'] = priority
         if assignee is not None:
             body['assignee'] = assignee
@@ -747,7 +754,7 @@ class ClickUpDataSource:
             body['due_date'] = due_date
         if due_date_time is not None:
             body['due_date_time'] = due_date_time
-        if priority is not None:
+        if priority is not None and priority in VALID_PRIORITIES:
             body['priority'] = priority
         if assignee_add is not None:
             body['assignee_add'] = assignee_add
@@ -850,7 +857,8 @@ class ClickUpDataSource:
         Returns:
             ClickUpResponse with operation result
         """
-        query_params: dict[str, Any] = {}
+        # HTTPRequest.query expects dict[str, str]; flatten list params to comma-separated strings
+        query_params: dict[str, str] = {}
         if archived is not None:
             query_params['archived'] = str(archived).lower()
         if include_markdown_description is not None:
@@ -864,13 +872,13 @@ class ClickUpDataSource:
         if subtasks is not None:
             query_params['subtasks'] = str(subtasks).lower()
         if statuses is not None:
-            query_params['statuses[]'] = statuses
+            query_params['statuses[]'] = ','.join(str(s) for s in statuses)
         if include_closed is not None:
             query_params['include_closed'] = str(include_closed).lower()
         if assignees is not None:
-            query_params['assignees[]'] = assignees
+            query_params['assignees[]'] = ','.join(str(a) for a in assignees)
         if tags is not None:
-            query_params['tags[]'] = tags
+            query_params['tags[]'] = ','.join(str(t) for t in tags)
         if due_date_gt is not None:
             query_params['due_date_gt'] = str(due_date_gt)
         if due_date_lt is not None:
@@ -884,7 +892,7 @@ class ClickUpDataSource:
         if date_updated_lt is not None:
             query_params['date_updated_lt'] = str(date_updated_lt)
         if custom_fields is not None:
-            query_params['custom_fields[]'] = custom_fields
+            query_params['custom_fields[]'] = json.dumps(custom_fields)
 
         url = self.base_url + "/list/{list_id}/task".format(list_id=list_id)
 
@@ -956,25 +964,25 @@ class ClickUpDataSource:
 
         body: dict[str, Any] = {}
         body['name'] = name
-        if description is not None:
+        if description is not None and description != "":
             body['description'] = description
-        if markdown_description is not None:
+        if markdown_description is not None and markdown_description != "":
             body['markdown_description'] = markdown_description
         if assignees is not None:
             body['assignees'] = assignees
         if tags is not None:
             body['tags'] = tags
-        if status is not None:
+        if status is not None and status != "":
             body['status'] = status
-        if priority is not None:
+        if priority is not None and priority in VALID_PRIORITIES:
             body['priority'] = priority
-        if due_date is not None:
+        if due_date is not None and due_date != 0:
             body['due_date'] = due_date
         if due_date_time is not None:
             body['due_date_time'] = due_date_time
-        if time_estimate is not None:
+        if time_estimate is not None and time_estimate != 0:
             body['time_estimate'] = time_estimate
-        if start_date is not None:
+        if start_date is not None and start_date != 0:
             body['start_date'] = start_date
         if start_date_time is not None:
             body['start_date_time'] = start_date_time
@@ -1108,30 +1116,33 @@ class ClickUpDataSource:
         url = self.base_url + "/task/{task_id}".format(task_id=task_id)
 
         body: dict[str, Any] = {}
-        if name is not None:
+        if name is not None and name != "":
             body['name'] = name
-        if description is not None:
+        if description is not None and description != "":
             body['description'] = description
-        if markdown_description is not None:
+        if markdown_description is not None and markdown_description != "":
             body['markdown_description'] = markdown_description
-        if status is not None:
+        if status is not None and status != "":
             body['status'] = status
-        if priority is not None:
+        if priority is not None and priority in VALID_PRIORITIES:
             body['priority'] = priority
-        if due_date is not None:
+        if due_date is not None and due_date != 0:
             body['due_date'] = due_date
         if due_date_time is not None:
             body['due_date_time'] = due_date_time
-        if time_estimate is not None:
+        if time_estimate is not None and time_estimate != 0:
             body['time_estimate'] = time_estimate
-        if start_date is not None:
+        if start_date is not None and start_date != 0:
             body['start_date'] = start_date
         if start_date_time is not None:
             body['start_date_time'] = start_date_time
-        if assignees_add is not None:
-            body['assignees_add'] = assignees_add
-        if assignees_rem is not None:
-            body['assignees_rem'] = assignees_rem
+        assignees_obj: dict[str, Any] = {}
+        if assignees_add is not None and len(assignees_add) > 0:
+            assignees_obj['add'] = assignees_add
+        if assignees_rem is not None and len(assignees_rem) > 0:
+            assignees_obj['rem'] = assignees_rem
+        if assignees_obj:
+            body['assignees'] = assignees_obj
         if archived is not None:
             body['archived'] = archived
 
@@ -1215,7 +1226,8 @@ class ClickUpDataSource:
         date_updated_lt: int | None = None,
         space_ids: list[str] | None = None,
         project_ids: list[str] | None = None,
-        list_ids: list[str] | None = None
+        list_ids: list[str] | None = None,
+        custom_fields: list[dict[str, Any]] | None = None,
     ) -> ClickUpResponse:
         """Get filtered Tasks across an entire Workspace (API v2)
 
@@ -1238,45 +1250,49 @@ class ClickUpDataSource:
             space_ids: Filter by Space IDs
             project_ids: Filter by project (Folder) IDs
             list_ids: Filter by List IDs
+            custom_fields: Filter by custom field values (e.g. [{"field_id": "abc", "operator": "=", "value": "foo"}])
 
         Returns:
             ClickUpResponse with operation result
         """
-        query_params: dict[str, Any] = {}
+        # Build query as list of (key, value) pairs; array params use bracket keys (e.g. assignees[]=1&assignees[]=2) so API parses as arrays
+        query_pairs: list[tuple[str, str]] = []
         if page is not None:
-            query_params['page'] = str(page)
+            query_pairs.append(("page", str(page)))
         if order_by is not None:
-            query_params['order_by'] = order_by
+            query_pairs.append(("order_by", order_by))
         if reverse is not None:
-            query_params['reverse'] = str(reverse).lower()
+            query_pairs.append(("reverse", str(reverse).lower()))
         if subtasks is not None:
-            query_params['subtasks'] = str(subtasks).lower()
+            query_pairs.append(("subtasks", str(subtasks).lower()))
         if statuses is not None:
-            query_params['statuses[]'] = statuses
+            query_pairs.extend(("statuses[]", str(s)) for s in statuses)
         if include_closed is not None:
-            query_params['include_closed'] = str(include_closed).lower()
+            query_pairs.append(("include_closed", str(include_closed).lower()))
         if assignees is not None:
-            query_params['assignees[]'] = assignees
+            query_pairs.extend(("assignees[]", str(a)) for a in assignees)
         if tags is not None:
-            query_params['tags[]'] = tags
+            query_pairs.extend(("tags[]", str(t)) for t in tags)
         if due_date_gt is not None:
-            query_params['due_date_gt'] = str(due_date_gt)
+            query_pairs.append(("due_date_gt", str(due_date_gt)))
         if due_date_lt is not None:
-            query_params['due_date_lt'] = str(due_date_lt)
+            query_pairs.append(("due_date_lt", str(due_date_lt)))
         if date_created_gt is not None:
-            query_params['date_created_gt'] = str(date_created_gt)
+            query_pairs.append(("date_created_gt", str(date_created_gt)))
         if date_created_lt is not None:
-            query_params['date_created_lt'] = str(date_created_lt)
+            query_pairs.append(("date_created_lt", str(date_created_lt)))
         if date_updated_gt is not None:
-            query_params['date_updated_gt'] = str(date_updated_gt)
+            query_pairs.append(("date_updated_gt", str(date_updated_gt)))
         if date_updated_lt is not None:
-            query_params['date_updated_lt'] = str(date_updated_lt)
+            query_pairs.append(("date_updated_lt", str(date_updated_lt)))
         if space_ids is not None:
-            query_params['space_ids[]'] = space_ids
+            query_pairs.extend(("space_ids[]", str(s)) for s in space_ids)
         if project_ids is not None:
-            query_params['project_ids[]'] = project_ids
+            query_pairs.extend(("project_ids[]", str(p)) for p in project_ids)
         if list_ids is not None:
-            query_params['list_ids[]'] = list_ids
+            query_pairs.extend(("list_ids[]", str(lid)) for lid in list_ids)
+        if custom_fields is not None:
+            query_pairs.append(("custom_fields[]", json.dumps(custom_fields)))
 
         url = self.base_url + "/team/{team_id}/task".format(team_id=team_id)
 
@@ -1285,7 +1301,7 @@ class ClickUpDataSource:
                 method="GET",
                 url=url,
                 headers={"Content-Type": "application/json"},
-                query=query_params,
+                query=query_pairs,
             )
             response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
             response_data = response.json() if response.text() else None
@@ -1402,6 +1418,51 @@ class ClickUpDataSource:
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_task_comment")
+
+    async def create_task_comment_reply(
+        self,
+        comment_id: str,
+        comment_text: str,
+        *,
+        assignee: int | None = None,
+        notify_all: bool | None = None,
+    ) -> ClickUpResponse:
+        """Create a reply to a comment (threaded comment) (API v2)
+
+        Args:
+            comment_id: The parent comment ID to reply to
+            comment_text: The reply text (plain text)
+            assignee: Assign the reply to a user ID
+            notify_all: Notify all assignees
+
+        Returns:
+            ClickUpResponse with operation result
+        """
+        url = self.base_url + "/comment/{comment_id}/reply".format(comment_id=comment_id)
+
+        body: dict[str, Any] = {}
+        body['comment_text'] = comment_text
+        if assignee is not None:
+            body['assignee'] = assignee
+        if notify_all is not None:
+            body['notify_all'] = notify_all
+
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ClickUpResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed create_task_comment_reply" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_task_comment_reply")
 
     async def get_list_comments(
         self,
@@ -1563,6 +1624,36 @@ class ClickUpDataSource:
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_comment")
+
+    async def get_comment_replies(
+        self,
+        comment_id: str
+    ) -> ClickUpResponse:
+        """Get replies to a comment (threaded comments, API v2)
+
+        Args:
+            comment_id: The Comment ID (parent comment). Get from get_task_comments or get_list_comments.
+
+        Returns:
+            ClickUpResponse with operation result (replies only; parent comment not included)
+        """
+        url = self.base_url + "/comment/{comment_id}/reply".format(comment_id=comment_id)
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ClickUpResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed get_comment_replies" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_comment_replies")
 
     async def get_task_members(
         self,
@@ -2212,6 +2303,78 @@ class ClickUpDataSource:
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_team_views")
 
+    async def create_team_view(
+        self,
+        team_id: str,
+        *,
+        name: str,
+        view_type: str = "list",
+        search: str | None = None,
+        show_closed: bool = True,
+    ) -> ClickUpResponse:
+        """Create a View at Workspace (Everything) level (API v2).
+
+        Used for keyword search: set search to filter tasks by name/description/custom field text.
+
+        Args:
+            team_id: The Workspace (Team) ID
+            name: Display name for the view
+            view_type: View type (list, board, calendar, table, etc.); default list
+            search: Optional search string for task name/description/custom fields
+            show_closed: Include closed (completed) tasks in the view; default True so completed tasks appear in search
+
+        Returns:
+            ClickUpResponse with data containing view (including view.id)
+        """
+        url = self.base_url + "/team/{team_id}/view".format(team_id=team_id)
+        body: dict[str, Any] = {
+            "name": name,
+            "type": view_type,
+            "grouping": {"field": "status", "dir": 1, "collapsed": [], "ignore": False},
+            "divide": {"field": None, "dir": None, "collapsed": []},
+            "sorting": {"fields": []},
+            "filters": {
+                "op": "AND",
+                "fields": [],
+                "search": search or "",
+                "show_closed": show_closed,
+            },
+            "columns": {"fields": []},
+            "team_sidebar": {
+                "assignees": [],
+                "assigned_comments": False,
+                "unassigned_tasks": False,
+            },
+            "settings": {
+                "show_task_locations": False,
+                "show_subtasks": 3,
+                "show_subtask_parent_names": False,
+                "show_closed_subtasks": False,
+                "show_assignees": True,
+                "show_images": True,
+                "collapse_empty_columns": None,
+                "me_comments": True,
+                "me_subtasks": True,
+                "me_checklists": True,
+            },
+        }
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ClickUpResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed create_team_view" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}",
+            )
+        except Exception as e:
+            return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_team_view")
+
     async def get_space_views(
         self,
         space_id: str
@@ -2368,6 +2531,32 @@ class ClickUpDataSource:
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_view_tasks")
+
+    async def delete_view(self, view_id: str) -> ClickUpResponse:
+        """Delete a View (API v2).
+
+        Args:
+            view_id: The View ID
+
+        Returns:
+            ClickUpResponse; 200 with empty body on success
+        """
+        url = self.base_url + "/view/{view_id}".format(view_id=view_id)
+        try:
+            request = HTTPRequest(
+                method="DELETE",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ClickUpResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed delete_view" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}",
+            )
+        except Exception as e:
+            return ClickUpResponse(success=False, error=str(e), message="Failed to execute delete_view")
 
     async def get_accessible_custom_fields(
         self,
@@ -3141,3 +3330,279 @@ class ClickUpDataSource:
             )
         except Exception as e:
             return ClickUpResponse(success=False, error=str(e), message="Failed to execute remove_guest_from_workspace")
+
+    # -------------------------------------------------------------------------
+    # Docs (API v3) - workspace docs, doc pages, single page details
+    # -------------------------------------------------------------------------
+
+    async def get_workspace_docs(
+        self,
+        workspace_id: str,
+        *,
+        creator: int | None = None,
+        parent_id: str | None = None,
+        parent_type: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> ClickUpResponse:
+        """List docs in a Workspace (API v3).
+
+        Args:
+            workspace_id: The Workspace ID (same as team id from get_authorized_teams_workspaces).
+            creator: Filter to docs created by the user with the given user ID (e.g. "my docs").
+            parent_id: Filter to children of a parent Doc with the given parent Doc ID.
+            parent_type: Filter by parent type: SPACE, FOLDER, LIST, EVERYTHING, WORKSPACE.
+            limit: Max results per page (10–100, default 50).
+            cursor: Cursor for the next page of results.
+
+        Returns:
+            ClickUpResponse with operation result (list of docs).
+        """
+        url = f"{CLICKUP_V3_BASE}/workspaces/{workspace_id}/docs"
+        query_params: dict[str, str] = {}
+        if creator is not None:
+            query_params["creator"] = str(creator)
+        if parent_id is not None:
+            query_params["parent_id"] = parent_id
+        if parent_type is not None:
+            query_params["parent_type"] = parent_type
+        if limit is not None:
+            query_params["limit"] = str(limit)
+        if cursor is not None:
+            query_params["cursor"] = cursor
+
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                query=query_params,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ClickUpResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed get_workspace_docs" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}",
+            )
+        except Exception as e:
+            return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_workspace_docs")
+
+    async def get_doc_pages(
+        self,
+        workspace_id: str,
+        doc_id: str,
+    ) -> ClickUpResponse:
+        """List pages in a Doc (API v3).
+
+        Args:
+            workspace_id: The Workspace ID.
+            doc_id: The Doc ID (from get_workspace_docs).
+
+        Returns:
+            ClickUpResponse with operation result (list or tree of pages).
+        """
+        url = f"{CLICKUP_V3_BASE}/workspaces/{workspace_id}/docs/{doc_id}/pages"
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ClickUpResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed get_doc_pages" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}",
+            )
+        except Exception as e:
+            return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_doc_pages")
+
+    async def get_doc_page(
+        self,
+        workspace_id: str,
+        doc_id: str,
+        page_id: str,
+    ) -> ClickUpResponse:
+        """Get full details of a single page in a Doc (API v3).
+
+        Args:
+            workspace_id: The Workspace ID.
+            doc_id: The Doc ID (from get_workspace_docs).
+            page_id: The Page ID (from get_doc_pages).
+
+        Returns:
+            ClickUpResponse with operation result (page details).
+        """
+        url = f"{CLICKUP_V3_BASE}/workspaces/{workspace_id}/docs/{doc_id}/pages/{page_id}"
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ClickUpResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed get_doc_page" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}",
+            )
+        except Exception as e:
+            return ClickUpResponse(success=False, error=str(e), message="Failed to execute get_doc_page")
+
+    async def create_doc(
+        self,
+        workspace_id: str,
+        *,
+        name: str = "",
+        parent: dict[str, Any] | None = None,
+        visibility: str | int | None = None,
+        create_page: bool = True,
+    ) -> ClickUpResponse:
+        """Create a Doc in a Workspace (API v3).
+
+        Args:
+            workspace_id: The Workspace ID (same as team id from get_authorized_teams_workspaces).
+            name: The name of the new Doc.
+            parent: The parent of the new Doc. Object with id (string) and type (int).
+                type: 4=Space, 5=Folder, 6=List, 7=Everything, 12=Workspace.
+            visibility: Visibility of the Doc. PUBLIC, PRIVATE, PERSONAL, or HIDDEN (or 1, 2, 3, 4).
+            create_page: Create a new page when creating the Doc.
+
+        Returns:
+            ClickUpResponse with operation result (created doc).
+        """
+        url = f"{CLICKUP_V3_BASE}/workspaces/{workspace_id}/docs"
+        body: dict[str, Any] = {
+            "name": name,
+            "create_page": create_page,
+        }
+        if parent is not None:
+            body["parent"] = parent
+        if visibility is not None:
+            body["visibility"] = visibility
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ClickUpResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed create_doc" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}",
+            )
+        except Exception as e:
+            return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_doc")
+
+    async def create_doc_page(
+        self,
+        workspace_id: str,
+        doc_id: str,
+        *,
+        parent_page_id: str | None = None,
+        name: str = "",
+        sub_title: str | None = None,
+        content: str = "",
+        content_format: str = "text/md",
+    ) -> ClickUpResponse:
+        """Create a page in a Doc (API v3).
+
+        Args:
+            workspace_id: The Workspace ID.
+            doc_id: The Doc ID (from get_workspace_docs).
+            parent_page_id: The ID of the parent page. Omit for a root page in the Doc.
+            name: The name of the new page.
+            sub_title: The subtitle of the new page.
+            content: The content of the new page.
+            content_format: Format of the content. text/md (markdown) or text/plain.
+
+        Returns:
+            ClickUpResponse with operation result (created page).
+        """
+        url = f"{CLICKUP_V3_BASE}/workspaces/{workspace_id}/docs/{doc_id}/pages"
+        body: dict[str, Any] = {
+            "name": name,
+            "content": content,
+            "content_format": content_format,
+        }
+        if parent_page_id is not None:
+            body["parent_page_id"] = parent_page_id
+        if sub_title is not None:
+            body["sub_title"] = sub_title
+        try:
+            request = HTTPRequest(
+                method="POST",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ClickUpResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed create_doc_page" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}",
+            )
+        except Exception as e:
+            return ClickUpResponse(success=False, error=str(e), message="Failed to execute create_doc_page")
+
+    async def update_doc_page(
+        self,
+        workspace_id: str,
+        doc_id: str,
+        page_id: str,
+        *,
+        name: str | None = None,
+        sub_title: str | None = None,
+        content: str | None = None,
+        content_edit_mode: str = "replace",
+        content_format: str = "text/md",
+    ) -> ClickUpResponse:
+        """Edit/update a page in a Doc (API v3).
+
+        Args:
+            workspace_id: The Workspace ID.
+            doc_id: The Doc ID (from get_workspace_docs).
+            page_id: The Page ID (from get_doc_pages).
+            name: The updated name of the page.
+            sub_title: The updated subtitle of the page.
+            content: The updated content of the page.
+            content_edit_mode: Strategy for updating content: replace (default), append, or prepend.
+            content_format: Format of the content. text/md (markdown) or text/plain.
+
+        Returns:
+            ClickUpResponse with operation result.
+        """
+        url = f"{CLICKUP_V3_BASE}/workspaces/{workspace_id}/docs/{doc_id}/pages/{page_id}"
+        body: dict[str, Any] = {
+            "content_edit_mode": content_edit_mode,
+            "content_format": content_format,
+        }
+        if name is not None:
+            body["name"] = name
+        if sub_title is not None:
+            body["sub_title"] = sub_title
+        if content is not None:
+            body["content"] = content
+        try:
+            request = HTTPRequest(
+                method="PUT",
+                url=url,
+                headers={"Content-Type": "application/json"},
+                body=body,
+            )
+            response = await self.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            response_data = response.json() if response.text() else None
+            return ClickUpResponse(
+                success=response.status < HTTP_ERROR_THRESHOLD,
+                data=response_data,
+                message="Successfully executed update_doc_page" if response.status < HTTP_ERROR_THRESHOLD else f"Failed with status {response.status}",
+            )
+        except Exception as e:
+            return ClickUpResponse(success=False, error=str(e), message="Failed to execute update_doc_page")

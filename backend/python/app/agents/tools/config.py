@@ -88,6 +88,10 @@ class ToolDiscoveryConfig:
             app_name="notion",
             client_builder="NotionClient",
         ),
+        "clickup": AppConfiguration(
+            app_name="clickup",
+            client_builder="ClickUpClient",
+        ),
         # Simple utility apps
         "calculator": AppConfiguration(
             app_name="calculator",

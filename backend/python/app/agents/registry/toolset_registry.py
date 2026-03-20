@@ -391,6 +391,7 @@ class ToolsetRegistry:
             'app.agents.actions.slack.slack',
             'app.agents.actions.jira.jira',
             'app.agents.actions.confluence.confluence',
+            'app.agents.actions.clickup.clickup',
             'app.agents.actions.github.github',
             'app.agents.actions.mariadb.mariadb',
             # 'app.agents.actions.gitlab.gitlab',

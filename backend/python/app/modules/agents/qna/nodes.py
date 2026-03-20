@@ -2338,6 +2338,71 @@ GITHUB_GUIDANCE = r"""
 
 """
 
+CLICKUP_GUIDANCE = r"""
+## ClickUp Tools
+
+### Available Tools
+- get_authorized_user — current authenticated user (id, name, email)
+- get_authorized_teams_workspaces — all workspaces (team_id, name) and team members
+- get_spaces — spaces in a workspace
+- get_folders — folders in a space
+- get_lists — lists in a folder
+- get_folderless_lists — lists directly in a space (no folder)
+- get_tasks — filter/search tasks across workspace, space, folder, or list
+- get_task — full details of a single task
+- search_tasks — find tasks by keyword (name, description, custom field text)
+- create_task — create a new task in a list
+- update_task — update fields on an existing task
+- get_comments — comments on a task or replies to a comment
+- create_task_comment — add a comment or reply to a comment on a task
+- create_checklist — add a checklist to a task
+- create_checklist_item — add an item to a checklist
+- update_checklist_item — check/uncheck or rename a checklist item
+- get_workspace_docs — all docs in a workspace
+- get_doc_pages — pages in a doc
+- get_doc_page — full content of a single page
+- create_doc — create a new doc
+- create_doc_page — add a page to a doc
+- update_doc_page — edit content or title of a page
+- create_space — create a new space in a workspace
+- create_folder — create a new folder in a space
+- create_list — create a new list in a folder or folderless list in a space
+- update_list — rename or update settings of a list
+
+### Dependencies
+- get_spaces              depends on: get_authorized_teams_workspaces
+- get_folders             depends on: get_spaces
+- get_lists               depends on: get_folders
+- get_folderless_lists    depends on: get_spaces
+- get_tasks               depends on: get_authorized_teams_workspaces
+- get_task                depends on: get_tasks | search_tasks | create_task
+- search_tasks            depends on: get_authorized_teams_workspaces
+- create_task             depends on: get_lists | get_folderless_lists
+- update_task             depends on: get_tasks | search_tasks | create_task
+- get_comments            depends on: get_tasks | search_tasks
+- create_task_comment     depends on: get_tasks | search_tasks
+- create_checklist        depends on: get_tasks | search_tasks
+- create_checklist_item   depends on: create_checklist | get_task
+- update_checklist_item   depends on: create_checklist | get_task
+- get_workspace_docs      depends on: get_authorized_teams_workspaces
+- get_doc_pages           depends on: get_workspace_docs | create_doc
+- get_doc_page            depends on: get_doc_pages
+- create_doc              depends on: get_authorized_teams_workspaces
+- create_doc_page         depends on: get_workspace_docs | create_doc
+- update_doc_page         depends on: get_doc_pages | create_doc_page
+- create_space            depends on: get_authorized_teams_workspaces
+- create_folder           depends on: get_spaces
+- create_list             depends on: get_folders
+- update_list             depends on: get_lists | get_folderless_lists
+- get_workspace_members   depends on: get_authorized_teams_workspaces (use for all members of a workspace; not list-specific)
+
+### Critical Rules
+- team_id and workspace_id are the same value — from get_authorized_teams_workspaces
+- A space has two kinds of lists: folder lists (get_folders → get_lists) and folderless lists (get_folderless_lists). Both must be checked when searching all lists in a space.
+- **Task by name:** Call **search_tasks**(team_id, keyword) first to get task_id, then use it for get_task, update_task, create_task_comment, get_comments, create_checklist, create_checklist_item, update_checklist_item. Subtask: search_tasks → get_task for list_id → create_task(list_id, name, parent=task_id).
+- When creating a task as a subtask, pass the parent task_id in the parent field. The list_id must be the same list the parent task belongs to (get it from get_task(parent_id)).
+- Never fabricate IDs — always obtain team_id, space_id, folder_id, list_id, task_id, doc_id, page_id, checklist_id, checklist_item_id from a prior tool call or explicit user input.
+- get_authorized_user is the source for the current user's id — use it when the user says "me", "my tasks", or "assign to me".
 MARIADB_GUIDANCE = r"""
 ## MariaDB-Specific Guidance
 
@@ -2775,6 +2840,7 @@ Generate:
 {outlook_guidance}
 {teams_guidance}
 {github_guidance}
+{clickup_guidance}
 {mariadb_guidance}
 
 ## Planning Best Practices
@@ -3584,6 +3650,7 @@ async def planner_node(
     outlook_guidance = OUTLOOK_GUIDANCE if _has_outlook_tools(state) else ""
     teams_guidance = TEAMS_GUIDANCE if _has_teams_tools(state) else ""
     github_guidance = GITHUB_GUIDANCE if _has_github_tools(state) else ""
+    clickup_guidance = CLICKUP_GUIDANCE if _has_clickup_tools(state) else ""
     mariadb_guidance = MARIADB_GUIDANCE if _has_mariadb_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
@@ -3595,6 +3662,7 @@ async def planner_node(
         outlook_guidance=outlook_guidance,
         teams_guidance=teams_guidance,
         github_guidance=github_guidance,
+        clickup_guidance=clickup_guidance,
         mariadb_guidance=mariadb_guidance
     )
 
@@ -4643,6 +4711,12 @@ def _has_mariadb_tools(state: ChatState) -> bool:
     """Check if MariaDB tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "mariadb" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
+def _has_clickup_tools(state: ChatState) -> bool:
+    """Check if ClickUp tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "clickup" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
@@ -7765,6 +7839,8 @@ When you have internal knowledge from retrieval tools:
         _has_outlook_tools(state),
         _has_slack_tools(state),
         _has_teams_tools(state),
+        _has_github_tools(state),
+        _has_clickup_tools(state),
     ])
 
     if has_knowledge and has_service_tools:
@@ -7815,6 +7891,8 @@ Use this decision tree to choose the right approach:
     if _has_outlook_tools(state):
         base_prompt += "\n" + OUTLOOK_GUIDANCE
 
+    if _has_clickup_tools(state):
+        base_prompt += "\n" + CLICKUP_GUIDANCE
     if _has_mariadb_tools(state):
         base_prompt += "\n" + MARIADB_GUIDANCE
 

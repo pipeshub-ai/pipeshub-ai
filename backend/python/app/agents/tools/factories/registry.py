@@ -6,6 +6,7 @@ from typing import Optional
 
 from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.factories.base import ClientFactory
+from app.agents.tools.factories.clickup import ClickUpClientFactory
 from app.agents.tools.factories.confluence import ConfluenceClientFactory
 from app.agents.tools.factories.dropbox import DropboxClientFactory
 
@@ -131,6 +132,9 @@ class ClientFactoryRegistry:
 
             elif app_name == "notion":
                 cls.register(app_name, NotionClientFactory())
+
+            elif app_name == "clickup":
+                cls.register(app_name, ClickUpClientFactory())
 
             elif app_name == "microsoft":
                 # Register factories for Microsoft sub-services
