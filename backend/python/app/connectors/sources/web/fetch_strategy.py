@@ -1,15 +1,20 @@
 """
 Multi-strategy URL fetcher with fallback chain for the web connector.
 
-Fallback chain:
+Fallback chain (default):
   1. aiohttp (existing session, cheapest, already async)
   2. curl_cffi with HTTP/2 browser impersonation
   3. curl_cffi with HTTP/1.1 forced
   4. cloudscraper (JS challenge solver)
 
+Optional headless mode (opt-in per connector instance):
+  PlaywrightFetcher — headless Chromium via Playwright.
+  Recommended for JavaScript-heavy SPAs or Cloudflare-protected sites.
+
 Each strategy shares the same headers but uses different
 TLS fingerprints / impersonation profiles.
 """
+from __future__ import annotations
 
 import asyncio
 import contextlib
@@ -29,17 +34,6 @@ from app.config.constants.http_status_code import HttpStatusCode
 
 MAX_429_RETRIES = 3
 REQUEST_TIMEOUT = 15
-
-@dataclass
-class FetchResponse:
-    """Unified response from any fetch strategy."""
-
-    status_code: int
-    content_bytes: bytes
-    headers: dict
-    final_url: str
-    strategy: str
-
 
 # ---------------------------------------------------------------------------
 # Shared stealth headers
@@ -357,11 +351,20 @@ async def fetch_url_with_fallback(
                     size = int(cl)
                     if size > max_size_bytes:
                         logger.warning(
-                            f"⚠️ Skipping {url}: Content-Length "
-                            + f"{size / (1024 * 1024):.1f}MB exceeds limit of "
-                            + f"{max_size_bytes:.0f}MB"
+                            "⚠️ Skipping %s: Content-Length %.1fMB exceeds limit of %.0fMB",
+                            url,
+                            size / (1024 * 1024),
+                            max_size_bytes / (1024 * 1024),
                         )
-                        return None
+                        # Return a concrete response so callers can distinguish
+                        # an intentional size skip from a connection failure.
+                        return FetchResponse(
+                            status_code=413,
+                            content_bytes=b"",
+                            headers={"X-Fetch-Skip-Reason": "max_size_exceeded"},
+                            final_url=url,
+                            strategy="size_guard",
+                        )
         except Exception:
             # HEAD not supported (405), connection error, timeout — proceed with GET
             pass
@@ -392,6 +395,12 @@ async def fetch_url_with_fallback(
             logger.debug(f"🔒 Using pinned strategy '{strategies[0][0]}' for {url}")
     else:
         strategies = all_strategies
+
+    # Tracks the last FetchResponse received across all strategies/attempts.
+    # When all strategies are exhausted due to bot-detection or 429s (not a
+    # hard connection failure), this lets callers inspect the status code and
+    # decide whether to queue the URL for a post-crawl retry.
+    last_failed_result: FetchResponse | None = None
 
     for strategy_name, strategy_fn in strategies:
         logger.debug(f"🔄 [{strategy_name}] Attempting {url}")
@@ -425,11 +434,12 @@ async def fetch_url_with_fallback(
                     return result
 
                 # ---- Bot detection (403, 999, 520-530) -> retry this strategy,
-                if status in _BOT_DETECTION_CODES or status > HttpStatusCode.CLOUDFLARE_NETWORK_ERROR.value:
+                if status in _BOT_DETECTION_CODES:
                     logger.warning(
-                        f"⚠️ [{strategy_name}] Bot blocked (HTTP {status}) for {url} "
-                        + f"(attempt {attempt + 1}/{max_retries_per_strategy})"
+                        "⚠️ [%s] Bot blocked (HTTP %s) for %s (attempt %d/%d)",
+                        strategy_name, status, url, attempt + 1, max_retries_per_strategy
                     )
+                    last_failed_result = result
                     break  # break 429 loop, go to next attempt
 
                 # ---- 429: Rate limited -> retry with backoff on SAME attempt ----
@@ -439,6 +449,7 @@ async def fetch_url_with_fallback(
                             f"⚠️ [{strategy_name}] 429 persists after {max_429_retries} "
                             + f"retries for {url}, trying next strategy"
                         )
+                        last_failed_result = result
                         break
 
                     # Check Retry-After header first
@@ -480,6 +491,821 @@ async def fetch_url_with_fallback(
 
         logger.debug(f"🔄 [{strategy_name}] Exhausted all {max_retries_per_strategy} attempts for {url}")
 
-    # All strategies exhausted
-    logger.error(f"❌ All fetch strategies failed for {url}")
+    # All strategies exhausted.
+    # Return the last FetchResponse if we got one (bot-block / 429 exhaustion) so
+    # callers can inspect the status code and decide whether to retry the URL later.
+    # Returns None only when every strategy failed with a hard connection error.
+    if last_failed_result is not None:
+        logger.error(
+            "❌ All fetch strategies failed for %s (last status: %s)",
+            url, last_failed_result.status_code
+        )
+        return last_failed_result
+
+    logger.error(f"❌ All fetch strategies failed for {url} (connection error)")
     return None
+
+
+# ---------------------------------------------------------------------------
+# Headless browser fetcher (opt-in)
+# ---------------------------------------------------------------------------
+"""
+Robust web fetcher built on Crawl4AI (https://docs.crawl4ai.com/).
+
+Replaces the hand-rolled Playwright fetcher with Crawl4AI's AsyncWebCrawler,
+which provides out-of-the-box:
+  - Anti-bot detection & multi-layer fallback (Cloudflare, Akamai, etc.)
+  - Shadow DOM flattening (Salesforce Lightning, Web Components)
+  - Stealth mode (navigator.webdriver masking, fingerprint evasion)
+  - Built-in retry with proxy escalation
+  - Automatic JS rendering wait (networkidle / CSS selector / JS expression)
+  - Clean markdown + cleaned HTML extraction
+  - iframe processing
+
+This module wraps it behind the same FetchResponse interface so the rest of
+your crawl pipeline doesn't need to change.
+"""
+
+
+import asyncio
+import logging
+from dataclasses import dataclass
+from typing import Callable, Awaitable, Optional
+
+
+# ---------------------------------------------------------------------------
+# Response container — identical interface to the old Playwright fetcher
+# ---------------------------------------------------------------------------
+@dataclass
+class FetchResponse:
+    status_code: int
+    content_bytes: bytes              # raw or cleaned HTML as UTF-8 bytes
+    headers: dict
+    final_url: str
+    strategy: str
+    markdown: str | None = None       # bonus: Crawl4AI gives us clean markdown
+    links: dict | None = None         # {"internal": [...], "external": [...]}
+    success: bool = True
+    error_message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+class NonRetryableError(Exception):
+    """Raised when a retry would be pointless (DNS failure, 4xx, etc.)."""
+
+
+# ---------------------------------------------------------------------------
+# Fetcher
+# ---------------------------------------------------------------------------
+class Crawl4AIFetcher:
+    """
+    Headless Chromium fetcher powered by Crawl4AI's AsyncWebCrawler.
+
+    Manages a single crawler instance reused across all fetches.
+    A semaphore (MAX_CONCURRENT_PAGES) prevents runaway parallelism.
+    """
+
+    MAX_CONCURRENT_PAGES = 1
+
+    # HTTP status codes that should NOT trigger retries
+    _NON_RETRYABLE_STATUSES = frozenset({400, 401, 403, 404, 405, 410, 451})
+
+    # Minimum meaningful body length
+    _MIN_BODY_LENGTH = 256
+
+    # Shorter timeout for tier-1 so fallback to tier-2/3 happens fast
+    # when a server tarpits the regular browser.
+    _TIER1_PAGE_TIMEOUT = 20_000  # 20s
+
+    # Status codes indicating rate-limiting or bot-detection where
+    # an immediate retry against the same server is counterproductive.
+    _RATE_LIMIT_CODES = frozenset({
+        403,                              # Forbidden (WAF/bot block)
+        429,                              # Too Many Requests
+        520, 521, 522, 523, 524, 529, 530 # Cloudflare
+    })
+
+    # Subset: retry the SAME tier with exponential backoff before
+    # falling through to the next tier.
+    _SAME_TIER_RETRY_CODES = frozenset({429, 529})
+
+    _MAX_SAME_TIER_RETRIES = 2
+    _MAX_TIER_BACKOFF_SECS = 120.0
+
+    def __init__(
+        self,
+        logger: logging.Logger | None = None,
+        *,
+        headless: bool = True,
+        stealth: bool = True,
+        text_mode: bool = False,
+        extra_browser_args: list[str] | None = None,
+        user_agent: str | None = None,
+        proxy_config=None,
+    ) -> None:
+        # Tier 1 (regular + stealth) is created eagerly in start().
+        # Tier 2 (undetected, no stealth) and Tier 3 (undetected + stealth)
+        # are lazy-created on first need.
+        self._crawler = None
+        self._undetected_crawler = None
+        self._undetected_stealth_crawler = None
+        self._semaphore: Optional[asyncio.Semaphore] = None
+        self.logger = logger or logging.getLogger(__name__)
+        self._patchright_available: Optional[bool] = None
+
+        # Store config params for deferred construction
+        self._headless = headless
+        self._stealth = stealth
+        self._text_mode = text_mode
+        self._extra_args = extra_browser_args or []
+        self._user_agent = user_agent
+        self._proxy_config = proxy_config
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+    def _build_browser_config(self, *, stealth: bool) -> "BrowserConfig":
+        """Build a BrowserConfig with the given stealth setting."""
+        from crawl4ai.async_configs import BrowserConfig
+
+        return BrowserConfig(
+            browser_type="chromium",
+            headless=self._headless,
+            viewport_width=1280,
+            viewport_height=720,
+            ignore_https_errors=True,
+            java_script_enabled=True,
+            enable_stealth=stealth,
+            text_mode=self._text_mode,
+            extra_args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-blink-features=AutomationControlled",
+                *self._extra_args,
+            ],
+            **({"user_agent": self._user_agent} if self._user_agent else {
+                "user_agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                )
+            }),
+        )
+
+    def _has_patchright(self) -> bool:
+        """Check once whether patchright is available."""
+        if self._patchright_available is None:
+            try:
+                import patchright  # noqa: F401
+                self._patchright_available = True
+            except ImportError:
+                self._patchright_available = False
+                self.logger.warning(
+                    "patchright not installed — undetected browser tiers unavailable. "
+                    "Install with: pip install patchright && python -m patchright install chromium"
+                )
+        return self._patchright_available
+
+    async def start(self) -> None:
+        """Start tier-1 crawler: regular browser + stealth."""
+        from crawl4ai import AsyncWebCrawler
+
+        self._crawler = AsyncWebCrawler(
+            config=self._build_browser_config(stealth=self._stealth),
+        )
+        await self._crawler.start()
+        self._semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_PAGES)
+        self.logger.info("Crawl4AIFetcher started (tier-1: regular + stealth)")
+
+    async def _get_undetected_crawler(self):
+        """Lazy-create tier-2: undetected browser, no stealth."""
+        if self._undetected_crawler is not None:
+            return self._undetected_crawler
+        if not self._has_patchright():
+            return None
+
+        from crawl4ai import AsyncWebCrawler
+        from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+        from crawl4ai.browser_adapter import UndetectedAdapter
+
+        config = self._build_browser_config(stealth=False)
+        strategy = AsyncPlaywrightCrawlerStrategy(
+            browser_config=config,
+            browser_adapter=UndetectedAdapter(),
+        )
+        self._undetected_crawler = AsyncWebCrawler(
+            crawler_strategy=strategy, config=config,
+        )
+        await self._undetected_crawler.start()
+        self.logger.info("Crawl4AIFetcher tier-2 started (undetected, no stealth)")
+        return self._undetected_crawler
+
+    async def _get_undetected_stealth_crawler(self):
+        """Lazy-create tier-3: undetected browser + stealth."""
+        if self._undetected_stealth_crawler is not None:
+            return self._undetected_stealth_crawler
+        if not self._has_patchright():
+            return None
+
+        from crawl4ai import AsyncWebCrawler
+        from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+        from crawl4ai.browser_adapter import UndetectedAdapter
+
+        config = self._build_browser_config(stealth=True)
+        strategy = AsyncPlaywrightCrawlerStrategy(
+            browser_config=config,
+            browser_adapter=UndetectedAdapter(),
+        )
+        self._undetected_stealth_crawler = AsyncWebCrawler(
+            crawler_strategy=strategy, config=config,
+        )
+        await self._undetected_stealth_crawler.start()
+        self.logger.info("Crawl4AIFetcher tier-3 started (undetected + stealth)")
+        return self._undetected_stealth_crawler
+
+    _RESTART_TIMEOUT = 60  # seconds – hard ceiling for close()/start() on crashed browsers
+
+    async def _restart_crawler(self, tier: str) -> None:
+        """Close and recreate a crawler whose browser process has crashed."""
+        self.logger.warning(f"[crawl4ai] Restarting {tier} crawler after browser crash")
+        if tier == "tier-1":
+            if self._crawler:
+                try:
+                    async with asyncio.timeout(self._RESTART_TIMEOUT):
+                        await self._crawler.close()
+                except Exception:
+                    pass
+            self._crawler = None
+            from crawl4ai import AsyncWebCrawler
+            self._crawler = AsyncWebCrawler(
+                config=self._build_browser_config(stealth=self._stealth),
+            )
+            async with asyncio.timeout(self._RESTART_TIMEOUT):
+                await self._crawler.start()
+            self.logger.info(f"[crawl4ai] {tier} crawler restarted successfully")
+        elif tier == "tier-2":
+            if self._undetected_crawler:
+                try:
+                    async with asyncio.timeout(self._RESTART_TIMEOUT):
+                        await self._undetected_crawler.close()
+                except Exception:
+                    pass
+            self._undetected_crawler = None
+            # Next call to _get_undetected_crawler() will lazy-create it
+        elif tier == "tier-3":
+            if self._undetected_stealth_crawler:
+                try:
+                    async with asyncio.timeout(self._RESTART_TIMEOUT):
+                        await self._undetected_stealth_crawler.close()
+                except Exception:
+                    pass
+            self._undetected_stealth_crawler = None
+            # Next call to _get_undetected_stealth_crawler() will lazy-create it
+
+    @staticmethod
+    def _is_target_crashed(result: Optional["FetchResponse"]) -> bool:
+        """Check if a failed result was caused by a browser crash."""
+        if result is None:
+            return False
+        msg = result.error_message or ""
+        return "Target crashed" in msg or "Target closed" in msg
+
+    @staticmethod
+    def _is_rate_limited(result: Optional["FetchResponse"]) -> bool:
+        """Return True if the failure looks like server-side rate-limiting or bot-detection."""
+        if result is None:
+            return False
+        return result.status_code in Crawl4AIFetcher._RATE_LIMIT_CODES
+
+    @staticmethod
+    def _should_retry_same_tier(result: Optional["FetchResponse"]) -> bool:
+        """Return True if the status code warrants retrying the same tier."""
+        if result is None:
+            return False
+        return result.status_code in Crawl4AIFetcher._SAME_TIER_RETRY_CODES
+
+    async def _rate_limit_backoff(
+        self,
+        url: str,
+        result: "FetchResponse",
+        attempt: int,
+        next_label: str,
+    ) -> None:
+        """Sleep with exponential backoff + jitter before the next attempt.
+
+        Args:
+            url:        The URL being fetched (for logging).
+            result:     The failed FetchResponse (checked for Retry-After header).
+            attempt:    1-based attempt index (controls exponential base).
+            next_label: Human-readable label for the next attempt (for logging).
+        """
+        # Respect Retry-After header if present
+        retry_after_raw = (
+            result.headers.get("Retry-After")
+            or result.headers.get("retry-after")
+        )
+        if retry_after_raw:
+            try:
+                delay = min(float(retry_after_raw), self._MAX_TIER_BACKOFF_SECS)
+            except (ValueError, TypeError):
+                delay = float(2 ** (attempt+2))
+        else:
+            delay = float(2 ** (attempt+2))
+
+        jitter = random.uniform(0, 1.0)
+        delay = min(delay + jitter, self._MAX_TIER_BACKOFF_SECS)
+
+        self.logger.info(
+            f"[crawl4ai] Rate-limited (HTTP {result.status_code}) on {url}, "
+            f"backing off {delay:.1f}s before {next_label}"
+        )
+        await asyncio.sleep(delay)
+
+    async def _try_tier(
+        self,
+        url: str,
+        crawler,
+        tier_label: str,
+        fetch_kwargs: dict,
+    ) -> tuple[Optional["FetchResponse"], bool]:
+        """Try a single tier, retrying on 429/529 with exponential backoff.
+
+        Returns (result, usable) where usable=True means we got good content.
+        """
+        result = await self._do_fetch(url, crawler=crawler, **fetch_kwargs)
+        if self._is_usable(result):
+            return result, True
+
+        # For 429/529: retry same tier up to _MAX_SAME_TIER_RETRIES times
+        if self._should_retry_same_tier(result):
+            for retry in range(1, self._MAX_SAME_TIER_RETRIES + 1):
+                await self._rate_limit_backoff(
+                    url, result, attempt=retry,
+                    next_label=f"{tier_label} retry {retry}/{self._MAX_SAME_TIER_RETRIES}",
+                )
+                result = await self._do_fetch(url, crawler=crawler, **fetch_kwargs)
+                if self._is_usable(result):
+                    return result, True
+
+        return result, False
+
+    async def close(self) -> None:
+        for crawler, label in [
+            (self._crawler, "tier-1"),
+            (self._undetected_crawler, "tier-2"),
+            (self._undetected_stealth_crawler, "tier-3"),
+        ]:
+            if crawler:
+                try:
+                    async with asyncio.timeout(self._RESTART_TIMEOUT):
+                        await crawler.close()
+                except Exception as exc:
+                    self.logger.warning(f"Error closing {label} crawler: {exc}")
+        self._crawler = None
+        self._undetected_crawler = None
+        self._undetected_stealth_crawler = None
+        self.logger.info("Crawl4AIFetcher closed")
+
+    async def __aenter__(self) -> "Crawl4AIFetcher":
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc_info) -> None:
+        await self.close()
+
+    @staticmethod
+    def _is_usable(result: Optional[FetchResponse]) -> bool:
+        """Check whether a fetch result has real page content.
+
+        Catches two failure modes:
+        - Navigation failed entirely (no headers from server).
+        - In-page JS redirect hit a Chromium error page. The initial HTTP
+          response has headers, but the captured HTML is Chromium's internal
+          error page. We detect this via an exact browser-generated string
+          that no real web server would ever send.
+        """
+        if result is None or not result.success or result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+            return False
+        if not result.headers:
+            return False
+        content = result.content_bytes.decode("utf-8", errors="replace")
+        if "This page has been blocked by Chromium" in content:
+            return False
+        return True
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    # JS expression that waits for meaningful body content to appear.
+    # Works for both normal DOM and Shadow DOM (Salesforce Lightning, etc.)
+    # by measuring total text length across all shadow roots.
+    # Skips cookie-consent / overlay elements so their text doesn't
+    # satisfy the threshold before the real page content has rendered.
+    # Returns true once there's > 100 chars of visible text (excluding overlays).
+    _DEFAULT_CSR_WAIT_JS = (
+        "js:() => {"
+        "  const SKIP_RE = /onetrust|cookiebot|cookie-?banner|cookie-?consent|"
+        "consent-?banner|gdpr|cc-window|cc-banner/i;"
+        "  function skip(el) {"
+        "    var id = el.id || '';"
+        "    var cls = typeof el.className === 'string' ? el.className : '';"
+        "    var role = el.getAttribute && (el.getAttribute('role') || '');"
+        "    if (SKIP_RE.test(id) || SKIP_RE.test(cls)) return true;"
+        "    var s = getComputedStyle(el);"
+        "    if (s.position === 'fixed' || s.position === 'sticky') {"
+        "      if (role === 'dialog' || role === 'alertdialog' || el.tagName === 'DIALOG') return true;"
+        "      if (s.zIndex && parseInt(s.zIndex) > 999) return true;"
+        "    }"
+        "    return false;"
+        "  }"
+        "  function measure(n) {"
+        "    let len = 0;"
+        "    if (n.nodeType === 3) return (n.textContent || '').trim().length;"
+        "    if (n.nodeType !== 1) return 0;"
+        "    if (skip(n)) return 0;"
+        "    if (n.shadowRoot) { for (const c of n.shadowRoot.childNodes) len += measure(c); }"
+        "    for (const c of n.childNodes) len += measure(c);"
+        "    return len;"
+        "  }"
+        "  return measure(document.body) > 100;"
+        "}"
+    )
+
+    # JS snippet to remove common cookie-consent overlays from the DOM.
+    # We REMOVE instead of clicking "Accept" because clicking can trigger
+    # page navigation/redirects (e.g. zoom.us → ERR_BLOCKED_BY_CLIENT).
+    # The underlying page content loads regardless of cookie consent on
+    # most sites; remove_overlay_elements=True provides additional cleanup.
+    _DISMISS_COOKIE_CONSENT_JS = (
+        "(function(){"
+        "  var sel = ["
+        "    '#onetrust-banner-sdk', '#onetrust-consent-sdk', '#onetrust-pc-sdk',"
+        "    '#CybotCookiebotDialog', '#CybotCookiebotDialogBodyUnderlay',"
+        "    '.cc-window', '.cc-banner', '.cc-revoke',"
+        "    '[class*=\"cookie-banner\"]', '[class*=\"cookie-consent\"]',"
+        "    '[class*=\"consent-banner\"]', '[id*=\"cookie-banner\"]',"
+        "    '[id*=\"cookie-consent\"]', '[id*=\"consent-banner\"]',"
+        "    '[data-testid=\"cookie-banner\"]'"
+        "  ];"
+        "  for (var i = 0; i < sel.length; i++) {"
+        "    var els = document.querySelectorAll(sel[i]);"
+        "    for (var j = 0; j < els.length; j++) els[j].remove();"
+        "  }"
+        "})()"
+    )
+    
+
+    def _check_content_size(self, content_bytes: bytes, max_size_mb: Optional[int]) -> bool:
+        if max_size_mb is not None:
+            max_size_bytes = max_size_mb * 1024 * 1024
+            if len(content_bytes) > max_size_bytes:
+                return False
+        return True
+
+    async def fetch(
+        self,
+        url: str,
+        *,
+        # --- timing ---
+        page_timeout: int = 60_000,
+        wait_until: str = "commit",
+        wait_for: str | None = None,
+        delay_before_return_html: float = 3.0,
+        # --- retry / anti-bot ---
+        magic: bool = False,
+        # --- content ---
+        process_iframes: bool = False,
+        remove_overlay_elements: bool = True,
+        exclude_external_links: bool = False,
+        word_count_threshold: int = 0,
+        css_selector: str | None = None,
+        excluded_tags: list[str] | None = None,
+        scan_full_page: bool = False,
+        # --- JS interaction ---
+        js_code: str | list[str] | None = None,
+        # --- proxy (per-request override) ---
+        proxy_config=None,
+        # --- size guard ---
+        max_size_mb: Optional[int] = None,
+    ) -> Optional[FetchResponse]:
+        """
+        Fetch a URL with full CSR/SPA support, anti-bot detection, and retries.
+
+        Args:
+            page_timeout:              Navigation timeout in ms. Default 60s to
+                                       allow slow CSR pages time to load.
+            wait_until:                Playwright load state for page.goto():
+                                       "commit" (default — returns as soon as the
+                                       server responds; actual content readiness is
+                                       handled by wait_for), "domcontentloaded",
+                                       "load". AVOID "networkidle" for sites with
+                                       persistent connections (SPAs with polling).
+            wait_for:                  Post-navigation wait condition. CSS selector
+                                       ("css:main article") or JS expression
+                                       ("js:() => document.querySelector('#app')").
+                                       If None, a default Shadow DOM–aware JS wait
+                                       is used that waits for >100 chars of visible
+                                       text to appear.
+            delay_before_return_html:  Extra seconds to wait after all conditions
+                                       are met (catches late-rendering components).
+            max_retries:               Number of retry rounds on anti-bot blocks.
+            magic:                     Enable Crawl4AI's "magic mode" which auto-
+                                       adjusts headers, timing, and fingerprints.
+            process_iframes:           Merge iframe content into the main HTML.
+            remove_overlay_elements:   Strip cookie banners, popups, modals.
+            exclude_external_links:    Remove external links from output.
+            word_count_threshold:      Minimum words per content block.
+            css_selector:              Only extract content matching this selector.
+            excluded_tags:             HTML tags to strip (e.g. ["form", "nav"]).
+            scan_full_page:            Auto-scroll the page to trigger lazy loading.
+            js_code:                   JavaScript to execute after page load
+                                       (click "Load More", dismiss modals, etc.).
+            proxy_config:              Per-request proxy override (ProxyConfig or
+                                       list[ProxyConfig]).
+            fallback_fetch_function:   Async function(url) -> raw HTML string,
+                                       called as last resort after all retries.
+        """
+        if not self._crawler or not self._semaphore:
+            raise RuntimeError("Crawl4AIFetcher not started — call start() first")
+
+        # If no explicit wait_for, use our Shadow DOM–aware content check
+        effective_wait_for = wait_for if wait_for is not None else self._DEFAULT_CSR_WAIT_JS
+
+        fetch_kwargs = dict(
+            page_timeout=page_timeout,
+            wait_until=wait_until,
+            wait_for=effective_wait_for,
+            delay_before_return_html=delay_before_return_html,
+            magic=magic,
+            process_iframes=process_iframes,
+            remove_overlay_elements=remove_overlay_elements,
+            exclude_external_links=exclude_external_links,
+            word_count_threshold=word_count_threshold,
+            css_selector=css_selector,
+            excluded_tags=excluded_tags,
+            scan_full_page=scan_full_page,
+            js_code=js_code,
+            proxy_config=proxy_config,
+        )
+
+        async with self._semaphore:
+            failed_tiers: list[str] = []
+
+            # ---- Tier 1: Regular browser + stealth (shorter timeout) ----
+            tier1_kwargs = {**fetch_kwargs, "page_timeout": self._TIER1_PAGE_TIMEOUT}
+            result, usable = await self._try_tier(
+                url, self._crawler, "tier-1", tier1_kwargs,
+            )
+            if usable:
+                self._log_result(url, result, "tier-1", failed_tiers)
+                if not self._check_content_size(result.content_bytes, max_size_mb):
+                    self.logger.info(f"⚠️ Skipping {url}: content size exceeds limit of {max_size_mb}MB")
+                    return FetchResponse(
+                            status_code=413,
+                            content_bytes=b"",
+                            headers={"X-Fetch-Skip-Reason": "max_size_exceeded"},
+                            final_url=result.final_url,
+                            strategy="size_guard",
+                        )
+                return result
+            failed_tiers.append("tier-1")
+            # If the browser process crashed, restart it so subsequent
+            # URLs aren't poisoned by the dead process.
+            if self._is_target_crashed(result) or result is None:
+                self.logger.warning(f"⚠️ [crawl4ai] tier-1 crashed for {url}, restarting and trying tier-2")
+                try:
+                    await self._restart_crawler("tier-1")
+                except Exception as exc:
+                    self.logger.error(f"[crawl4ai] Failed to restart tier-1: {exc}")
+            elif self._is_rate_limited(result):
+                self.logger.warning(f"⚠️ [crawl4ai] tier-1 rate-limited for {url}, trying tier-2")
+                await self._rate_limit_backoff(url, result, attempt=1, next_label="tier-2")
+            elif result is not None and result.status_code != 0:
+                # Non-retryable error — no point trying other tiers
+                self._log_result(url, result, "tier-1-non-retryable", failed_tiers)
+                return result
+
+            # ---- Tier 2: Undetected browser, no stealth ----
+            undetected = await self._get_undetected_crawler()
+            if undetected:
+                result, usable = await self._try_tier(
+                    url, undetected, "tier-2", fetch_kwargs,
+                )
+                if usable:
+                    self._log_result(url, result, "tier-2", failed_tiers)
+                    if not self._check_content_size(result.content_bytes, max_size_mb):
+                        self.logger.info(f"⚠️ Skipping {url}: content size exceeds limit of {max_size_mb}MB")
+                        return FetchResponse(
+                            status_code=413,
+                            content_bytes=b"",
+                            headers={"X-Fetch-Skip-Reason": "max_size_exceeded"},
+                            final_url=result.final_url,
+                            strategy="size_guard",
+                        )
+                    return result
+                failed_tiers.append("tier-2")
+                if self._is_target_crashed(result) or result is None:
+                    self.logger.warning(f"⚠️ [crawl4ai] tier-2 crashed for {url}, restarting and trying tier-3")
+                    try:
+                        await self._restart_crawler("tier-2")
+                    except Exception as exc:
+                        self.logger.error(f"[crawl4ai] Failed to restart tier-2: {exc}")
+                elif self._is_rate_limited(result):
+                    self.logger.warning(f"⚠️ [crawl4ai] tier-2 rate-limited for {url}, trying tier-3")
+                    await self._rate_limit_backoff(url, result, attempt=2, next_label="tier-3")
+                elif result is not None and result.status_code != 0:
+                    # Non-retryable error — no point trying other tiers
+                    self._log_result(url, result, "tier-2-non-retryable", failed_tiers)
+                    return result
+            else:
+                failed_tiers.append("tier-2 (unavailable)")
+                self.logger.warning(f"⚠️ [crawl4ai] tier-2 unavailable for {url}, trying tier-3")
+
+            # ---- Tier 3: Undetected browser + stealth ----
+            undetected_stealth = await self._get_undetected_stealth_crawler()
+            if undetected_stealth:
+                result, usable = await self._try_tier(
+                    url, undetected_stealth, "tier-3", fetch_kwargs,
+                )
+                if usable:
+                    self._log_result(url, result, "tier-3", failed_tiers)
+                    if not self._check_content_size(result.content_bytes, max_size_mb):
+                        self.logger.info(f"⚠️ Skipping {url}: content size exceeds limit of {max_size_mb}MB")
+                        return None
+                    return result
+                failed_tiers.append("tier-3")
+            else:
+                failed_tiers.append("tier-3 (unavailable)")
+
+            # All tiers exhausted — return whatever the last result was
+            self._log_result(url, result, "all-tiers-failed", failed_tiers)
+            if result is not None and result.status_code in Crawl4AIFetcher._RATE_LIMIT_CODES:
+                await asyncio.sleep(16)
+            return result
+
+    def _log_result(
+        self, url: str, result: Optional[FetchResponse], tier: str,
+        failed_tiers: list[str] | None = None,
+    ) -> None:
+        if result and result.final_url != url:
+            self.logger.warning(f"⚠️ [crawl4ai] Redirected {url} → {result.final_url}")
+        failed_ctx = f" (failed: {', '.join(failed_tiers)})" if failed_tiers else ""
+        if tier == "all-tiers-failed":
+            self.logger.error(
+                f"❌ [crawl4ai] All tiers failed for {url}"
+                + (f" (tried: {', '.join(failed_tiers)})" if failed_tiers else "")
+            )
+        elif tier.endswith("-non-retryable"):
+            status = result.status_code if result else "N/A"
+            self.logger.warning(
+                f"⚠️ [crawl4ai] {tier} for {url} — HTTP {status}, "
+                f"not retryable across tiers{failed_ctx}"
+            )
+        elif result and result.success:
+            if result.status_code and result.status_code >= 400:
+                self.logger.warning(
+                    f"⚠️ [crawl4ai] {tier} got content for {url} but HTTP status is "
+                    f"{result.status_code} (browser success, server error){failed_ctx}"
+                )
+            else:
+                self.logger.info(f"✅ [crawl4ai] {tier} succeeded for {url}{failed_ctx}")
+        else:
+            self.logger.warning(f"⚠️ [crawl4ai] {tier} failed for {url}{failed_ctx}")
+    # ------------------------------------------------------------------
+    # Internal fetch logic
+    # ------------------------------------------------------------------
+    async def _do_fetch(
+        self,
+        url: str,
+        *,
+        crawler,
+        **kwargs,
+    ) -> Optional[FetchResponse]:
+        from crawl4ai.async_configs import CrawlerRunConfig, CacheMode
+
+        # Always prepend cookie-consent dismissal JS so overlays don't
+        # block SPA content from loading.
+        user_js = kwargs.get("js_code")
+        if user_js:
+            js_list = [self._DISMISS_COOKIE_CONSENT_JS] + (
+                user_js if isinstance(user_js, list) else [user_js]
+            )
+        else:
+            js_list = [self._DISMISS_COOKIE_CONSENT_JS]
+
+        # Build the per-request crawl config
+        run_config = CrawlerRunConfig(
+            # --- navigation & timing ---
+            page_timeout=kwargs["page_timeout"],
+            wait_until=kwargs["wait_until"],
+            wait_for=kwargs["wait_for"],
+            delay_before_return_html=kwargs["delay_before_return_html"],
+
+            # --- anti-bot & retry ---
+            magic=kwargs["magic"],
+
+            # --- content processing ---
+            process_iframes=kwargs["process_iframes"],
+            remove_overlay_elements=kwargs["remove_overlay_elements"],
+            exclude_external_links=kwargs["exclude_external_links"],
+            word_count_threshold=kwargs["word_count_threshold"],
+            scan_full_page=kwargs["scan_full_page"],
+
+            # --- content selection ---
+            **({"css_selector": kwargs["css_selector"]}
+               if kwargs["css_selector"] else {}),
+            **({"excluded_tags": kwargs["excluded_tags"]}
+               if kwargs["excluded_tags"] else {}),
+
+            # --- JS execution (cookie dismissal + user JS) ---
+            js_code=js_list,
+
+            # --- proxy (per-request override) ---
+            **({"proxy_config": kwargs["proxy_config"]}
+               if kwargs["proxy_config"] else {}),
+
+            # Never use cached results for a live fetcher
+            cache_mode=CacheMode.BYPASS,
+        )
+
+        try:
+            self.logger.debug(
+                f"[crawl4ai] arun {url} "
+                f"(timeout={kwargs['page_timeout']}ms, wait_until={kwargs['wait_until']!r})"
+            )
+            # Hard ceiling: page_timeout (ms→s) + 30s buffer for browser overhead.
+            # Prevents indefinite hangs when the browser process crashes
+            # ("Target crashed") and Playwright never resolves the awaitable.
+            hard_timeout = kwargs["page_timeout"] / 1000 + 60
+            async with asyncio.timeout(hard_timeout):
+                result = await crawler.arun(url=url, config=run_config)
+        except TimeoutError:
+            self.logger.error(
+                f"[crawl4ai] Hard timeout ({hard_timeout:.0f}s) exceeded for {url} — "
+                f"browser likely crashed or hung"
+            )
+            return None
+        except Exception as exc:
+            self.logger.error(f"[crawl4ai] Unhandled error for {url}: {exc}")
+            return None
+
+        # --- Build our FetchResponse from CrawlResult ---
+        if not result.success:
+            self.logger.warning(
+                f"[crawl4ai] Crawl failed for {url}: {result.error_message}"
+            )
+            return FetchResponse(
+                status_code=result.status_code or 0,
+                content_bytes=b"",
+                headers=result.response_headers or {},
+                final_url=result.url,
+                strategy="crawl4ai",
+                markdown=None,
+                links=None,
+                success=False,
+                error_message=result.error_message,
+            )
+
+        # Log when browser got content but HTTP status indicates an error
+        if result.status_code and result.status_code >= 400:
+            error_detail = f": {result.error_message}" if result.error_message else ""
+            self.logger.warning(
+                f"[crawl4ai] Browser returned content for {url} but HTTP status is {result.status_code} "
+                f"(server returned error page; content may not be usable){error_detail}"
+            )
+
+        # Prefer cleaned_html; fall back to raw html
+        html_content = result.cleaned_html or result.html or ""
+        content_bytes = html_content.encode("utf-8")
+
+        # Validate content isn't an empty shell
+        if len(content_bytes) < self._MIN_BODY_LENGTH:
+            self.logger.warning(
+                f"[crawl4ai] Body too small ({len(content_bytes)} bytes) "
+                f"for {url}"
+                f"html_cleaned: {result.cleaned_html}"
+                f"html: {result.html}"
+            )
+
+        # Extract markdown safely (can be str or MarkdownGenerationResult)
+        markdown_text = None
+        if result.markdown:
+            if isinstance(result.markdown, str):
+                markdown_text = result.markdown
+            elif hasattr(result.markdown, "raw_markdown"):
+                markdown_text = result.markdown.raw_markdown
+        
+        return FetchResponse(
+            status_code=result.status_code or 200,
+            content_bytes=content_bytes,
+            headers=result.response_headers or {},
+            final_url=result.url,
+            strategy="crawl4ai",
+            markdown=markdown_text,
+            links=result.links if result.links else None,
+            success=True,
+            error_message=None,
+        )

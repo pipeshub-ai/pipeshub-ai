@@ -1,5 +1,6 @@
 services:
   pipeshub-ai:
+    privileged: true
     image: pipeshub-ai:latest
     restart: always
     build:
@@ -28,7 +29,7 @@ services:
     environment:
       # Core environment settings
       - NODE_ENV=${NODE_ENV:-development}
-      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_LEVEL=${LOG_LEVEL:-debug}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}

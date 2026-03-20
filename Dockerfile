@@ -37,6 +37,8 @@ COPY ./backend/python/pyproject.toml ./
 
 # Install Python dependencies
 RUN uv pip install --system -e . && \
+    crawl4ai-setup && \
+    playwright install && \
     # Download ML models
     python -m spacy download en_core_web_sm && \
     python -c "import nltk; nltk.download('punkt', quiet=True)" && \
@@ -159,6 +161,9 @@ COPY --from=python-deps /usr/local/bin /usr/local/bin
 # Copy ML model data
 COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
 COPY --from=python-deps /root/nltk_data /root/nltk_data
+
+# Copy Playwright browser binaries
+COPY --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
 
 # Copy Node.js backend (already pruned)
 COPY --from=nodejs-backend /app/backend/dist ./backend/dist
