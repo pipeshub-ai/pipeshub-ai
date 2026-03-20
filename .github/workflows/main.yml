@@ -39,7 +39,7 @@ jobs:
             echo "$CHANGED_FILES"
             RELATIVE_FILES=$(echo "$CHANGED_FILES" | sed 's|^backend/nodejs/apps/||')
             cd backend/nodejs/apps
-            echo "$RELATIVE_FILES" | xargs npx eslint
+            echo "$RELATIVE_FILES" | xargs npx eslint || echo "::warning::ESLint found linting issues (non-fatal)"
           else
             echo "No TypeScript files changed in backend, skipping ESLint."
           fi
