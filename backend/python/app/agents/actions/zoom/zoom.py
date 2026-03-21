@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -5,7 +6,6 @@ from typing import Annotated, Literal, Optional, Tuple
 from urllib.parse import quote
 from pydantic import model_validator
 from datetime import datetime, timezone, timedelta
-from dateutil.parser import parse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
@@ -47,9 +47,14 @@ class GetMyProfileInput(BaseModel):
 
 
 class ListMeetingsInput(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-    from_: Optional[str] = Field(default=None, alias="from", description="Start date (YYYY-MM-DD).")
-    to_: Optional[str] = Field(default=None, description="End date (YYYY-MM-DD).")
+    from_: str = Field(
+        min_length=1,
+        description="Start date (YYYY-MM-DD). Required to bound the meeting range.",
+    )
+    to_: str = Field(
+        min_length=1,
+        description="End date (YYYY-MM-DD). Required to bound the meeting range.",
+    )
     top: Optional[int] = Field(default=10, description="Maximum number of meetings to return.")
 
 class GetMeetingInput(BaseModel):
@@ -285,6 +290,43 @@ class Zoom:
                 return False, json.dumps(response)
             return True, json.dumps({"message": success_message, "data": self._clean_response_data(response)})
 
+    async def _get_meeting_detail_dict(self, meeting_id: str) -> dict | None:
+        """GET a single meeting; returns unwrapped payload or None on failure."""
+        detail_response = await self.client.meeting(meetingId=meeting_id)
+        success, detail_cleaned = self._handle_response(detail_response, "ok")
+        if not success:
+            return None
+        detail = json.loads(detail_cleaned)
+        if not isinstance(detail, dict):
+            return None
+        payload = detail.get("data", detail)
+        return payload if isinstance(payload, dict) else None
+
+    async def _meeting_details_by_id(
+        self,
+        meeting_ids: list[str],
+    ) -> dict[str, dict]:
+        unique_ids = list(dict.fromkeys(mid for mid in meeting_ids if mid))
+        if not unique_ids:
+            return {}
+
+        async def fetch_one(mid: str) -> tuple[str, dict | None]:
+            payload = await self._get_meeting_detail_dict(mid)
+            return mid, payload
+
+        out: dict[str, dict] = {}
+        for i in range(0, len(unique_ids), 10):
+            chunk = unique_ids[i:i + 10]
+            pairs = await asyncio.gather(*[fetch_one(mid) for mid in chunk], return_exceptions=True)
+            for item in pairs:
+                if isinstance(item, Exception):
+                    logger.warning("Parallel meeting detail fetch failed: %s", item)
+                    continue
+                mid, payload = item
+                if payload is not None:
+                    out[mid] = payload
+        return out
+
     # ------------------------------------------------------------------
     # User tools
     # ------------------------------------------------------------------
@@ -348,7 +390,7 @@ class Zoom:
     ) -> Tuple[bool, str]:
         """Return all meeting instances (including recurring occurrences) within [from_date, to_date]."""
         try:
-            top = min(top, 50)
+            top = min(top or 10, 50)
             from_dt = _ensure_aware(datetime.fromisoformat(from_.replace("Z", "+00:00")))
             to_dt   = _ensure_aware(datetime.fromisoformat(to_.replace("Z", "+00:00"))) + timedelta(days=1)
 
@@ -373,6 +415,14 @@ class Zoom:
                     seen.add(mid)
                     parents.append(parent)
 
+            # Recurring series need GET /meetings/{id} for occurrences; Zoom has no batch read, so fetch in parallel.
+            recurring_ids = [
+                str(meeting.get("id"))
+                for meeting in parents
+                if meeting.get("type") in (3, 8) and meeting.get("id") is not None
+            ]
+            details_by_id = await self._meeting_details_by_id(recurring_ids)
+
             results: list[dict] = []
 
             for meeting in parents:
@@ -393,13 +443,9 @@ class Zoom:
 
                 # Recurring (type 8 fixed, type 3 no-fixed-time) — expand occurrences
                 elif meeting_type in (3, 8):
-                    detail_response = await self.client.meeting(meetingId=str(meeting.get("id")))
-                    detail_success, detail_cleaned = self._handle_response(detail_response, "ok")
-                    if not detail_success:
+                    detail = details_by_id.get(str(meeting.get("id")))
+                    if not detail:
                         continue
-
-                    detail = json.loads(detail_cleaned)
-                    detail = detail.get("data", detail)
                     occurrences = detail.get("occurrences", [])
 
                     for occ in occurrences:
@@ -522,7 +568,7 @@ class Zoom:
                     recurrence.end_date_time += "Z"
                 
                 # Dump the Pydantic model to a dict, applying aliases (e.g., type_ -> type)
-                body["recurrence"] = recurrence.model_dump(by_alias=True, exclude_none=True) if hasattr(recurrence, "model_dump") else recurrence
+                body["recurrence"] = recurrence.model_dump(by_alias=True, exclude_none=True)
             if invitees:
                 body["settings"] = {
                     "meeting_invitees": [{"email": email} for email in invitees]
@@ -591,7 +637,7 @@ class Zoom:
                 # Forcefully append 'Z' to end_date_time if the AI forgot it
                 if getattr(recurrence, "end_date_time", None) and not recurrence.end_date_time.endswith("Z"):
                     recurrence.end_date_time += "Z"
-                body["recurrence"] = recurrence.model_dump(by_alias=True, exclude_none=True) if hasattr(recurrence, "model_dump") else recurrence
+                body["recurrence"] = recurrence.model_dump(by_alias=True, exclude_none=True)
             if invitees:
                 body["settings"] = {
                     "meeting_invitees": [{"email": email} for email in invitees]
@@ -827,16 +873,20 @@ class Zoom:
                     seen.add(mid)
                     recurring_parents.append(parent)
 
+            # Parallel detail fetches — Zoom exposes only per-meeting GET, not a batch endpoint.
+            recurring_ids = [
+                str(r.get("id"))
+                for r in recurring_parents
+                if r.get("id") is not None
+            ]
+            details_by_id = await self._meeting_details_by_id(recurring_ids)
+
             results: list[dict] = []
 
             for recurring in recurring_parents:
-                detail_response = await self.client.meeting(meetingId=str(recurring.get("id")))
-                detail_success, detail_cleaned = self._handle_response(detail_response, "ok")
-                if not detail_success:
+                detail = details_by_id.get(str(recurring.get("id")))
+                if not detail:
                     continue
-
-                detail = json.loads(detail_cleaned)
-                detail = detail.get("data", detail)
                 recurrence = detail.get("recurrence", {})
                 occurrences = detail.get("occurrences", [])
 
@@ -1071,10 +1121,12 @@ class Zoom:
         try:
             # Zoom supports filtering via type param
             types_to_fetch = [type_] if type_ else ["personal", "company", "external"]
-            page_size = min(100, top)
-            top = min(top, 50)
+            limit = top if top is not None and top > 0 else 10
+            page_size = 100  # Zoom API page size; `limit` caps total merged results
             all_contacts: list = []
             for contact_type in types_to_fetch:
+                if len(all_contacts) >= limit:
+                    break
                 next_page_token: str | None = None
 
                 while True:
@@ -1095,7 +1147,7 @@ class Zoom:
                         contact["contact_type"] = contact_type
 
                     all_contacts.extend(contacts)
-                    if len(all_contacts) >= top:
+                    if len(all_contacts) >= limit:
                         break
 
                     # Pagination handling
@@ -1104,11 +1156,12 @@ class Zoom:
                         break
                     next_page_token = next_token
 
+            trimmed_contacts = all_contacts[:limit]
             return True, json.dumps({
                 "message": "Contacts fetched successfully",
                 "data": {
-                    "contacts": all_contacts,
-                    "total": len(all_contacts),
+                    "contacts": trimmed_contacts,
+                    "total": len(trimmed_contacts),
                 },
             })
         except Exception as e:
