@@ -36,6 +36,8 @@ interface SidebarToolsetsSectionProps {
 }
 
 interface ToolsetWithStatus extends RegistryToolset {
+  isFromRegistry?: boolean;
+  instanceId?: string;
   isConfigured: boolean;
   isAuthenticated: boolean;
 }
@@ -80,6 +82,20 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
     open: false,
     message: '',
   });
+
+  const buildUIState = (toolset: ToolsetWithStatus) => {
+    const isFromRegistry = toolset.isFromRegistry === true || !toolset.instanceId;
+    const configureTooltip =
+      isFromRegistry
+        ? (<><span>Not configured (registry).</span><br /><span>Admins can create an instance.</span></>)
+        : toolset.isConfigured && !toolset.isAuthenticated
+          ? 'Authenticate this toolset'
+          : 'Configure toolset';
+    // Consistent action icon scheme for both branches
+    const configureIcon = isFromRegistry ? UI_ICONS.alertCircle : UI_ICONS.settings;
+    const configureIconColor = isFromRegistry ? theme.palette.error.main : theme.palette.warning.main;
+    return { isFromRegistry, configureTooltip, configureIcon, configureIconColor };
+  };
 
   // Use toolsets from props (already loaded with status)
   const toolsets = toolsetsProp as ToolsetWithStatus[];
@@ -285,13 +301,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
             (toolset as any).toolsetType || toolset.name || ''
           );
           const hasTypeAlreadyInFlow = normalizedActiveToolsetTypes.includes(normalizedToolsetType);
-          const isFromRegistry = (toolset as any).isFromRegistry === true || !(toolset as any).instanceId;
-          // Tooltip for configure action (support multi-line)
-          const configureTooltip = isFromRegistry
-            ? (<><span>Not configured (registry).</span><br /><span>Admins can create an instance.</span></>)
-            : needsConfiguration && toolset.isConfigured
-              ? 'Authenticate this toolset'
-              : 'Configure toolset';
+          const { isFromRegistry, configureTooltip, configureIcon, configureIconColor } = buildUIState(toolset);
           
           // Create drag data for entire toolset
           const toolsetDragData = {
@@ -361,8 +371,8 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
               showAuthenticatedIndicator={!needsConfiguration && toolset.isAuthenticated}
               onConfigureClick={needsConfiguration ? () => handleConfigureClick(toolset) : undefined}
               configureTooltip={configureTooltip}
-              configureIcon={isFromRegistry ?  UI_ICONS.alertCircle: UI_ICONS.settings}
-              configureIconColor={isFromRegistry ? theme.palette.error.main : theme.palette.warning.main}
+              configureIcon={configureIcon}
+              configureIconColor={configureIconColor}
               onDragAttempt={
                 hasTypeAlreadyInFlow
                   ? handleDuplicateTypeDragAttempt
@@ -458,13 +468,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                     (toolset as any).toolsetType || toolset.name || ''
                   );
                   const hasTypeAlreadyInFlow = normalizedActiveToolsetTypes.includes(normalizedToolsetType);
-                  const isFromRegistry = (toolset as any).isFromRegistry === true || !instanceId;
-
-                  const configureTooltip = isFromRegistry
-                    ? (<><span>Not configured (registry).</span><br /><span>Admins can create an instance.</span></>)
-                    : needsConfiguration && toolset.isConfigured
-                      ? 'Authenticate this toolset'
-                      : 'Configure toolset';
+                  const { isFromRegistry, configureTooltip, configureIcon, configureIconColor } = buildUIState(toolset);
 
                   // Create drag data for this instance
                   const toolsetDragData = {
@@ -532,8 +536,8 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                       showAuthenticatedIndicator={!needsConfiguration && toolset.isAuthenticated}
                       onConfigureClick={needsConfiguration ? () => handleConfigureClick(toolset) : undefined}
                       configureTooltip={configureTooltip}
-                      configureIcon={isFromRegistry ? UI_ICONS.connector : UI_ICONS.alertCircle}
-                      configureIconColor={isFromRegistry ? theme.palette.info.main : theme.palette.warning.main}
+                      configureIcon={configureIcon}
+                      configureIconColor={configureIconColor}
                       onDragAttempt={
                         hasTypeAlreadyInFlow
                           ? handleDuplicateTypeDragAttempt

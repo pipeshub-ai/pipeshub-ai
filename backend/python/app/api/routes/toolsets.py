@@ -1918,7 +1918,8 @@ async def get_my_toolsets(
         for toolset_name in registry.list_toolsets():
             try:
                 meta = registry.get_toolset_metadata(toolset_name)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to get metadata for toolset '{toolset_name}': {e}")
                 meta = None
             if not meta or meta.get("isInternal", False):
                 continue
@@ -1929,7 +1930,7 @@ async def get_my_toolsets(
 
             # Determine auth type from supported list, default to NONE
             supported_auth_types = meta.get("supported_auth_types", [])
-            auth_type_value = (supported_auth_types[0] if supported_auth_types else "NONE") or "NONE"
+            auth_type_value = supported_auth_types[0] if supported_auth_types else "NONE"
 
             # Prepare tools list
             tools_list = [

@@ -103,7 +103,7 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
             appName: inst.toolsetType || '',
           })),
           // Auth status
-          isConfigured: inst.isConfigured ?? true,
+          isConfigured: inst.isConfigured,
           isAuthenticated: inst.isAuthenticated ?? false,
           isFromRegistry: !!inst.isFromRegistry,
           // Instance identification (NEW – used by agent builder when saving)
