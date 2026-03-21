@@ -2,10 +2,11 @@
 Registry for managing client factories.
 """
 
-from typing import Dict, Optional
+from typing import Optional
 
 from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.factories.base import ClientFactory
+from app.agents.tools.factories.clickup import ClickUpClientFactory
 from app.agents.tools.factories.confluence import ConfluenceClientFactory
 from app.agents.tools.factories.dropbox import DropboxClientFactory
 
@@ -23,6 +24,7 @@ from app.agents.tools.factories.github import GitHubClientFactory
 from app.agents.tools.factories.google import GoogleClientFactory
 from app.agents.tools.factories.jira import JiraClientFactory
 from app.agents.tools.factories.linear import LinearClientFactory
+from app.agents.tools.factories.mariadb import MariaDBClientFactory
 from app.agents.tools.factories.microsoft import MSGraphClientFactory
 from app.agents.tools.factories.notion import NotionClientFactory
 from app.agents.tools.factories.slack import SlackClientFactory
@@ -37,7 +39,7 @@ class ClientFactoryRegistry:
     Provides centralized access to client factories and automatic initialization.
     """
 
-    _factories: Dict[str, ClientFactory] = {}
+    _factories: dict[str, ClientFactory] = {}
     _initialized: bool = False
 
     @classmethod
@@ -131,6 +133,9 @@ class ClientFactoryRegistry:
             elif app_name == "notion":
                 cls.register(app_name, NotionClientFactory())
 
+            elif app_name == "clickup":
+                cls.register(app_name, ClickUpClientFactory())
+
             elif app_name == "microsoft":
                 # Register factories for Microsoft sub-services
                 for subdir in config.subdirectories:
@@ -147,6 +152,9 @@ class ClientFactoryRegistry:
 
             elif app_name == "linear":
                 cls.register(app_name, LinearClientFactory())
+
+            elif app_name == "mariadb":
+                cls.register(app_name, MariaDBClientFactory())
 
             # elif app_name == "linkedin":
             #     cls.register(app_name, LinkedInClientFactory())

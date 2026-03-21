@@ -85,6 +85,24 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
         : isAuthenticated
       : isConfigured;
   const supportsSync = connector.supportsSync || false;
+  const syncStatus = connector.status ?? 'IDLE';
+  const getSyncStatusLabel = (): string => {
+    if (!isActive) return 'Inactive';
+    const words = syncStatus.replace(/_/g, ' ').toLowerCase().split(' ');
+    return words.map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : '')).join(' ') || syncStatus;
+  };
+  const getSyncStatusColor = (): string => {
+    if (!isActive) return theme.palette.text.disabled;
+    switch (syncStatus) {
+      case 'FULL_SYNCING':
+        return theme.palette.warning.main;
+      case 'SYNCING':
+        return theme.palette.info.main;
+      case 'IDLE':
+      default:
+        return theme.palette.success.main;
+    }
+  };
   return (
     <Stack spacing={1.5}>
       {/* Quick Actions */}
@@ -360,6 +378,34 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
                 }}
               >
                 {isActive ? 'Active' : 'Inactive'}
+              </Typography>
+            </Stack>
+          )}
+
+          {supportsSync && (
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Box
+                  sx={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    bgcolor: getSyncStatusColor(),
+                  }}
+                />
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
+                  Sync
+                </Typography>
+              </Stack>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 500,
+                  fontSize: '0.8125rem',
+                  color: getSyncStatusColor(),
+                }}
+              >
+                {getSyncStatusLabel()}
               </Typography>
             </Stack>
           )}

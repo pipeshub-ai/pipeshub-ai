@@ -1109,7 +1109,13 @@ export default function RecordDetails() {
                           >
                             Origin
                           </Typography>
-                          <Typography variant="body2">{record.origin}</Typography>
+                          <Typography variant="body2">
+                            {record.origin === 'COLLECTION' || record.origin === 'KB'
+                              ? 'Collection'
+                              : record.origin === 'CONNECTOR'
+                                ? 'Connector'
+                                : record.origin}
+                          </Typography>
                         </Box>
 
                         <Box>

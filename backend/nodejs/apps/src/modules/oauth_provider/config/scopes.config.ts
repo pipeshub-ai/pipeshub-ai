@@ -1,8 +1,8 @@
 export interface ScopeDefinition {
-  name: string
-  description: string
-  category: string
-  requiresUserConsent: boolean
+  name: string;
+  description: string;
+  category: string;
+  requiresUserConsent: boolean;
 }
 
 export const OAuthScopes: Record<string, ScopeDefinition> = {
@@ -253,12 +253,20 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     category: 'Access',
     requiresUserConsent: true,
   },
-}
+};
 
 export const DefaultMcpScopes = [
-  'openid', 'profile', 'email', 'offline_access', 'connector:read', 
-  'connector:write', 'semantic:read', 'semantic:write', 
-  'conversation:read', 'conversation:write', 'conversation:chat'
+  'openid',
+  'profile',
+  'email',
+  'offline_access',
+  'connector:read',
+  'connector:write',
+  'semantic:read',
+  'semantic:write',
+  'conversation:read',
+  'conversation:write',
+  'conversation:chat',
 ];
 
 export const ScopeCategories = [
@@ -275,41 +283,43 @@ export const ScopeCategories = [
   'Connectors',
   'Configuration',
   'Crawling',
-]
+];
 
 export function validateScopes(requestedScopes: string[]): {
-  valid: boolean
-  invalid: string[]
+  valid: boolean;
+  invalid: string[];
 } {
-  const validScopeNames = Object.keys(OAuthScopes)
+  const validScopeNames = Object.keys(OAuthScopes);
   const invalid = requestedScopes.filter(
     (scope) => !validScopeNames.includes(scope),
-  )
+  );
   return {
     valid: invalid.length === 0,
     invalid,
-  }
+  };
 }
 
 export function getScopesByCategory(category: string): ScopeDefinition[] {
-  return Object.values(OAuthScopes).filter((scope) => scope.category === category)
+  return Object.values(OAuthScopes).filter(
+    (scope) => scope.category === category,
+  );
 }
 
 export function getAllScopesGroupedByCategory(): Record<
   string,
   ScopeDefinition[]
 > {
-  const grouped: Record<string, ScopeDefinition[]> = {}
+  const grouped: Record<string, ScopeDefinition[]> = {};
   for (const category of ScopeCategories) {
-    grouped[category] = getScopesByCategory(category)
+    grouped[category] = getScopesByCategory(category);
   }
-  return grouped
+  return grouped;
 }
 
 export function isValidScope(scope: string): boolean {
-  return scope in OAuthScopes
+  return scope in OAuthScopes;
 }
 
 export function getScopeDefinition(scope: string): ScopeDefinition | undefined {
-  return OAuthScopes[scope]
+  return OAuthScopes[scope];
 }

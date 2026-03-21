@@ -319,6 +319,16 @@ axiosInstance.interceptors.response.use(
       processedError.message = 'Something went wrong. Please try again later.';
     }
 
+    // Try to show error in snackbar if ErrorContext is available
+    try {
+      const errorContext = window.__errorContext;
+      if (errorContext && errorContext.showError) {
+        errorContext.showError(processedError.message);
+      }
+    } catch (e : unknown) {
+      console.error('Failed to show error in snackbar:', e);
+    }
+
     return Promise.reject(processedError);
   }
 );
