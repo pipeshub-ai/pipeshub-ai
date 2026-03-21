@@ -14,7 +14,6 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from github.Issue import Issue
 from PIL import Image
-from github.PullRequestReview import PullRequestReview
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -58,7 +57,6 @@ from app.models.blocks import (
     DataFormat,
     GroupSubType,
     GroupType,
-    TableRowMetadata,
 )
 from app.models.entities import (
     AppUser,
@@ -79,7 +77,9 @@ from app.sources.client.github.github import (
 from app.sources.external.github.github_ import GitHubDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-from github.PullRequest import PullRequest
+if TYPE_CHECKING:
+    from github.PullRequest import PullRequest
+    from github.PullRequestReview import PullRequestReview
 
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -240,11 +240,11 @@ class GithubConnector(BaseConnector):
     async def stream_record(self, record: Record) -> StreamingResponse:
         if record.record_type == RecordType.TICKET:
             self.logger.info("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
-            
+
             blocks_container, remaining_attachments_updates= await self._build_ticket_blocks(record)
             self.logger.info(f"Sending remaining {len(remaining_attachments_updates)} attachments to process of issues")
             await self._process_new_records(remaining_attachments_updates)
-            
+
             async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
                 json_str = blocks_container.model_dump_json(indent=2)
                 chunk_size = 81920
@@ -261,7 +261,7 @@ class GithubConnector(BaseConnector):
             )
         elif record.record_type == RecordType.PULL_REQUEST:
             self.logger.info("🟣🟣🟣 STREAM_GITHUB_PULL_REQUEST_MARKER 🟣🟣🟣")
-            
+
             block_container, remaining_attachment_updates= await self._build_pull_request_blocks(record)
             self.logger.info(f"Sending remaining {len(remaining_attachment_updates)} attachments to process of pull request")
             await self._process_new_records(remaining_attachment_updates)
@@ -419,7 +419,7 @@ class GithubConnector(BaseConnector):
             record_group = RecordGroup(
                 id=str(uuid.uuid4()),
                 org_id=self.data_entities_processor.org_id,
-                name=repo.url,
+                name=repo.full_name,
                 group_type=RecordGroupType.REPOSITORY.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
@@ -530,7 +530,7 @@ class GithubConnector(BaseConnector):
                     # reviews
                     reviews_attachments = await self.make_reviews_attachments(issue, record_update.record)
                     record_updates_batch.extend(reviews_attachments)
-                    
+
             if record_update:
                 record_updates_batch.append(record_update)
                 # get the file attachments from issue description / pr description
@@ -666,7 +666,7 @@ class GithubConnector(BaseConnector):
         block_group_number = 0
         blocks: list[Block] = []
         block_groups: list[BlockGroup] = []
-        list_remaining_records: list[RecordUpdate] = []        
+        list_remaining_records: list[RecordUpdate] = []
         issue = issue_res.data
 
         # getting modi. markdown  content with images as base64
@@ -783,7 +783,7 @@ class GithubConnector(BaseConnector):
                 if record_updates:
                     issue_comment_attachments.extend(record_updates)
         return issue_comment_attachments
-    
+
     async def make_r_comment_attachments(self, issue:Issue, record: Record) -> list[RecordUpdate]:
         r_comment_attachments: list[RecordUpdate] = []
         repo_fullname = issue.repository.full_name.split("/")
@@ -807,7 +807,7 @@ class GithubConnector(BaseConnector):
                 record_updates = await self.make_file_records_from_list(attachments,record)
                 r_comment_attachments.extend(record_updates)
         return r_comment_attachments
-    
+
     async def make_reviews_attachments(self, issue:Issue, record: Record) -> list[RecordUpdate]:
         reviews_attachments: list[RecordUpdate] = []
         repo_fullname = issue.repository.full_name.split("/")
@@ -991,7 +991,7 @@ class GithubConnector(BaseConnector):
         # pr_url = record.weburl.split("/")
         pr_url = getattr(record,"weburl","")
         if not pr_url:
-            raise ValueError(f"Web URL is required for indexing pull request")
+            raise ValueError("Web URL is required for indexing pull request")
         self.logger.info(f"Building blocks for pull request: {record.weburl}")
         pr_url = pr_url.split("/")
         pr_number = int(pr_url[6])
@@ -1168,7 +1168,7 @@ class GithubConnector(BaseConnector):
                 )
                 block_groups.append(bg_n)
                 block_group_number += 1
-        
+
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
         self.logger.info(f"Blocks container created for pr{pr_number}")
         return blocks_container , list_remaining_records
@@ -1359,7 +1359,7 @@ class GithubConnector(BaseConnector):
                         child_name=record_update[0].record.record_name,
                     ))
         return child_records, remaining_record_updates
-     
+
     async def make_block_comment_of_attachments(self, markdown_raw:str, record:Record)->tuple[list[CommentAttachment],list[RecordUpdate]] :
         cleaned_content, attachments = await self.clean_github_content(markdown_raw)
         child_comment_records: list[CommentAttachment] = []
