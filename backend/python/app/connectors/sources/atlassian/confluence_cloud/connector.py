@@ -11,21 +11,13 @@ Authentication: OAuth 2.0 (3-legged OAuth)
 
 import base64
 import json
-import re
 import uuid
 from collections import defaultdict
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from logging import Logger
 from typing import (
     Any,
-    AsyncGenerator,
-    Awaitable,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Set,
-    Tuple,
 )
 from urllib.parse import parse_qs, urlparse
 
@@ -33,7 +25,12 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -70,11 +67,14 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.sources.atlassian.confluence_cloud.block_parser import (
+    ConfluenceBlockParser,
+)
 from app.connectors.sources.atlassian.core.apps import ConfluenceApp
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.blocks import (
-    Block,
+    BlockComment,
     BlockGroup,
     BlockGroupChildren,
     BlocksContainer,
@@ -126,7 +126,7 @@ CONTENT_EXPAND_PARAMS = (
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 
-def extract_media_from_adf(adf_content: Dict[str, Any]) -> List[Dict[str, Any]]:
+def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Extract all media nodes from ADF content.
 
@@ -141,9 +141,9 @@ def extract_media_from_adf(adf_content: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not adf_content or not isinstance(adf_content, dict):
         return []
 
-    media_nodes: List[Dict[str, Any]] = []
+    media_nodes: list[dict[str, Any]] = []
 
-    def traverse(node: Dict[str, Any]) -> None:
+    def traverse(node: dict[str, Any]) -> None:
         """Recursively traverse ADF nodes to find media."""
         if not isinstance(node, dict):
             return
@@ -186,533 +186,6 @@ def extract_media_from_adf(adf_content: Dict[str, Any]) -> List[Dict[str, Any]]:
         traverse(adf_content)
 
     return media_nodes
-
-
-def adf_to_text(
-    adf_content: Dict[str, Any],
-    media_cache: Optional[Dict[str, str]] = None,
-    logger: Optional[Logger] = None
-) -> str:
-    """
-    Convert Atlassian Document Format (ADF) to Markdown.
-    Returns markdown-formatted text with headers, lists, code blocks, tables, etc.
-
-    Args:
-        adf_content: The ADF document to convert
-        media_cache: Optional dict mapping media_id -> base64 data URI for embedding images
-        logger: Optional logger for debug messages
-    """
-    if not adf_content or not isinstance(adf_content, dict):
-        return ""
-
-    text_parts: List[str] = []
-    _media_cache = media_cache or {}
-
-    def apply_text_marks(text: str, marks: List[Dict[str, Any]]) -> str:
-        """Apply markdown formatting based on text marks (bold, italic, link, etc.)."""
-        if not marks:
-            return text
-
-        # Process marks in reverse order (innermost first)
-        for mark in reversed(marks):
-            mark_type = mark.get("type", "")
-            attrs = mark.get("attrs", {})
-
-            if mark_type == "strong":
-                text = f"**{text}**"
-            elif mark_type == "em":
-                text = f"*{text}*"
-            elif mark_type == "code":
-                text = f"`{text}`"
-            elif mark_type == "strike":
-                text = f"~~{text}~~"
-            elif mark_type == "link":
-                href = attrs.get("href", "")
-                if href:
-                    text = f"[{text}]({href})"
-            elif mark_type == "underline":
-                # Markdown doesn't have underline, use emphasis
-                text = f"*{text}*"
-            elif mark_type == "textColor":
-                # Markdown doesn't support inline colors, but we can preserve the text
-                # Optionally add HTML span with color (if downstream supports HTML in markdown)
-                color = attrs.get("color", "")
-                if color:
-                    # Use HTML span for color (some markdown renderers support this)
-                    text = f'<span style="color: {color}">{text}</span>'
-
-        return text
-
-    def extract_list_item_content(list_item: Dict[str, Any], depth: int) -> Dict[str, str]:
-        """Extract text content and nested lists from a list item.
-
-        Returns dict with:
-            - text: The main text content of the list item
-            - nested: Any nested lists formatted with proper indentation
-        """
-        content = list_item.get("content", [])
-        text_parts: List[str] = []
-        nested_parts: List[str] = []
-
-        for child in content:
-            child_type = child.get("type", "")
-            if child_type in ["bulletList", "orderedList", "taskList"]:
-                # Nested list - extract with current depth
-                nested_text = extract_text(child, depth)
-                if nested_text:
-                    nested_parts.append(nested_text)
-            else:
-                # Regular content (paragraph, text, etc.)
-                child_text = extract_text(child, depth)
-                if child_text:
-                    text_parts.append(child_text)
-
-        # Join text parts, clean up excessive whitespace
-        main_text = " ".join(text_parts).strip()
-        main_text = re.sub(r'\s+', ' ', main_text)  # Normalize whitespace
-
-        # Join nested lists
-        nested_text = "\n".join(nested_parts) if nested_parts else ""
-
-        return {"text": main_text, "nested": nested_text}
-
-    def extract_text(node: Dict[str, Any], list_depth: int = 0, strip_marks: bool = False) -> str:
-        """Recursively extract text from ADF nodes and convert to markdown.
-
-        Args:
-            node: The ADF node to process
-            list_depth: Current nesting level for lists (0 = not in list, 1+ = nested depth)
-            strip_marks: If True, ignore text formatting marks (for table cells)
-        """
-        if not isinstance(node, dict):
-            return ""
-
-        node_type = node.get("type", "")
-        text = ""
-        indent = "  " * list_depth  # 2 spaces per nesting level
-
-        if node_type == "text":
-            text = node.get("text", "")
-            # Skip formatting marks for table cells (they don't render well in markdown tables)
-            if not strip_marks:
-                marks = node.get("marks", [])
-                text = apply_text_marks(text, marks)
-
-        elif node_type == "paragraph":
-            content = node.get("content", [])
-            para_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
-            if para_text:
-                # In lists or tables, paragraphs should contribute text without adding newlines
-                if list_depth > 0 or strip_marks:
-                    # Just return the text, no newlines - let list item/table cell handle spacing
-                    text = para_text
-                else:
-                    # Check if paragraph contains only a list - if so, don't add extra spacing
-                    has_list = any(child.get("type") in ["bulletList", "orderedList", "taskList"] for child in content)
-                    if has_list:
-                        # Lists already have their own spacing, don't add extra
-                        text = para_text
-                    else:
-                        text = f"{para_text}\n\n"
-
-        elif node_type == "heading":
-            level = node.get("attrs", {}).get("level", 1)
-            content = node.get("content", [])
-            heading_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
-            if heading_text:
-                if strip_marks:
-                    # In tables, just return heading text without # markers
-                    text = heading_text
-                else:
-                    text = f"{'#' * level} {heading_text}\n\n"
-
-        elif node_type == "blockquote":
-            content = node.get("content", [])
-            quote_text = "".join(extract_text(child, list_depth, strip_marks) for child in content).strip()
-            if quote_text:
-                if strip_marks:
-                    # In tables, just return the quote text
-                    text = quote_text
-                else:
-                    # Add > to each line for proper markdown blockquote
-                    quoted_lines = quote_text.split("\n")
-                    quoted_lines = [f"> {line}" if line.strip() else ">" for line in quoted_lines]
-                    text = "\n".join(quoted_lines) + "\n\n"
-
-        elif node_type in ["bulletList", "unorderedList"]:
-            content = node.get("content", [])
-            bullet_lines: List[str] = []
-
-            for child in content:
-                child_type = child.get("type", "")
-
-                # Extract the text content from the list item
-                if child_type == "listItem":
-                    # Standard structure: listItem > paragraph > text
-                    item_content = extract_list_item_content(child, list_depth + 1)
-                    item_text = item_content.get("text", "").strip()
-                    nested_content = item_content.get("nested", "")
-                else:
-                    # Fallback: directly extract text from whatever node this is
-                    item_text = extract_text(child, list_depth + 1, strip_marks).strip()
-                    nested_content = ""
-
-                # Add bullet marker if we have text
-                if item_text:
-                    bullet_line = f"{indent}- {item_text}"
-                    bullet_lines.append(bullet_line)
-                    if nested_content:
-                        bullet_lines.append(nested_content)
-
-            # Join all bullet items with newlines
-            if bullet_lines:
-                text = "\n".join(bullet_lines)
-                if list_depth == 0:
-                    text += "\n\n"
-
-        # Handle both "orderedList" and "numberedList" (some variations exist)
-        elif node_type in ["orderedList", "numberedList"]:
-            content = node.get("content", [])
-            numbered_lines: List[str] = []
-
-            for i, child in enumerate(content, start=1):
-                child_type = child.get("type", "")
-
-                # Extract the text content from the list item
-                if child_type == "listItem":
-                    # Standard structure: listItem > paragraph > text
-                    item_content = extract_list_item_content(child, list_depth + 1)
-                    item_text = item_content.get("text", "").strip()
-                    nested_content = item_content.get("nested", "")
-                else:
-                    # Fallback: directly extract text from whatever node this is
-                    item_text = extract_text(child, list_depth + 1, strip_marks).strip()
-                    nested_content = ""
-
-                # Add number marker if we have text
-                if item_text:
-                    numbered_line = f"{indent}{i}. {item_text}"
-                    numbered_lines.append(numbered_line)
-                    if nested_content:
-                        numbered_lines.append(nested_content)
-
-            # Join all numbered items with newlines
-            if numbered_lines:
-                text = "\n".join(numbered_lines)
-                if list_depth == 0:
-                    text += "\n\n"
-
-        elif node_type == "listItem":
-            # This is handled by extract_list_item_content, but provide fallback
-            content = node.get("content", [])
-            text = "".join(extract_text(child, list_depth) for child in content).strip()
-
-        elif node_type == "codeBlock":
-            content = node.get("content", [])
-            code_text = "".join(extract_text(child, list_depth) for child in content)
-            language = node.get("attrs", {}).get("language", "")
-            # Preserve code formatting - don't strip, but ensure proper code block
-            text = f"```{language}\n{code_text}\n```\n\n"
-
-        elif node_type == "inlineCode":
-            text = f"`{node.get('text', '')}`"
-
-        elif node_type == "hardBreak":
-            text = "\n"
-
-        elif node_type == "rule":
-            text = "---\n\n"
-
-        elif node_type == "media":
-            attrs = node.get("attrs", {})
-            media_id = attrs.get("id", "")
-            alt = attrs.get("alt", "")
-            title = attrs.get("title", "")
-
-            display_text = alt or title or "attachment"
-
-            # Check if we have base64 data for this media in cache
-            if media_id and media_id in _media_cache:
-                data_uri = _media_cache[media_id]
-                if list_depth > 0:
-                    text = f"\n![{display_text}]({data_uri})\n"
-                else:
-                    text = f"\n![{display_text}]({data_uri})\n\n"
-            else:
-                # Fallback: just show the image name/alt text
-                if list_depth > 0:
-                    text = f"\n![{display_text}]\n"
-                else:
-                    text = f"\n![{display_text}]\n\n"
-
-        elif node_type == "mention":
-            attrs = node.get("attrs", {})
-            mention_text = attrs.get("text", attrs.get("id", "mention"))
-            text = f"@{mention_text}"
-
-        elif node_type == "emoji":
-            attrs = node.get("attrs", {})
-            short_name = attrs.get("shortName", "")
-            if short_name:
-                text = f":{short_name}:"
-            else:
-                text = attrs.get("text", "")
-
-        elif node_type == "table":
-            content = node.get("content", [])
-            rows: List[str] = []
-            is_first_row = True
-
-            for row in content:
-                if row.get("type") == "tableRow":
-                    cells: List[str] = []
-                    for cell in row.get("content", []):
-                        cell_type = cell.get("type", "")
-                        if cell_type in ["tableCell", "tableHeader"]:
-                            # Strip marks (bold, italic, etc.) - they don't render in markdown tables
-                            cell_text = extract_text(cell, list_depth, strip_marks=True).strip()
-                            # Escape pipe characters in cell content
-                            cell_text = cell_text.replace("|", "\\|")
-                            # Replace newlines with space for markdown table compatibility
-                            cell_text = cell_text.replace("\n", " ")
-                            cells.append(cell_text)
-
-                    if cells:
-                        rows.append("| " + " | ".join(cells) + " |")
-
-                        # Add header separator after first row
-                        if is_first_row:
-                            separator = "| " + " | ".join(["---"] * len(cells)) + " |"
-                            rows.append(separator)
-                            is_first_row = False
-
-            if rows:
-                text = "\n".join(rows) + "\n\n"
-
-        elif node_type in ["tableCell", "tableHeader"]:
-            content = node.get("content", [])
-            # Pass strip_marks through to children
-            text = "".join(extract_text(child, list_depth, strip_marks) for child in content)
-
-        elif node_type == "panel":
-            attrs = node.get("attrs", {})
-            panel_type = attrs.get("panelType", "info")
-            content = node.get("content", [])
-            panel_text = "".join(extract_text(child, list_depth) for child in content).strip()
-            if panel_text:
-                # Use blockquote style for panels
-                panel_lines = panel_text.split("\n")
-                panel_lines = [f"> **{panel_type.upper()}**: {line}" if line.strip() else ">" for line in panel_lines]
-                text = "\n".join(panel_lines) + "\n\n"
-
-        # Media wrappers - just extract the media content
-        elif node_type in ["mediaSingle", "mediaGroup"]:
-            content = node.get("content", [])
-            text = "".join(extract_text(child, list_depth) for child in content)
-
-        # Smart links / inline cards
-        elif node_type == "inlineCard":
-            attrs = node.get("attrs", {})
-            url = attrs.get("url", "")
-            if url:
-                text = f"[{url}]({url})"
-
-        # Task lists (checkboxes)
-        elif node_type == "taskList":
-            content = node.get("content", [])
-            task_items: List[str] = []
-            for child in content:
-                if child.get("type") == "taskItem":
-                    item_text = extract_text(child, list_depth + 1).strip()
-                    if item_text:
-                        task_items.append(item_text)
-            if task_items:
-                text = "\n".join(task_items) + "\n\n"
-
-        elif node_type == "taskItem":
-            attrs = node.get("attrs", {})
-            state = attrs.get("state", "TODO")
-            content = node.get("content", [])
-            item_text = "".join(extract_text(child, list_depth) for child in content).strip()
-            checkbox = "[x]" if state == "DONE" else "[ ]"
-            task_indent = "  " * (list_depth - 1) if list_depth > 0 else ""
-            text = f"{task_indent}- {checkbox} {item_text}"
-
-        # Decision lists
-        elif node_type == "decisionList":
-            content = node.get("content", [])
-            decision_items: List[str] = []
-            for child in content:
-                if child.get("type") == "decisionItem":
-                    item_text = extract_text(child, list_depth + 1).strip()
-                    if item_text:
-                        decision_items.append(item_text)
-            if decision_items:
-                text = "\n".join(decision_items) + "\n\n"
-
-        elif node_type == "decisionItem":
-            attrs = node.get("attrs", {})
-            state = attrs.get("state", "DECIDED")
-            content = node.get("content", [])
-            item_text = "".join(extract_text(child, list_depth) for child in content).strip()
-            marker = "✓" if state == "DECIDED" else "◇"
-            decision_indent = "  " * (list_depth - 1) if list_depth > 0 else ""
-            text = f"{decision_indent}{marker} {item_text}"
-
-        # Status badges
-        elif node_type == "status":
-            attrs = node.get("attrs", {})
-            status_text = attrs.get("text", "")
-            if status_text:
-                text = f"[{status_text}]"
-
-        # Date nodes
-        elif node_type == "date":
-            attrs = node.get("attrs", {})
-            timestamp = attrs.get("timestamp", "")
-            if timestamp:
-                try:
-                    # Convert timestamp to readable date
-                    dt = datetime.fromtimestamp(int(timestamp) / 1000, tz=timezone.utc)
-                    text = dt.strftime("%Y-%m-%d")
-                except (ValueError, TypeError):
-                    text = timestamp
-
-        # Expand/collapsible sections
-        elif node_type in ["expand", "nestedExpand"]:
-            attrs = node.get("attrs", {})
-            title = attrs.get("title", "Details")
-            content = node.get("content", [])
-            expand_text = "".join(extract_text(child, list_depth) for child in content).strip()
-            if expand_text:
-                text = f"**{title}**\n{expand_text}\n\n"
-
-        # Layout containers - just extract content
-        elif node_type == "layoutSection":
-            content = node.get("content", [])
-            column_texts: List[str] = []
-            for child in content:
-                child_text = extract_text(child, list_depth).strip()
-                if child_text:
-                    column_texts.append(child_text)
-            if column_texts:
-                text = "\n\n".join(column_texts) + "\n\n"
-
-        elif node_type == "layoutColumn":
-            content = node.get("content", [])
-            text = "".join(extract_text(child, list_depth) for child in content)
-
-        # Placeholder nodes - just show placeholder text
-        elif node_type == "placeholder":
-            attrs = node.get("attrs", {})
-            text = attrs.get("text", "")
-
-        # Extension nodes (Confluence-specific) - handle nested ADF
-        elif node_type == "extension":
-            attrs = node.get("attrs", {})
-            extension_type = attrs.get("extensionType", "")
-            extension_key = attrs.get("extensionKey", "")
-            parameters = attrs.get("parameters", {})
-
-            # Handle nested ADF in extension parameters (e.g., nested tables)
-            nested_adf_str = parameters.get("adf")
-            if nested_adf_str:
-                try:
-                    nested_adf = json.loads(nested_adf_str) if isinstance(nested_adf_str, str) else nested_adf_str
-                    # Recursively parse nested ADF
-                    nested_text = extract_text(nested_adf, list_depth, strip_marks)
-                    if nested_text:
-                        text = nested_text
-                except Exception as e:
-                    if logger:
-                        logger.debug(f"Failed to parse nested ADF in extension: {e}")
-                    # Fallback: try to extract from content
-                    content = node.get("content", [])
-                    text = "".join(extract_text(child, list_depth, strip_marks) for child in content)
-            else:
-                # No nested ADF - extract from content or show extension info
-                content = node.get("content", [])
-                if content:
-                    text = "".join(extract_text(child, list_depth, strip_marks) for child in content)
-                else:
-                    # Show extension type as placeholder
-                    text = f"[Extension: {extension_key or extension_type}]"
-
-        # Generic fallback for any node with content
-        elif "content" in node:
-            content = node.get("content", [])
-            text = "".join(extract_text(child, list_depth, strip_marks) for child in content)
-
-        return text
-
-    if "content" in adf_content:
-        for node in adf_content.get("content", []):
-            text = extract_text(node)
-            if text:
-                text_parts.append(text)
-    else:
-        text = extract_text(adf_content)
-        if text:
-            text_parts.append(text)
-
-    result = "".join(text_parts)
-    # Clean up excessive newlines (more than 2 consecutive)
-    result = re.sub(r'\n{3,}', '\n\n', result)
-    # Remove trailing whitespace from lines
-    result = "\n".join(line.rstrip() for line in result.split("\n"))
-    # Clean up spacing around lists - remove blank lines before lists
-    # This helps when paragraphs contain lists - ensure lists start without extra spacing
-    result = re.sub(r'\n\n+(\d+\. )', r'\n\1', result)  # Remove extra newlines before numbered list items
-    result = re.sub(r'\n\n+(- )', r'\n\1', result)  # Remove extra newlines before bullet list items
-    # Clean up spacing between list items (should be single newline)
-    result = re.sub(r'(\n\d+\. .+)\n\n+(\d+\. )', r'\1\n\2', result)  # Between numbered items
-    result = re.sub(r'(\n- .+)\n\n+(- )', r'\1\n\2', result)  # Between bullet items
-
-    return result.strip()
-
-
-async def adf_to_text_with_images(
-    adf_content: Dict[str, Any],
-    media_fetcher: Callable[[str, str], Awaitable[Optional[str]]],
-    logger: Optional[Logger] = None
-) -> str:
-    """
-    Convert Atlassian Document Format (ADF) to Markdown with embedded images.
-
-    This async version fetches media content and embeds it as base64 data URIs.
-    Used for streaming content that needs to be indexed by multimodal models.
-
-    Args:
-        adf_content: The ADF document to convert
-        media_fetcher: Async callback that takes (media_id, alt_text) and returns
-                      base64 data URI string or None if fetch fails
-        logger: Optional logger for debug messages
-
-    Returns:
-        Markdown text with images embedded as base64 data URIs
-    """
-    if not adf_content or not isinstance(adf_content, dict):
-        return ""
-
-    # Extract all media nodes and fetch their content
-    media_nodes = extract_media_from_adf(adf_content)
-    media_cache: Dict[str, str] = {}
-
-    # Fetch all media (sequentially to avoid rate limits)
-    for media_info in media_nodes:
-        media_id = media_info.get("id", "")
-        alt_text = media_info.get("alt", "")
-        if media_id:
-            try:
-                data_uri = await media_fetcher(media_id, alt_text)
-                if data_uri:
-                    media_cache[media_id] = data_uri
-            except Exception as e:
-                if logger:
-                    logger.debug(f"Failed to fetch media {media_id} for embedding: {e}")
-
-    # Reuse the main adf_to_text function with the media cache
-    return adf_to_text(adf_content, media_cache, logger)
 
 
 @ConnectorBuilder("Confluence")\
@@ -872,8 +345,8 @@ class ConfluenceConnector(BaseConnector):
         )
 
         # Client instances
-        self.external_client: Optional[ExternalConfluenceClient] = None
-        self.data_source: Optional[ConfluenceDataSource] = None
+        self.external_client: ExternalConfluenceClient | None = None
+        self.data_source: ConfluenceDataSource | None = None
         self.connector_id: str = connector_id
 
         # Initialize sync points for incremental sync
@@ -1213,7 +686,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Group sync failed: {e}", exc_info=True)
             raise
 
-    async def _sync_spaces(self) -> List[RecordGroup]:
+    async def _sync_spaces(self) -> list[RecordGroup]:
         """
         Sync spaces from Confluence with permissions using cursor-based pagination.
 
@@ -1542,9 +1015,11 @@ class ConfluenceConnector(BaseConnector):
                         attachments = attachment_data.get("results", [])
 
                         if attachments:
+                            # v2 list API puts base URL only on response _links, not per attachment
+                            v2_attachments_base_url: str | None = None
 
                             try:
-                                embedded_image_ids: Set[str] = set()
+                                embedded_image_ids: set[str] = set()
 
                                 try:
                                     if content_type == "page":
@@ -1559,15 +1034,16 @@ class ConfluenceConnector(BaseConnector):
                                             status=["current"],  # Only fetch current version attachments
                                             limit=100
                                         )
-                                    if v2_response and v2_response.status == HttpStatusCode.SUCCESS.valu:
+                                    if v2_response and v2_response.status == HttpStatusCode.SUCCESS.value:
                                         v2_data = v2_response.json()
                                         attachments_v2 = v2_data.get("results", [])
                                         if attachments_v2:
                                             attachments = attachments_v2
+                                            v2_attachments_base_url = v2_data.get("_links", {}).get("base")
                                 except Exception as v2_error:
                                     self.logger.debug(f"Error fetching v2 attachments: {v2_error}")
 
-                                attachment_mime_types: Dict[str, str] = {}
+                                attachment_mime_types: dict[str, str] = {}
                                 for att in attachments:
                                     att_id = att.get("id")
                                     if att_id:
@@ -1585,7 +1061,7 @@ class ConfluenceConnector(BaseConnector):
                                         body_format="atlas_doc_format"
                                     )
 
-                                if not page_adf_response or page_adf_response.status != HttpStatusCode.SUCCESS.valu:
+                                if not page_adf_response or page_adf_response.status != HttpStatusCode.SUCCESS.value:
                                     raise Exception(f"Failed to fetch ADF content: status={page_adf_response.status if page_adf_response else 'None'}")
 
                                 page_adf_data = page_adf_response.json()
@@ -1618,7 +1094,7 @@ class ConfluenceConnector(BaseConnector):
                                             limit=100
                                         )
 
-                                    if footer_comments_response and footer_comments_response.status == HttpStatusCode.SUCCESS.valu:
+                                    if footer_comments_response and footer_comments_response.status == HttpStatusCode.SUCCESS.value:
                                         footer_comments_data = footer_comments_response.json()
                                         footer_comments = footer_comments_data.get("results", [])
 
@@ -1654,7 +1130,7 @@ class ConfluenceConnector(BaseConnector):
                                             limit=100
                                         )
 
-                                    if inline_comments_response and inline_comments_response.status == HttpStatusCode.SUCCESS.valu:
+                                    if inline_comments_response and inline_comments_response.status == HttpStatusCode.SUCCESS.value:
                                         inline_comments_data = inline_comments_response.json()
                                         inline_comments = inline_comments_data.get("results", [])
 
@@ -1698,7 +1174,8 @@ class ConfluenceConnector(BaseConnector):
                                         item_id,
                                         space_id,
                                         existing_record=existing_attachment,
-                                        parent_node_id=parent_node_id
+                                        parent_node_id=parent_node_id,
+                                        attachment_api_base_url=v2_attachments_base_url,
                                     )
 
                                     if attachment_record:
@@ -1774,7 +1251,7 @@ class ConfluenceConnector(BaseConnector):
             last_sync_time_ms = last_audit_sync.get("last_sync_time_ms") if last_audit_sync else None
 
             # Current time as checkpoint
-            current_time_ms = int(datetime.now().timestamp() * 1000)
+            current_time_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
             # First run: Initialize checkpoint and skip (permissions already synced during content sync)
             if last_sync_time_ms is None:
@@ -1825,7 +1302,7 @@ class ConfluenceConnector(BaseConnector):
         self,
         start_date_ms: int,
         end_date_ms: int
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Fetch audit logs and extract content titles that had permission changes.
 
@@ -1878,7 +1355,7 @@ class ConfluenceConnector(BaseConnector):
 
         return list(content_titles_set)
 
-    def _extract_content_title_from_audit_record(self, record: Dict[str, Any]) -> Optional[str]:
+    def _extract_content_title_from_audit_record(self, record: dict[str, Any]) -> str | None:
         """
         Extract content title from an audit record if it's a content permission change.
 
@@ -1913,7 +1390,7 @@ class ConfluenceConnector(BaseConnector):
         return content_obj.get("name")
 
 
-    async def _sync_content_permissions_by_titles(self, titles: List[str]) -> None:
+    async def _sync_content_permissions_by_titles(self, titles: list[str]) -> None:
         """
         Search for content by titles and sync their current permissions.
 
@@ -2038,7 +1515,7 @@ class ConfluenceConnector(BaseConnector):
 
         self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
 
-    async def _fetch_space_permissions(self, space_id: str, space_name: str) -> List[Permission]:
+    async def _fetch_space_permissions(self, space_id: str, space_name: str) -> list[Permission]:
         """
         Fetch all permissions for a space with cursor-based pagination.
 
@@ -2095,7 +1572,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch permissions for space {space_name}: {e}")
             return []  # Return empty list on error, space will be created without permissions
 
-    async def _fetch_page_permissions(self, page_id: str) -> List[Permission]:
+    async def _fetch_page_permissions(self, page_id: str) -> list[Permission]:
         """
         Fetch permissions for a Confluence page using v1 API.
 
@@ -2141,11 +1618,11 @@ class ConfluenceConnector(BaseConnector):
         page_id: str,
         page_title: str,
         comment_type: str,
-        page_permissions: List[Permission],
-        parent_space_id: Optional[str],
+        page_permissions: list[Permission],
+        parent_space_id: str | None,
         parent_type: str = "page",
-        parent_node_id: Optional[str] = None
-    ) -> List[tuple[CommentRecord, List[Permission]]]:
+        parent_node_id: str | None = None
+    ) -> list[tuple[CommentRecord, list[Permission]]]:
         """
         Recursively fetch all comments (footer or inline) for a page or blogpost.
 
@@ -2290,10 +1767,10 @@ class ConfluenceConnector(BaseConnector):
         comment_id: str,
         comment_type: str,
         page_id: str,
-        parent_space_id: Optional[str],
-        page_permissions: List[Permission],
-        parent_node_id: Optional[str] = None
-    ) -> List[tuple[CommentRecord, List[Permission]]]:
+        parent_space_id: str | None,
+        page_permissions: list[Permission],
+        parent_node_id: str | None = None
+    ) -> list[tuple[CommentRecord, list[Permission]]]:
         """
         Recursively fetch all children (replies) of a comment.
 
@@ -2406,15 +1883,15 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_comment_record(
         self,
-        comment_data: Dict[str, Any],
+        comment_data: dict[str, Any],
         page_id: str,
-        parent_space_id: Optional[str],
+        parent_space_id: str | None,
         comment_type: str,
-        parent_comment_id: Optional[str],
-        base_url: Optional[str] = None,
-        existing_record: Optional[Record] = None,
-        parent_node_id: Optional[str] = None
-    ) -> Optional[CommentRecord]:
+        parent_comment_id: str | None,
+        base_url: str | None = None,
+        existing_record: Record | None = None,
+        parent_node_id: str | None = None
+    ) -> CommentRecord | None:
         """
         Transform Confluence comment data to CommentRecord entity.
 
@@ -2517,7 +1994,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform comment: {e}")
             return None
 
-    def _construct_web_url(self, links: Dict[str, Any], base_url: Optional[str] = None) -> Optional[str]:
+    def _construct_web_url(self, links: dict[str, Any], base_url: str | None = None) -> str | None:
         """
         Construct web URL from _links dictionary.
 
@@ -2548,7 +2025,7 @@ class ConfluenceConnector(BaseConnector):
 
         return None
 
-    def _extract_cursor_from_next_link(self, next_url: str) -> Optional[str]:
+    def _extract_cursor_from_next_link(self, next_url: str) -> str | None:
         """
         Extract cursor value from _links.next URL.
 
@@ -2583,7 +2060,7 @@ class ConfluenceConnector(BaseConnector):
         principal_id: str,
         permission_type: PermissionType,
         create_pseudo_group_if_missing: bool = False
-    ) -> Optional[Permission]:
+    ) -> Permission | None:
         """
         Create Permission object from principal data (user or group).
 
@@ -2664,7 +2141,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to create permission from principal: {e}")
             return None
 
-    async def _create_pseudo_group(self, account_id: str) -> Optional[AppUserGroup]:
+    async def _create_pseudo_group(self, account_id: str) -> AppUserGroup | None:
         """
         Create a pseudo-group for a user without email.
 
@@ -2696,7 +2173,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
             return None
 
-    async def _transform_space_permission(self, perm_data: Dict[str, Any]) -> Optional[Permission]:
+    async def _transform_space_permission(self, perm_data: dict[str, Any]) -> Permission | None:
         """
         Transform Confluence space permission to Permission object.
 
@@ -2776,9 +2253,11 @@ class ConfluenceConnector(BaseConnector):
             return PermissionType.COMMENT
 
         # Page/blogpost/attachment operations = WRITE
-        if target_type in ["page", "blogpost", "attachment"]:
-            if operation_key in ["create", "delete", "archive"]:
-                return PermissionType.WRITE
+        if (
+            target_type in ["page", "blogpost", "attachment"]
+            and operation_key in ["create", "delete", "archive"]
+        ):
+            return PermissionType.WRITE
 
         # Everything else = OTHER
         return PermissionType.OTHER
@@ -2806,8 +2285,8 @@ class ConfluenceConnector(BaseConnector):
 
     async def _transform_page_restriction_to_permissions(
         self,
-        restriction_data: Dict[str, Any]
-    ) -> List[Permission]:
+        restriction_data: dict[str, Any]
+    ) -> list[Permission]:
         """
         Transform page restriction data (from v1 API) to Permission objects.
         Creates pseudo-groups for users without email to preserve permissions.
@@ -2883,9 +2362,9 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_space_record_group(
         self,
-        space_data: Dict[str, Any],
-        base_url: Optional[str] = None
-    ) -> Optional[RecordGroup]:
+        space_data: dict[str, Any],
+        base_url: str | None = None
+    ) -> RecordGroup | None:
         """
         Transform Confluence space data to RecordGroup entity.
 
@@ -2938,10 +2417,10 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_webpage_record(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         record_type: RecordType,
-        existing_record: Optional[Record] = None
-    ) -> Optional[WebpageRecord]:
+        existing_record: Record | None = None
+    ) -> WebpageRecord | None:
         """
         Unified transform for page/blogpost data to WebpageRecord.
 
@@ -3089,12 +2568,13 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_attachment_file_record(
         self,
-        attachment_data: Dict[str, Any],
+        attachment_data: dict[str, Any],
         parent_external_record_id: str,
-        parent_external_record_group_id: Optional[str],
-        existing_record: Optional[Record] = None,
-        parent_node_id: Optional[str] = None
-    ) -> Optional[FileRecord]:
+        parent_external_record_group_id: str | None,
+        existing_record: Record | None = None,
+        parent_node_id: str | None = None,
+        attachment_api_base_url: str | None = None,
+    ) -> FileRecord | None:
         """
         Transform Confluence attachment to FileRecord entity.
         Supports both v1 and v2 API response formats.
@@ -3105,6 +2585,7 @@ class ConfluenceConnector(BaseConnector):
             parent_external_record_group_id: Space ID from parent page
             existing_record: Optional existing record to check for updates
             parent_node_id: Internal record ID of parent page
+            attachment_api_base_url: Root _links.base from v2 paginated attachment responses (not on each item)
 
         Returns:
             FileRecord object or None if transformation fails
@@ -3191,11 +2672,14 @@ class ConfluenceConnector(BaseConnector):
             if '.' in file_name:
                 extension = file_name.split('.')[-1].lower()
 
-            # Construct web URL using helper method
-            links = attachment_data.get("_links", {})
-            # For attachments, base_url might be in _links itself (v2 format)
-            base_url_from_links = links.get("base")
-            web_url = self._construct_web_url(links, base_url_from_links)
+            # Construct web URL: v2 list responses put base only on the parent _links; per-item has webui + webuiLink
+            links = dict(attachment_data.get("_links") or {})
+            if not links.get("webui"):
+                webui_link = attachment_data.get("webuiLink")
+                if webui_link:
+                    links["webui"] = webui_link
+            effective_base = attachment_api_base_url or links.get("base")
+            web_url = self._construct_web_url(links, effective_base)
 
             # Determine record ID and version
             is_new = existing_record is None
@@ -3242,10 +2726,10 @@ class ConfluenceConnector(BaseConnector):
 
     async def _process_webpage_with_update(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         record_type: RecordType,
-        existing_record: Optional[Record],
-        permissions: List[Permission]
+        existing_record: Record | None,
+        permissions: list[Permission]
     ) -> RecordUpdate:
         """Process webpage with change detection.
 
@@ -3310,7 +2794,7 @@ class ConfluenceConnector(BaseConnector):
             external_record_id=webpage_record.external_record_id
         )
 
-    async def _fetch_group_members(self, group_id: str, group_name: str) -> List[str]:
+    async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
         """
         Fetch all members of a group with pagination.
 
@@ -3368,7 +2852,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
             return []
 
-    async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
+    async def _get_app_users_by_emails(self, emails: list[str]) -> list[AppUser]:
         """
         Get AppUser objects by their email addresses from database.
 
@@ -3405,7 +2889,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to get users by emails: {e}")
             return []
 
-    def _transform_to_app_user(self, user_data: Dict[str, Any]) -> Optional[AppUser]:
+    def _transform_to_app_user(self, user_data: dict[str, Any]) -> AppUser | None:
         """
         Transform Confluence user data to AppUser entity.
 
@@ -3445,8 +2929,8 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_user_group(
         self,
-        group_data: Dict[str, Any]
-    ) -> Optional[AppUserGroup]:
+        group_data: dict[str, Any]
+    ) -> AppUserGroup | None:
         """
         Transform Confluence group data to AppUserGroup entity.
 
@@ -3475,7 +2959,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform group: {e}")
             return None
 
-    def _parse_confluence_datetime(self, datetime_str: str) -> Optional[int]:
+    def _parse_confluence_datetime(self, datetime_str: str) -> int | None:
         """
         Parse Confluence datetime string to epoch timestamp in milliseconds.
 
@@ -3524,16 +3008,25 @@ class ConfluenceConnector(BaseConnector):
                 # Process attachments for children_records
                 # Fetch attachments directly from v2 API (since page content API doesn't include them)
                 attachments_data = []
+                attachments_api_base_url: str | None = None
                 try:
                     datasource = await self._get_fresh_datasource()
-                    attachments_response = await datasource.get_page_attachments(
-                        id=int(record.external_record_id),
-                        status=["current"],  # Only fetch current version attachments
-                        limit=100
-                    )
-                    if attachments_response and attachments_response.status == HttpStatusCode.SUCCESS.valu:
+                    if record.record_type == RecordType.CONFLUENCE_PAGE:
+                        attachments_response = await datasource.get_page_attachments(
+                            id=int(record.external_record_id),
+                            status=["current"],  # Only fetch current version attachments
+                            limit=100
+                        )
+                    else:
+                        attachments_response = await datasource.get_blogpost_attachments(
+                            id=int(record.external_record_id),
+                            status=["current"],
+                            limit=100
+                        )
+                    if attachments_response and attachments_response.status == HttpStatusCode.SUCCESS.value:
                         attachments_result = attachments_response.json()
                         attachments_data = attachments_result.get("results", [])
+                        attachments_api_base_url = attachments_result.get("_links", {}).get("base")
                         self.logger.debug(f"Fetched {len(attachments_data)} attachment(s) for streaming")
                 except Exception as e:
                     self.logger.warning(f"Failed to fetch attachments for streaming: {e}", exc_info=True)
@@ -3545,10 +3038,11 @@ class ConfluenceConnector(BaseConnector):
                     record.id,
                     record.external_record_group_id,
                     record.weburl,
+                    attachment_api_base_url=attachments_api_base_url,
                 )
 
                 # Build MIME types map from attachments_data
-                attachment_mime_types: Dict[str, str] = {}
+                attachment_mime_types: dict[str, str] = {}
                 for attachment in attachments_data:
                     attachment_id = attachment.get("id")
                     if attachment_id:
@@ -3599,7 +3093,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500, detail=f"Failed to stream record: {str(e)}"
-            )
+            ) from e
 
     async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
         """
@@ -3665,7 +3159,7 @@ class ConfluenceConnector(BaseConnector):
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to fetch content: {str(e)}"
-            )
+            ) from e
 
     async def _fetch_comment_content(self, record: CommentRecord) -> str:
         """
@@ -3733,13 +3227,13 @@ class ConfluenceConnector(BaseConnector):
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to fetch comment content: {str(e)}"
-            )
+            ) from e
 
     def _resolve_confluence_attachment_id(
         self,
-        media_info: Dict[str, Any],
-        attachments: Optional[List[Dict[str, Any]]] = None
-    ) -> Optional[str]:
+        media_info: dict[str, Any],
+        attachments: list[dict[str, Any]] | None = None
+    ) -> str | None:
         """
         Resolve Confluence attachment ID from ADF media node.
 
@@ -3780,7 +3274,7 @@ class ConfluenceConnector(BaseConnector):
         self,
         page_id: str,
         content_type: str = "page"
-    ) -> Callable[[str, str], Awaitable[Optional[str]]]:
+    ) -> Callable[[str, str], Awaitable[str | None]]:
         """
         Create a media fetcher callback bound to a specific Confluence page.
 
@@ -3795,7 +3289,7 @@ class ConfluenceConnector(BaseConnector):
         captured_page_id = page_id
         captured_content_type = content_type
 
-        async def fetcher(media_id: str, alt_text: str) -> Optional[str]:
+        async def fetcher(media_id: str, alt_text: str) -> str | None:
             return await self._fetch_confluence_media_as_base64(captured_page_id, media_id, alt_text, captured_content_type)
 
         return fetcher
@@ -3806,7 +3300,7 @@ class ConfluenceConnector(BaseConnector):
         media_id: str,
         media_alt: str,
         content_type: str = "page"
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Fetch Confluence attachment content and return as base64 data URI.
 
@@ -3861,7 +3355,9 @@ class ConfluenceConnector(BaseConnector):
 
             # Download attachment content
             attachment_id = target_attachment.get("id")
-            mime_type = target_attachment.get("metadata", {}).get("mediaType", "application/octet-stream")
+
+            # Extract MIME type - check top level first, then metadata object as fallback
+            mime_type = target_attachment.get("mediaType") or "image/png"
 
             # Stream attachment content
             content_bytes = b""
@@ -3873,9 +3369,8 @@ class ConfluenceConnector(BaseConnector):
 
             # Convert to base64
             base64_data = base64.b64encode(content_bytes).decode('utf-8')
-            data_uri = f"data:{mime_type};base64,{base64_data}"
+            return f"data:{mime_type};base64,{base64_data}"
 
-            return data_uri
 
         except Exception as e:
             self.logger.warning(f"Error fetching media (id='{media_id}', alt='{media_alt}') for page {page_id}: {e}")
@@ -3886,7 +3381,7 @@ class ConfluenceConnector(BaseConnector):
         page_id: str,
         record_type: RecordType,
         comment_type: str  # "footer" or "inline"
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Recursively fetch all comments (footer or inline) for a page or blogpost using v2 API.
         Returns a flat list of all comments including nested replies.
@@ -3899,7 +3394,7 @@ class ConfluenceConnector(BaseConnector):
         Returns:
             List of comment dictionaries with ADF body
         """
-        all_comments: List[Dict[str, Any]] = []
+        all_comments: list[dict[str, Any]] = []
         batch_size = 100
         cursor = None
 
@@ -3984,7 +3479,7 @@ class ConfluenceConnector(BaseConnector):
         comment_id: str,
         comment_type: str,  # "footer" or "inline"
         record_type: RecordType
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Recursively fetch all child comments (replies) for a given comment.
 
@@ -3996,7 +3491,7 @@ class ConfluenceConnector(BaseConnector):
         Returns:
             List of child comment dictionaries
         """
-        all_children: List[Dict[str, Any]] = []
+        all_children: list[dict[str, Any]] = []
         batch_size = 100
         cursor = None
 
@@ -4057,8 +3552,8 @@ class ConfluenceConnector(BaseConnector):
 
     def _organize_confluence_comments_to_threads(
         self,
-        comments_data: List[Dict[str, Any]]
-    ) -> List[List[Dict[str, Any]]]:
+        comments_data: list[dict[str, Any]]
+    ) -> list[list[dict[str, Any]]]:
         """
         Group Confluence comments by thread (parent comment) and sort by created timestamp.
         Returns list of threads, each thread is a list of comments sorted by created.
@@ -4072,7 +3567,7 @@ class ConfluenceConnector(BaseConnector):
         if not comments_data:
             return []
 
-        threads: Dict[str, List[Dict[str, Any]]] = {}
+        threads: dict[str, list[dict[str, Any]]] = {}
 
         for comment in comments_data:
             comment_id = str(comment.get("id", ""))
@@ -4096,20 +3591,19 @@ class ConfluenceConnector(BaseConnector):
             )
 
         # Sort threads by first comment's created timestamp (oldest thread first)
-        sorted_threads = sorted(
+        return sorted(
             threads.values(),
             key=lambda t: self._parse_confluence_datetime(
                 t[0].get("version", {}).get("createdAt", "")
             ) or 0 if t else 0
         )
 
-        return sorted_threads
 
     def _create_comment_media_fetcher(
         self,
         page_id: str,
         content_type: str = "page"
-    ) -> Callable[[str, str], Awaitable[Optional[str]]]:
+    ) -> Callable[[str, str], Awaitable[str | None]]:
         """
         Create a media fetcher callback for comments.
         Comments use collection "comment-container-{pageId}" but attachments
@@ -4125,7 +3619,7 @@ class ConfluenceConnector(BaseConnector):
         captured_page_id = page_id
         captured_content_type = content_type
 
-        async def fetcher(media_id: str, alt_text: str) -> Optional[str]:
+        async def fetcher(media_id: str, alt_text: str) -> str | None:
             # For comments, media might be in comment-container collection
             # but we can still try to fetch from page attachments
             return await self._fetch_confluence_media_as_base64(captured_page_id, media_id, alt_text, captured_content_type)
@@ -4134,23 +3628,24 @@ class ConfluenceConnector(BaseConnector):
 
     async def _parse_confluence_page_to_blocks(
         self,
-        page_data: Dict[str, Any],
+        page_data: dict[str, Any],
         page_id: str,
         page_title: str,
-        weburl: Optional[str] = None,
-        attachment_children_map: Optional[Dict[str, ChildRecord]] = None,
-        attachment_mime_types: Optional[Dict[str, str]] = None,
-        attachments_data: Optional[List[Dict[str, Any]]] = None,
-        record_type: Optional[RecordType] = None,
+        weburl: str | None = None,
+        attachment_children_map: dict[str, ChildRecord] | None = None,
+        attachment_mime_types: dict[str, str] | None = None,
+        attachments_data: list[dict[str, Any]] | None = None,
+        record_type: RecordType | None = None,
     ) -> BlocksContainer:
         """
         Parse Confluence page ADF content into BlocksContainer with comments.
 
         Structure:
-        - Main content BlockGroup (index=0)
-        - Comment Thread BlockGroups (index=1,2,...) for footer and inline comments
-        - Comment BlockGroups (sub_type=COMMENT) for each comment
-        - Attachments assigned to description or comment children
+        - Individual Block objects for each ADF node (paragraphs, headings, images, etc.)
+        - BlockGroups for structural containers (tables, panels, toggles, etc.)
+        - Footer comments as COMMENT_THREAD/COMMENT BlockGroups
+        - Inline comments attached to Block.comments
+        - Attachments as ChildRecords
 
         Args:
             page_data: Page data from API (with body.atlas_doc_format.value)
@@ -4165,55 +3660,70 @@ class ConfluenceConnector(BaseConnector):
         Returns:
             BlocksContainer with BlockGroups and Blocks
         """
-        block_groups: List[BlockGroup] = []
-        blocks: List[Block] = []
-        block_group_index = 0
+        # Initialize parser
+        parser = ConfluenceBlockParser(self.logger)
 
         # Extract ADF content
         body = page_data.get("body", {})
         atlas_doc = body.get("atlas_doc_format", {})
         adf_content = atlas_doc.get("value")
 
-        # Track attachment IDs used in comments (to exclude from description children)
-        comment_attachment_ids: Set[str] = set()
-        # Track embedded images in description (already in content as base64, exclude from children)
-        description_image_ids: Set[str] = set()
+        # Parse ADF if it's a string
+        if isinstance(adf_content, str):
+            try:
+                adf_dict = json.loads(adf_content)
+            except json.JSONDecodeError:
+                adf_dict = None
+        else:
+            adf_dict = adf_content
 
-        def resolve_attachment_id(media_info: Dict[str, Any]) -> Optional[str]:
-            """Resolve ADF media node to attachment ID.
+        # Determine content_type for API calls
+        content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
 
-            ADF media nodes have attrs.id which is a Media Platform UUID.
-            Attachment objects have:
-            - id: Confluence attachment ID (e.g., "att195952659")
-            - fileId: Media Platform UUID that matches attrs.id from ADF
-            """
-            media_id = media_info.get("id")  # Media Platform UUID from ADF
+        # 1. Parse ADF content to blocks using the new parser
+        if adf_dict:
+            blocks, block_groups = await parser.parse_adf(
+                adf_content=adf_dict,
+                media_fetcher=self._create_confluence_media_fetcher(page_id, content_type),
+                parent_page_url=weburl,
+                page_id=page_id,
+            )
+        else:
+            blocks = []
+            block_groups = []
 
-            # Method 1: Match media_id with attachment.fileId (PRIMARY - most reliable)
+        # Prepend page title as H1 — ADF body does not include the title
+        if page_title and str(page_title).strip():
+            title_block = parser.create_title_block(
+                str(page_title).strip(),
+                page_id,
+                weburl,
+            )
+            blocks.insert(0, title_block)
+
+        # Track attachment IDs that are used (embedded images)
+        used_attachment_ids: set[str] = set()
+
+        # Helper function to resolve media from ADF to attachment IDs
+        def resolve_attachment_id(media_info: dict[str, Any]) -> str | None:
+            """Resolve ADF media node to attachment ID."""
+            media_id = media_info.get("id")
+
+            # Method 1: Match by fileId (most reliable)
             if media_id and attachments_data:
                 for att in attachments_data:
-                    # Compare ADF media_id with attachment fileId (Media Platform UUID)
                     if att.get("fileId") == media_id:
-                        attachment_id = att.get("id")  # Confluence attachment ID
-                        # Verify it exists in attachment_children_map
-                        if attachment_id and str(attachment_id) in attachment_children_map:
+                        attachment_id = att.get("id")
+                        if attachment_id and str(attachment_id) in (attachment_children_map or {}):
                             return str(attachment_id)
 
-            # Method 2: Fall back to filename matching
+            # Method 2: Match by filename
             media_filename = media_info.get("filename", "") or media_info.get("alt", "")
-            if not media_filename:
-                return None
-
-            # Build filename -> attachment_id lookup from attachment_children_map
-            if attachment_children_map:
+            if media_filename and attachment_children_map:
                 for att_id, child_record in attachment_children_map.items():
                     child_name = child_record.child_name
                     if child_name:
-                        # Try exact match
-                        if child_name == media_filename:
-                            return att_id
-                        # Try case-insensitive match
-                        if child_name.lower().strip() == media_filename.lower().strip():
+                        if child_name == media_filename or child_name.lower().strip() == media_filename.lower().strip():
                             return att_id
 
             return None
@@ -4224,66 +3734,24 @@ class ConfluenceConnector(BaseConnector):
             mime_type = _attachment_mime_types.get(attachment_id, "")
             return mime_type.startswith("image/")
 
-        # Extract media from description ADF - identify embedded images (to exclude from children)
-        if adf_content:
-            try:
-                # Parse ADF if it's a string
-                if isinstance(adf_content, str):
-                    adf_dict = json.loads(adf_content)
-                else:
-                    adf_dict = adf_content
+        # Track which attachments were used as images in blocks
+        if adf_dict:
+            for media_info in extract_media_from_adf(adf_dict):
+                attachment_id = resolve_attachment_id(media_info)
+                if attachment_id and is_image_attachment(attachment_id):
+                    used_attachment_ids.add(attachment_id)
 
-                for media_info in extract_media_from_adf(adf_dict):
-                    attachment_id = resolve_attachment_id(media_info)
-                    if attachment_id and is_image_attachment(attachment_id):
-                        description_image_ids.add(attachment_id)
-            except Exception as e:
-                self.logger.debug(f"Error extracting media from description: {e}")
+        # 2. Fetch and process comments
+        footer_comments: list[dict[str, Any]] = []
+        inline_comments: list[dict[str, Any]] = []
 
-        # 1. Convert description ADF to markdown
-        if not adf_content:
-            description_content = f"# {page_title}"
-        else:
-            # Parse ADF if it's a string
-            if isinstance(adf_content, str):
-                try:
-                    adf_dict = json.loads(adf_content)
-                except json.JSONDecodeError:
-                    adf_dict = {}
-            else:
-                adf_dict = adf_content
-
-            # Convert ADF to markdown with embedded images
-            # Determine content_type for correct API calls
-            content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
-            description_content = await adf_to_text_with_images(
-                adf_dict,
-                self._create_confluence_media_fetcher(page_id, content_type),
-                self.logger
-            )
-
-        # Check if description content is empty (after stripping whitespace)
-        description_content_stripped = description_content.strip() if description_content else ""
-        has_description_content = bool(description_content_stripped)
-
-        # Check if we have attachments that might go to description (before comments processing)
-        # We'll know for sure after processing comments, but we can check if any exist
-        bool(attachment_children_map)
-
-        # 2. Fetch and process comments (footer and inline)
-        has_comments = False
         if record_type:
-            all_comments: List[Dict[str, Any]] = []
-
             # Fetch footer comments
             footer_comments = await self._fetch_page_comments_recursive(
                 page_id=page_id,
                 record_type=record_type,
                 comment_type="footer"
             )
-            for comment in footer_comments:
-                comment["_comment_type"] = "footer"  # Mark comment type
-                all_comments.append(comment)
 
             # Fetch inline comments
             inline_comments = await self._fetch_page_comments_recursive(
@@ -4291,186 +3759,209 @@ class ConfluenceConnector(BaseConnector):
                 record_type=record_type,
                 comment_type="inline"
             )
-            for comment in inline_comments:
-                comment["_comment_type"] = "inline"  # Mark comment type
-                all_comments.append(comment)
 
-            # Organize comments into threads
-            if all_comments:
-                has_comments = True
-                sorted_threads = self._organize_confluence_comments_to_threads(all_comments)
+        # 3. Attach inline comments to blocks
+        if inline_comments:
+            await parser.attach_inline_comments_to_blocks(
+                blocks=blocks,
+                inline_comments=inline_comments,
+                media_fetcher=self._create_comment_media_fetcher(page_id, content_type),
+            )
 
-                for thread_comments in sorted_threads:
-                    if not thread_comments:
+        # 4. Process footer comments as COMMENT_THREAD/COMMENT BlockGroups
+        comment_attachment_ids: set[str] = set()
+
+        if footer_comments:
+            sorted_threads = self._organize_confluence_comments_to_threads(footer_comments)
+
+            for thread_comments in sorted_threads:
+                if not thread_comments:
+                    continue
+
+                # Get thread ID
+                first_comment = thread_comments[0]
+                parent_comment_id = first_comment.get("parentCommentId")
+                first_comment_id = str(first_comment.get("id", ""))
+                thread_id = str(parent_comment_id) if parent_comment_id else first_comment_id
+
+                # Create COMMENT_THREAD BlockGroup
+                thread_group_index = len(block_groups)
+                thread_group = parser.create_comment_thread_group(
+                    thread_id=thread_id,
+                    group_index=thread_group_index,
+                    comment_type="footer",
+                    page_title=page_title,
+                    weburl=weburl,
+                )
+                block_groups.append(thread_group)
+
+                # Create COMMENT BlockGroups for each comment in thread
+                for comment in thread_comments:
+                    comment_id = str(comment.get("id", ""))
+                    comment_body_data = comment.get("body", {})
+                    atlas_doc_format = comment_body_data.get("atlas_doc_format", {})
+                    adf_value = atlas_doc_format.get("value")
+
+                    if not adf_value:
                         continue
 
-                    # Get thread ID from first comment
-                    first_comment = thread_comments[0]
-                    parent_comment_id = first_comment.get("parentCommentId")
-                    first_comment_id = str(first_comment.get("id", ""))
-                    thread_id = str(parent_comment_id) if parent_comment_id else first_comment_id
-                    comment_type = first_comment.get("_comment_type", "footer")
+                    # Parse ADF
+                    try:
+                        if isinstance(adf_value, str):
+                            comment_body_adf = json.loads(adf_value)
+                        else:
+                            comment_body_adf = adf_value
+                    except json.JSONDecodeError:
+                        self.logger.warning(f"Failed to parse ADF for comment {comment_id}")
+                        continue
 
-                    # Create thread BlockGroup with parent_index=0 (Description BlockGroup)
-                    thread_block_group_index = block_group_index
-                    thread_block_group = BlockGroup(
-                        id=str(uuid.uuid4()),
-                        index=thread_block_group_index,
-                        parent_index=0,
-                        name=f"{comment_type.capitalize()} Comment Thread - {thread_id[:8]}" if thread_id else f"{comment_type.capitalize()} Comment Thread",
-                        type=GroupType.TEXT_SECTION,
-                        sub_type=GroupSubType.COMMENT_THREAD,
-                        description=f"{comment_type.capitalize()} comment thread for page {page_title}",
-                        source_group_id=f"{page_id}_thread_{comment_type}_{thread_id}" if thread_id else f"{page_id}_thread_{comment_type}_{thread_block_group_index}",
-                        weburl=weburl,
-                        requires_processing=False,
+                    # Convert ADF comment body to markdown
+                    comment_body = parser._adf_to_markdown_simple(comment_body_adf)
+
+                    if not comment_body:
+                        continue
+
+                    # Build comment weburl
+                    links = comment.get("_links", {})
+                    comment_weburl_raw = links.get("webui", weburl)
+                    comment_weburl = comment_weburl_raw
+                    if (
+                        comment_weburl
+                        and not comment_weburl.startswith("http")
+                        and weburl
+                        and weburl.startswith("http")
+                    ):
+                        parsed = urlparse(weburl)
+                        base_url = f"{parsed.scheme}://{parsed.netloc}/wiki"
+                        comment_weburl = f"{base_url}{comment_weburl}"
+
+                    # Get author info
+                    version = comment.get("version", {})
+                    author_id = version.get("authorId", "Unknown")
+
+                    # Get file attachments used in this comment (images excluded)
+                    comment_children: list[ChildRecord] = []
+                    for media_info in extract_media_from_adf(comment_body_adf):
+                        attachment_id = resolve_attachment_id(media_info)
+                        if attachment_id and attachment_id in (attachment_children_map or {}):
+                            comment_attachment_ids.add(attachment_id)
+                            if not is_image_attachment(attachment_id):
+                                comment_children.append(attachment_children_map[attachment_id])
+
+                    # Create BlockComment for parser
+                    block_comment = BlockComment(
+                        text=comment_body,
+                        format=DataFormat.MARKDOWN,
+                        author_id=author_id,
+                        thread_id=thread_id,
+                        weburl=parser._normalize_url(comment_weburl),
+                        created_at=parser._parse_confluence_timestamp(comment.get("createdAt")),
                     )
-                    block_groups.append(thread_block_group)
-                    block_group_index += 1
 
-                    # Create BlockGroup objects for each comment in the thread
-                    for comment in thread_comments:
-                        comment_id = str(comment.get("id", ""))
-                        comment_body_data = comment.get("body", {})
-                        atlas_doc_format = comment_body_data.get("atlas_doc_format", {})
-                        adf_value = atlas_doc_format.get("value")
+                    # Create COMMENT BlockGroup
+                    comment_group_index = len(block_groups)
+                    comment_group = parser.create_comment_group(
+                        block_comment=block_comment,
+                        group_index=comment_group_index,
+                        parent_group_index=thread_group_index,
+                        source_id=comment_id,
+                        children_records=comment_children if comment_children else None,
+                    )
+                    block_groups.append(comment_group)
 
-                        if not adf_value:
-                            continue
+        # 5. Track attachments used in inline comments
+        for block in blocks:
+            if block.comments:
+                for thread in block.comments:
+                    for comment in thread:
+                        if comment.attachments:
+                            for att in comment.attachments:
+                                comment_attachment_ids.add(att.id)
 
-                        # Parse ADF (it's a JSON string)
-                        try:
-                            if isinstance(adf_value, str):
-                                comment_body_adf = json.loads(adf_value)
-                            else:
-                                comment_body_adf = adf_value
-                        except json.JSONDecodeError:
-                            self.logger.warning(f"Failed to parse ADF for comment {comment_id}")
-                            continue
-
-                        # Convert ADF comment body to markdown with base64 images
-                        # Use same content_type as parent page/blogpost for API calls
-                        content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
-                        comment_body = await adf_to_text_with_images(
-                            comment_body_adf,
-                            self._create_comment_media_fetcher(page_id, content_type),
-                            self.logger
-                        )
-
-                        if not comment_body:
-                            continue
-
-                        # Build comment weburl
-                        links = comment.get("_links", {})
-                        comment_weburl_raw = links.get("webui", weburl)
-                        comment_weburl = comment_weburl_raw
-                        if comment_weburl and not comment_weburl.startswith("http"):
-                            # Construct full URL if relative
-                            # Extract base URL from page weburl (e.g., https://domain.atlassian.net/wiki)
-                            if weburl and weburl.startswith("http"):
-                                # Parse base URL from page weburl
-                                parsed = urlparse(weburl)
-                                base_url = f"{parsed.scheme}://{parsed.netloc}/wiki"
-                                comment_weburl = f"{base_url}{comment_weburl}"
-
-                        # Get author info
-                        version = comment.get("version", {})
-                        author_id = version.get("authorId", "Unknown")
-
-                        # Get file attachments used in this comment (images excluded - already as base64)
-                        comment_children: List[ChildRecord] = []
-                        for media_info in extract_media_from_adf(comment_body_adf):
-                            attachment_id = resolve_attachment_id(media_info)
-                            if attachment_id and attachment_id in attachment_children_map:
-                                comment_attachment_ids.add(attachment_id)
-                                # Only include non-image files (images already embedded as base64)
-                                if not is_image_attachment(attachment_id):
-                                    comment_children.append(attachment_children_map[attachment_id])
-
-                        # Create BlockGroup with sub_type=COMMENT
-                        comment_block_group = BlockGroup(
-                            id=str(uuid.uuid4()),
-                            index=block_group_index,
-                            parent_index=thread_block_group_index,  # Points to thread BlockGroup
-                            type=GroupType.TEXT_SECTION,
-                            sub_type=GroupSubType.COMMENT,
-                            name=f"Comment by {author_id}",
-                            description=f"Comment by {author_id}",
-                            source_group_id=comment_id,
-                            data=comment_body,
-                            format=DataFormat.MARKDOWN,
-                            weburl=comment_weburl or weburl,
-                            requires_processing=True,
-                            children_records=comment_children if comment_children else None,
-                        )
-                        block_groups.append(comment_block_group)
-                        block_group_index += 1
-
-        # Build description children: all attachments NOT used in comments and NOT embedded images
-        description_children: List[ChildRecord] = []
+        # 6. Build non-comment attachments (excluding embedded images)
+        remaining_attachments: list[ChildRecord] = []
         if attachment_children_map:
             for attachment_id, child_record in attachment_children_map.items():
                 if attachment_id in comment_attachment_ids:
-                    continue  # Used in comment - belongs to that comment's BlockGroup
-                if attachment_id in description_image_ids:
-                    continue  # Embedded image in description - already in content as base64
-                description_children.append(child_record)
+                    continue  # Used in comment
+                if attachment_id in used_attachment_ids:
+                    continue  # Embedded image - already in blocks as IMAGE
+                remaining_attachments.append(child_record)
 
-        # Create description BlockGroup only if there's content, attachments, or comments
-        # (Comments need parent_index=0, so we must create it if there are comments)
-        if has_description_content or description_children or has_comments:
-            # Determine if requires_processing: only true if there's actual content to process
-            requires_processing = has_description_content
+        # 7. Post-process blocks (fix indices, list numbering, grouping)
+        parser.post_process_blocks(blocks, block_groups)
 
-            description_block_group = BlockGroup(
-                id=str(uuid.uuid4()),
-                index=0,  # Description is always at index 0
-                name=page_title,
-                type=GroupType.TEXT_SECTION,
-                sub_type=GroupSubType.CONTENT,
-                description=f"Content for page {page_title}",
-                source_group_id=f"{page_id}_content",
-                data=description_content if has_description_content else "",
-                format=DataFormat.MARKDOWN,
-                weburl=weburl,
-                requires_processing=requires_processing,
-                children_records=description_children if description_children else None,
-            )
-            # Insert at beginning and shift all other indices by 1
-            block_groups.insert(0, description_block_group)
-            for bg in block_groups[1:]:  # Update indices for all BlockGroups after description
-                bg.index += 1
+        # 8. Assign remaining attachments to appropriate parent
+        # For now, assign to first block group (content wrapper) if it exists
+        # Otherwise create a wrapper group
+        if remaining_attachments:
+            if block_groups:
+                # Find or create content wrapper group
+                content_group = None
+                for bg in block_groups:
+                    if bg.sub_type == GroupSubType.CONTENT:
+                        content_group = bg
+                        break
 
-        # Populate children arrays for BlockGroups
-        # Build a map of parent_index -> list of child indices
-        blockgroup_children_map: Dict[int, List[int]] = defaultdict(list)
-        block_children_map: Dict[int, List[int]] = defaultdict(list)
+                if not content_group:
+                    # Create content wrapper group
+                    content_group = BlockGroup(
+                        id=str(uuid.uuid4()),
+                        index=0,
+                        name=page_title,
+                        type=GroupType.TEXT_SECTION,
+                        sub_type=GroupSubType.CONTENT,
+                        source_group_id=f"{page_id}_content",
+                        weburl=parser._normalize_url(weburl),
+                    )
+                    block_groups.insert(0, content_group)
 
-        # Collect all BlockGroup children (thread groups and comment groups that are children of their parents)
+                    # Update indices after insertion
+                    for i, bg in enumerate(block_groups):
+                        bg.index = i
+
+                # Assign attachments
+                content_group.children_records = remaining_attachments
+            else:
+                # No block groups - create a content wrapper
+                content_group = BlockGroup(
+                    id=str(uuid.uuid4()),
+                    index=0,
+                    name=page_title,
+                    type=GroupType.TEXT_SECTION,
+                    sub_type=GroupSubType.CONTENT,
+                    source_group_id=f"{page_id}_content",
+                    weburl=parser._normalize_url(weburl),
+                    children_records=remaining_attachments,
+                )
+                block_groups.append(content_group)
+
+        # 9. Update parent relationships after post-processing
+        # Build children references for block groups
+        blockgroup_children_map: dict[int, list[int]] = defaultdict(list)
+        block_children_map: dict[int, list[int]] = defaultdict(list)
+
         for bg in block_groups:
             if bg.parent_index is not None:
                 blockgroup_children_map[bg.parent_index].append(bg.index)
 
-        # Collect all Block children (if any blocks exist with parent_index)
         for b in blocks:
             if b.parent_index is not None:
                 block_children_map[b.parent_index].append(b.index)
 
-        # Now populate the children arrays using range-based structure
+        # Populate children arrays
         for bg in block_groups:
             child_block_indices = []
             child_bg_indices = []
 
-            # Add child BlockGroups
             if bg.index in blockgroup_children_map:
                 child_bg_indices = sorted(blockgroup_children_map[bg.index])
 
-            # Add child Blocks
             if bg.index in block_children_map:
                 child_block_indices = sorted(block_children_map[bg.index])
 
-            # Set children if we have any
-            if child_block_indices or child_bg_indices:
+            # Only update if we have children and group doesn't already have children set
+            if (child_block_indices or child_bg_indices) and not bg.children:
                 bg.children = BlockGroupChildren.from_indices(
                     block_indices=child_block_indices,
                     block_group_indices=child_bg_indices
@@ -4478,7 +3969,7 @@ class ConfluenceConnector(BaseConnector):
 
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
-    async def _fetch_page_data_with_adf(self, page_id: str, record_type: RecordType) -> Dict[str, Any]:
+    async def _fetch_page_data_with_adf(self, page_id: str, record_type: RecordType) -> dict[str, Any]:
         """Fetch page/blogpost with ADF format instead of HTML."""
         datasource = await self._get_fresh_datasource()
 
@@ -4502,18 +3993,22 @@ class ConfluenceConnector(BaseConnector):
 
     async def _process_page_attachments_for_children(
         self,
-        attachments_data: List[Dict[str, Any]],
+        attachments_data: list[dict[str, Any]],
         page_id: str,
         page_node_id: str,
         space_id: str,
-        page_weburl: Optional[str],
-    ) -> Dict[str, ChildRecord]:
+        page_weburl: str | None,
+        attachment_api_base_url: str | None = None,
+    ) -> dict[str, ChildRecord]:
         """
         Process page attachments and create ChildRecords.
         Creates FileRecords if they don't exist (for new attachments added after sync).
+
+        Args:
+            attachment_api_base_url: v2 list response _links.base (required to build absolute web URLs for attachments).
         """
-        attachment_children_map: Dict[str, ChildRecord] = {}
-        new_file_records: List[Tuple[FileRecord, List[Permission]]] = []
+        attachment_children_map: dict[str, ChildRecord] = {}
+        new_file_records: list[tuple[FileRecord, list[Permission]]] = []
 
         async with self.data_store_provider.transaction() as tx_store:
             for attachment in attachments_data:
@@ -4535,7 +4030,8 @@ class ConfluenceConnector(BaseConnector):
                         parent_external_record_id=page_id,
                         parent_external_record_group_id=space_id,
                         existing_record=None,
-                        parent_node_id=page_node_id
+                        parent_node_id=page_node_id,
+                        attachment_api_base_url=attachment_api_base_url,
                     )
 
                     if file_record:
@@ -4600,13 +4096,13 @@ class ConfluenceConnector(BaseConnector):
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to download attachment: {str(e)}"
-            )
+            ) from e
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (delegates to full sync)."""
         await self.run_sync()
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         """Reindex a list of Confluence records.
 
         This method:
@@ -4667,7 +4163,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch record from source and return data for reindexing.
 
         Args:
@@ -4698,7 +4194,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_page(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch page from source for reindexing."""
         try:
             page_id = record.external_record_id
@@ -4754,7 +4250,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_blogpost(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch blogpost from source for reindexing."""
         try:
             blogpost_id = record.external_record_id
@@ -4809,7 +4305,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_attachment(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Fetch attachment from source for reindexing."""
         try:
             attachment_id = record.external_record_id
@@ -4840,6 +4336,7 @@ class ConfluenceConnector(BaseConnector):
                 return None
 
             attachment_data = response.json()
+            single_attachment_base = attachment_data.get("_links", {}).get("base")
 
             # Check if version changed
             current_version = attachment_data.get("version", {}).get("number")
@@ -4863,7 +4360,8 @@ class ConfluenceConnector(BaseConnector):
                 parent_page_id,
                 parent_space_id,
                 existing_record=record,
-                parent_node_id=parent_node_id
+                parent_node_id=parent_node_id,
+                attachment_api_base_url=single_attachment_base,
             )
 
             if not attachment_record:
@@ -4888,8 +4386,8 @@ class ConfluenceConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> FilterOptionsResponse:
         """
         Get dynamic filter options for Confluence filters with cursor-based pagination.
@@ -4922,8 +4420,8 @@ class ConfluenceConnector(BaseConnector):
         self,
         page: int,
         limit: int,
-        search: Optional[str],
-        cursor: Optional[str]
+        search: str | None,
+        cursor: str | None
     ) -> FilterOptionsResponse:
         """Fetch available Confluence spaces with cursor-based pagination.
 
@@ -5026,8 +4524,8 @@ class ConfluenceConnector(BaseConnector):
         self,
         page: int,
         limit: int,
-        search: Optional[str],
-        cursor: Optional[str]
+        search: str | None,
+        cursor: str | None
     ) -> FilterOptionsResponse:
         """Fetch pages with cursor-based pagination.
 
@@ -5119,8 +4617,8 @@ class ConfluenceConnector(BaseConnector):
         self,
         page: int,
         limit: int,
-        search: Optional[str],
-        cursor: Optional[str]
+        search: str | None,
+        cursor: str | None
     ) -> FilterOptionsResponse:
         """Fetch blogposts with cursor-based pagination.
 
@@ -5208,7 +4706,7 @@ class ConfluenceConnector(BaseConnector):
             cursor=next_cursor
         )
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications (not implemented)."""
         self.logger.warning("Webhook notifications not yet supported for Confluence")
         pass
