@@ -2344,6 +2344,9 @@ components:
         indexingStatus:
           type: string
           nullable: true
+        isInternal:
+          type: boolean
+          description: True when the node is an internal/system record group or record (doesn't come from source)
         createdAt:
           type: integer
           description: Creation timestamp (epoch ms)
