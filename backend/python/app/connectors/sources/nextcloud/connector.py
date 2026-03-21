@@ -1640,7 +1640,7 @@ class NextcloudConnector(BaseConnector):
                 )
 
             # Create async generator for streaming
-            async def generate() -> AsyncGenerator[bytes]:
+            async def generate() -> AsyncGenerator[bytes, None]:
                 yield file_content
 
             return create_stream_record_response(
