@@ -393,6 +393,7 @@ class ToolsetRegistry:
             'app.agents.actions.confluence.confluence',
             'app.agents.actions.clickup.clickup',
             'app.agents.actions.github.github',
+            'app.agents.actions.mariadb.mariadb',
             'app.agents.actions.redshift.redshift',
             # 'app.agents.actions.gitlab.gitlab',
             # 'app.agents.actions.linear.linear',

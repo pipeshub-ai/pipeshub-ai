@@ -2404,6 +2404,7 @@ CLICKUP_GUIDANCE = r"""
 - Never fabricate IDs — always obtain team_id, space_id, folder_id, list_id, task_id, doc_id, page_id, checklist_id, checklist_item_id from a prior tool call or explicit user input.
 - get_authorized_user is the source for the current user's id — use it when the user says "me", "my tasks", or "assign to me".
 """
+
 MARIADB_GUIDANCE = r"""
 ## MariaDB-Specific Guidance
 
@@ -3711,8 +3712,8 @@ async def planner_node(
         teams_guidance=teams_guidance,
         github_guidance=github_guidance,
         clickup_guidance=clickup_guidance,
-        mariadb_guidance=mariadb_guidance
-        redshift_guidance=redshift_guidance
+        mariadb_guidance=mariadb_guidance,
+        redshift_guidance=redshift_guidance,
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
