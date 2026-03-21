@@ -6662,9 +6662,8 @@ paths:
       tags:
         - SAML
       summary: SAML sign-in callback
-      description: |
-        Handle the SAML Identity Provider callback after user authentication. This endpoint receives the SAML assertion from the IdP.
       operationId: samlSignInCallback
+      description: |
         Handles the callback from the SAML Identity Provider (IDP)
         after successful user authentication.
 
