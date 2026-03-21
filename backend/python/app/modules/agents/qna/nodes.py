@@ -20,6 +20,8 @@ import re
 import time
 from typing import Any, Literal, Union
 from uuid import UUID
+import pytz
+from datetime import datetime, timezone
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -3544,7 +3546,7 @@ ZOOM_GUIDANCE = r"""
 
 ## Available Tools
 ### User
-- **get_my_profile** — Get the authenticated user's profile (name, email, timezone).
+- **get_my_profile** — Get the authenticated user's profile (name, email).
 
 ### Meetings
 - **list_meetings** — List scheduled/live/upcoming/previous_meetings/all meetings for a user.
@@ -3558,7 +3560,7 @@ ZOOM_GUIDANCE = r"""
 
 ### Contacts
 - **list_contacts** — List all contacts for a user.
-- **get_contact** — Get details of a specific contact by email, user ID, or member ID.
+- **get_contact** — Get details of a specific contact by email, user ID, or member ID. used to resolve the email from name
 
 ### Transcripts
 - **get_meeting_transcript** — Fetch the AI Companion transcript for a past meeting as plain text.
@@ -3655,6 +3657,10 @@ ZOOM_GUIDANCE = r"""
 - Use `end_times` when the user gives a count (e.g. "10 times", "for the next 5 weeks").
 - **Never set both.** If neither is given, ask the user which they prefer.
 
+### Timezone Inference
+BEFORE checking if timezone is missing, always read the Temporal Context 
+   section. If User timezone is present there, use it directly. Never ask user for timezone.
+
 ---
 
 ## Key Rules
@@ -3663,7 +3669,7 @@ ZOOM_GUIDANCE = r"""
    - Use `list_upcoming_meetings` for "what's next", not `list_meetings`.
 3. **Transcript requires a past meeting.** `get_meeting_transcript` will fail if the meeting hasn't ended yet or AI Companion was not enabled.
 4. **Update only fields the user mentioned.** Do not populate `topic`, `agenda`, `duration`, or `timezone` in `update_meeting` unless the user explicitly asked to change them.
-5. **Infer timezone from context.** If the user is in India, default to `Asia/Kolkata`. Never ask for timezone unless it's ambiguous.
+5. **Alwasy use the user's timezone** → INFERRABLE from **Temporal Context**, and assume current year if not provided.
 6. **Multiple matches on search — confirm before acting.** If `search_meetings_by_name` returns more than one result and the action is destructive (delete, update), confirm with the user which one to act on.
 7. **Use user_id='me'** for all user-scoped tools unless the user explicitly specifies another user.
 8. **Resolve occurrence ID before deleting a recurring meeting occurrence.**
@@ -8112,9 +8118,14 @@ Use this decision tree to choose the right approach:
     if timezone or current_time:
         time_parts = []
         if current_time:
-            time_parts.append(f"Current time: {current_time}")
+            time_parts.append(f"**Current time**: {current_time}")
         if timezone:
-            time_parts.append(f"User timezone: {timezone}")
+            tz = pytz.timezone(timezone)
+            now = datetime.now(tz)
+            abbr = now.strftime("%Z")        # IST, EST, PST etc.
+            offset = now.strftime("%z")      # +0530
+            offset_fmt = f"{offset[:-2]}:{offset[-2:]}"  # +05:30
+            time_parts.append(f"**User timezone**: {timezone} ({abbr} (UTC{offset_fmt}))")
         base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
 
     # ── Capability summary ────────────────────────────────────────────────────
