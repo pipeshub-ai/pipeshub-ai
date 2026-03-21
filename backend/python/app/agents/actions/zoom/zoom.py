@@ -4,7 +4,7 @@ import re
 from typing import Annotated, Literal, Optional, Tuple
 from urllib.parse import quote
 from pydantic import model_validator
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dateutil.parser import parse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from app.agents.tools.config import ToolCategory
@@ -27,17 +27,13 @@ from app.sources.external.zoom.zoom import ZoomDataSource
 logger = logging.getLogger(__name__)
 
 
-def _coerce_meeting_id(v: str | int) -> str:
+def _coerce_meeting_id(raw_meeting_id: str | int) -> str:
     """Accept meeting_id as int or str (e.g. from tool result); coerce to str."""
-    return str(v)
+    return str(raw_meeting_id)
 
 
 # meeting_id from Zoom API / tool results can be int; coerce to str for API calls
 MeetingId = Annotated[str, BeforeValidator(_coerce_meeting_id)]
-
-# Meeting type constants (avoid magic strings)
-MEETING_TYPES_SEARCH: Tuple[str, ...] = ("scheduled", "upcoming")
-
 
 # ---------------------------------------------------------------------------
 # Pydantic input schemas
@@ -86,7 +82,7 @@ class CreateMeetingInput(BaseModel):
     topic: str = Field(description="Meeting topic/title.")
     start_time: Optional[str] = Field(default=None, description="Start time in ISO 8601 format (e.g. 2025-03-20T14:00:00Z).")
     duration: Optional[int] = Field(default=60, ge=1, description="Duration in minutes (default 60).")
-    timezone: Optional[str] = Field(default=None, description="Timezone (e.g. Asia/Kolkata). Infer from context if not stated.")
+    timezone: Optional[str] = Field(default=None, description="Timezone (e.g. Asia/Kolkata). Infer from system prompt, dont ask user")
     agenda: Optional[str] = Field(default=None, description="Meeting agenda/description.")
     type_: Optional[int] = Field(
         default=2,
@@ -188,16 +184,16 @@ class ListRecurringMeetingsEndingInput(BaseModel):
 
 _STRIP_FIELDS = {"global_dial_in_numbers", "global_dial_in_countries", "dial_in_numbers"}
 
-def _ensure_aware(dt: datetime) -> datetime:
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
+def _ensure_aware(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
 
 
 def _in_range(start_time: str, from_dt: datetime, to_dt: datetime) -> bool:
     try:
-        dt = _ensure_aware(datetime.fromisoformat(start_time.replace("Z", "+00:00")))
-        return from_dt <= dt <= to_dt
+        start_dt = _ensure_aware(datetime.fromisoformat(start_time.replace("Z", "+00:00")))
+        return from_dt <= start_dt <= to_dt
     except ValueError:
         return False
 # ---------------------------------------------------------------------------
@@ -255,11 +251,20 @@ class Zoom:
     def _clean_response_data(self, data: object) -> object:
         """Strip noisy dial-in fields from any response data."""
         if isinstance(data, dict):
-            cleaned = {k: v for k, v in data.items() if k not in _STRIP_FIELDS}
+            cleaned = {
+                key: val for key, val in data.items() if key not in _STRIP_FIELDS
+            }
             if "settings" in cleaned and isinstance(cleaned["settings"], dict):
-                cleaned["settings"] = {k: v for k, v in cleaned["settings"].items() if k not in _STRIP_FIELDS}
+                cleaned["settings"] = {
+                    key: val
+                    for key, val in cleaned["settings"].items()
+                    if key not in _STRIP_FIELDS
+                }
             if "meetings" in cleaned and isinstance(cleaned["meetings"], list):
-                cleaned["meetings"] = [self._clean_response_data(m) for m in cleaned["meetings"]]
+                cleaned["meetings"] = [
+                    self._clean_response_data(meeting)
+                    for meeting in cleaned["meetings"]
+                ]
             return cleaned
         return data
 
@@ -345,11 +350,11 @@ class Zoom:
         try:
             top = min(top, 50)
             from_dt = _ensure_aware(datetime.fromisoformat(from_.replace("Z", "+00:00")))
-            to_dt   = _ensure_aware(datetime.fromisoformat(to_.replace("Z", "+00:00")))
+            to_dt   = _ensure_aware(datetime.fromisoformat(to_.replace("Z", "+00:00"))) + timedelta(days=1)
 
             # Step 1 — fetch all parent meetings
             all_parents: list[dict] = []
-            for meeting_type in ("scheduled", "upcoming"):
+            for meeting_type in ("upcoming", "previous_meetings"):
                 response = await self.client.meetings(userId="me", type_=meeting_type, page_size=100)
                 success, cleaned = self._handle_response(response, "ok")
                 if not success:
@@ -362,33 +367,33 @@ class Zoom:
             # Deduplicate parents by ID
             seen: set[str] = set()
             parents: list[dict] = []
-            for m in all_parents:
-                mid = str(m.get("id", ""))
+            for parent in all_parents:
+                mid = str(parent.get("id", ""))
                 if mid not in seen:
                     seen.add(mid)
-                    parents.append(m)
+                    parents.append(parent)
 
             results: list[dict] = []
 
-            for m in parents:
-                meeting_type = m.get("type")
+            for meeting in parents:
+                meeting_type = meeting.get("type")
 
                 # Non-recurring (type 2) — single start_time check
                 if meeting_type == 2:
-                    start = m.get("start_time")
+                    start = meeting.get("start_time")
                     if start and _in_range(start, from_dt, to_dt):
                         results.append({
-                            "meeting_id": m.get("id"),
-                            "topic": m.get("topic"),
+                            "meeting_id": meeting.get("id"),
+                            "topic": meeting.get("topic"),
                             "start_time": start,
-                            "duration": m.get("duration"),
-                            "join_url": m.get("join_url"),
+                            "duration": meeting.get("duration"),
+                            "join_url": meeting.get("join_url"),
                             "recurring": False,
                         })
 
                 # Recurring (type 8 fixed, type 3 no-fixed-time) — expand occurrences
                 elif meeting_type in (3, 8):
-                    detail_response = await self.client.meeting(meetingId=str(m.get("id")))
+                    detail_response = await self.client.meeting(meetingId=str(meeting.get("id")))
                     detail_success, detail_cleaned = self._handle_response(detail_response, "ok")
                     if not detail_success:
                         continue
@@ -401,9 +406,9 @@ class Zoom:
                         occ_start = occ.get("start_time")
                         if occ_start and _in_range(occ_start, from_dt, to_dt):
                             results.append({
-                                "meeting_id": m.get("id"),
+                                "meeting_id": meeting.get("id"),
                                 "occurrence_id": occ.get("occurrence_id"),
-                                "topic": m.get("topic"),
+                                "topic": meeting.get("topic"),
                                 "start_time": occ_start,
                                 "duration": occ.get("duration"),
                                 "join_url": detail.get("join_url"),
@@ -411,7 +416,7 @@ class Zoom:
                                 "status": occ.get("status"),
                             })
 
-            results.sort(key=lambda x: x["start_time"])
+            results.sort(key=lambda row: row["start_time"])
             trimmed = results[:top]
 
             return True, json.dumps({
@@ -707,7 +712,7 @@ class Zoom:
             logger.info("zoom.search_meetings_by_name called with query=%s user_id=%s", query, user_id)
             query_lower = query.lower()
             matched: list[dict] = []
-
+            MEETING_TYPES_SEARCH = ("upcoming", "previous_meetings")
             for meeting_type in MEETING_TYPES_SEARCH:
                 response = await self.client.meetings(userId=user_id, type_=meeting_type, page_size=100)
 
@@ -719,18 +724,18 @@ class Zoom:
                 # _handle_response wraps under "data" key — unwrap it
                 meetings = data.get("data", data).get("meetings", [])
 
-                for m in meetings:
-                    if isinstance(m, dict) and query_lower in str(m.get("topic", "")).lower():
-                        matched.append(m)
+                for meeting in meetings:
+                    if isinstance(meeting, dict) and query_lower in str(meeting.get("topic", "")).lower():
+                        matched.append(meeting)
 
             # Deduplicate by meeting id, preserving all fields
             seen: set[str] = set()
             unique: list[dict] = []
-            for m in matched:
-                mid = str(m.get("id", ""))
+            for meeting in matched:
+                mid = str(meeting.get("id", ""))
                 if mid not in seen:
                     seen.add(mid)
-                    unique.append(m)
+                    unique.append(meeting)
 
             if not unique:
                 return False, json.dumps({"error": f"No meetings found matching '{query}'"})
@@ -816,16 +821,16 @@ class Zoom:
             # Deduplicate
             seen: set[str] = set()
             recurring_parents: list[dict] = []
-            for m in all_parents:
-                mid = str(m.get("id", ""))
-                if mid not in seen and m.get("type") in (3, 8):
+            for parent in all_parents:
+                mid = str(parent.get("id", ""))
+                if mid not in seen and parent.get("type") in (3, 8):
                     seen.add(mid)
-                    recurring_parents.append(m)
+                    recurring_parents.append(parent)
 
             results: list[dict] = []
 
-            for m in recurring_parents:
-                detail_response = await self.client.meeting(meetingId=str(m.get("id")))
+            for recurring in recurring_parents:
+                detail_response = await self.client.meeting(meetingId=str(recurring.get("id")))
                 detail_success, detail_cleaned = self._handle_response(detail_response, "ok")
                 if not detail_success:
                     continue
@@ -867,7 +872,7 @@ class Zoom:
                     "join_url": detail.get("join_url"),
                 })
 
-            results.sort(key=lambda x: x["series_end"])
+            results.sort(key=lambda row: row["series_end"])
             trimmed = results[:top]
 
             return True, json.dumps({
@@ -894,7 +899,7 @@ class Zoom:
             "Requires cloud recording with audio transcription enabled. Scope: cloud_recording:read:meeting_transcript."
         ),
         args_schema=GetMeetingTranscriptInput,
-        returns="JSON with transcript metadata and VTT file download URL",
+        returns="JSON with timestamped transcript (one line per cue: [start - end] text), meeting_id, instance_uuid",
         primary_intent=ToolIntent.SEARCH,
         category=ToolCategory.COMMUNICATION,
         when_to_use=[
@@ -991,22 +996,43 @@ class Zoom:
 
     @staticmethod
     def _parse_vtt(vtt: str) -> str:
-        """Convert WebVTT content to clean plain text, removing headers and timecodes."""
+        """Convert WebVTT to readable text: each cue is one line ``[start - end] spoken text``."""
+        timecode_re = re.compile(r"^([\d:.]+)\s*-->\s*([\d:.]+)")
         lines = vtt.splitlines()
-        text_lines = []
-        for line in lines:
-            line = line.strip()
-            # Skip WEBVTT header, NOTE blocks, empty lines, and timecode lines
+        segments: list[str] = []
+        current_start: str | None = None
+        current_end: str | None = None
+        current_text: list[str] = []
+
+        def flush() -> None:
+            nonlocal current_start, current_end, current_text
+            if current_start and current_text:
+                stamp = f"[{current_start} - {current_end}]" if current_end else f"[{current_start}]"
+                segments.append(f"{stamp} {' '.join(current_text)}")
+            current_start = None
+            current_end = None
+            current_text = []
+
+        for raw in lines:
+            line = raw.strip()
             if not line:
+                flush()
                 continue
             if line.startswith("WEBVTT") or line.startswith("NOTE"):
                 continue
-            if re.match(r"^\d+$", line):          # cue index numbers
+            timecode_match = timecode_re.match(line)
+            if timecode_match:
+                flush()
+                current_start = timecode_match.group(1)
+                current_end = timecode_match.group(2)
                 continue
-            if re.match(r"[\d:.]+ --> [\d:.]+", line):  # timecodes
+            if re.match(r"^\d+$", line):
                 continue
-            text_lines.append(line)
-        return " ".join(text_lines)
+            if current_start is not None:
+                current_text.append(line)
+
+        flush()
+        return "\n".join(segments)
     
     # ------------------------------------------------------------------
     # Contact tools
