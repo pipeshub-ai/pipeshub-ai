@@ -1,16 +1,18 @@
 import asyncio
 import io
 import json
+import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from openpyxl import load_workbook
-from openpyxl.cell.cell import MergedCell
+from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -49,6 +51,10 @@ MAX_HEADER_GENERATION_ROWS = 10  # Maximum number of rows to use for header gene
 MAX_HEADER_DETECTION_ROWS = 4  # Check first 4 rows for multi-row headers
 MIN_ROWS_FOR_HEADER_ANALYSIS = 1  # Minimum number of rows required for header analysis
 MAX_HEADER_COUNT_RETRIES = 2  # Maximum retries when LLM returns wrong header count
+EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, int(os.getenv("EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT", "500")))
+EXCEL_MAX_TABLE_ROWS_TO_INDEX = max(1, int(os.getenv("EXCEL_MAX_TABLE_ROWS_TO_INDEX", "2000")))
+EXCEL_ROW_BLOCK_CHUNK_THRESHOLD = int(os.getenv("EXCEL_ROW_BLOCK_CHUNK_THRESHOLD", "2000"))
+EXCEL_ROW_BLOCK_CHUNK_SIZE = max(1, int(os.getenv("EXCEL_ROW_BLOCK_CHUNK_SIZE", "100")))
 
 
 # Built-in Excel date format codes mapping
@@ -286,7 +292,7 @@ def _resolve_ambiguous_format(format_str: str) -> str:
     return python_format
 
 
-def format_excel_datetime(dt_value: Union[datetime, str, int, float, None], number_format: str) -> Union[str, int, float, None]:
+def format_excel_datetime(dt_value: datetime | str | int | float | None, number_format: str) -> str | int | float | None:
     """
     Apply Excel number format to datetime value using whitelist-based approach.
 
@@ -334,7 +340,7 @@ def format_excel_datetime(dt_value: Union[datetime, str, int, float, None], numb
 
 
 class ExcelParser:
-    def __init__(self, logger) -> None:
+    def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
         self.workbook = None
         self.file_binary = None
@@ -377,12 +383,12 @@ class ExcelParser:
                 self.workbook.close()
 
 
-    def _json_default(self, obj) -> str:
+    def _json_default(self, obj: object) -> str:
         if isinstance(obj, datetime):
             return obj.isoformat()
         return str(obj)
 
-    def _process_sheet(self, sheet) -> Dict[str, List[List[Dict[str, Any]]]]:
+    def _process_sheet(self, sheet: Worksheet) -> dict[str, list[list[dict[str, Any]]]]:
         """Process individual sheet and extract cell data"""
         try:
             self.logger.info(f"Processing sheet: {sheet.title}")
@@ -466,21 +472,62 @@ class ExcelParser:
             self.logger.error(f"Error processing sheet {sheet.title}: {e}", exc_info=True)
             raise
 
-    async def find_tables(self, sheet, llm: BaseChatModel) -> List[Dict[str, Any]]:
+    async def find_tables(self, sheet: Worksheet, llm: BaseChatModel) -> list[dict[str, Any]]:
         """Find and process all tables in a sheet with LLM-based header detection/generation"""
         try:
             self.logger.info(f"Finding tables in sheet: {sheet.title}")
             tables = []
-            visited_cells = set()  # Track already processed cells
+            visited_ranges: list[tuple[int, int, int, int]] = []
 
-            async def get_table(start_row: int, start_col: int) -> Dict[str, Any]:
+            # Pre-scan: build a set of non-empty cell positions and find the true sheet
+            # extent. openpyxl frequently reports inflated max_row/max_col (e.g. 98k rows)
+            # for sheets that only have ~1k rows of actual data because empty-but-styled
+            # rows are counted. Iterating sheet._cells (the internal non-empty cell dict)
+            # is 50-100x faster than iter_rows() for such sheets.
+            # NOTE: sheet._cells is a private openpyxl implementation detail (tested with
+            # openpyxl==3.1.5). It may change or be removed in future versions. The
+            # getattr fallback below ensures graceful degradation to iter_rows() if the
+            # attribute no longer exists.
+            _raw_cells = getattr(sheet, '_cells', None)
+            if _raw_cells is not None:
+                non_empty_positions: set[tuple[int, int]] = {
+                    (r, c) for (r, c), _cell in _raw_cells.items() if _cell.value is not None
+                }
+            else:
+                non_empty_positions = {
+                    (cell.row, cell.column)
+                    for _row in sheet.iter_rows()
+                    for cell in _row
+                    if cell.value is not None
+                }
+
+            if not non_empty_positions:
+                self.logger.info(f"Sheet '{sheet.title}' has no data, skipping")
+                return []
+
+            effective_max_row: int = max(r for r, _ in non_empty_positions)
+            effective_max_col: int = max(c for _, c in non_empty_positions)
+
+            if effective_max_row < sheet.max_row or effective_max_col < sheet.max_column:
+                self.logger.info(
+                    f"Sheet '{sheet.title}': effective dimensions {effective_max_row}\u00d7{effective_max_col} "
+                    f"(openpyxl reported {sheet.max_row}\u00d7{sheet.max_column})"
+                )
+
+            def get_visited_range(row: int, col: int) -> tuple[int, int, int, int] | None:
+                for start_row, end_row, start_col, end_col in visited_ranges:
+                    if start_row <= row <= end_row and start_col <= col <= end_col:
+                        return (start_row, end_row, start_col, end_col)
+                return None
+
+            async def get_table(start_row: int, start_col: int) -> dict[str, Any]:
                 """Extract a table starting from (start_row, start_col) with intelligent header detection."""
                 self.logger.info(f"Extracting table starting at row={start_row}, col={start_col}")
                 # Step 1: Find table boundaries (max_row, max_col)
                 max_col = start_col
-                for col in range(start_col, sheet.max_column + 1):
+                for col in range(start_col, effective_max_col + 1):
                     has_data = False
-                    for r in range(start_row, sheet.max_row + 1):
+                    for r in range(start_row, effective_max_row + 1):
                         cell = sheet.cell(row=r, column=col)
                         if cell.value is not None:
                             has_data = True
@@ -490,7 +537,7 @@ class ExcelParser:
                         break
 
                 max_row = start_row
-                for row in range(start_row+1, sheet.max_row + 1):
+                for row in range(start_row+1, effective_max_row + 1):
                     has_data = False
                     for col in range(start_col, max_col + 1):
                         cell = sheet.cell(row=row, column=col)
@@ -539,19 +586,11 @@ class ExcelParser:
                     headers = first_rows[0] if first_rows else []
                     data_start_row = start_row + 1
                     self.logger.info(f"Using single-row headers: {headers}")
-                    # Mark header cells as visited
-                    for col in range(start_col, max_col + 1):
-                        visited_cells.add((start_row, col))
                 elif detection.has_headers and detection.num_header_rows > 1:
                     # Multi-row headers: concatenate them into single-row headers
                     multirow_headers = first_rows[:detection.num_header_rows]
                     data_start_row = start_row + detection.num_header_rows
                     self.logger.info(f"Multi-row headers detected ({detection.num_header_rows} rows), will concatenate into single-row headers")
-
-                    # Mark header cells as visited
-                    for row_idx in range(start_row, start_row + detection.num_header_rows):
-                        for col in range(start_col, max_col + 1):
-                            visited_cells.add((row_idx, col))
 
                     # Concatenate multi-row headers directly (no LLM)
                     headers = self._concatenate_multirow_headers(multirow_headers, column_count)
@@ -562,9 +601,10 @@ class ExcelParser:
                     sample_start = start_row
                     self.logger.info("No headers detected, will generate headers from data")
 
-                    # Extract all rows for sampling
+                    # Extract a bounded subset of rows for sampling to avoid scanning massive tables.
                     all_rows = []
-                    for row_idx in range(sample_start, max_row + 1):
+                    sample_end_row = min(max_row, sample_start + EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT - 1)
+                    for row_idx in range(sample_start, sample_end_row + 1):
                         row_values = []
                         for col in range(start_col, max_col + 1):
                             cell = sheet.cell(row=row_idx, column=col)
@@ -612,15 +652,22 @@ class ExcelParser:
                     }
 
                 # Step 5: Build table structure once with correct headers
+                total_data_rows = max(0, max_row - data_start_row + 1)
+                processed_end_row = min(max_row, data_start_row + EXCEL_MAX_TABLE_ROWS_TO_INDEX - 1)
+
+                if total_data_rows > EXCEL_MAX_TABLE_ROWS_TO_INDEX:
+                    self.logger.warning(
+                        f"Large Excel table detected with {total_data_rows} rows at rows [{start_row}-{max_row}]. "
+                        f"Limiting indexed rows to first {EXCEL_MAX_TABLE_ROWS_TO_INDEX}."
+                    )
+
                 table_data = []
-                for row_idx in range(data_start_row, max_row + 1):
+                for row_idx in range(data_start_row, processed_end_row + 1):
                     row_data = []
                     for col_idx, col in enumerate(range(start_col, max_col + 1)):
                         cell = sheet.cell(row=row_idx, column=col)
                         header = headers[col_idx]
                         cell_data = self._process_cell(cell, header, row_idx, col)
-                        if cell.value is not None:
-                            visited_cells.add((row_idx, col))
                         row_data.append(cell_data)
                     table_data.append(row_data)
 
@@ -629,25 +676,54 @@ class ExcelParser:
                     "data": table_data,
                     "start_row": start_row,
                     "start_col": start_col,
-                    "end_row": max_row,
+                    "end_row": processed_end_row,
                     "end_col": max_col,
+                    "full_end_row": max_row,
+                    "total_data_rows": total_data_rows,
                 }
 
-            # Find all tables in the sheet
-            for row in range(1, sheet.max_row + 1):
-                for col in range(1, sheet.max_column + 1):
-                    cell = sheet.cell(row=row, column=col)
+            # Find all tables in the sheet while skipping previously claimed ranges.
+            row = 1
+            while row <= effective_max_row:
+                col = 1
+                while col <= effective_max_col:
+                    visited_range = get_visited_range(row, col)
+                    if visited_range is not None:
+                        _start_row, end_row, start_col, end_col = visited_range
+                        if start_col == 1 and end_col >= effective_max_col and col == 1:
+                            row = end_row + 1
+                            col = 1
+                            break
+                        col = end_col + 1
+                        continue
 
-                    # Possible table start detection (cell has data and not visited)
-                    if (
-                        cell.value
-                        and (row, col) not in visited_cells
-                    ):
-                        self.logger.info(f"Found potential table start at ({row}, {col}) with value: {cell.value}")
+                    # O(1) set lookup instead of sheet.cell() creation
+                    if (row, col) in non_empty_positions:
+                        self.logger.info(f"Found potential table start at ({row}, {col})")
                         table = await get_table(row, col)
                         if table["data"]:  # Only add if table has data
                             tables.append(table)
+                            full_end_row = table.get("full_end_row", table["end_row"])
+                            visited_ranges.append(
+                                (table["start_row"], full_end_row, table["start_col"], table["end_col"])
+                            )
                             self.logger.info(f"Table added with {len(table['data'])} rows and {len(table['headers'])} columns")
+
+                            if table["start_col"] == 1 and table["end_col"] >= effective_max_col:
+                                row = full_end_row + 1
+                                col = 1
+                                break
+
+                            col = table["end_col"] + 1
+                            continue
+
+                    col += 1
+                else:
+                    row += 1
+                    continue
+
+                if col == 1:
+                    continue
 
             self.logger.info(f"Found {len(tables)} tables in sheet: {sheet.title}")
             return tables
@@ -656,17 +732,18 @@ class ExcelParser:
             self.logger.error(f"Error finding tables in sheet {sheet.title}: {e}", exc_info=True)
             raise
 
-    def _process_cell(self, cell, header, row, col) -> Dict[str, Any]:
+    def _process_cell(self, cell: Cell | MergedCell, header: str | None, row: int, col: int) -> dict[str, Any]:
         """Process a single cell and return its data with denormalized merged cell values."""
         try:
             # Check if the cell is a merged cell
             if isinstance(cell, MergedCell):
                 # Look for the merged range that contains this cell.
                 merged_value = None
-                for merged_range in cell.parent.merged_cells.ranges:
+                worksheet = cast(Worksheet, cell.parent)
+                for merged_range in worksheet.merged_cells.ranges:
                     if cell.coordinate in merged_range:
                         # Get the top-left cell of the merged range
-                        top_left_cell = cell.parent.cell(
+                        top_left_cell = worksheet.cell(
                             row=merged_range.min_row, column=merged_range.min_col
                         )
                         merged_value = top_left_cell.value
@@ -722,13 +799,13 @@ class ExcelParser:
             self.logger.error(f"Error processing cell at ({row}, {col}): {e}", exc_info=True)
             raise
 
-    def _count_empty_values(self, row: Dict[str, Any]) -> int:
+    def _count_empty_values(self, row: dict[str, Any]) -> int:
         """Count the number of empty/None values in a row"""
         return sum(1 for value in row.values() if value is None or value == "")
 
     def _select_representative_sample_rows(
-        self, data_rows: List[List[Any]], num_sample_rows: int = NUM_SAMPLE_ROWS
-    ) -> List[Tuple[int, List[Any], int]]:
+        self, data_rows: list[list[Any]], num_sample_rows: int = NUM_SAMPLE_ROWS
+    ) -> list[tuple[int, list[Any], int]]:
         """
         Select representative sample rows from data by prioritizing rows with fewer empty values.
 
@@ -772,7 +849,7 @@ class ExcelParser:
 
         return selected_rows
 
-    def _convert_rows_to_strings(self, rows: List[List[Any]], num_rows: int = 4) -> List[List[str]]:
+    def _convert_rows_to_strings(self, rows: list[list[Any]], num_rows: int = 4) -> list[list[str]]:
         """
         Convert multiple rows to lists of strings for LLM prompts.
 
@@ -790,7 +867,7 @@ class ExcelParser:
         ]
 
     async def detect_excel_headers_with_llm(
-        self, first_rows: List[List[Any]], llm: BaseChatModel
+        self, first_rows: list[list[Any]], llm: BaseChatModel
     ) -> ExcelHeaderDetection:
         """
         Use LLM to detect if the first row(s) contain valid headers and how many rows they span.
@@ -866,8 +943,8 @@ class ExcelParser:
             )
 
     async def generate_excel_headers_with_llm(
-        self, sample_rows: List[Tuple[int, List[Any], int]], column_count: int, llm: BaseChatModel
-    ) -> List[str]:
+        self, sample_rows: list[tuple[int, list[Any], int]], column_count: int, llm: BaseChatModel
+    ) -> list[str]:
         """
         Generate descriptive headers from sample data using LLM.
 
@@ -888,7 +965,7 @@ class ExcelParser:
         try:
             # Format sample data for display
             formatted_samples = []
-            for idx, row, empty_count in sample_rows[:MAX_HEADER_GENERATION_ROWS]:
+            for _idx, row, _empty_count in sample_rows[:MAX_HEADER_GENERATION_ROWS]:
                 formatted_row = [str(v) if v is not None else "" for v in row]
                 formatted_samples.append(formatted_row)
 
@@ -980,7 +1057,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
 
 
-    def _concatenate_multirow_headers(self, multirow_headers: List[List[Any]], column_count: int) -> List[str]:
+    def _concatenate_multirow_headers(self, multirow_headers: list[list[Any]], column_count: int) -> list[str]:
         """
         Fallback method to concatenate multi-row headers with underscores.
 
@@ -1010,10 +1087,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             seen.add(value_str)
 
             # Join with underscores or use generic name if no parts
-            if parts:
-                header = "_".join(parts)
-            else:
-                header = f"Column_{col_idx + 1}"
+            header = "_".join(parts) if parts else f"Column_{col_idx + 1}"
 
             consolidated.append(header)
 
@@ -1026,11 +1100,11 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
         ),
     )
-    async def _call_llm(self,messages) -> Union[str, dict, list]:
+    async def _call_llm(self, messages: list[Any]) -> AIMessage:
         """Wrapper for LLM calls with retry logic"""
-        return await self.llm.ainvoke(messages)
+        return await self.llm.ainvoke(messages)  # type: ignore[return-value]
 
-    async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> List[Dict[str, Any]]:
+    async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> list[dict[str, Any]]:
         """Get all tables in a specific sheet with LLM-based header detection/generation
 
         Note: Header detection and generation is now handled in find_tables() method,
@@ -1056,7 +1130,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             self.logger.error(f"Error getting tables in sheet {sheet_name}: {e}", exc_info=True)
             raise
 
-    async def get_table_summary(self, table: Dict[str, Any]) -> str:
+    async def get_table_summary(self, table: dict[str, Any]) -> str:
         """Get a natural language summary of a specific table"""
         self.logger.info(f"Getting summary for table with {len(table['headers'])} columns and {len(table['data'])} rows")
         try:
@@ -1088,8 +1162,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             raise
 
     async def get_rows_text(
-        self, rows: List[List[Dict[str, Any]]], table_summary: str
-    ) -> List[str]:
+        self, rows: list[list[dict[str, Any]]], table_summary: str
+    ) -> list[str]:
         """Convert multiple rows into natural language text using context from summaries in a single prompt"""
         self.logger.info(f"Converting {len(rows)} rows to natural language text")
         try:
@@ -1134,8 +1208,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             raise
 
     async def process_sheet_with_summaries(
-        self, llm, sheet_name: str, cumulative_row_count: List[int]
-    ) -> Dict[str, Any]:
+        self, llm: BaseChatModel, sheet_name: str, cumulative_row_count: list[int]
+    ) -> dict[str, Any] | None:
         """Process a sheet and generate all summaries and row texts
         Args:
             llm: Language model instance
@@ -1144,6 +1218,10 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         """
         self.logger.info(f"Processing sheet with summaries: {sheet_name}")
         self.llm = llm
+
+        if not self.workbook:
+            self.logger.warning(f"Workbook not loaded, cannot process sheet '{sheet_name}'")
+            return None
 
         if sheet_name not in self.workbook.sheetnames:
             self.logger.warning(f"Sheet '{sheet_name}' not found in workbook")
@@ -1189,9 +1267,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 # Limit parallel processing to at most 10 concurrent batches
                 semaphore = asyncio.Semaphore(10)
 
-                async def limited_get_rows_text(batch) -> List[str]:
-                    async with semaphore:
-                        return await self.get_rows_text(batch, table_summary)
+                async def limited_get_rows_text(batch: list[Any], _sem: asyncio.Semaphore = semaphore, _ts: str = table_summary) -> list[str]:
+                    async with _sem:
+                        return await self.get_rows_text(batch, _ts)
 
                 # Create throttled tasks for all batches
                 batch_tasks = []
@@ -1204,7 +1282,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 self.logger.info(f"Completed processing {len(batch_tasks)} batches with LLM")
 
                 # Combine results with their metadata and process
-                for i, (start_idx, batch, _) in enumerate(batch_tasks):
+                for i, (_start_idx, batch, _) in enumerate(batch_tasks):
                     row_texts = task_results[i]
 
                     # Add processed rows to results
@@ -1250,19 +1328,20 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         self.logger.info(f"Completed processing sheet {sheet_name} with {len(processed_tables)} tables")
         return {"sheet_name": sheet_name, "tables": processed_tables}
 
-    async def get_blocks_from_workbook(self, llm) -> BlocksContainer:
+    async def get_blocks_from_workbook(self, llm: BaseChatModel) -> BlocksContainer:
         """Build a BlocksContainer with SHEET and TABLE groups and TABLE_ROW blocks.
 
         Mirrors the CSV blocks structure, but nests tables under sheet groups.
         """
         self.logger.info("Building blocks from workbook")
-        blocks: List[Block] = []
-        block_groups: List[BlockGroup] = []
+        blocks: list[Block] = []
+        block_groups: list[BlockGroup] = []
 
         # Initialize cumulative row count for record-level threshold checking
         cumulative_row_count = [0]
 
         # Iterate sheets and build hierarchy
+        assert self.workbook is not None, "Workbook must be loaded before calling get_blocks_from_workbook"
         self.logger.info(f"Processing {len(self.workbook.sheetnames)} sheets: {self.workbook.sheetnames}")
         for sheet_idx, sheet_name in enumerate(self.workbook.sheetnames, 1):
             self.logger.info(f"Processing sheet {sheet_idx}/{len(self.workbook.sheetnames)}: {sheet_name}")
@@ -1322,8 +1401,38 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 block_groups.append(table_group)
                 sheet_table_group_indices.append(table_group_index)
 
+                rows_for_blocks = rows
+                if len(rows) > EXCEL_ROW_BLOCK_CHUNK_THRESHOLD:
+                    rows_for_blocks = []
+                    for chunk_start in range(0, len(rows), EXCEL_ROW_BLOCK_CHUNK_SIZE):
+                        chunk_rows = rows[chunk_start:chunk_start + EXCEL_ROW_BLOCK_CHUNK_SIZE]
+                        if not chunk_rows:
+                            continue
+
+                        start_row_num = int(chunk_rows[0].get("row_num") or (chunk_start + 1))
+                        end_row_num = int(chunk_rows[-1].get("row_num") or (chunk_start + len(chunk_rows)))
+                        chunk_text = "\n".join(
+                            row.get("natural_language_text", "")
+                            for row in chunk_rows
+                            if row.get("natural_language_text")
+                        )
+
+                        rows_for_blocks.append(
+                            {
+                                "natural_language_text": chunk_text,
+                                "row_num": start_row_num,
+                                "row_end_num": end_row_num,
+                                "row_count": len(chunk_rows),
+                            }
+                        )
+
+                    self.logger.warning(
+                        f"Large Excel table detected with {len(rows)} rows. "
+                        f"Chunking row blocks into {len(rows_for_blocks)} blocks of up to {EXCEL_ROW_BLOCK_CHUNK_SIZE} rows each."
+                    )
+
                 # Create TABLE_ROW blocks under this table
-                for i, row in enumerate(rows):
+                for i, row in enumerate(rows_for_blocks):
                     block_index = len(blocks)
                     blocks.append(
                         Block(
@@ -1333,6 +1442,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             data={
                                 "row_natural_language_text": row.get("natural_language_text", ""),
                                 "row_number": int(row.get("row_num") or (i + 1)),
+                                "row_end_number": int(row.get("row_end_num") or row.get("row_num") or (i + 1)),
+                                "row_count": int(row.get("row_count") or 1),
                                 "sheet_number": sheet_idx,
                                 "sheet_name": sheet_name,
                             },

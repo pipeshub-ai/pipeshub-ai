@@ -3,11 +3,14 @@ import json
 import os
 import ssl
 import threading
+from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
-from typing import Any, AsyncGenerator, Callable, Dict, Optional, Set
+from typing import Any, Optional
 
-from aiokafka import AIOKafkaConsumer  # type: ignore
+from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
+from aiokafka.structs import ConsumerRecord  # type: ignore
+from typing_extensions import override
 
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
@@ -17,6 +20,12 @@ MAX_CONCURRENT_PARSING = int(os.getenv('MAX_CONCURRENT_PARSING', '5'))
 MAX_CONCURRENT_INDEXING = int(os.getenv('MAX_CONCURRENT_INDEXING', '10'))
 SHUTDOWN_TASK_TIMEOUT = float(os.getenv('SHUTDOWN_TASK_TIMEOUT', '240.0'))
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
+MAX_PENDING_INDEXING_TASKS = int(
+    os.getenv(
+        'MAX_PENDING_INDEXING_TASKS',
+        str(max(MAX_CONCURRENT_PARSING, MAX_CONCURRENT_INDEXING) * 4),
+    )
+)
 
 
 class IndexingEvent:
@@ -49,19 +58,24 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.worker_executor: Optional[ThreadPoolExecutor] = None
         self.worker_loop: Optional[asyncio.AbstractEventLoop] = None
         self.worker_loop_ready = threading.Event()  # Signal when worker loop is ready
+        self.main_loop: Optional[asyncio.AbstractEventLoop] = None
         # Dual semaphores for parsing and indexing phases (created in worker thread)
         self.parsing_semaphore: Optional[asyncio.Semaphore] = None
         self.indexing_semaphore: Optional[asyncio.Semaphore] = None
-        self.message_handler: Optional[Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]] = None
+        self.message_handler: Optional[Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]]] = None
         # Track active futures for proper cleanup
-        self._active_futures: Set[Future] = set()
+        self._active_futures: set[Future[Any]] = set()
         self._futures_lock = threading.Lock()
         self._message_count = 0
+        self._commit_lock: Optional[asyncio.Lock] = None
+        self._next_commit_offset: dict[tuple[str, int], int] = {}
+        self._completed_offsets: dict[tuple[str, int], set[int]] = {}
+        self._backpressure_logged = False
 
     @staticmethod
-    def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> Dict[str, Any]:
+    def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> dict[str, Any]:
         """Convert KafkaConsumerConfig dataclass to dictionary format for aiokafka consumer"""
-        config = {
+        config: dict[str, Any] = {
             'bootstrap_servers': ",".join(kafka_config.bootstrap_servers),
             'group_id': kafka_config.group_id,
             'auto_offset_reset': kafka_config.auto_offset_reset,
@@ -126,12 +140,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.worker_executor.submit(run_worker_loop)
         self.logger.info("Worker thread started")
 
+    @override
     async def initialize(self) -> None:
         """Initialize the Kafka consumer and worker thread"""
         consumer = None
         try:
             if not self.kafka_config:
                 raise ValueError("Kafka configuration is not valid")
+
+            self.main_loop = asyncio.get_running_loop()
+            self._commit_lock = asyncio.Lock()
 
             # Start worker thread first
             self.__start_worker_thread()
@@ -218,6 +236,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         with self._futures_lock:
             return len(self._active_futures)
 
+    @override
     async def cleanup(self) -> None:
         """Stop the Kafka consumer and clean up resources"""
         try:
@@ -230,9 +249,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
 
-    async def start(
+    @override
+    async def start(  # type: ignore[override]
         self,
-        message_handler: Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]  # type: ignore
+        message_handler: Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]]
     ) -> None:
         """Start consuming messages with the provided handler
 
@@ -248,12 +268,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 await self.initialize()
 
             self.consume_task = asyncio.create_task(self.__consume_loop())
-            self.logger.info(f"Started Kafka consumer task with parsing_slots={MAX_CONCURRENT_PARSING}, indexing_slots={MAX_CONCURRENT_INDEXING}")
+            self.logger.info(
+                f"Started Kafka consumer task with parsing_slots={MAX_CONCURRENT_PARSING}, "
+                f"indexing_slots={MAX_CONCURRENT_INDEXING}, max_pending_tasks={MAX_PENDING_INDEXING_TASKS}"
+            )
         except Exception as e:
             self.logger.error(f"Failed to start Kafka consumer: {str(e)}")
             raise
 
-    async def stop(self, message_handler: Optional[Callable[[Dict[str, Any]], AsyncGenerator[Dict[str, Any], None]]] = None) -> None:  # type: ignore
+    @override
+    async def stop(self, message_handler: Optional[Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]]] = None) -> None:  # type: ignore[override]
         """Stop consuming messages gracefully.
 
         Order of operations:
@@ -285,9 +309,29 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             except Exception as e:
                 self.logger.error(f"Error stopping Kafka consumer: {e}")
 
+    @override
     def is_running(self) -> bool:
         """Check if consumer is running"""
         return self.running
+
+    async def __wait_for_capacity(self) -> None:
+        """Apply backpressure before draining more Kafka messages into memory."""
+        while self.running:
+            active_count = self._get_active_task_count()
+            if active_count < MAX_PENDING_INDEXING_TASKS:
+                if self._backpressure_logged:
+                    self.logger.info(
+                        f"Backpressure cleared: active tasks back to {active_count}/{MAX_PENDING_INDEXING_TASKS}"
+                    )
+                    self._backpressure_logged = False
+                return
+
+            if not self._backpressure_logged:
+                self.logger.warning(
+                    f"Backpressure engaged: {active_count} active tasks queued; pausing Kafka reads at cap {MAX_PENDING_INDEXING_TASKS}"
+                )
+                self._backpressure_logged = True
+            await asyncio.sleep(0.1)
 
     async def __consume_loop(self) -> None:
         """Main consumption loop with dual semaphore control"""
@@ -295,13 +339,17 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.info("Starting Kafka consumer loop")
             while self.running:
                 try:
+                    await self.__wait_for_capacity()
+                    if not self.running:
+                        break
+
                     message_batch = await self.consumer.getmany(timeout_ms=1000, max_records=1)  # type: ignore
 
                     if not message_batch:
                         await asyncio.sleep(0.1)
                         continue
 
-                    for _, messages in message_batch.items():
+                    for topic_partition, messages in message_batch.items():
                         for message in messages:
                             # Check if we should stop before processing
                             if not self.running:
@@ -310,7 +358,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
                             try:
                                 self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
-                                await self.__start_processing_task(message)
+                                await self.__start_processing_task(message, topic_partition)
                             except Exception as e:
                                 self.logger.error(f"Error processing individual message: {e}")
                                 continue
@@ -331,7 +379,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
 
 
-    def __parse_message(self, message) -> Optional[Dict[str, Any]]:
+    def __parse_message(self, message: ConsumerRecord) -> dict[str, Any] | None:
         """Parse the Kafka message value into a dictionary.
 
         Handles bytes decoding, JSON parsing, and double-encoded JSON.
@@ -378,7 +426,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
             return None
 
-    async def __start_processing_task(self, message) -> None:
+    async def __start_processing_task(self, message: ConsumerRecord, topic_partition: TopicPartition) -> None:
         """Start a new task for processing a message with semaphore control.
         Submits the task to the worker thread's event loop instead of the main loop.
         Tracks futures to ensure proper cleanup during shutdown.
@@ -391,6 +439,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.warning("Consumer is stopping, skipping message processing")
             return
 
+        partition_key = (topic_partition.topic, topic_partition.partition)
+        self._next_commit_offset.setdefault(partition_key, message.offset)
+        self._completed_offsets.setdefault(partition_key, set())
+
         # Submit coroutine to worker thread's event loop and track the future
         future = asyncio.run_coroutine_threadsafe(
             self.__process_message_wrapper(message),
@@ -402,12 +454,21 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self._active_futures.add(future)
 
         # Add callback to remove future from tracking when done
-        def on_future_done(f: Future) -> None:
+        def on_future_done(f: Future[Any]) -> None:
             with self._futures_lock:
                 self._active_futures.discard(f)
-            # Log any exceptions that weren't handled
-            if f.exception():
-                self.logger.error(f"Task completed with unhandled exception: {f.exception()}")
+
+            try:
+                success = f.result()
+            except Exception as exc:
+                self.logger.error(f"Task completed with unhandled exception: {exc}")
+                success = False
+
+            if self.main_loop and self.running:
+                self.main_loop.call_soon_threadsafe(
+                    asyncio.create_task,
+                    self.__handle_task_completion(topic_partition, message.offset, success=success)
+                )
 
         future.add_done_callback(on_future_done)
 
@@ -418,7 +479,42 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 active_count = len(self._active_futures)
             self.logger.info(f"📊 Active processing tasks: {active_count}")
 
-    async def __process_message_wrapper(self, message) -> None:
+    async def __handle_task_completion(self, topic_partition: TopicPartition, offset: int, *, success: bool) -> None:
+        """Commit only contiguous successfully processed offsets."""
+        if not self.consumer:
+            return
+
+        partition_key = (topic_partition.topic, topic_partition.partition)
+
+        if not success:
+            self.logger.warning(
+                f"Processing failed for {topic_partition.topic}-{topic_partition.partition}-{offset}; offset will remain uncommitted"
+            )
+            return
+
+        if not self._commit_lock:
+            return
+
+        async with self._commit_lock:
+            next_offset = self._next_commit_offset.setdefault(partition_key, offset)
+            completed_offsets = self._completed_offsets.setdefault(partition_key, set())
+            completed_offsets.add(offset)
+
+            commit_upto = next_offset
+            while commit_upto in completed_offsets:
+                completed_offsets.remove(commit_upto)
+                commit_upto += 1
+
+            if commit_upto == next_offset:
+                return
+
+            await self.consumer.commit({topic_partition: commit_upto})  # type: ignore
+            self._next_commit_offset[partition_key] = commit_upto
+            self.logger.info(
+                f"Committed offset {commit_upto} for topic={topic_partition.topic}, partition={topic_partition.partition}"
+            )
+
+    async def __process_message_wrapper(self, message: ConsumerRecord) -> bool:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
 
         Iterates over events yielded by the message handler:
@@ -432,49 +528,53 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         offset = message.offset
         message_id = f"{topic}-{partition}-{offset}"
 
-        needs_parsing_release = True
-        needs_indexing_release = True
+        parsing_held = False
+        indexing_held = False
 
         if not self.parsing_semaphore or not self.indexing_semaphore:
             self.logger.error(f"Semaphores not initialized for {message_id}")
-            return
+            return False
 
         try:
             await self.parsing_semaphore.acquire()
-            needs_parsing_release = False
+            parsing_held = True
 
             await self.indexing_semaphore.acquire()
-            needs_indexing_release = False
+            indexing_held = True
 
             parsed_message = self.__parse_message(message)
             if parsed_message is None:
                 self.logger.warning(f"Failed to parse message {message_id}, skipping")
-                return
+                return False
 
             if self.message_handler:
                 async for event in self.message_handler(parsed_message):
                     event_type = event.get("event")
 
-                    if event_type == IndexingEvent.PARSING_COMPLETE and not needs_parsing_release and self.parsing_semaphore:
+                    if event_type == IndexingEvent.PARSING_COMPLETE and parsing_held and self.parsing_semaphore:
                         self.parsing_semaphore.release()
-                        needs_parsing_release = True
+                        parsing_held = False
                         self.logger.debug(f"Released parsing semaphore for {message_id}")
-                    elif event_type == IndexingEvent.INDEXING_COMPLETE and not needs_indexing_release and self.indexing_semaphore:
+                    elif event_type == IndexingEvent.INDEXING_COMPLETE and indexing_held and self.indexing_semaphore:
                         self.indexing_semaphore.release()
-                        needs_indexing_release = True
+                        indexing_held = False
                         self.logger.debug(f"Released indexing semaphore for {message_id}")
             else:
                 self.logger.error(f"No message handler available for {message_id}")
+                return False
+
+            return True
 
         except Exception as e:
             self.logger.error(f"Error in process_message_wrapper for {message_id}: {e}")
+            return False
         finally:
             # Ensure semaphores are released even on error
-            if not needs_parsing_release and self.parsing_semaphore:
+            if parsing_held and self.parsing_semaphore:
                 self.parsing_semaphore.release()
                 self.logger.debug(f"Released parsing semaphore in finally for {message_id}")
 
-            if not needs_indexing_release and self.indexing_semaphore:
+            if indexing_held and self.indexing_semaphore:
                 self.indexing_semaphore.release()
                 self.logger.debug(f"Released indexing semaphore in finally for {message_id}")
 
