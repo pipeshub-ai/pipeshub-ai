@@ -3622,7 +3622,7 @@ BEFORE checking if timezone is missing, always read the Temporal Context
    - Use `list_upcoming_meetings` for "what's next", not `list_meetings`.
 3. **Transcript requires a past meeting.** `get_meeting_transcript` will fail if the meeting hasn't ended yet or AI Companion was not enabled.
 4. **Update only fields the user mentioned.** Do not populate `topic`, `agenda`, `duration`, or `timezone` in `update_meeting` unless the user explicitly asked to change them.
-5. **Alwasy use the user's timezone** → INFERRABLE from **Temporal Context**, and assume current year if not provided.
+5. **Always use the user's timezone** → INFERRABLE from **Temporal Context**, and assume current year if not provided.
 6. **Multiple matches on search — confirm before acting.** If `search_meetings_by_name` returns more than one result and the action is destructive (delete, update), confirm with the user which one to act on.
 7. **Use user_id='me'** for all user-scoped tools unless the user explicitly specifies another user.
 8. **Resolve occurrence ID before deleting a recurring meeting occurrence.**
@@ -8034,7 +8034,7 @@ Use this decision tree to choose the right approach:
 
     if _has_outlook_tools(state):
         base_prompt += "\n" + OUTLOOK_GUIDANCE
-    
+
     if _has_zoom_tools(state):
         base_prompt += "\n" + ZOOM_GUIDANCE
 
