@@ -742,7 +742,8 @@ async def stream_llm_response(
                     final_answer = existing_ai_content
                     reason = None
                     confidence = None
-
+                
+                logger.info(f"final_answer: {final_answer}")
                 # Always normalize citations - don't use LLM-generated citations
                 normalized, cites = normalize_citations_and_chunks_for_agent(final_answer, final_results, virtual_record_id_to_result, records)
 
@@ -1079,7 +1080,8 @@ async def handle_json_mode(
                 reference_data = None
 
             normalized, cites = normalize_citations_and_chunks(final_answer, final_results, records)
-
+            logger.info(f"final_answer: {final_answer}")
+            logger.info(f"normalized: {normalized}")
             words = re.findall(r'\S+', normalized)
             for i in range(0, len(words), target_words_per_chunk):
                 chunk_words = words[i:i + target_words_per_chunk]
