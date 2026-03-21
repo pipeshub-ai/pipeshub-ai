@@ -12532,6 +12532,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         sort_dir: str,
         *,
         only_containers: bool = False,
+        record_group_ids: list[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -12549,6 +12550,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             sort_field: Field to sort by.
             sort_dir: Sort direction ('ASC' or 'DESC').
             only_containers: If True, only return nodes that can have children.
+            record_group_ids: Optional list of record group IDs to restrict visibility.
             transaction: Optional transaction ID.
         """
         start = time.perf_counter()
@@ -12583,6 +12585,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             **parent_bind_vars,
         }
 
+        # Build optional record_group_ids filter for the AQL query
+        rg_filter_line = ""
+        if record_group_ids:
+            rg_filter_line = 'FILTER node.nodeType != "recordGroup" OR node.origin != "COLLECTION" OR node.id IN @record_group_ids'
+            bind_vars["record_group_ids"] = record_group_ids
+
         # Simple query for direct children with sorting and pagination
         query = f"""
         {sub_query}
@@ -12591,6 +12599,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR node IN raw_children
                 // Include all container types (app, kb, recordGroup, folder) even if empty
                 FILTER @only_containers == false OR node.hasChildren == true OR node.nodeType IN ["app", "recordGroup", "folder"]
+                {rg_filter_line}
                 RETURN node
         )
         LET sorted_children = (FOR child IN filtered_children SORT child[@sort_field] @sort_dir RETURN child)
@@ -12626,6 +12635,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         only_containers: bool = False,
         parent_id: str | None = None,  # For scoped search
         parent_type: str | None = None,  # Type of parent (app/recordGroup/record)
+        record_group_ids: list[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, Any]:
         """
@@ -12655,6 +12665,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             origins=origins,
             connector_ids=connector_ids,
             only_containers=only_containers,
+            record_group_ids=record_group_ids,
         )
 
         # Convert to AQL FILTER statements - add FILTER keyword before each condition
@@ -12691,7 +12702,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         else:
             # For app-level scope or global search, apply scope filters as before
             scope_filter_rg, scope_filter_record, scope_filter_rg_inline, scope_filter_record_inline = self._build_scope_filters(
-                parent_id, parent_type, parent_connector_id
+                parent_id, parent_type, parent_connector_id, record_group_ids=record_group_ids
             )
 
         # Build bind variables
@@ -12703,6 +12714,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "sort_field": sort_field,
             "sort_dir": sort_dir,
         }
+
+        # Add record_group_ids to bind vars for scope filter binding
+        if record_group_ids:
+            bind_vars["record_group_ids"] = record_group_ids
 
         # Add bind variables based on parent_type
         if parent_id:
@@ -15176,6 +15191,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_ids: list[str] | None = None,
         *,
         only_containers: bool = False,
+        record_group_ids: list[str] | None = None,
     ) -> tuple[list[str], dict[str, Any]]:
         """
         Build filter conditions and parameters for knowledge hub search queries.
@@ -15246,6 +15262,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if connector_ids:
             filter_params["connector_ids"] = connector_ids
             filter_conditions.append('((node.nodeType == "app" AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids))')
+
+        # Record group ID restriction: only allow COLLECTION-origin recordGroups
+        # whose IDs are in the provided list. CONNECTOR-origin recordGroups
+        # (Confluence spaces, Jira projects, etc.) pass through — they're
+        # already scoped by connector_ids. Non-recordGroup nodes also pass.
+        if record_group_ids:
+            filter_params["record_group_ids"] = record_group_ids
+            filter_conditions.append(
+                '(node.nodeType != "recordGroup" OR node.origin != "COLLECTION" OR node.id IN @record_group_ids)'
+            )
 
         # Add search condition to filter conditions if present
         if search_query:
@@ -15692,7 +15718,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         parent_id: str | None,
         parent_type: str | None,
-        parent_connector_id: str | None = None
+        parent_connector_id: str | None = None,
+        record_group_ids: list[str] | None = None,
     ) -> tuple[str, str, str, str]:
         """
         Build scope filter clauses for recordGroups and records.
@@ -15702,26 +15729,75 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             The "inline" versions are boolean expressions (not FILTER statements)
             used inside FILTER conditions with OR logic.
+
+        Args:
+            parent_id: Optional parent node ID for scoped search
+            parent_type: Optional type of parent
+            parent_connector_id: Optional connector ID of parent (needed for record/folder types)
+            record_group_ids: Optional list of allowed record group IDs (agent security boundary).
+                When set, restricts both recordGroups AND their child records.
         """
+        # --- record_group_ids constraint (layered on top of parent scope) ---
+        rg_ids_filter = ""
+        rg_ids_inline = ""
+        record_ids_filter = ""
+        record_ids_inline = ""
+        if record_group_ids:
+            # Origin-aware: only restrict COLLECTION-origin recordGroups (KBs).
+            # CONNECTOR-origin recordGroups (spaces, drives) pass through —
+            # they are scoped by connector_ids instead.
+            rg_ids_filter = 'FILTER rg.origin != "COLLECTION" OR rg._key IN @record_group_ids'
+            rg_ids_inline = '(inherited_node.origin != "COLLECTION" OR inherited_node._key IN @record_group_ids)'
+            # Same for records: only restrict COLLECTION-origin records.
+            # CONNECTOR records are scoped by connector_ids.
+            record_ids_filter = """FILTER record.origin != "COLLECTION" OR LENGTH(
+                FOR ip IN inheritPermissions
+                    FILTER ip._from == record._id
+                    FILTER PARSE_IDENTIFIER(ip._to).key IN @record_group_ids
+                    LIMIT 1
+                    RETURN 1
+            ) > 0 OR LENGTH(
+                FOR bt IN belongsTo
+                    FILTER bt._from == record._id
+                    FILTER IS_SAME_COLLECTION('recordGroups', bt._to)
+                    FILTER PARSE_IDENTIFIER(bt._to).key IN @record_group_ids
+                    LIMIT 1
+                    RETURN 1
+            ) > 0"""
+            record_ids_inline = """(inherited_node.origin != "COLLECTION" OR LENGTH(
+                FOR ip IN inheritPermissions
+                    FILTER ip._from == inherited_node._id
+                    FILTER PARSE_IDENTIFIER(ip._to).key IN @record_group_ids
+                    LIMIT 1
+                    RETURN 1
+            ) > 0 OR LENGTH(
+                FOR bt IN belongsTo
+                    FILTER bt._from == inherited_node._id
+                    FILTER IS_SAME_COLLECTION('recordGroups', bt._to)
+                    FILTER PARSE_IDENTIFIER(bt._to).key IN @record_group_ids
+                    LIMIT 1
+                    RETURN 1
+            ) > 0)"""
+
         if not parent_id or not parent_type:
-            # Global search - no scope filter
+            # Global search
+            if record_group_ids:
+                return (rg_ids_filter, record_ids_filter, rg_ids_inline or "true", record_ids_inline or "true")
             return ("", "", "true", "true")
 
         if parent_type == "app":
-            # Filter by connectorId
-            return (
-                "FILTER rg.connectorId == @parent_id",
-                "FILTER record.connectorId == @parent_id",
-                "inherited_node.connectorId == @parent_id",
-                "inherited_node.connectorId == @parent_id"
+            scope_rg = f"FILTER rg.connectorId == @parent_id\n            {rg_ids_filter}".rstrip()
+            scope_record = f"FILTER record.connectorId == @parent_id\n            {record_ids_filter}".rstrip()
+            scope_rg_inline = "inherited_node.connectorId == @parent_id" + (
+                f" AND {rg_ids_inline}" if rg_ids_inline else ""
             )
+            scope_record_inline = "inherited_node.connectorId == @parent_id" + (
+                f" AND {record_ids_inline}" if record_ids_inline else ""
+            )
+            return (scope_rg, scope_record, scope_rg_inline, scope_record_inline)
         elif parent_type in ("kb", "recordGroup"):
-            # Filter by parent relationship
-            # RecordGroups: match if parent is this recordGroup
-            # Records: match if belong to this recordGroup OR nested within
-            return (
-                "FILTER (rg.parentId == @parent_id OR rg._key == @parent_id)",
-                """FILTER (
+            scope_rg = f"FILTER (rg.parentId == @parent_id OR rg._key == @parent_id)\n            {rg_ids_filter}".rstrip()
+            scope_record = f"""FILTER (
                 record.connectorId == @parent_id
                 OR LENGTH(
                     FOR ip IN inheritPermissions
@@ -15729,9 +15805,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER ip._to == CONCAT('recordGroups/', @parent_id)
                         RETURN 1
                 ) > 0
-            )""",
-                "(inherited_node.parentId == @parent_id OR inherited_node._key == @parent_id)",
-                """(
+            )
+            {record_ids_filter}""".rstrip()
+            scope_rg_inline = "(inherited_node.parentId == @parent_id OR inherited_node._key == @parent_id)" + (
+                f" AND {rg_ids_inline}" if rg_ids_inline else ""
+            )
+            scope_record_inline = """(
                 inherited_node.connectorId == @parent_id
                 OR LENGTH(
                     FOR ip IN inheritPermissions
@@ -15739,17 +15818,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER ip._to == CONCAT('recordGroups/', @parent_id)
                         RETURN 1
                 ) > 0
-            )"""
-            )
+            )""" + (f" AND {record_ids_inline}" if record_ids_inline else "")
+            return (scope_rg, scope_record, scope_rg_inline, scope_record_inline)
         elif parent_type in ("record", "folder"):
-            # For record parents, scope by same connector then filter in post-processing
-            return (
-                "FILTER rg.connectorId == @parent_connector_id",
-                "FILTER record.connectorId == @parent_connector_id",
-                "inherited_node.connectorId == @parent_connector_id",
-                "inherited_node.connectorId == @parent_connector_id"
+            scope_rg = f"FILTER rg.connectorId == @parent_connector_id\n            {rg_ids_filter}".rstrip()
+            scope_record = f"FILTER record.connectorId == @parent_connector_id\n            {record_ids_filter}".rstrip()
+            scope_rg_inline = "inherited_node.connectorId == @parent_connector_id" + (
+                f" AND {rg_ids_inline}" if rg_ids_inline else ""
             )
+            scope_record_inline = "inherited_node.connectorId == @parent_connector_id" + (
+                f" AND {record_ids_inline}" if record_ids_inline else ""
+            )
+            return (scope_rg, scope_record, scope_rg_inline, scope_record_inline)
         else:
+            if record_group_ids:
+                return (rg_ids_filter, record_ids_filter, rg_ids_inline or "true", record_ids_inline or "true")
             return ("", "", "true", "true")
 
     def _build_children_intersection_aql(
@@ -17937,27 +18020,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             )
 
-            // Check team permissions on the agent (only if no individual access)
-            LET team_access = LENGTH(individual_access) == 0 ? (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from IN user_teams
-                    FILTER perm._to == agent_path
-                    FILTER perm.type == "TEAM"
-                    LET agent = DOCUMENT(agent_path)
-                    FILTER agent != null
-                    FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
-                        access_type: "TEAM",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
-            ) : []
-
-            // Check org permissions on the agent (only if no individual or team access)
-            LET org_access = LENGTH(individual_access) == 0 && LENGTH(team_access) == 0 && org_key != null ? (
+            // Check org permissions on the agent (only if no individual access)
+            LET org_access = LENGTH(individual_access) == 0 && org_key != null ? (
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
                     FILTER perm._to == agent_path
@@ -17975,11 +18039,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             ) : []
 
-            // Get base agent with permissions
+            // Check team permissions on the agent (only if no individual or org access)
+            LET team_access = LENGTH(individual_access) == 0 && LENGTH(org_access) == 0 ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "TEAM"
+                    LET agent = DOCUMENT(agent_path)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            ) : []
+
+            // Get base agent with permissions (first available access type)
             LET base_agent = LENGTH(individual_access) > 0 ?
                 FIRST(individual_access) :
-                (LENGTH(team_access) > 0 ? FIRST(team_access) :
-                (LENGTH(org_access) > 0 ? FIRST(org_access) : null))
+                (LENGTH(org_access) > 0 ? FIRST(org_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) : null))
 
             // Get linked toolsets with their tools
             LET linked_toolsets = base_agent != null ? (

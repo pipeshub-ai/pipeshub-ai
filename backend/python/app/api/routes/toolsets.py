@@ -264,6 +264,18 @@ async def get_oauth_credentials_for_toolset(
             f"Failed to retrieve OAuth credentials for toolset: {str(e)}"
         ) from e
 
+async def get_toolset_by_id(instance_id: str, config_service: ConfigurationService) -> Optional[dict[str, Any]]:
+    """Fetch a single toolset instance by ID from ETCD."""
+    try:
+        instances_path = DEFAULT_TOOLSET_INSTANCES_PATH
+        instances = await config_service.get_config(instances_path, default=[])
+        if isinstance(instances, list):
+            return next((inst for inst in instances if inst.get("_id") == instance_id), None)
+        return None
+    except Exception as e:
+        logger.error(f"Failed to fetch toolset instance '{instance_id}': {e}", exc_info=True)
+        return None
+
 
 # ============================================================================
 # Custom Exceptions
@@ -1334,7 +1346,8 @@ async def create_toolset_instance(
     }
     if oauth_config_id:
         new_instance["oauthConfigId"] = oauth_config_id
-
+    else: 
+        new_instance["auth"] = auth_config
     instances.append(new_instance)
 
     instances_path = _get_instances_path(org_id)
@@ -1860,6 +1873,10 @@ async def get_my_toolsets(
         toolset_type = inst.get("toolsetType", "")
         meta = registry.get_toolset_metadata(toolset_type)
         is_authenticated = bool(user_auth and user_auth.get("isAuthenticated", False))
+        authType = inst.get("authType", "NONE").upper()
+        auth_stored = None
+        if authType != "OAUTH" and user_auth is not None:
+            auth_stored = user_auth.get("auth", None)
 
         toolsets.append({
             "instanceId": inst.get("_id"),
@@ -1886,6 +1903,7 @@ async def get_my_toolsets(
             "createdBy": inst.get("createdBy"),
             "createdAtTimestamp": inst.get("createdAtTimestamp"),
             "updatedAtTimestamp": inst.get("updatedAtTimestamp"),
+            "auth": auth_stored,
         })
 
     return {"status": "success", "toolsets": toolsets}
@@ -1928,26 +1946,21 @@ async def authenticate_toolset_instance(
 
     body_data = await request.body()
     body = _parse_request_json(request, body_data)
-    credentials = body.get("credentials", {})
     auth = body.get("auth", {})
 
-    if not credentials and not auth:
+    if not auth:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
 
     # Validate required fields based on auth type
     if auth_type == "API_TOKEN":
-        token = (credentials.get("apiToken") or auth.get("apiToken") or "").strip()
+        token = auth.get("apiToken").strip()
         if not token:
             raise InvalidAuthConfigError("apiToken is required for API_TOKEN auth type")
-    elif auth_type == "BEARER_TOKEN":
-        token = (credentials.get("bearerToken") or auth.get("bearerToken") or "").strip()
-        if not token:
-            raise InvalidAuthConfigError("bearerToken is required for BEARER_TOKEN auth type")
-    elif auth_type == "USERNAME_PASSWORD":
-        username = (credentials.get("username") or auth.get("username") or "").strip()
-        password = (credentials.get("password") or auth.get("password") or "").strip()
+    elif auth_type == "BASIC_AUTH":
+        username = auth.get("username").strip()
+        password = auth.get("password").strip()
         if not username or not password:
-            raise InvalidAuthConfigError("username and password are required for USERNAME_PASSWORD auth type")
+            raise InvalidAuthConfigError("username and password are required for BASIC_AUTH auth type")
 
     now = get_epoch_timestamp_in_ms()
     user_auth = {
@@ -1956,7 +1969,7 @@ async def authenticate_toolset_instance(
         "instanceId": instance_id,
         "toolsetType": instance.get("toolsetType"),
         "auth": auth if auth else {},
-        "credentials": credentials if credentials else {},
+        "credentials": {},
         "updatedAt": now,
         "updatedBy": user_id,
     }
@@ -1970,6 +1983,47 @@ async def authenticate_toolset_instance(
 
     return {"status": "success", "message": "Toolset authenticated successfully.", "isAuthenticated": True}
 
+@router.put("/instances/{instance_id}/credentials", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@inject
+async def update_toolset_credentials(
+    instance_id: str,
+    request: Request,
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+) -> Dict[str, Any]:
+    """
+    Update the current user's credentials for a toolset instance.
+    This is used for non-OAuth types to update credentials without re-authenticating.
+    For OAuth types, use the reauthenticate endpoint to clear credentials and start a new OAuth flow.
+    """
+    user_context = _get_user_context(request)
+    user_id = user_context["user_id"]
+
+    body_data = await request.body()
+    body = _parse_request_json(request, body_data)
+    auth = body.get("auth", {})
+
+    if not auth:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Credentials are required.")
+
+    auth_path = _get_user_auth_path(instance_id, user_id)
+
+    try:
+        existing_auth = await config_service.get_config(auth_path, default=None)
+        if not existing_auth or not isinstance(existing_auth, dict):
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="No existing credentials found for this instance. Please authenticate first.")
+        
+        existing_auth["auth"] = auth
+        existing_auth["updatedAt"] = get_epoch_timestamp_in_ms()
+        existing_auth["updatedBy"] = user_id
+
+        await config_service.set_config(auth_path, existing_auth)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update credentials for instance {instance_id}: {e}")
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to update credentials.")
+
+    return {"status": "success", "message": "Credentials updated successfully."}
 
 @router.delete("/instances/{instance_id}/credentials", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
