@@ -1426,6 +1426,7 @@ class GitHubDataSource:
         try:
             async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
                 resp = await client.get(weburl, headers=headers)
+                resp.raise_for_status()
                 file_data = resp.content
                 return GitHubResponse(success=True, data=file_data)
         except httpx.HTTPStatusError as e:
