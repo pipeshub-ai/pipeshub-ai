@@ -4058,6 +4058,15 @@ components:
           type: string
           description: SAML attribute name for user email
           example: "email"
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time (JIT) user provisioning
+          default: true
+          example: true
+        samlPlatform:
+          type: string
+          description: Name of the SAML platform or provider (e.g., Okta, Azure AD)
+          example: "Okta"
 
     GenericOAuthConfig:
       type: object
@@ -6656,9 +6665,26 @@ paths:
       description: |
         Handle the SAML Identity Provider callback after user authentication. This endpoint receives the SAML assertion from the IdP.
       operationId: samlSignInCallback
+        Handles the callback from the SAML Identity Provider (IDP)
+        after successful user authentication.
+
+        This endpoint is invoked by the IDP and not directly by clients.
+
+        Flow:
+        1. IDP posts SAMLResponse and RelayState
+        2. Server validates the SAML assertion signature
+        3. Server extracts user identity
+        4. Server completes authentication
+        5. Redirects to frontend with authentication result
+
+        RelayState contains the session token or state used to resume
+        the authentication process.
+
       security: []
+
       requestBody:
         description: "SAML response from Identity Provider"
+        required: false
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -6672,9 +6698,65 @@ paths:
                   description: Relay state from the original request
       responses:
         '302':
-          description: Redirect to application with authentication tokens
+          description: Redirect to frontend with authentication result
+          headers:
+            Location:
+              description: Frontend URL containing authentication result parameters
+              schema:
+                type: string
+
+        '400':
+          description: Invalid or malformed SAML response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
         '401':
-          description: SAML authentication failed
+          description: SAML assertion validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+        '404':
+          description: Session expired or user not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+        '500':
+          description: Internal server error during SAML processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+  /saml/updateAppConfig:
+    post:
+      tags:
+        - SAML
+      summary: Reload SAML application configuration (Internal)
+      description: |
+        Internal endpoint to reload SAML configuration from the configuration manager.
+        This is called by other services when SAML settings are updated.<br><br>
+        <b>Purpose:</b><br>
+        When SAML configuration is updated in the Configuration Manager, this endpoint
+        is called to reload the settings into the authentication service without restart.<br><br>
+        <b>Effects:</b><br>
+        <ul>
+        <li>Reloads AppConfig from configuration files</li>
+        <li>Rebinds authentication controllers with new config</li>
+        <li>Updates SAML passport strategy settings</li>
+        </ul>
+        <b>Note:</b> This is an internal service-to-service endpoint.
+      operationId: updateSamlAppConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Configuration reloaded successfully
           content:
             application/json:
               schema:
