@@ -35,7 +35,7 @@ class HTTPClient(IClient):
             )
         return self.client
 
-    async def execute(self, request: HTTPRequest, **kwargs) -> HTTPResponse:
+    async def execute(self, request: HTTPRequest, **kwargs: object) -> HTTPResponse:
         """Execute an HTTP request
         Args:
             request: The HTTP request to execute

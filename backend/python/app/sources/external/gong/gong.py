@@ -104,17 +104,17 @@ class GongDataSource:
 
     async def get_call(
         self,
-        id: str
+        resource_id: str
     ) -> GongResponse:
         """Get a specific call
 
         Args:
-            id: The call ID
+            resource_id: The call ID
 
         Returns:
             GongResponse with operation result
         """
-        url = self.base_url + "/calls/{id}".format(id=id)
+        url = self.base_url + "/calls/{id}".format(id=resource_id)
 
         try:
             request = HTTPRequest(
@@ -135,14 +135,14 @@ class GongDataSource:
     async def get_calls_extensive(
         self,
         content_selector: dict[str, Any] | None = None,
-        filter: dict[str, Any] | None = None,
+        query_filter: dict[str, Any] | None = None,
         cursor: str | None = None
     ) -> GongResponse:
         """Get detailed call data with content selectors
 
         Args:
             content_selector: Content selection (context, exposedFields)
-            filter: Filter criteria (fromDateTime, toDateTime, callIds, primaryUserIds, workspaceId)
+            query_filter: Filter criteria (fromDateTime, toDateTime, callIds, primaryUserIds, workspaceId)
             cursor: Pagination cursor
 
         Returns:
@@ -153,8 +153,8 @@ class GongDataSource:
         body: dict[str, Any] = {}
         if content_selector is not None:
             body['contentSelector'] = content_selector
-        if filter is not None:
-            body['filter'] = filter
+        if query_filter is not None:
+            body['filter'] = query_filter
         if cursor is not None:
             body['cursor'] = cursor
 
@@ -266,12 +266,12 @@ class GongDataSource:
 
     async def get_call_transcripts(
         self,
-        filter: dict[str, Any]
+        query_filter: dict[str, Any]
     ) -> GongResponse:
         """Get call transcripts
 
         Args:
-            filter: Filter with callIds array
+            query_filter: Filter with callIds array
 
         Returns:
             GongResponse with operation result
@@ -279,7 +279,7 @@ class GongDataSource:
         url = self.base_url + "/calls/transcript"
 
         body: dict[str, Any] = {}
-        body['filter'] = filter
+        body['filter'] = query_filter
 
         try:
             request = HTTPRequest(
@@ -335,19 +335,19 @@ class GongDataSource:
 
     async def add_call_recording(
         self,
-        id: str,
+        resource_id: str,
         media_url: str | None = None
     ) -> GongResponse:
         """Upload media for a call
 
         Args:
-            id: The call ID
+            resource_id: The call ID
             media_url: Media URL
 
         Returns:
             GongResponse with operation result
         """
-        url = self.base_url + "/calls/{id}/media".format(id=id)
+        url = self.base_url + "/calls/{id}/media".format(id=resource_id)
 
         body: dict[str, Any] = {}
         if media_url is not None:
@@ -372,13 +372,13 @@ class GongDataSource:
 
     async def get_call_sharing(
         self,
-        filter: dict[str, Any] | None = None,
+        query_filter: dict[str, Any] | None = None,
         cursor: str | None = None
     ) -> GongResponse:
         """Get shared calls
 
         Args:
-            filter: Filter criteria
+            query_filter: Filter criteria
             cursor: Pagination cursor
 
         Returns:
@@ -387,8 +387,8 @@ class GongDataSource:
         url = self.base_url + "/calls/sharing"
 
         body: dict[str, Any] = {}
-        if filter is not None:
-            body['filter'] = filter
+        if query_filter is not None:
+            body['filter'] = query_filter
         if cursor is not None:
             body['cursor'] = cursor
 
@@ -451,17 +451,17 @@ class GongDataSource:
 
     async def get_user(
         self,
-        id: str
+        resource_id: str
     ) -> GongResponse:
         """Get a specific user
 
         Args:
-            id: The user ID
+            resource_id: The user ID
 
         Returns:
             GongResponse with operation result
         """
-        url = self.base_url + "/users/{id}".format(id=id)
+        url = self.base_url + "/users/{id}".format(id=resource_id)
 
         try:
             request = HTTPRequest(
@@ -481,17 +481,17 @@ class GongDataSource:
 
     async def get_user_history(
         self,
-        id: str
+        resource_id: str
     ) -> GongResponse:
         """Get user settings history
 
         Args:
-            id: The user ID
+            resource_id: The user ID
 
         Returns:
             GongResponse with operation result
         """
-        url = self.base_url + "/users/{id}/settings-history".format(id=id)
+        url = self.base_url + "/users/{id}/settings-history".format(id=resource_id)
 
         try:
             request = HTTPRequest(
@@ -512,14 +512,14 @@ class GongDataSource:
     async def list_users_extensive(
         self,
         *,
-        filter: dict[str, Any] | None = None,
+        query_filter: dict[str, Any] | None = None,
         cursor: str | None = None,
         include_avatars: bool | None = None
     ) -> GongResponse:
         """List users by filter
 
         Args:
-            filter: Filter (fromDateTime, toDateTime, createdFromDateTime, createdToDateTime, userIds)
+            query_filter: Filter (fromDateTime, toDateTime, createdFromDateTime, createdToDateTime, userIds)
             cursor: Pagination cursor
             include_avatars: Include avatar URLs
 
@@ -529,8 +529,8 @@ class GongDataSource:
         url = self.base_url + "/users/extensive"
 
         body: dict[str, Any] = {}
-        if filter is not None:
-            body['filter'] = filter
+        if query_filter is not None:
+            body['filter'] = query_filter
         if cursor is not None:
             body['cursor'] = cursor
         if include_avatars is not None:
@@ -555,12 +555,12 @@ class GongDataSource:
 
     async def get_aggregate_activity(
         self,
-        filter: dict[str, Any]
+        query_filter: dict[str, Any]
     ) -> GongResponse:
         """Get aggregated activity stats by users
 
         Args:
-            filter: Filter (fromDate, toDate, userIds)
+            query_filter: Filter (fromDate, toDate, userIds)
 
         Returns:
             GongResponse with operation result
@@ -568,7 +568,7 @@ class GongDataSource:
         url = self.base_url + "/stats/activity/aggregate"
 
         body: dict[str, Any] = {}
-        body['filter'] = filter
+        body['filter'] = query_filter
 
         try:
             request = HTTPRequest(
@@ -589,13 +589,13 @@ class GongDataSource:
 
     async def get_aggregate_activity_by_period(
         self,
-        filter: dict[str, Any],
+        query_filter: dict[str, Any],
         aggregation_period: str | None = None
     ) -> GongResponse:
         """Get activity aggregated by period
 
         Args:
-            filter: Filter (fromDate, toDate, userIds)
+            query_filter: Filter (fromDate, toDate, userIds)
             aggregation_period: Aggregation period (DAY, WEEK, MONTH, QUARTER)
 
         Returns:
@@ -604,7 +604,7 @@ class GongDataSource:
         url = self.base_url + "/stats/activity/aggregate-by-period"
 
         body: dict[str, Any] = {}
-        body['filter'] = filter
+        body['filter'] = query_filter
         if aggregation_period is not None:
             body['aggregationPeriod'] = aggregation_period
 
@@ -627,13 +627,13 @@ class GongDataSource:
 
     async def get_activity_day_by_day(
         self,
-        filter: dict[str, Any],
+        query_filter: dict[str, Any],
         aggregation_period: str | None = None
     ) -> GongResponse:
         """Get day-by-day activity
 
         Args:
-            filter: Filter (fromDate, toDate, userIds)
+            query_filter: Filter (fromDate, toDate, userIds)
             aggregation_period: Unused but accepted for consistency
 
         Returns:
@@ -642,7 +642,7 @@ class GongDataSource:
         url = self.base_url + "/stats/activity/day-by-day"
 
         body: dict[str, Any] = {}
-        body['filter'] = filter
+        body['filter'] = query_filter
         if aggregation_period is not None:
             body['aggregationPeriod'] = aggregation_period
 
@@ -665,13 +665,13 @@ class GongDataSource:
 
     async def get_answered_scorecards(
         self,
-        filter: dict[str, Any],
+        query_filter: dict[str, Any],
         aggregation_period: str | None = None
     ) -> GongResponse:
         """Get answered scorecards by user
 
         Args:
-            filter: Filter (fromDate, toDate, userIds, scorecardIds)
+            query_filter: Filter (fromDate, toDate, userIds, scorecardIds)
             aggregation_period: Aggregation period
 
         Returns:
@@ -680,7 +680,7 @@ class GongDataSource:
         url = self.base_url + "/stats/activity/scorecards"
 
         body: dict[str, Any] = {}
-        body['filter'] = filter
+        body['filter'] = query_filter
         if aggregation_period is not None:
             body['aggregationPeriod'] = aggregation_period
 
@@ -703,12 +703,12 @@ class GongDataSource:
 
     async def get_interaction_stats(
         self,
-        filter: dict[str, Any]
+        query_filter: dict[str, Any]
     ) -> GongResponse:
         """Get interaction stats by user
 
         Args:
-            filter: Filter (fromDate, toDate, userIds)
+            query_filter: Filter (fromDate, toDate, userIds)
 
         Returns:
             GongResponse with operation result
@@ -716,7 +716,7 @@ class GongDataSource:
         url = self.base_url + "/stats/interaction"
 
         body: dict[str, Any] = {}
-        body['filter'] = filter
+        body['filter'] = query_filter
 
         try:
             request = HTTPRequest(
@@ -1320,13 +1320,13 @@ class GongDataSource:
 
     async def get_content_shared_with_external(
         self,
-        filter: dict[str, Any],
+        query_filter: dict[str, Any],
         cursor: str | None = None
     ) -> GongResponse:
         """Get content shared with external parties
 
         Args:
-            filter: Filter criteria
+            query_filter: Filter criteria
             cursor: Pagination cursor
 
         Returns:
@@ -1335,7 +1335,7 @@ class GongDataSource:
         url = self.base_url + "/engagement-data/content-shared"
 
         body: dict[str, Any] = {}
-        body['filter'] = filter
+        body['filter'] = query_filter
         if cursor is not None:
             body['cursor'] = cursor
 
@@ -1487,17 +1487,17 @@ class GongDataSource:
 
     async def get_permission_profile(
         self,
-        id: str
+        resource_id: str
     ) -> GongResponse:
         """Get a permission profile
 
         Args:
-            id: The permission profile ID
+            resource_id: The permission profile ID
 
         Returns:
             GongResponse with operation result
         """
-        url = self.base_url + "/permission-profile/{id}".format(id=id)
+        url = self.base_url + "/permission-profile/{id}".format(id=resource_id)
 
         try:
             request = HTTPRequest(
@@ -1554,21 +1554,21 @@ class GongDataSource:
 
     async def update_permission_profile(
         self,
-        id: str,
+        resource_id: str,
         name: str | None = None,
         permissions: list[Any] | None = None
     ) -> GongResponse:
         """Update a permission profile
 
         Args:
-            id: The permission profile ID
+            resource_id: The permission profile ID
             name: Profile name
             permissions: Permissions list
 
         Returns:
             GongResponse with operation result
         """
-        url = self.base_url + "/permission-profile/{id}".format(id=id)
+        url = self.base_url + "/permission-profile/{id}".format(id=resource_id)
 
         body: dict[str, Any] = {}
         if name is not None:
@@ -1595,17 +1595,17 @@ class GongDataSource:
 
     async def delete_permission_profile(
         self,
-        id: str
+        resource_id: str
     ) -> GongResponse:
         """Delete a permission profile
 
         Args:
-            id: The permission profile ID
+            resource_id: The permission profile ID
 
         Returns:
             GongResponse with operation result
         """
-        url = self.base_url + "/permission-profile/{id}".format(id=id)
+        url = self.base_url + "/permission-profile/{id}".format(id=resource_id)
 
         try:
             request = HTTPRequest(
@@ -1660,12 +1660,12 @@ class GongDataSource:
 
     async def get_daily_briefs(
         self,
-        filter: dict[str, Any]
+        query_filter: dict[str, Any]
     ) -> GongResponse:
         """Get daily brief summaries
 
         Args:
-            filter: Filter criteria
+            query_filter: Filter criteria
 
         Returns:
             GongResponse with operation result
@@ -1673,7 +1673,7 @@ class GongDataSource:
         url = self.base_url + "/coaching/daily-briefs"
 
         body: dict[str, Any] = {}
-        body['filter'] = filter
+        body['filter'] = query_filter
 
         try:
             request = HTTPRequest(
@@ -1694,14 +1694,14 @@ class GongDataSource:
 
     async def get_emails_extensive(
         self,
-        filter: dict[str, Any],
+        query_filter: dict[str, Any],
         content_selector: dict[str, Any] | None = None,
         cursor: str | None = None
     ) -> GongResponse:
         """Get detailed email activity data
 
         Args:
-            filter: Filter criteria
+            query_filter: Filter criteria
             content_selector: Content selection
             cursor: Pagination cursor
 
@@ -1711,7 +1711,7 @@ class GongDataSource:
         url = self.base_url + "/emails/extensive"
 
         body: dict[str, Any] = {}
-        body['filter'] = filter
+        body['filter'] = query_filter
         if content_selector is not None:
             body['contentSelector'] = content_selector
         if cursor is not None:

@@ -189,7 +189,7 @@ async def main() -> None:
         if user_id:
             # 3. Get User Details
             print_section("User Details")
-            user_resp = await data_source.get_user(id=user_id)
+            user_resp = await data_source.get_user(resource_id=user_id)
             print_result("Get User", user_resp)
 
         # 4. List Calls
@@ -208,7 +208,7 @@ async def main() -> None:
         if call_id:
             # 5. Get Call Details
             print_section("Call Details")
-            call_resp = await data_source.get_call(id=call_id)
+            call_resp = await data_source.get_call(resource_id=call_id)
             print_result("Get Call", call_resp)
 
         # 6. List Scorecards
@@ -225,7 +225,7 @@ async def main() -> None:
         if user_id:
             print_section("Activity Stats")
             stats_resp = await data_source.get_aggregate_activity(
-                filter={"fromDate": "2024-01-01", "toDate": "2024-12-31"}
+                query_filter={"fromDate": "2024-01-01", "toDate": "2024-12-31"}
             )
             print_result("Get Aggregate Activity", stats_resp)
 
