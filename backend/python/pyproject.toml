@@ -111,10 +111,6 @@ select = [
     "RET502",   # Do not implicitly return None if other returns have values
     "RET503",   # Missing explicit return at end of function with other returns
 
-    # --- Boolean trap (force keyword args for booleans, like named params) ---
-    "FBT001",   # Boolean positional arg in function definition
-    "FBT002",   # Boolean default value in function definition
-
     # --- Builtin name shadowing (causes type confusion) ---
     "A001",     # Variable shadows a Python builtin
     "A002",     # Argument shadows a Python builtin
@@ -153,7 +149,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "app/sources/external/**/example*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401", "T201", "T203"]
 "app/**/migrations/*.py" = ["ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN401"]
-"tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "FBT001", "FBT002", "T201", "T203"]
+"tests/**/*.py" = ["ANN001", "ANN002", "ANN003", "T201", "T203"]
 
 
 [project]

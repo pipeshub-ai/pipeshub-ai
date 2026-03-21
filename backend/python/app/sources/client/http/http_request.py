@@ -2,7 +2,7 @@ import base64
 import json
 from typing import Any
 
-from pydantic import BaseModel, Field  # type: ignore
+from pydantic import BaseModel, Field
 
 
 class HTTPRequest(BaseModel):
