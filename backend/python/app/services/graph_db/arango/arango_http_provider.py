@@ -13158,7 +13158,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: true,
                     sharingStatus: sharingStatus,
-                    isInternal: rg.isInternal == true
+                    isInternal: rg.isInternal ? true : false
                 }}
         )
 
@@ -13202,7 +13202,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    isInternal: record.isInternal == true
+                    isInternal: record.isInternal ? true : false
                 }}
         )
 
@@ -14619,7 +14619,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_child_rgs OR has_records,
                     userRole: normalized_role,
                     sharingStatus: sharingStatus,
-                    isInternal: node.isInternal == true
+                    isInternal: node.isInternal ? true : false
                 }})
         )
         """
@@ -14699,7 +14699,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
                     userRole: normalized_role,
-                    isInternal: record.isInternal == true
+                    isInternal: record.isInternal ? true : false
                 }}
         ) : []
         RETURN internal_records
@@ -14788,7 +14788,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_child_rgs OR has_records,
                     userRole: normalized_role,
                     sharingStatus: sharingStatus,
-                    isInternal: node.isInternal == true
+                    isInternal: node.isInternal ? true : false
                 }}
         )
         RETURN child_rgs
@@ -14853,7 +14853,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
                     userRole: normalized_role,
-                    isInternal: record.isInternal == true
+                    isInternal: record.isInternal ? true : false
                 }}
         )
         RETURN direct_records
@@ -14956,7 +14956,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
                     userRole: normalized_role,
-                    isInternal: record.isInternal == true
+                    isInternal: record.isInternal ? true : false
                 }}
         ) : []
 
@@ -15035,7 +15035,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_child_rgs OR has_records,
                     userRole: normalized_role,
                     sharingStatus: sharingStatus,
-                    isInternal: node.isInternal == true
+                    isInternal: node.isInternal ? true : false
                 }}
         )
 
@@ -15090,7 +15090,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
                     userRole: normalized_role,
-                    isInternal: record.isInternal == true
+                    isInternal: record.isInternal ? true : false
                 }}
         )
 
@@ -15181,7 +15181,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
                     userRole: normalized_role,
-                    isInternal: record.isInternal == true
+                    isInternal: record.isInternal ? true : false
                 }}
         )
         """
