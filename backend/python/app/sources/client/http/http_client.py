@@ -1,9 +1,8 @@
 import types
 from typing import Optional
 
-from typing_extensions import override
-
 import httpx
+from typing_extensions import override
 
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
