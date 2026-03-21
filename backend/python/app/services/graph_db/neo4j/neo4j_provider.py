@@ -6748,6 +6748,7 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH (r)-[:IS_OF_TYPE]->(f:File)
                 WHERE f.isFile = false
             }
+            AND coalesce(r.isInternal, false) = false
             RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus, count(*) AS cnt
             """
 

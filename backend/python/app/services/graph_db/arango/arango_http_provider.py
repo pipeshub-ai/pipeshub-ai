@@ -14478,6 +14478,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR doc IN 1..1 INBOUND rgId {CollectionNames.BELONGS_TO.value}
                         FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", doc._id)
                         FILTER doc.recordType != @drive_record_type
+                        FILTER doc.isInternal != true
 
                         LET targetDoc = FIRST(
                             FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
