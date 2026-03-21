@@ -845,9 +845,13 @@ export const getMyToolsets =
       const { userId } = req.user || {};
       if (!userId) throw new UnauthorizedError('User authentication required');
 
-      const { search } = req.query;
+      const { search, includeRegistry } = req.query as { search?: string; includeRegistry?: string };
       const queryParams = new URLSearchParams();
       if (search) queryParams.append('search', String(search));
+      // We control the caller; simply forward when 'true'
+      if (includeRegistry === 'true') {
+        queryParams.append('includeRegistry', 'true');
+      }
 
       logger.info(`Getting my toolsets for user ${userId}`);
 

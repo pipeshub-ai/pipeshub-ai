@@ -1821,6 +1821,7 @@ async def delete_toolset_instance(
 async def get_my_toolsets(
     request: Request,
     search: Optional[str] = Query(None),
+    include_registry: bool = Query(False, alias="includeRegistry"),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Dict[str, Any]:
     """
@@ -1852,7 +1853,9 @@ async def get_my_toolsets(
         ]
 
     if not instances:
-        return {"status": "success", "toolsets": []}
+        # If no configured instances exist and includeRegistry is false, short-circuit
+        if not include_registry:
+            return {"status": "success", "toolsets": []}
 
     registry = _get_registry(request)
 
@@ -1900,11 +1903,62 @@ async def get_my_toolsets(
             ],
             "isConfigured": True,
             "isAuthenticated": is_authenticated,
+            "isFromRegistry": False,
             "createdBy": inst.get("createdBy"),
             "createdAtTimestamp": inst.get("createdAtTimestamp"),
             "updatedAtTimestamp": inst.get("updatedAtTimestamp"),
             "auth": auth_stored,
         })
+
+    # Optionally include missing toolsets from registry as synthetic, non-configured entries
+    if include_registry:
+        # Build a set of existing toolset types present in the user's list
+        existing_types = {t.get("toolsetType", "").lower() for t in toolsets}
+
+        for toolset_name in registry.list_toolsets():
+            try:
+                meta = registry.get_toolset_metadata(toolset_name)
+            except Exception:
+                meta = None
+            if not meta or meta.get("isInternal", False):
+                continue
+
+            toolset_type = (meta.get("name") or toolset_name or "").lower()
+            if not toolset_type or toolset_type in existing_types:
+                continue
+
+            # Determine auth type from supported list, default to NONE
+            supported_auth_types = meta.get("supported_auth_types", [])
+            auth_type_value = (supported_auth_types[0] if supported_auth_types else "NONE") or "NONE"
+
+            # Prepare tools list
+            tools_list = [
+                {
+                    "name": t.get("name", ""),
+                    "fullName": f"{toolset_type}.{t.get('name', '')}",
+                    "description": t.get("description", ""),
+                }
+                for t in meta.get("tools", [])
+            ]
+
+            synthetic_entry = {
+                "instanceId": "",
+                "instanceName": f"{meta.get('display_name', toolset_type)}",
+                "toolsetType": toolset_type,
+                "authType": auth_type_value,
+                "oauthConfigId": None,
+                "displayName": meta.get("display_name", toolset_type),
+                "description": meta.get("description", ""),
+                "iconPath": meta.get("icon_path", ""),
+                "category": meta.get("category", "app"),
+                "supportedAuthTypes": supported_auth_types,
+                "toolCount": len(meta.get("tools", [])),
+                "tools": tools_list,
+                "isConfigured": False,
+                "isAuthenticated": False,
+                "isFromRegistry": True,
+            }
+            toolsets.append(synthetic_entry)
 
     return {"status": "success", "toolsets": toolsets}
 

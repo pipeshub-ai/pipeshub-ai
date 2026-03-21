@@ -66,10 +66,11 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
           ConnectorApiService.getActiveAgentConnectorInstances(1, 100, ''),
           ConnectorApiService.getConfiguredConnectorInstances(undefined, 1, 100, ''),
           ConnectorApiService.getConnectorRegistry(undefined, 1, 100, ''),
-          // Use getMyToolsets() which returns org-wide instances with user auth status
-          // Each item has: instanceId, instanceName, toolsetType, authType, displayName,
-          //                description, iconPath, category, tools, isAuthenticated
-          ToolsetApiService.getMyToolsets(),
+          // Use getMyToolsets({ includeRegistry: true }) which returns org-wide instances with user auth status,
+          // plus missing registry toolsets as synthetic entries for agent builder UX.
+          // Each item has: instanceId ('' for synthetic), instanceName, toolsetType, authType, displayName,
+          //                description, iconPath, category, tools, isAuthenticated, isConfigured, isFromRegistry
+          ToolsetApiService.getMyToolsets({ includeRegistry: true }),
         ]);
 
         setAvailableTools([]); // Deprecated - tools are now from toolsets
@@ -81,8 +82,8 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
         setConfiguredConnectors(Array.isArray(connectorsArray) ? connectorsArray : []);
         setConnectorRegistry(connectorRegistryResponse?.connectors || []);
         
-        // Map MyToolset instances to sidebar-compatible format.
-        // Each entry includes instanceId so the agent builder can store it.
+        // Map MyToolset instances (configured + synthetic) to sidebar-compatible format.
+        // Synthetic entries will have instanceId === '' and isFromRegistry === true.
         const toolsetsWithStatus = (myToolsetsResponse?.toolsets || []).map((inst: any) => ({
           // Keep all original MyToolset fields
           ...inst,
@@ -102,8 +103,9 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
             appName: inst.toolsetType || '',
           })),
           // Auth status
-          isConfigured: inst.isConfigured ?? true,   // admin-created = always configured
+          isConfigured: inst.isConfigured ?? true,
           isAuthenticated: inst.isAuthenticated ?? false,
+          isFromRegistry: !!inst.isFromRegistry,
           // Instance identification (NEW – used by agent builder when saving)
           instanceId: inst.instanceId,
           instanceName: inst.instanceName,
@@ -149,7 +151,8 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
   // Refresh toolsets function - can be called after OAuth authentication
   const refreshToolsets = useCallback(async () => {
     try {
-      const myToolsetsResponse = await ToolsetApiService.getMyToolsets();
+      // Keep registry-sourced entries visible as well
+      const myToolsetsResponse = await ToolsetApiService.getMyToolsets({ includeRegistry: true });
       
       // Map MyToolset instances to sidebar-compatible format
       const toolsetsWithStatus = (myToolsetsResponse?.toolsets || []).map((inst: any) => ({
@@ -173,6 +176,7 @@ export const useAgentBuilderData = (editingAgent?: Agent | { _key: string } | nu
         // Auth status
         isConfigured: inst.isConfigured ?? true,
         isAuthenticated: inst.isAuthenticated ?? false,
+        isFromRegistry: !!inst.isFromRegistry,
         // Instance identification
         instanceId: inst.instanceId,
         instanceName: inst.instanceName,

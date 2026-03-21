@@ -14,15 +14,16 @@ import {
   alpha,
   Snackbar,
   Alert,
+  Portal,
 } from '@mui/material';
-import { Icon } from '@iconify/react';
 
 import { RegistryToolset, RegistryTool } from 'src/types/agent';
 import ToolsetApiService from 'src/services/toolset-api';
+import { useAdmin } from 'src/context/AdminContext';
 
 import { SidebarCategory } from './sidebar-category';
 import { SidebarNodeItem } from './sidebar-node-item';
-import { getToolIcon } from './sidebar.icons';
+import { getToolIcon, UI_ICONS } from './sidebar.icons';
 
 interface SidebarToolsetsSectionProps {
   expandedApps: Record<string, boolean>;
@@ -73,6 +74,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   activeToolsetTypes = [],
 }) => {
   const theme = useTheme();
+  const { isAdmin } = useAdmin();
   const [searchQuery, setSearchQuery] = useState('');
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string }>({
     open: false,
@@ -87,6 +89,8 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   // Track OAuth window and polling interval
   const oauthWindowRef = useRef<Window | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Use body as snackbar container to escape any local stacking context (drawers, sticky headers)
+  const snackbarContainer = typeof window !== 'undefined' ? document.body : undefined;
 
   // Listen for OAuth completion via postMessage and refresh toolsets
   useEffect(() => {
@@ -136,9 +140,8 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
     );
   });
 
-  // Loading state is handled by parent skeleton loader
-  // If toolsets are empty, show empty state
-  if (toolsets.length === 0) {
+  // Show empty state only when not loading and no results after filter
+  if (!loading && filteredToolsets.length === 0) {
     return (
       <Box sx={{ pl: 4, py: 2 }}>
         <Typography
@@ -169,6 +172,22 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   const handleConfigureClick = async (toolset: ToolsetWithStatus) => {
     const authType = (toolset as any).authType || '';
     const instanceId = (toolset as any).instanceId || '';
+    const isFromRegistry = (toolset as any).isFromRegistry === true || !instanceId;
+
+    // If this is a synthetic/registry-only entry, route admins to Available tab
+    // and prompt non-admins to contact their administrator.
+    if (isFromRegistry) {
+      if (isAdmin) {
+        const basePath = isBusiness ? '/account/company-settings/settings/toolsets' : '/account/individual/settings/toolsets';
+        window.location.href = `${basePath}?tab=available`;
+        return;
+      }
+      setSnackbar({
+        open: true,
+        message: `${toolset.displayName} is not configured yet. Please contact your administrator to configure it.`,
+      });
+      return;
+    }
 
     if (authType === 'OAUTH') {
       try {
@@ -266,6 +285,13 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
             (toolset as any).toolsetType || toolset.name || ''
           );
           const hasTypeAlreadyInFlow = normalizedActiveToolsetTypes.includes(normalizedToolsetType);
+          const isFromRegistry = (toolset as any).isFromRegistry === true || !(toolset as any).instanceId;
+          // Tooltip for configure action (support multi-line)
+          const configureTooltip = isFromRegistry
+            ? (<><span>Not configured (registry).</span><br /><span>Admins can create an instance.</span></>)
+            : needsConfiguration && toolset.isConfigured
+              ? 'Authenticate this toolset'
+              : 'Configure toolset';
           
           // Create drag data for entire toolset
           const toolsetDragData = {
@@ -294,10 +320,14 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
 
           // Handler for attempting to drag unconfigured toolset
           const handleUnconfiguredDragAttempt = () => {
-            const reason = !toolset.isConfigured 
-              ? 'not configured' 
-              : 'not authenticated';
-            
+            if (isFromRegistry) {
+              setSnackbar({
+                open: true,
+                message: `${toolset.displayName} is not configured yet. Please contact your administrator to configure it.`,
+              });
+              return;
+            }
+            const reason = !toolset.isConfigured ? 'not configured' : 'not authenticated';
             setSnackbar({
               open: true,
               message: `${toolset.displayName} is ${reason}. Please configure it before using.`,
@@ -330,6 +360,9 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
               showConfigureIcon={needsConfiguration}
               showAuthenticatedIndicator={!needsConfiguration && toolset.isAuthenticated}
               onConfigureClick={needsConfiguration ? () => handleConfigureClick(toolset) : undefined}
+              configureTooltip={configureTooltip}
+              configureIcon={isFromRegistry ?  UI_ICONS.alertCircle: UI_ICONS.settings}
+              configureIconColor={isFromRegistry ? theme.palette.error.main : theme.palette.warning.main}
               onDragAttempt={
                 hasTypeAlreadyInFlow
                   ? handleDuplicateTypeDragAttempt
@@ -425,6 +458,13 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                     (toolset as any).toolsetType || toolset.name || ''
                   );
                   const hasTypeAlreadyInFlow = normalizedActiveToolsetTypes.includes(normalizedToolsetType);
+                  const isFromRegistry = (toolset as any).isFromRegistry === true || !instanceId;
+
+                  const configureTooltip = isFromRegistry
+                    ? (<><span>Not configured (registry).</span><br /><span>Admins can create an instance.</span></>)
+                    : needsConfiguration && toolset.isConfigured
+                      ? 'Authenticate this toolset'
+                      : 'Configure toolset';
 
                   // Create drag data for this instance
                   const toolsetDragData = {
@@ -452,10 +492,14 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                   };
 
                   const handleUnconfiguredDragAttempt = () => {
-                    const reason = !toolset.isConfigured 
-                      ? 'not configured' 
-                      : 'not authenticated';
-                    
+                    if (isFromRegistry) {
+                      setSnackbar({
+                        open: true,
+                        message: `${instanceName} is not configured yet. Please contact your administrator to configure it.`,
+                      });
+                      return;
+                    }
+                    const reason = !toolset.isConfigured ? 'not configured' : 'not authenticated';
                     setSnackbar({
                       open: true,
                       message: `${instanceName} is ${reason}. Please configure it before using.`,
@@ -487,6 +531,9 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                       showConfigureIcon={needsConfiguration}
                       showAuthenticatedIndicator={!needsConfiguration && toolset.isAuthenticated}
                       onConfigureClick={needsConfiguration ? () => handleConfigureClick(toolset) : undefined}
+                      configureTooltip={configureTooltip}
+                      configureIcon={isFromRegistry ? UI_ICONS.connector : UI_ICONS.alertCircle}
+                      configureIconColor={isFromRegistry ? theme.palette.info.main : theme.palette.warning.main}
                       onDragAttempt={
                         hasTypeAlreadyInFlow
                           ? handleDuplicateTypeDragAttempt
@@ -589,20 +636,28 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
       )}
 
       {/* Snackbar for notifications */}
-      <Snackbar
-        open={snackbar.open}
-        autoHideDuration={4000}
-        onClose={() => setSnackbar({ ...snackbar, open: false })}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-      >
-        <Alert
-          onClose={() => setSnackbar({ ...snackbar, open: false })}
-          severity="warning"
-          sx={{ width: '100%' }}
+      <Portal container={snackbarContainer}>
+        <Snackbar
+          open={snackbar.open}
+          autoHideDuration={5000}
+          onClose={(_event, reason) => {
+            // Keep snackbar visible on clickaway during drag/drop so the user notices it
+            if (reason === 'clickaway') {
+              return;
+            }
+            setSnackbar({ ...snackbar, open: false });
+          }}
+          anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
         >
-          {snackbar.message}
-        </Alert>
-      </Snackbar>
+          <Alert
+            onClose={() => setSnackbar({ ...snackbar, open: false })}
+            severity="warning"
+            sx={{ width: '100%' }}
+          >
+            {snackbar.message}
+          </Alert>
+        </Snackbar>
+      </Portal>
     </Box>
   );
 };

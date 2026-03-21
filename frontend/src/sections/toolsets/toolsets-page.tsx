@@ -51,6 +51,7 @@ import linkIcon from '@iconify-icons/mdi/link-variant';
 import appsIcon from '@iconify-icons/mdi/apps';
 import listIcon from '@iconify-icons/mdi/format-list-bulleted';
 
+import { useSearchParams } from 'react-router-dom';
 import ToolsetRegistryCard from './components/toolset-registry-card';
 import ToolsetCard from './components/toolset-card';
 
@@ -90,6 +91,7 @@ const ToolsetsPage: React.FC = () => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const { isAdmin } = useAdmin();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // ============================================================================
   // STATE
@@ -338,10 +340,42 @@ const ToolsetsPage: React.FC = () => {
     }
   }, []);
 
+  // Preload configured (my-toolsets) count for showing badge even when viewing Available tab
+  const preloadConfiguredCount = useCallback(async () => {
+    try {
+      const result = await ToolsetApiService.getMyToolsets();
+      const all = result.toolsets || [];
+      // Apply the same client-side search filter used in fetchConfigured for accurate count when search is active
+      const filtered = activeSearchQuery
+        ? all.filter(
+            (t) =>
+              t.instanceName?.toLowerCase().includes(activeSearchQuery.toLowerCase()) ||
+              t.displayName?.toLowerCase().includes(activeSearchQuery.toLowerCase()) ||
+              t.toolsetType?.toLowerCase().includes(activeSearchQuery.toLowerCase())
+          )
+        : all;
+      setConfiguredTotal(filtered.length);
+    } catch (error) {
+      console.error('Failed to preload configured toolsets count:', error);
+    }
+  }, [activeSearchQuery]);
+
   // Initial load
   useEffect(() => {
+    // Initialize tab from URL on first load and fetch using derived tab immediately
+    const tabParam = searchParams.get('tab');
+    const initialTab: TabValue = tabParam === 'available' ? 'available' : 'my-toolsets';
+    setActiveTab(initialTab);
+    if (!tabParam) {
+      // Reflect default in URL for deep links
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set('tab', initialTab);
+        return next;
+      }, { replace: true });
+    }
     setIsFirstLoad(true);
-    if (activeTab === 'my-toolsets') {
+    if (initialTab === 'my-toolsets') {
       fetchConfigured(INITIAL_PAGE, false);
       // Preload registry count for admins to show in Available tab badge
       if (isAdmin) {
@@ -349,6 +383,8 @@ const ToolsetsPage: React.FC = () => {
       }
     } else {
       fetchRegistry(INITIAL_PAGE, false);
+      // Preload configured count so My Toolsets badge is populated on Available tab
+      preloadConfiguredCount();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -419,6 +455,12 @@ const ToolsetsPage: React.FC = () => {
   const handleTabChange = useCallback(
     (_event: React.SyntheticEvent, newTab: TabValue) => {
       if (newTab === activeTab) return;
+      // Sync URL query param
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set('tab', newTab);
+        return next;
+      }, { replace: true });
       setIsSwitchingTab(true);
       setActiveTab(newTab);
       setSearchInput('');
@@ -444,7 +486,7 @@ const ToolsetsPage: React.FC = () => {
         }, 50);
       }
     },
-    [activeTab, fetchConfigured, fetchRegistry]
+    [activeTab, fetchConfigured, fetchRegistry, setSearchParams]
   );
 
   const refreshAllData = useCallback(async (showLoader = true, forceRefreshBoth = false) => {
