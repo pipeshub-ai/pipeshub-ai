@@ -15,7 +15,7 @@ import logging
 from enum import Enum
 from typing import Any, cast
 
-from pydantic import BaseModel, Field  # type: ignore[import-untyped]
+from pydantic import BaseModel, Field
 from typing_extensions import override
 
 from app.config.configuration_service import ConfigurationService

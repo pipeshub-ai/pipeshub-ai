@@ -55,6 +55,7 @@ class GongDataSource:
         Args:
             client: GongClient instance with configured authentication
         """
+        super().__init__()
         self._client = client
         self.http: GongRESTClientViaOAuth | GongRESTClientViaBasicAuth = client.get_client()
         self.base_url = self.http.get_base_url().rstrip('/')

@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-import httpx  # type: ignore
+import httpx
 
 
 class HTTPResponse:
