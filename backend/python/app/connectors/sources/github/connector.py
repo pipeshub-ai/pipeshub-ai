@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from github.Issue import Issue
 from PIL import Image
+from github.PullRequestReview import PullRequestReview
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -78,8 +79,7 @@ from app.sources.client.github.github import (
 from app.sources.external.github.github_ import GitHubDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-if TYPE_CHECKING:
-    from github.PullRequest import PullRequest
+from github.PullRequest import PullRequest
 
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -240,8 +240,11 @@ class GithubConnector(BaseConnector):
     async def stream_record(self, record: Record) -> StreamingResponse:
         if record.record_type == RecordType.TICKET:
             self.logger.info("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
-            blocks_container: BlocksContainer = await self._build_ticket_blocks(record)
-
+            
+            blocks_container, remaining_attachments_updates= await self._build_ticket_blocks(record)
+            self.logger.info(f"Sending remaining {len(remaining_attachments_updates)} attachments to process of issues")
+            await self._process_new_records(remaining_attachments_updates)
+            
             async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
                 json_str = blocks_container.model_dump_json(indent=2)
                 chunk_size = 81920
@@ -258,7 +261,10 @@ class GithubConnector(BaseConnector):
             )
         elif record.record_type == RecordType.PULL_REQUEST:
             self.logger.info("🟣🟣🟣 STREAM_GITHUB_PULL_REQUEST_MARKER 🟣🟣🟣")
-            block_container = await self._build_pull_request_blocks(record)
+            
+            block_container, remaining_attachment_updates= await self._build_pull_request_blocks(record)
+            self.logger.info(f"Sending remaining {len(remaining_attachment_updates)} attachments to process of pull request")
+            await self._process_new_records(remaining_attachment_updates)
 
             async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
                 json_str = block_container.model_dump_json(indent=2)
@@ -493,7 +499,10 @@ class GithubConnector(BaseConnector):
                 (record_update.record, record_update.new_permissions)
                 for record_update in batch
             ]
-            await self.data_entities_processor.on_new_records(batch_sent)
+            try:
+                await self.data_entities_processor.on_new_records(batch_sent)
+            except Exception as e:
+                self.logger.error(f"Error in processing new record batch, batch partially processed: {e}")
 
     async def _build_issue_records(
         self, issue_batch: list[Issue], last_sync_time: str | None = None
@@ -505,17 +514,32 @@ class GithubConnector(BaseConnector):
             pull_request = getattr(issue, "pull_request", None)
             if pull_request is None:
                 record_update = await self._process_issue_to_ticket(issue)
+                # fetch comment attachments
+                if record_update:
+                    issue_comment_attachments = await self.make_issue_comment_records(issue, record_update.record)
+                    record_updates_batch.extend(issue_comment_attachments)
             else:
                 record_update = await self._process_pr_to_pull_request(issue)
+                # fetch comment, reviews, review_comment attachments
+                if record_update:
+                    issue_comment_attachments = await self.make_issue_comment_records(issue, record_update.record)
+                    record_updates_batch.extend(issue_comment_attachments)
+                    # r_comment
+                    r_comment_attachments = await self.make_r_comment_attachments(issue, record_update.record)
+                    record_updates_batch.extend(r_comment_attachments)
+                    # reviews
+                    reviews_attachments = await self.make_reviews_attachments(issue, record_update.record)
+                    record_updates_batch.extend(reviews_attachments)
+                    
             if record_update:
                 record_updates_batch.append(record_update)
-                # get the file attachments from issue data / pr data
+                # get the file attachments from issue description / pr description
                 # make file records for all except images
-                markdown_content_raw: str = issue.body or ""
+                markdown_content_raw: str = getattr(issue,"body","") or ""
                 markdown_content, attachments = await self.clean_github_content(
                     markdown_content_raw
                 )
-                self.logger.debug(f"Processed markdown content for issue {issue.url}")
+                self.logger.debug(f"Processed markdown description for issue {issue.url}")
                 if attachments:
                     file_record_updates = await self.make_file_records_from_list(
                         attachments=attachments, record=record_update.record
@@ -614,7 +638,7 @@ class GithubConnector(BaseConnector):
             )
             return None
 
-    async def _build_ticket_blocks(self, record: Record) -> BlocksContainer:
+    async def _build_ticket_blocks(self, record: Record) -> tuple[BlocksContainer, list[RecordUpdate]]:
         """_summary_
 
         Args:
@@ -624,21 +648,25 @@ class GithubConnector(BaseConnector):
             BlocksContainer: _description_
         """
         raw_url = record.weburl.split("/")
-        self.logger.info(f"raw_url : {raw_url}")
         repo_name = raw_url[4]
         username = raw_url[3]
         issue_number = int(raw_url[6])
         issue_res = self.data_source.get_issue(
             owner=username, repo=repo_name, number=issue_number
         )
-        if not issue_res.success or not issue_res.data:
-            self.logger.error(
-                f"Failed to fetch issue details for record {record.external_record_id}: {issue_res.error}"
-            )
-            return BlocksContainer(blocks=[], block_groups=[])
+        # if not issue_res.success or not issue_res.data:
+        #     self.logger.error(
+        #         f"Failed to fetch issue details for record {record.external_record_id}: {issue_res.error}"
+        #     )
+        #     return BlocksContainer(blocks=[], block_groups=[])
+        if not issue_res.success:
+            raise Exception(f"❌❌ Failed to fetch issue details for record {record.external_record_id}: {issue_res.error}")
+        if not issue_res.data:
+            raise Exception(f"❌❌ No issue data found for record {record.external_record_id}")
         block_group_number = 0
         blocks: list[Block] = []
         block_groups: list[BlockGroup] = []
+        list_remaining_records: list[RecordUpdate] = []        
         issue = issue_res.data
 
         # getting modi. markdown  content with images as base64
@@ -647,31 +675,9 @@ class GithubConnector(BaseConnector):
             markdown_content_raw
         )
         self.logger.debug(f"Processed markdown content for issue {issue.url}")
-        # NOTE: Adding record name into Content for record name search Permanently FIX todo
-        markdown_content_with_images_base64 = f"# {issue.title}\n\n{markdown_content_with_images_base64}"
         # get linked attachments to issue->ticket
-        existing_attachs = None
-        async with self.data_store_provider.transaction() as tx_store:
-            existing_attachs = await tx_store.get_records_by_parent(
-                connector_id=self.connector_id,
-                parent_external_record_id=f"{issue.url}",
-                record_type=RecordType.FILE,
-            )
-        self.logger.info(
-            f"Found {len(existing_attachs)} attachments linked to issue {issue.url}"
-        )
-        table_row_metadata: TableRowMetadata = None
-        list_child_records: list[ChildRecord] = []
-        for attach_record in existing_attachs:
-            child_record = ChildRecord(
-                child_type=ChildType.RECORD,
-                child_id=attach_record.id,
-                child_name=attach_record.record_name,
-            )
-            list_child_records.append(child_record)
-        if list_child_records:
-            table_row_metadata = TableRowMetadata(children_records=list_child_records)
-
+        child_records, remaining_record_updates = await self.make_child_records_of_attachments(markdown_content_raw, record)
+        list_remaining_records.extend(remaining_record_updates)
         # bg of title and desc./body
         bg_0 = BlockGroup(
             index=block_group_number,
@@ -680,19 +686,21 @@ class GithubConnector(BaseConnector):
             format=DataFormat.MARKDOWN.value,
             sub_type=GroupSubType.CONTENT.value,
             source_group_id=record.weburl,
+            # NOTE: Adding record name into Content for record name search Permanent FIX todo
             data=f"{issue.title}\n\n{markdown_content_with_images_base64}",
             source_modified_date=str(self.datetime_to_epoch_ms(issue.updated_at)),
             requires_processing=True,
-            table_row_metadata=table_row_metadata,
+            children_records=child_records,
         )
         block_groups.append(bg_0)
         # make blocks of issue comments
-        comments_bg = await self._build_comment_blocks(
+        comments_bg,remaining_record_updates = await self._build_comment_blocks(
             issue_url=record.weburl, parent_index=block_group_number, record=record
         )
         block_groups.extend(comments_bg)
         block_group_number += len(comments_bg)
-        return BlocksContainer(blocks=blocks, block_groups=block_groups)
+        list_remaining_records.extend(remaining_record_updates)
+        return BlocksContainer(blocks=blocks, block_groups=block_groups), list_remaining_records
 
     async def _sync_records_incremental(self) -> None:
         """_summary_
@@ -751,9 +759,83 @@ class GithubConnector(BaseConnector):
     async def _process_comments_to_commentrecord(self) -> CommentRecord:
         return
 
+    async def make_issue_comment_records(self, issue: Issue, record: Record) -> list[RecordUpdate]:
+        issue_comment_attachments: list[RecordUpdate] = []
+        repo_fullname = issue.repository.full_name.split("/")
+        owner = repo_fullname[0]
+        repo = repo_fullname[1]
+        issue_number = issue.number
+        issue_comments_res = self.data_source.list_issue_comments(
+            owner=owner, repo=repo, number=issue_number
+        )
+        if not issue_comments_res.success:
+            self.logger.error(f"Failed to get issue comments: {issue_comments_res.error}")
+            return []
+        if not issue_comments_res.data:
+            self.logger.info(f"No comments found for issue {issue.url}")
+            return []
+        issue_comments = issue_comments_res.data
+        for issue_comment in issue_comments:
+            raw_comment_data = getattr(issue_comment,"body","") or ""
+            cleaned_content, attachments = await self.clean_github_content(raw_comment_data)
+            if attachments:
+                record_updates = await self.make_file_records_from_list(attachments,record)
+                if record_updates:
+                    issue_comment_attachments.extend(record_updates)
+        return issue_comment_attachments
+    
+    async def make_r_comment_attachments(self, issue:Issue, record: Record) -> list[RecordUpdate]:
+        r_comment_attachments: list[RecordUpdate] = []
+        repo_fullname = issue.repository.full_name.split("/")
+        owner = repo_fullname[0]
+        repo = repo_fullname[1]
+        issue_number = issue.number
+        r_comments_res = self.data_source.get_pull_review_comments(
+            owner=owner, repo=repo, number=issue_number
+        )
+        if not r_comments_res.success:
+            self.logger.error(f"Failed to get review comments: {r_comments_res.error}")
+            return []
+        if not r_comments_res.data:
+            self.logger.info(f"No review comments found for issue {issue.url}")
+            return []
+        r_comments = r_comments_res.data
+        for r_comment in r_comments:
+            raw_comment_data = getattr(r_comment,"body","") or ""
+            cleaned_content, attachments = await self.clean_github_content(raw_comment_data)
+            if attachments:
+                record_updates = await self.make_file_records_from_list(attachments,record)
+                r_comment_attachments.extend(record_updates)
+        return r_comment_attachments
+    
+    async def make_reviews_attachments(self, issue:Issue, record: Record) -> list[RecordUpdate]:
+        reviews_attachments: list[RecordUpdate] = []
+        repo_fullname = issue.repository.full_name.split("/")
+        owner = repo_fullname[0]
+        repo = repo_fullname[1]
+        issue_number = issue.number
+        reviews_res = self.data_source.get_pull_reviews(
+            owner=owner, repo=repo, number=issue_number
+        )
+        if not reviews_res.success:
+            self.logger.error(f"Failed to get reviews: {reviews_res.error}")
+            return []
+        if not reviews_res.data:
+            self.logger.info(f"No reviews found for issue {issue.url}")
+            return []
+        reviews = reviews_res.data
+        for review in reviews:
+            raw_review_data = getattr(review,"body","") or ""
+            cleaned_content, attachments = await self.clean_github_content(raw_review_data)
+            if attachments:
+                record_updates = await self.make_file_records_from_list(attachments,record)
+                if record_updates:
+                    reviews_attachments.extend(record_updates)
+        return reviews_attachments
+
     async def _build_comment_blocks(
         self, issue_url: str, parent_index: int, record: Record
-    ) -> list[BlockGroup]:
+    ) -> tuple[list[BlockGroup], list[RecordUpdate]]:
         """_summary_
         Args:
             issue_url (str): _description_
@@ -762,7 +844,7 @@ class GithubConnector(BaseConnector):
         """
         self.logger.info(f"Building comment blocks for issue: {issue_url}")
         raw_url = issue_url.split("/")
-        self.logger.info(f"raw_url : {raw_url}")
+        # self.logger.info(f"raw_url : {raw_url}")
         repo_name = raw_url[4]
         username = raw_url[3]
         issue_number = int(raw_url[6])
@@ -776,25 +858,22 @@ class GithubConnector(BaseConnector):
             self.logger.error(
                 f"Failed to fetch comments for issue {issue_url}: {comments_res.error}"
             )
-            return []
+            return [],[]
         if not comments_res.data:
             self.logger.info(f"No comments found for issue {issue_url}")
-            return []
+            return [],[]
+        self.logger.info(f"Found {len(comments_res.data)} comments for issue {issue_url}")
+        list_remaining_records: list[RecordUpdate] = []
         block_groups: list[BlockGroup] = []
         block_group_number = parent_index + 1
         comments = comments_res.data
         for comment in comments:
-            raw_markdown_content: str = comment.body
+            raw_markdown_content: str = getattr(comment,"body","") or ""
             markdown_content_with_images_base64 = await self.embed_images_as_base64(
                 raw_markdown_content
             )
-            # handle attachments if any in comment body
-            # push attachments comment wise to on_new_records
-            table_row_metadata: TableRowMetadata = None
-            childrecords = await self.process_other_attachments_blocks(
-                raw_markdown_content=raw_markdown_content, record=record
-            )
-            table_row_metadata = TableRowMetadata(children_records=childrecords)
+            child_records, remaining_record_updates = await self.make_child_records_of_attachments(raw_markdown_content, record)
+            list_remaining_records.extend(remaining_record_updates)
             bg = BlockGroup(
                 index=block_group_number,
                 parent_index=parent_index,
@@ -807,11 +886,11 @@ class GithubConnector(BaseConnector):
                 source_modified_date=str(self.datetime_to_epoch_ms(comment.updated_at)),
                 requires_processing=True,
                 weburl=comment.html_url,
-                table_row_metadata=table_row_metadata,
+                children_records=child_records,
             )
             block_group_number += 1
             block_groups.append(bg)
-        return block_groups
+        return block_groups , list_remaining_records
 
     # ---------------------------Pull Requests-----------------------------------#
     async def _process_pr_to_pull_request(self, issue: Issue) -> RecordUpdate | None:
@@ -906,76 +985,61 @@ class GithubConnector(BaseConnector):
             )
             return None
 
-    async def _build_pull_request_blocks(self, record: Record) -> BlocksContainer:
+    async def _build_pull_request_blocks(self, record: Record) -> tuple[BlocksContainer,list[RecordUpdate]]:
         # TODO: think for BG as code file updates how as in newer commit some files same as old
         # TODO: think of keys when PR gets updated like only when metadata is getting updated or say body and also consider it for file changes
-        pr_url = record.weburl.split("/")
+        # pr_url = record.weburl.split("/")
+        pr_url = getattr(record,"weburl","")
+        if not pr_url:
+            raise ValueError(f"Web URL is required for indexing pull request")
         self.logger.info(f"Building blocks for pull request: {record.weburl}")
+        pr_url = pr_url.split("/")
         pr_number = int(pr_url[6])
         owner = pr_url[3]
         repo_name = pr_url[4]
         pull_request_res = self.data_source.get_pull(owner, repo_name, pr_number)
-        if not pull_request_res.success or not pull_request_res.data:
-            self.logger.error(
-                f"Failed to fetch pull request details for record {record.external_record_id}: {pull_request_res.error}"
-            )
-            return BlocksContainer(blocks=[], block_groups=[])
+        if not pull_request_res.success:
+            raise Exception(f"Failed to fetch pull request details for record {record.external_record_id}: {pull_request_res.error}")
+        if not pull_request_res.data:
+            raise Exception(f"No pull request data found for record {record.external_record_id}")
         pull_request: PullRequest = pull_request_res.data
         block_group_number = 0
         block_number = 0
         blocks: list[Block] = []
         block_groups: list[BlockGroup] = []
-        markdown_content_raw: str = pull_request.body or ""
+        list_remaining_records: list[RecordUpdate] = []
+        markdown_content_raw: str = getattr(pull_request,"body","") or ""
         # getting modified markdown  content with images as base64
         markdown_with_base64 = await self.embed_images_as_base64(markdown_content_raw)
-        self.logger.debug(f"Processed markdown content for issue {pull_request.url}")
-        # NOTE: Adding record name into Content for record name search Permanently FIX todo
-        markdown_with_base64 = f"{pull_request.title}\n\n{markdown_with_base64}"
+        self.logger.debug(f"Processed markdown content for pull request {pull_request.url}")
         # get linked attachments to pull request
-        existing_attachs = None
-        async with self.data_store_provider.transaction() as tx_store:
-            existing_attachs = await tx_store.get_records_by_parent(
-                connector_id=self.connector_id,
-                parent_external_record_id=f"{pull_request.url}",
-                record_type=RecordType.FILE,
-            )
-        self.logger.info(
-            f"Found {len(existing_attachs)} attachments linked to issue {pull_request.url}"
-        )
-        table_row_metadata: TableRowMetadata = None
-        list_child_records: list[ChildRecord] = []
-        for attach_record in existing_attachs:
-            child_record = ChildRecord(
-                child_type=ChildType.RECORD,
-                child_id=attach_record.id,
-                child_name=attach_record.record_name,
-            )
-            list_child_records.append(child_record)
-        if list_child_records:
-            table_row_metadata = TableRowMetadata(children_records=list_child_records)
-
-        # bg of title and desc./body
+        child_records, remaining_record_updates = await self.make_child_records_of_attachments(markdown_content_raw, record)
+        list_remaining_records.extend(remaining_record_updates)
+            # bg of title and desc./body
         bg_0 = BlockGroup(
             index=block_group_number,
             name=pull_request.title,
             type=GroupType.TEXT_SECTION,
+            # NOTE: Adding record name into Content for record name search Permanently FIX todo
             data=f"{pull_request.title}\n\n{markdown_with_base64}",
             format=DataFormat.MARKDOWN,
             weburl=pull_request.html_url,
             sub_type=GroupSubType.CONTENT.value,
             requires_processing=True,
-            table_row_metadata=table_row_metadata,
             source_modified_date= str(self.datetime_to_epoch_ms(pull_request.updated_at)),
+            children_records=child_records,
         )
         self.logger.info(f"bg for title and desc created for pr{pr_number}")
         block_groups.append(bg_0)
 
-        comment_block_groups = await self._build_comment_blocks(
+        comment_block_groups, remaining_record_updates = await self._build_comment_blocks(
             issue_url=record.weburl, parent_index=block_group_number, record=record
         )
+        list_remaining_records.extend(remaining_record_updates)
         block_groups.extend(comment_block_groups)
         block_group_number += len(comment_block_groups)
         block_group_number += 1
+
         # blocks for commits of pr
         commits_res = self.data_source.get_pull_commits(owner, repo_name, pr_number)
         if commits_res.success and commits_res.data:
@@ -1007,7 +1071,7 @@ class GithubConnector(BaseConnector):
         block_groups.append(bg_1)
         block_group_number += 1
         self.logger.info(
-            f"bg and blocks of length {block_number},  for commits created for pr{pr_number}"
+            f"Block groups and Blocks of length {block_number},  for commits created for pr{pr_number}"
         )
         # block group for files changed in pr
         files_res = self.data_source.get_pull_file_changes(owner, repo_name, pr_number,fetch_full_content=False)
@@ -1021,13 +1085,12 @@ class GithubConnector(BaseConnector):
             if review_comments_res.success and review_comments_res.data:
                 review_comments = review_comments_res.data
                 for r_comment in review_comments:
-                    raw_markdown_content: str = r_comment.body
+                    raw_markdown_content: str = getattr(r_comment,"body","") or ""
                     markdown_content_with_images_base64 = (
                         await self.embed_images_as_base64(raw_markdown_content)
                     )
-                    attachments = await self.process_other_attachments_block_comment(
-                        raw_markdown_content, record
-                    )
+                    attachments,remaining_record_updates = await self.make_block_comment_of_attachments(raw_markdown_content, record)
+                    list_remaining_records.extend(remaining_record_updates)
                     block_comment = BlockComment(
                         text=markdown_content_with_images_base64,
                         format=DataFormat.MARKDOWN,
@@ -1035,9 +1098,6 @@ class GithubConnector(BaseConnector):
                         updated_at=str(self.datetime_to_epoch_ms(r_comment.updated_at)),
                         created_at=str(self.datetime_to_epoch_ms(r_comment.created_at)),
                         attachments=attachments,
-                    )
-                    self.logger.info(
-                        f"Mapping review r_comment on file: {r_comment.path}"
                     )
                     if r_comment.path in review_comments_map:
                         review_comments_map[r_comment.path].append([block_comment])
@@ -1047,7 +1107,7 @@ class GithubConnector(BaseConnector):
             for file in files:
                 self.logger.info(f"Fetching content for file: {file.filename}")
                 # file content details
-                file_blob_url = getattr(file, "blob_url", None).split("/")
+                file_blob_url = getattr(file, "blob_url", "").split("/")
                 file_ref = file_blob_url[6]
                 file_content_res = self.data_source.get_file_contents(
                     owner, repo_name, file.filename, file_ref
@@ -1083,9 +1143,35 @@ class GithubConnector(BaseConnector):
                     block_groups.append(bg_n)
                     block_group_number += 1
 
+        # making blockgroups for reviews
+        # keeping parent of reviews as description bg
+        reviews_res = self.data_source.get_pull_reviews(owner, repo_name, pr_number)
+        if reviews_res.success and reviews_res.data:
+            reviews:list[PullRequestReview] = reviews_res.data
+            for review in reviews:
+                raw_review_data = getattr(review,"body","") or ""
+                markdown_content_with_images_base64 = await self.embed_images_as_base64(raw_review_data)
+                child_records,remaining_record_updates = await self.make_child_records_of_attachments(raw_review_data, record)
+                list_remaining_records.extend(remaining_record_updates)
+                bg_n  = BlockGroup(
+                    index = block_group_number,
+                    parent_index =0,
+                    name =f"Review by {review.user.login} on pull request {pr_number}",
+                    type=GroupType.TEXT_SECTION.value,
+                    format=DataFormat.MARKDOWN.value,
+                    sub_type=GroupSubType.COMMENT.value,
+                    source_group_id=review.html_url,
+                    data = markdown_content_with_images_base64,
+                    weburl=review.html_url,
+                    requires_processing=True,
+                    children_records=child_records,
+                )
+                block_groups.append(bg_n)
+                block_group_number += 1
+        
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
         self.logger.info(f"Blocks container created for pr{pr_number}")
-        return blocks_container
+        return blocks_container , list_remaining_records
 
     # ---------------------------Attachment functions-----------------------------------#
     async def embed_images_as_base64(self, body_content: str) -> str:
@@ -1141,6 +1227,7 @@ class GithubConnector(BaseConnector):
         record_updates: list[RecordUpdate] = []
         record_updates = await self.make_file_records_from_list(attachments, record)
         await self._process_new_records(record_updates)
+        self.logger.debug(f"processed other attachments blocks for record of length {len(record_updates)}")
         for record_update in record_updates:
             child_record = ChildRecord(
                 child_id=record_update.record.id,
@@ -1188,7 +1275,7 @@ class GithubConnector(BaseConnector):
                     f"Skipping attachment due to missing URL or name: {attach}"
                 )
                 continue
-
+            # below look up to be removed below part as such not reqd. mostly as in block comments will look up record, come here only if not present
             existing_record = None
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
@@ -1242,6 +1329,65 @@ class GithubConnector(BaseConnector):
 
         return list_records_new
 
+    async def make_child_records_of_attachments(self, markdown_raw:str, record:Record)->tuple[list[ChildRecord],list[RecordUpdate]]:
+        cleaned_content, attachments = await self.clean_github_content(markdown_raw)
+        child_records: list[ChildRecord] = []
+        remaining_record_updates: list[RecordUpdate] = []
+        for attachment in attachments:
+            if attachment.get("type") == "image":
+                continue
+            attachment_url = attachment.get("href")
+            existing_record = None
+            async with self.data_store_provider.transaction() as tx_store:
+                existing_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id, external_id=f"{attachment_url}"
+                )
+            if existing_record:
+                child_records.append(ChildRecord(
+                    child_type=ChildType.RECORD,
+                    child_id=existing_record.id,
+                    child_name=existing_record.record_name,
+                ))
+            else:
+                # make file record collect over all block groups send for indexing
+                record_update = await self.make_file_records_from_list([attachment], record)
+                if record_update:
+                    remaining_record_updates.extend(record_update)
+                    child_records.append(ChildRecord(
+                        child_type=ChildType.RECORD,
+                        child_id=record_update[0].record.id,
+                        child_name=record_update[0].record.record_name,
+                    ))
+        return child_records, remaining_record_updates
+     
+    async def make_block_comment_of_attachments(self, markdown_raw:str, record:Record)->tuple[list[CommentAttachment],list[RecordUpdate]] :
+        cleaned_content, attachments = await self.clean_github_content(markdown_raw)
+        child_comment_records: list[CommentAttachment] = []
+        remaining_record_updates: list[RecordUpdate] = []
+        for attachment in attachments:
+            if attachment.get("type") == "image":
+                continue
+            attachment_url = attachment.get("href")
+            existing_record = None
+            async with self.data_store_provider.transaction() as tx_store:
+                existing_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id, external_id=f"{attachment_url}"
+                )
+            if existing_record:
+                child_comment_records.append(CommentAttachment(
+                    name=existing_record.record_name,
+                    id=existing_record.id,
+                ))
+            else:
+                # make file record collect over all block groups send for indexing
+                record_update = await self.make_file_records_from_list([attachment], record)
+                if record_update:
+                    remaining_record_updates.extend(record_update)
+                    child_comment_records.append(CommentAttachment(
+                    name=record_update[0].record.record_name,
+                    id=record_update[0].record.id,
+                ))
+        return child_comment_records, remaining_record_updates
     # ---------------------------insitu functions-----------------------------------#
     def datetime_to_epoch_ms(self, dt:datetime) -> int:
         # make sure it's timezone-aware (assume UTC if missing)

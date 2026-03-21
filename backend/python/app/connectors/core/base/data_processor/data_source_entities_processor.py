@@ -35,6 +35,7 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
+    PullRequestRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
@@ -200,6 +201,8 @@ class DataSourceEntitiesProcessor:
                 is_public=LinkPublicStatus.UNKNOWN,
                 linked_record_id=None,
             )
+        elif parent_record_type == RecordType.PULL_REQUEST:
+            return PullRequestRecord(**base_params)
         else:
             raise ValueError(
                 f"Unsupported parent record type: {parent_record_type.value}. for _handle_parent_record"

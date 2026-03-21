@@ -127,7 +127,7 @@ class GitHubClient(IClient):
             if not token:
                 raise ValueError("Access token required for GitHub client (OAuth)")
 
-            client = GitHubClientViaToken(token=token, per_page=30)
+            client = GitHubClientViaToken(token=token, per_page=90)
             client.create_client()
             logger.info("Built GitHub client from toolset config")
             return cls(client)
