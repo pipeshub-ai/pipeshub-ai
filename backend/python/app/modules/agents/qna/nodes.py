@@ -6795,15 +6795,6 @@ async def _generate_fast_api_response(
     if not full_content.strip():
         return False
 
-    conversation_id = state.get("conversation_id")
-    if conversation_id:
-        try:
-            from app.utils.conversation_tasks import await_and_collect_results
-            for task_result in await await_and_collect_results(conversation_id):
-                safe_stream_write(writer, {"event": "conversation_task", "data": task_result}, config)
-        except Exception as e:
-            log.warning("Fast-path: conversation tasks failed: %s", e)
-
     # Extract reference data (links) from the raw tool results
     reference_data = []
     for r in non_retrieval:
