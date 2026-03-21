@@ -293,10 +293,10 @@ def assert_record_paths_or_names_contain(
     """
     for substring in expected_substrings:
         if not record_path_or_name_contains(driver, connector_id, substring):
-            preview = fetch_record_paths(driver, connector_id, limit=20)
+            n = count_records(driver, connector_id)
             raise AssertionError(
-                f"No Record path or name for connector {connector_id} contained substring {substring!r}. "
-                f"Sample (path, name) pairs: {preview}"
+                f"No Record path or name for connector {connector_id} contained the expected "
+                f"substring (Record count: {n}). Graph paths/names are omitted from this message."
             )
 
 
@@ -309,8 +309,8 @@ def assert_record_names_contain(
     names = set(fetch_record_names(driver, connector_id))
     for name in expected_names:
         assert name in names, (
-            f"Expected record_name '{name}' not found in graph for connector {connector_id}. "
-            f"Found names: {sorted(names)[:20]}..."
+            f"Expected record_name not found in graph for connector {connector_id} "
+            f"(distinct names: {len(names)}). Name lists are omitted from this message."
         )
 
 

@@ -110,8 +110,8 @@ class TestAzureBlobFullLifecycle:
     @pytest.mark.order(4)
     def test_04_test_connection(self, pipeshub_client: PipeshubClient) -> None:
         connector_id = _state["connector_id"]
-        result = pipeshub_client.toggle_sync(connector_id, enable=True)
-        logger.info("✅ Sync enabled (connection tested): %s", result)
+        pipeshub_client.toggle_sync(connector_id, enable=True)
+        logger.info("✅ Sync enabled (connection tested)")
 
     @pytest.mark.order(5)
     def test_05_full_sync_graph_validation(
@@ -200,7 +200,7 @@ class TestAzureBlobFullLifecycle:
         assert_record_paths_or_names_contain(neo4j_driver, connector_id, [new_name])
         _state["move_source_key"] = new_key
         _state["move_source_name"] = new_name
-        logger.info("✅ Rename validated: %s → %s", old_name, new_name)
+        logger.info("✅ Rename validated (connector %s)", connector_id)
 
     @pytest.mark.order(8)
     def test_08_move_blob_graph_validation(
@@ -235,7 +235,7 @@ class TestAzureBlobFullLifecycle:
         assert_record_paths_or_names_contain(neo4j_driver, connector_id, [move_name])
         groups = count_record_groups(neo4j_driver, connector_id)
         assert groups >= 2
-        logger.info("✅ Move validated: %s → moved-folder/", move_name)
+        logger.info("✅ Move validated (connector %s)", connector_id)
 
     @pytest.mark.order(9)
     def test_09_disable_connector(self, pipeshub_client: PipeshubClient) -> None:

@@ -12,6 +12,7 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -85,7 +86,9 @@ class PipeshubClient:
         data = self._handle_response(resp)
         access_token = data.get("access_token")
         if not access_token:
-            raise PipeshubAuthError(f"Token endpoint did not return access_token: {data}")
+            raise PipeshubAuthError(
+                "OAuth token response did not include access_token"
+            )
 
         self._access_token = str(access_token)
 
@@ -105,12 +108,17 @@ class PipeshubClient:
         return f"{self.base_url}{path}"
 
     def _handle_response(self, resp: requests.Response) -> Any:
-        if resp.status_code == 401:
-            raise PipeshubAuthError(f"Unauthorized calling {resp.url}: {resp.text}")
         if resp.status_code >= 400:
-            raise PipeshubClientError(
-                f"HTTP {resp.status_code} calling {resp.url}: {resp.text}"
+            p = urlparse(resp.url or "")
+            loc = (
+                f"{p.scheme}://{p.netloc}{p.path or '/'}"
+                if p.netloc
+                else (resp.url or "")
             )
+            msg = f"HTTP {resp.status_code} {loc}"
+            if resp.status_code == 401:
+                raise PipeshubAuthError(msg)
+            raise PipeshubClientError(msg)
         try:
             return resp.json()
         except ValueError:
@@ -145,7 +153,7 @@ class PipeshubClient:
         )
         data = self._handle_response(resp)
         if not data.get("success"):
-            raise PipeshubClientError(f"Failed to create connector: {data}")
+            raise PipeshubClientError("Failed to create connector (API returned success=false)")
 
         connector = data.get("connector") or {}
         return ConnectorInstance(
@@ -187,7 +195,9 @@ class PipeshubClient:
         )
         data = self._handle_response(resp)
         if not data.get("success"):
-            raise PipeshubClientError(f"Failed to fetch connector {connector_id}: {data}")
+            raise PipeshubClientError(
+                f"Failed to fetch connector {connector_id} (API returned success=false)"
+            )
         return data.get("connector") or {}
 
     def toggle_sync(self, connector_id: str, enable: bool = True) -> Dict[str, Any]:
