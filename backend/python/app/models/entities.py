@@ -408,6 +408,7 @@ class FileRecord(Record):
             source_updated_at=arango_base_record["sourceLastModifiedTimestamp"],
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId"),
+            is_internal=arango_base_record.get("isInternal", False),
             is_file=arango_base_file_record.get("isFile", True),
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes"),
             extension=arango_base_file_record.get("extension"),

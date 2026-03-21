@@ -836,6 +836,10 @@ class DataSourceEntitiesProcessor:
                             f"with AUTO_INDEX_OFF status"
                         )
                         continue
+                        
+                    if record.is_internal:
+                        self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                        continue
 
                     await self.messaging_producer.send_message(
                             "record-events",
@@ -894,17 +898,24 @@ class DataSourceEntitiesProcessor:
             if not records:
                 self.logger.info("No records to reindex")
                 return
+            
+            skipped_records = 0
 
             # Reset status to QUEUED for all records before reindexing
             async with self.data_store_provider.transaction() as tx_store:
                 for record in records:
                     current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
-                    # Only reset if not already QUEUED or EMPTY
-                    if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
+                    # Only reset if not already QUEUED or EMPTY or internal record
+                    if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value] and not record.is_internal:
                         await self._reset_indexing_status_to_queued(record.id, tx_store)
 
             # Now send the reindex events
             for record in records:
+                if record.is_internal:
+                    self.logger.debug(f"Skipping reindex event for internal record {record.id}")
+                    skipped_records += 1
+                    continue
+
                 payload = record.to_kafka_record()
 
                 await self.messaging_producer.send_message(
@@ -917,7 +928,7 @@ class DataSourceEntitiesProcessor:
                     key=record.id
                 )
 
-            self.logger.info(f"Published reindex events for {len(records)} records")
+            self.logger.info(f"Published reindex events for {len(records) - skipped_records} records and skipped {skipped_records} internal records")
         except Exception as e:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e

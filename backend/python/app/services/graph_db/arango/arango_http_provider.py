@@ -1420,7 +1420,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
 
-            await self._reset_indexing_status_to_queued(record_id)
+            if not rec.get("isInternal"):
+                await self._reset_indexing_status_to_queued(record_id)
 
             # Create event data for router to publish
             try:
@@ -13156,7 +13157,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: rg.webUrl,
                     hasChildren: has_children,
                     previewRenderable: true,
-                    sharingStatus: sharingStatus
+                    sharingStatus: sharingStatus,
+                    isInternal: rg.isInternal == true
                 }}
         )
 
@@ -13199,7 +13201,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: file_info ? file_info.extension : null,
                     webUrl: record.webUrl,
                     hasChildren: has_children,
-                    previewRenderable: record.previewRenderable != null ? record.previewRenderable : true
+                    previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
+                    isInternal: record.isInternal == true
                 }}
         )
 
@@ -14615,7 +14618,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
                     userRole: normalized_role,
-                    sharingStatus: sharingStatus
+                    sharingStatus: sharingStatus,
+                    isInternal: node.isInternal == true
                 }})
         )
         """
@@ -14694,7 +14698,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal == true
                 }}
         ) : []
         RETURN internal_records
@@ -14782,7 +14787,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
                     userRole: normalized_role,
-                    sharingStatus: sharingStatus
+                    sharingStatus: sharingStatus,
+                    isInternal: node.isInternal == true
                 }}
         )
         RETURN child_rgs
@@ -14846,7 +14852,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal == true
                 }}
         )
         RETURN direct_records
@@ -14948,7 +14955,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal == true
                 }}
         ) : []
 
@@ -15026,7 +15034,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
                     userRole: normalized_role,
-                    sharingStatus: sharingStatus
+                    sharingStatus: sharingStatus,
+                    isInternal: node.isInternal == true
                 }}
         )
 
@@ -15080,7 +15089,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal == true
                 }}
         )
 
@@ -15170,7 +15180,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal == true
                 }}
         )
         """
