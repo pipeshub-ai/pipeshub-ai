@@ -1256,7 +1256,7 @@ class SharePointConnector(BaseConnector):
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=True,
+                permissions_changed=permissions_changed,
                 new_permissions=permissions
             )
 
@@ -1906,8 +1906,7 @@ class SharePointConnector(BaseConnector):
                     page_record = await self._create_page_record(page, site_id, site_name, existing_record)
 
                     if page_record:
-                        permissions, should_inherit = await self._get_page_permissions(site_id, page.id)
-                        page_record.inherit_permissions = should_inherit
+                        permissions = await self._get_page_permissions(site_id, page.id)
 
                         if existing_record:
                             permissions_changed = True
