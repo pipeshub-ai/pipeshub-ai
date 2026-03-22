@@ -1906,7 +1906,7 @@ class SharePointConnector(BaseConnector):
                     page_record = await self._create_page_record(page, site_id, site_name, existing_record)
 
                     if page_record:
-                        permissions, should_inherit = await self._get_page_permissions(site_id, page.id, session=http_session)
+                        permissions, should_inherit = await self._get_page_permissions(site_id, page.id)
                         page_record.inherit_permissions = should_inherit
 
                         if existing_record:

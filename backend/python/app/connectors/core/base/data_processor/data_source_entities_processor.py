@@ -690,7 +690,7 @@ class DataSourceEntitiesProcessor:
                 )
                 if not belongs_to_edges:
                     self.logger.info(
-                        "\n\n\n⭕⭕⭕No BELONGS_TO edge for record %s; running _process_record without permissions "
+                        "No BELONGS_TO edge for record %s; running _process_record without permissions "
                         "to restore graph edges",
                         record.record_name,
                     )
