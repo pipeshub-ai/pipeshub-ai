@@ -10,6 +10,10 @@ on:
         description: 'Connector markers to run (e.g. "s3", "gcs", "azure_blob", "azure_files", or "integration" for all)'
         required: true
         default: 'integration'
+      commit_hash:
+        description: 'Commit hash to checkout (defaults to HEAD)'
+        required: false
+        default: ''
       graph_db:
         description: 'Graph database backend to test against'
         required: true
@@ -39,7 +43,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha }}
 
       - name: Build Neo4j stack images
         if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
@@ -118,10 +122,10 @@ jobs:
           PIPESHUB_BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
           PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
           PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-          TEST_NEO4J_URI: bolt://localhost:7687
-          TEST_NEO4J_USERNAME: neo4j
-          TEST_NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
-          TEST_NEO4J_DATABASE: neo4j
+          TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
+          TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
+          TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
+          TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
           S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
           S3_REGION: ${{ secrets.S3_REGION }}
