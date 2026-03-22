@@ -44,6 +44,7 @@ export interface MyToolset {
   tools: Array<{ name: string; fullName: string; description: string }>;
   isConfigured: boolean;
   isAuthenticated: boolean;
+  isFromRegistry?: boolean;
   createdBy?: string;
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
@@ -687,10 +688,12 @@ class ToolsetApiService {
    */
   static async getMyToolsets(params?: {
     search?: string;
+    includeRegistry?: boolean;
   }): Promise<{ toolsets: MyToolset[] }> {
     try {
       const queryParams = new URLSearchParams();
       if (params?.search) queryParams.append('search', params.search);
+      if (params?.includeRegistry) queryParams.append('includeRegistry', 'true');
 
       const response = await axios.get(
         `/api/v1/toolsets/my-toolsets?${queryParams.toString()}`
