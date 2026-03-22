@@ -97,6 +97,26 @@ class S3StorageHelper:
             count += 1
         return count
 
+    def upload_object(self, bucket: str, key: str, data: bytes, content_type: str | None = None) -> None:
+        """Upload a single object from bytes."""
+        extra = {}
+        if content_type:
+            extra["ContentType"] = content_type
+        self._client.put_object(Bucket=bucket, Key=key, Body=data, **extra)
+
+    def overwrite_object(self, bucket: str, key: str, data: bytes, content_type: str | None = None) -> None:
+        """Overwrite an existing object with new content."""
+        self.upload_object(bucket, key, data, content_type)
+
+    def get_object_metadata(self, bucket: str, key: str) -> dict:
+        """Return object metadata (ETag, ContentLength, LastModified, etc.)."""
+        resp = self._client.head_object(Bucket=bucket, Key=key)
+        return {
+            "etag": resp.get("ETag", "").strip('"'),
+            "content_length": resp.get("ContentLength"),
+            "last_modified": resp.get("LastModified"),
+        }
+
     def rename_object(self, bucket: str, old_key: str, new_key: str) -> None:
         self._client.copy_object(
             Bucket=bucket,
@@ -108,8 +128,8 @@ class S3StorageHelper:
     def move_object(self, bucket: str, old_key: str, new_key: str) -> None:
         self.rename_object(bucket, old_key, new_key)
 
-    def delete_bucket(self, bucket: str) -> None:
-        # Delete all objects first (including versions if versioned).
+    def clear_objects(self, bucket: str) -> None:
+        """Delete all objects in the bucket without deleting the bucket itself."""
         paginator = self._client.get_paginator("list_object_versions")
         for page in paginator.paginate(Bucket=bucket):
             to_delete = []
@@ -123,8 +143,6 @@ class S3StorageHelper:
                 self._client.delete_objects(
                     Bucket=bucket, Delete={"Objects": to_delete}
                 )
-
-        # Fallback for non-versioned buckets.
         remaining = self.list_objects(bucket)
         if remaining:
             self._client.delete_objects(
@@ -132,6 +150,8 @@ class S3StorageHelper:
                 Delete={"Objects": [{"Key": k} for k in remaining]},
             )
 
+    def delete_bucket(self, bucket: str) -> None:
+        self.clear_objects(bucket)
         self._client.delete_bucket(Bucket=bucket)
 
 
@@ -169,6 +189,29 @@ class GCSStorageHelper:
             count += 1
         return count
 
+    def upload_blob(self, bucket: str, key: str, data: bytes, content_type: str | None = None) -> None:
+        """Upload a single blob from bytes."""
+        bkt = self._client.bucket(bucket)
+        blob = bkt.blob(key)
+        blob.upload_from_string(data, content_type=content_type or "application/octet-stream")
+
+    def overwrite_blob(self, bucket: str, key: str, data: bytes, content_type: str | None = None) -> None:
+        """Overwrite an existing blob with new content (same key, new ETag/generation)."""
+        self.upload_blob(bucket, key, data, content_type)
+
+    def get_blob_metadata(self, bucket: str, key: str) -> dict:
+        """Return blob metadata (generation, md5_hash, etag, size, etc.)."""
+        bkt = self._client.bucket(bucket)
+        blob = bkt.blob(key)
+        blob.reload()
+        return {
+            "generation": blob.generation,
+            "md5_hash": blob.md5_hash,
+            "etag": blob.etag,
+            "size": blob.size,
+            "updated": blob.updated,
+        }
+
     def rename_object(self, bucket: str, old_key: str, new_key: str) -> None:
         bkt = self._client.bucket(bucket)
         blob = bkt.blob(old_key)
@@ -179,11 +222,15 @@ class GCSStorageHelper:
     def move_object(self, bucket: str, old_key: str, new_key: str) -> None:
         self.rename_object(bucket, old_key, new_key)
 
-    def delete_bucket(self, bucket: str) -> None:
+    def clear_objects(self, bucket: str) -> None:
+        """Delete all objects in the bucket without deleting the bucket itself."""
         bkt = self._client.bucket(bucket)
         for blob in bkt.list_blobs():
             blob.delete()
-        bkt.delete()
+
+    def delete_bucket(self, bucket: str) -> None:
+        self.clear_objects(bucket)
+        self._client.bucket(bucket).delete()
 
 
 class AzureBlobStorageHelper:
@@ -211,6 +258,30 @@ class AzureBlobStorageHelper:
             count += 1
         return count
 
+    def upload_blob(self, container: str, key: str, data: bytes, content_type: str | None = None) -> None:
+        """Upload a single blob from bytes."""
+        from azure.storage.blob import ContentSettings as BlobContentSettings  # type: ignore[import-not-found]
+        container_client = self._service.get_container_client(container)
+        blob_client = container_client.get_blob_client(key)
+        cs = BlobContentSettings(content_type=content_type) if content_type else None
+        blob_client.upload_blob(data, overwrite=True, content_settings=cs)
+
+    def overwrite_blob(self, container: str, key: str, data: bytes, content_type: str | None = None) -> None:
+        """Overwrite an existing blob with new content."""
+        self.upload_blob(container, key, data, content_type)
+
+    def get_blob_metadata(self, container: str, key: str) -> dict:
+        """Return blob properties (etag, last_modified, size, etc.)."""
+        container_client = self._service.get_container_client(container)
+        blob_client = container_client.get_blob_client(key)
+        props = blob_client.get_blob_properties()
+        return {
+            "etag": props.etag,
+            "last_modified": props.last_modified,
+            "size": props.size,
+            "content_md5": props.content_settings.content_md5 if props.content_settings else None,
+        }
+
     def rename_object(self, container: str, old_key: str, new_key: str) -> None:
         # Implement rename as download + re-upload to avoid dealing with copy URLs.
         container_client = self._service.get_container_client(container)
@@ -224,15 +295,16 @@ class AzureBlobStorageHelper:
     def move_object(self, container: str, old_key: str, new_key: str) -> None:
         self.rename_object(container, old_key, new_key)
 
-    def delete_container(self, container: str) -> None:
+    def clear_objects(self, container: str) -> None:
+        """Delete all blobs in the container without deleting the container itself."""
         container_client = self._service.get_container_client(container)
-
-        # Delete all blobs first.
         blobs = list(container_client.list_blobs())
         if blobs:
             container_client.delete_blobs(*blobs)
 
-        container_client.delete_container()
+    def delete_container(self, container: str) -> None:
+        self.clear_objects(container)
+        self._service.get_container_client(container).delete_container()
 
 
 class AzureFilesStorageHelper:
@@ -300,6 +372,44 @@ class AzureFilesStorageHelper:
 
         return count
 
+    def upload_file(self, share: str, key: str, data: bytes) -> None:
+        """Upload a single file from bytes, creating parent directories as needed."""
+        share_client = self._service.get_share_client(share)
+        dir_name, _, file_name = key.rpartition("/")
+        if dir_name:
+            directory_client = self._ensure_azure_files_directory(share_client, dir_name)
+        else:
+            directory_client = share_client.get_directory_client("")
+        file_client = directory_client.get_file_client(file_name)
+        file_client.upload_file(data)
+
+    def overwrite_file(self, share: str, key: str, data: bytes) -> None:
+        """Overwrite an existing file with new content."""
+        share_client = self._service.get_share_client(share)
+        dir_name, _, file_name = key.rpartition("/")
+        if dir_name:
+            directory_client = share_client.get_directory_client(dir_name)
+        else:
+            directory_client = share_client.get_directory_client("")
+        file_client = directory_client.get_file_client(file_name)
+        file_client.upload_file(data)
+
+    def get_file_metadata(self, share: str, key: str) -> dict:
+        """Return file properties (etag, last_modified, size, etc.)."""
+        share_client = self._service.get_share_client(share)
+        dir_name, _, file_name = key.rpartition("/")
+        if dir_name:
+            directory_client = share_client.get_directory_client(dir_name)
+        else:
+            directory_client = share_client.get_directory_client("")
+        file_client = directory_client.get_file_client(file_name)
+        props = file_client.get_file_properties()
+        return {
+            "etag": props.etag,
+            "last_modified": props.last_modified,
+            "size": props.size,
+        }
+
     def rename_object(self, share: str, old_path: str, new_path: str) -> None:
         self._copy_and_delete(share, old_path, new_path)
 
@@ -327,10 +437,9 @@ class AzureFilesStorageHelper:
 
         src_file_client.delete_file()
 
-    def delete_share(self, share: str) -> None:
+    def clear_objects(self, share: str) -> None:
+        """Delete all files in the share without deleting the share itself."""
         share_client = self._service.get_share_client(share)
-
-        # Delete all files in all directories.
         for path in list(self._iter_files_in_share(share)):
             dir_name, _, file_name = path.rpartition("/")
             directory_client = (
@@ -341,5 +450,7 @@ class AzureFilesStorageHelper:
             file_client = directory_client.get_file_client(file_name)
             file_client.delete_file()
 
-        share_client.delete_share()
+    def delete_share(self, share: str) -> None:
+        self.clear_objects(share)
+        self._service.get_share_client(share).delete_share()
 

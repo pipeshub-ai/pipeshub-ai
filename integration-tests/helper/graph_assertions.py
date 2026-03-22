@@ -264,6 +264,41 @@ def record_path_or_name_contains(
         return int(rec["c"]) > 0 if rec else False
 
 
+def record_file_path_for_name(
+    driver: Driver, connector_id: str, record_name: str
+) -> Optional[str]:
+    """Return File.path for the Record with the given display name, if any."""
+    cypher = """
+    MATCH (r:Record {connectorId: $cid})
+    WHERE coalesce(r.recordName, r.name) = $name
+    OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(f:File)
+    RETURN f.path AS path
+    LIMIT 1
+    """
+    with driver.session() as session:
+        result = session.run(cypher, cid=connector_id, name=record_name)
+        rec = result.single()
+        if not rec or rec["path"] is None:
+            return None
+        return str(rec["path"])
+
+
+def record_name_path_contains(
+    driver: Driver,
+    connector_id: str,
+    record_name: str,
+    path_substring: str,
+) -> bool:
+    """
+    True if the Record named *record_name* has a File.path containing *path_substring*.
+
+    Use after object-store moves: bucket/container/share maps to one RecordGroup; prefixes
+    are path segments, not extra RecordGroups.
+    """
+    path = record_file_path_for_name(driver, connector_id, record_name)
+    return bool(path and path_substring in path)
+
+
 def record_paths_or_names_contain(
     driver: Driver,
     connector_id: str,
