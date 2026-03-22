@@ -10,17 +10,27 @@ on:
         description: 'Connector markers to run (e.g. "s3", "gcs", "azure_blob", "azure_files", or "integration" for all)'
         required: true
         default: 'integration'
+      graph_db:
+        description: 'Graph database backend to test against'
+        required: true
+        default: 'neo4j'
+        type: choice
+        options:
+          - arango
+          - neo4j
+          - both
 
 permissions:
   contents: read
 
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
+  GRAPH_DB: ${{ github.event.inputs.graph_db || 'neo4j' }}
 
 jobs:
   integration-tests:
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     environment:
       name: integration-test-dev
@@ -31,15 +41,35 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Build and start services
+      - name: Build Neo4j stack images
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         working-directory: deployment/docker-compose
-        run: |
-          docker compose -f docker-compose.integration.neo4j.yml build
-          docker compose -f docker-compose.integration.neo4j.yml up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml build
 
-      - name: Wait for core services to be healthy
+      - name: Build ArangoDB stack images
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.arango.yml build
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python and install dependencies
+        working-directory: integration-tests
         run: |
-          echo "Waiting for core services (Node.js, Redis, Kafka, MongoDB)..."
+          uv venv
+          uv pip install -e .
+
+      - name: 'Neo4j: Start services'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml up -d
+
+      - name: 'Neo4j: Wait for core services'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
+        run: |
+          
+          echo "Waiting for core services..."
           timeout 120 bash -c '
             until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health | grep -q "\"status\":\"healthy\""; do
               sleep 5
@@ -47,7 +77,8 @@ jobs:
           '
           echo "Core services are healthy!"
 
-      - name: Wait for Python microservices to be healthy
+      - name: 'Neo4j: Wait for Python microservices'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         run: |
           echo "Waiting for connector and query services..."
           timeout 180 bash -c '
@@ -57,13 +88,13 @@ jobs:
           '
           echo "All services are healthy!"
 
-      - name: Create organization and admin user
+      - name: 'Neo4j: Create organization and admin user'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         env:
           BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
           ADMIN_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
           ADMIN_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
         run: |
-          # Step 1: Create organization with admin user
           echo "Creating organization..."
           curl -sf "${BASE_URL}/api/v1/org" \
             -H "Content-Type: application/json" \
@@ -79,50 +110,103 @@ jobs:
           echo ""
           echo "Organization created successfully!"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Set up Python and create virtual environment
-        working-directory: integration-tests
-        run: uv venv
-
-      - name: Install dependencies
-        working-directory: integration-tests
-        run: uv pip install -e .
-
-      - name: Run integration tests
+      - name: 'Neo4j: Run integration tests'
+        if: env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both'
         working-directory: integration-tests
         env:
-          # Environment selector
           PIPESHUB_TEST_ENV: local
-
-          # Pipeshub API
           PIPESHUB_BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
-
-          # Local auth (org admin credentials to auto-create OAuth app)
           PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
           PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
-
-          # Neo4j (local docker compose instance)
-          TEST_NEO4J_URI: ${{ secrets.TEST_NEO4J_URI }}
-          TEST_NEO4J_USERNAME: ${{ secrets.TEST_NEO4J_USERNAME }}
-          TEST_NEO4J_PASSWORD: ${{ secrets.TEST_NEO4J_PASSWORD }}
-          TEST_NEO4J_DATABASE: ${{ secrets.TEST_NEO4J_DATABASE }}
-
-          # AWS S3
+          TEST_NEO4J_URI: bolt://localhost:7687
+          TEST_NEO4J_USERNAME: neo4j
+          TEST_NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+          TEST_NEO4J_DATABASE: neo4j
           S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
           S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
           S3_REGION: ${{ secrets.S3_REGION }}
-
-          # Google Cloud Storage
           GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
-
-          # Azure Blob Storage
           AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
-
-          # Azure Files
           AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
         run: |
           source .venv/bin/activate
           MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
           pytest -m "$MARKERS" -v --tb=short 2>&1
+
+      - name: 'Neo4j: Tear down services (preserve images)'
+        if: always() && (env.GRAPH_DB == 'neo4j' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.neo4j.yml down -v
+
+      - name: 'ArangoDB: Start services'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.arango.yml up -d
+
+      - name: 'ArangoDB: Wait for core services'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        run: |
+          echo "Waiting for core services..."
+          timeout 120 bash -c '
+            until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health | grep -q "\"status\":\"healthy\""; do
+              sleep 5
+            done
+          '
+          echo "Core services are healthy!"
+
+      - name: 'ArangoDB: Wait for Python microservices'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        run: |
+          echo "Waiting for connector and query services..."
+          timeout 180 bash -c '
+            until curl -sf ${{ env.PIPESHUB_BASE_URL }}/api/v1/health/services | grep -q "\"status\":\"healthy\""; do
+              sleep 5
+            done
+          '
+          echo "All services are healthy!"
+
+      - name: 'ArangoDB: Create organization and admin user'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        env:
+          BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
+          ADMIN_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+        run: |
+          echo "Creating organization..."
+          curl -sf "${BASE_URL}/api/v1/org" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "accountType": "business",
+              "adminFullName": "Integration Test Admin",
+              "contactEmail": "'"${ADMIN_EMAIL}"'",
+              "password": "'"${ADMIN_PASSWORD}"'",
+              "confirmPassword": "'"${ADMIN_PASSWORD}"'",
+              "registeredName": "Integration Test Org",
+              "shortName": "INTTEST"
+            }'
+          echo ""
+          echo "Organization created successfully!"
+
+      - name: 'ArangoDB: Run integration tests'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: integration-tests
+        env:
+          PIPESHUB_TEST_ENV: local
+          PIPESHUB_BASE_URL: ${{ env.PIPESHUB_BASE_URL }}
+          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+          S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+          GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
+          AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
+          AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
+        run: |
+          source .venv/bin/activate
+          MARKERS="${{ github.event.inputs.connectors || 'integration' }}"
+          pytest -m "$MARKERS" -v --tb=short 2>&1
+
+      - name: 'ArangoDB: Tear down services (preserve images)'
+        if: always() && (env.GRAPH_DB == 'arango' || env.GRAPH_DB == 'both')
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.arango.yml down -v
