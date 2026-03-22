@@ -353,6 +353,7 @@ class MSGraphClient:
                 ri.http_method = Method.GET
                 ri.url = url  # absolute URL
                 ri.headers.add("Accept", "application/json")
+                ri.headers.add("Prefer", "deltashowsharingchanges")
 
                 error_mapping: Dict[str, type[ParsableFactory]] = {
                     "4XX": ODataError,
