@@ -1242,13 +1242,12 @@ class SharePointConnector(BaseConnector):
             # Get permissions currently fetching permissions via site record group
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
 
-            # Todo: Get permissions for the record
-            # for user in users:
-            #     permissions.append(Permission(
-            #         email=user.email,
-            #         type=PermissionType.READ,
-            #         entity_type=EntityType.USER
-            #     ))
+            if is_root:
+                file_record.inherit_permissions = True
+
+            if existing_record:
+                is_updated = True
+                permissions_changed = True
 
             return RecordUpdate(
                 record=file_record,
@@ -1257,7 +1256,7 @@ class SharePointConnector(BaseConnector):
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=True,
+                permissions_changed=permissions_changed,
                 new_permissions=permissions
             )
 
@@ -1895,6 +1894,7 @@ class SharePointConnector(BaseConnector):
                     is_updated = False
                     metadata_changed = False
                     content_changed = False
+                    permissions_changed = False
 
                     if existing_record:
                         # Use eTag for change detection (same pattern as drive items)
@@ -1903,11 +1903,15 @@ class SharePointConnector(BaseConnector):
                             is_updated = True
                             content_changed = True
 
-
                     page_record = await self._create_page_record(page, site_id, site_name, existing_record)
 
                     if page_record:
                         permissions = await self._get_page_permissions(site_id, page.id)
+
+                        if existing_record:
+                            permissions_changed = True
+                            is_updated = True
+
                         if not self.indexing_filters.is_enabled(IndexingFilterKey.PAGES, default=True):
                             page_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
@@ -1918,7 +1922,7 @@ class SharePointConnector(BaseConnector):
                             is_deleted=False,
                             metadata_changed=metadata_changed,
                             content_changed=content_changed,
-                            permissions_changed=False,
+                            permissions_changed=permissions_changed,
                             new_permissions=permissions
                         ))
                         self.stats['pages_processed'] += 1
