@@ -799,6 +799,7 @@ class KnowledgeHubService:
             previewRenderable=doc.get('previewRenderable'),
             permission=permission,
             sharingStatus=doc.get('sharingStatus'),
+            isInternal=bool(doc.get('isInternal', False)),
         )
 
 

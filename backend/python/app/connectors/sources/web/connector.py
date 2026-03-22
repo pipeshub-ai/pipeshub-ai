@@ -832,9 +832,10 @@ class WebConnector(BaseConnector):
                     path=prefix_path,
                     mime_type=MimeTypes.HTML.value,
                     preview_renderable=False,
+                    is_internal=True,
                     parent_external_record_id=parent_url,
                     parent_record_type=RecordType.FILE if parent_url else None,
-                    indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
+                    indexing_status=ProgressStatus.NOT_STARTED.value,
                 )
 
                 permissions = [
@@ -1838,9 +1839,10 @@ class WebConnector(BaseConnector):
                     path=prefix_path,
                     mime_type=MimeTypes.HTML.value,
                     preview_renderable=False,
+                    is_internal=True,
                     parent_external_record_id=segment_parent_url,
                     parent_record_type=RecordType.FILE if segment_parent_url else None,
-                    indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
+                    indexing_status=ProgressStatus.NOT_STARTED.value,
                 )
 
                 permissions = [

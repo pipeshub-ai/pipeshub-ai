@@ -128,6 +128,8 @@ interface HubNode {
   extension?: string;
   webUrl?: string;
   externalRecordId?: string;
+  /** Internal/system record group or record — indexing status is hidden in the UI */
+  isInternal?: boolean;
   permission?: {
     role: string;
     canEdit: boolean;
@@ -1055,11 +1057,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => {
-        if (params.row.nodeType !== 'record')           return (
-          <Typography variant="caption" color="text.secondary">
-            —
-          </Typography>
-        );
+        if (params.row.nodeType !== 'record' || params.row.isInternal) {
+          return (
+            <Typography variant="caption" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
 
         const status = params.value || 'NOT_STARTED';
         let displayLabel = '';

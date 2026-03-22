@@ -6748,6 +6748,7 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH (r)-[:IS_OF_TYPE]->(f:File)
                 WHERE f.isFile = false
             }
+            AND coalesce(r.isInternal, false) = false
             RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus, count(*) AS cnt
             """
 
@@ -6881,8 +6882,9 @@ class Neo4jProvider(IGraphDBProvider):
                     "reason": f"Unsupported record origin: {origin}"
                 }
 
-            # Reset indexing status to QUEUED before reindexing
-            await self._reset_indexing_status_to_queued(record_id)
+            if not record.get("isInternal"):
+                # Reset indexing status to QUEUED before reindexing
+                await self._reset_indexing_status_to_queued(record_id)
 
             # Create event data for router to publish
             try:
@@ -12853,7 +12855,8 @@ class Neo4jProvider(IGraphDBProvider):
                        webUrl: rg.webUrl,
                        hasChildren: EXISTS((rg)<-[:BELONGS_TO]-(:RecordGroup)) OR EXISTS((rg)<-[:BELONGS_TO]-(:Record)),
                        previewRenderable: true,
-                       sharingStatus: sharingStatus
+                       sharingStatus: sharingStatus,
+                       isInternal: COALESCE(rg.isInternal, false)
                      }
                    ELSE null END
                  ) AS rg_nodes_with_nulls
@@ -12908,7 +12911,8 @@ class Neo4jProvider(IGraphDBProvider):
            extension: CASE WHEN file_info IS NOT NULL THEN file_info.extension ELSE null END,
            webUrl: record.webUrl,
            hasChildren: has_children,
-           previewRenderable: COALESCE(record.previewRenderable, true)
+           previewRenderable: COALESCE(record.previewRenderable, true),
+           isInternal: COALESCE(record.isInternal, false)
          }
                    ELSE null END
                  ) AS record_nodes_with_nulls
@@ -13671,7 +13675,8 @@ class Neo4jProvider(IGraphDBProvider):
             webUrl: rg.webUrl,
             hasChildren: has_child_rgs OR has_records,
             userRole: permission_role,
-            sharingStatus: sharingStatus
+            sharingStatus: sharingStatus,
+            isInternal: coalesce(rg.isInternal, false)
         }}) AS raw_children
 
         RETURN raw_children
@@ -13758,7 +13763,8 @@ class Neo4jProvider(IGraphDBProvider):
                 webUrl: record.webUrl,
                 hasChildren: has_children,
                 previewRenderable: coalesce(record.previewRenderable, true),
-                userRole: permission_role
+                userRole: permission_role,
+                isInternal: coalesce(record.isInternal, false)
             }}) AS internal_records
         }}
 
@@ -13844,7 +13850,8 @@ class Neo4jProvider(IGraphDBProvider):
                 webUrl: node.webUrl,
                 hasChildren: has_child_rgs OR has_records,
                 userRole: permission_role,
-                sharingStatus: sharingStatus
+                sharingStatus: sharingStatus,
+                isInternal: coalesce(node.isInternal, false)
             }}) AS child_rgs
         }}
 
@@ -13911,7 +13918,8 @@ class Neo4jProvider(IGraphDBProvider):
                 webUrl: record.webUrl,
                 hasChildren: has_children,
                 previewRenderable: coalesce(record.previewRenderable, true),
-                userRole: permission_role
+                userRole: permission_role,
+                isInternal: coalesce(record.isInternal, false)
             }}) AS direct_records
         }}
 
@@ -13998,7 +14006,8 @@ class Neo4jProvider(IGraphDBProvider):
             webUrl: record.webUrl,
             hasChildren: has_children,
             previewRenderable: coalesce(record.previewRenderable, true),
-            userRole: permission_role
+            userRole: permission_role,
+            isInternal: coalesce(record.isInternal, false)
         }}) AS raw_children
 
         RETURN raw_children
