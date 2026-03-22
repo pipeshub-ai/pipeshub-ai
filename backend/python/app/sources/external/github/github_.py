@@ -4,8 +4,8 @@ import base64
 import datetime
 import difflib
 from collections.abc import Sequence
-from typing import List, Optional
 
+import httpx
 from github import (
     Github,  # type: ignore
 )
@@ -50,14 +50,22 @@ class GitHubDataSource:
     def __init__(self, client: object) -> None:
         if isinstance(client, Github):
             self._sdk: Github = client
+            # NOTE : when can this be a case
         else:
             get_sdk = getattr(client, "get_sdk", None)
             if get_sdk is None or not callable(get_sdk):
-                raise TypeError("client must be a github.Github or expose get_sdk() -> Github")
+                raise TypeError("client must be a github.GithubClient or expose get_sdk() -> Github")
             sdk = get_sdk()
             if not isinstance(sdk, Github):
                 raise TypeError("get_sdk() must return a github.Github instance")
             self._sdk = sdk
+            get_token = getattr(client, "get_token", None)
+            if get_token is None or not callable(get_token):
+                raise TypeError("client must be a github.GitHubClient or expose get_token() -> str")
+            token = get_token()
+            if not isinstance(token, str):
+                raise TypeError("get_token() must return a string")
+            self.token = token
 
     # -----------------------
     # Internal helpers
@@ -114,10 +122,10 @@ class GitHubDataSource:
 
     def list_user_repos(
         self,
-        user: Optional[str]=None,
+        user: str | None=None,
         type: str = "owner",
-        per_page: Optional[int] = None,
-        page: Optional[int] = None,
+        per_page: int | None = None,
+        page: int | None = None,
     ) -> GitHubResponse[list[Repository]]:
         """List repositories for a given user. When both per_page and page are omitted, returns all repos. When either is passed, returns one page (default 10 per page, max 50). Pass the login from get_owner(owner='me') result; do not pass 'me' here."""
         try:
@@ -176,8 +184,8 @@ class GitHubDataSource:
         labels: Sequence[str] | None = None,
         assignee: str | None = None,
         since: str | None = None,
-        per_page: Optional[int] = None,
-        page: Optional[int] = None,
+        per_page: int | None = None,
+        page: int | None = None,
     ) -> GitHubResponse[list[Issue]]:
         """List issues with filters. When both per_page and page are None (e.g. from connector), returns all issues. Otherwise returns one page (default 10 per page, max 50)."""
         try:
@@ -360,8 +368,8 @@ class GitHubDataSource:
         state: str = "open",
         head: str | None = None,
         base: str | None = None,
-        per_page: Optional[int] = None,
-        page: Optional[int] = None,
+        per_page: int | None = None,
+        page: int | None = None,
     ) -> GitHubResponse[list[PullRequest]]:
         """List PRs. When both per_page and page are None (e.g. from connector), returns all PRs. Otherwise returns one page (default 10 per page, max 50)."""
         try:
@@ -570,7 +578,7 @@ class GitHubDataSource:
         status: str,
         max_diff_lines: int = 5000,
         context_lines: int = 3,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Generate a complete unified diff with safety limits.
 
@@ -704,7 +712,7 @@ class GitHubDataSource:
         repo: str,
         number: int,
         event: str,
-        body: Optional[str] = None,
+        body: str | None = None,
     ) -> GitHubResponse[PullRequestReview]:
         """Submit a PR review: APPROVE, REQUEST_CHANGES, or COMMENT. Optional body for the review summary."""
         try:
@@ -1254,7 +1262,7 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-    def list_pending_invitations(self, owner: str, repo: str) -> GitHubResponse[List[Invitation]]:
+    def list_pending_invitations(self, owner: str, repo: str) -> GitHubResponse[list[Invitation]]:
         """List pending repo invitations."""
         try:
             r = self._repo(owner, repo)
@@ -1275,7 +1283,7 @@ class GitHubDataSource:
 
 
     # DependabotAlert not available in older PyGithub versions
-    def list_dependabot_alerts(self, owner: str, repo: str) -> GitHubResponse[List[object]]:
+    def list_dependabot_alerts(self, owner: str, repo: str) -> GitHubResponse[list[object]]:
         """List Dependabot alerts for a repo."""
         try:
             r = self._repo(owner, repo)
@@ -1361,8 +1369,8 @@ class GitHubDataSource:
     def search_repositories(
         self,
         query: str,
-        per_page: Optional[int] = None,
-        page: Optional[int] = None,
+        per_page: int | None = None,
+        page: int | None = None,
     ) -> GitHubResponse[list[Repository]]:
         """Search repositories. Default 10 per page, max 50."""
         try:
@@ -1387,3 +1395,41 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
+    # ----------------Other than SDK calls------------------ #
+
+    async def get_img_bytes(self, image_url: str) -> GitHubResponse[bytes]:
+        GITHUB_TOKEN = self.token
+        # self.logger.info(f"Fetching image from URL: {image_url}")
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "*/*",
+        }
+        try:
+            async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
+                resp = await client.get(image_url, headers=headers)
+                resp.raise_for_status()
+                img_data = resp.content
+                return GitHubResponse(success=True, data=img_data)
+        except httpx.HTTPStatusError as e:
+            return GitHubResponse(success=False, error=f"HTTP {e.response.status_code} fetching image from {image_url}")
+        except Exception as e:
+            return GitHubResponse(success=False, error=f"Error fetching image from {image_url}: {str(e)}")
+
+    async def get_attachment_files_content(self,weburl:str) -> GitHubResponse[bytes]:
+        """Getting file content from weburl for attachments."""
+        GITHUB_TOKEN = self.token
+        headers = {
+                "Authorization": f"Bearer {GITHUB_TOKEN}",
+                "Accept": "application/vnd.github+json",
+        }
+        file_data = b""
+        try:
+            async with httpx.AsyncClient(follow_redirects=True,timeout=30.0) as client:
+                resp = await client.get(weburl, headers=headers)
+                resp.raise_for_status()
+                file_data = resp.content
+                return GitHubResponse(success=True, data=file_data)
+        except httpx.HTTPStatusError as e:
+            return GitHubResponse(success=False, error=f"HTTP {e.response.status_code} fetching file content from {weburl}")
+        except Exception as e:
+            return GitHubResponse(success=False, error=f"Error fetching file from {weburl}: {str(e)}")

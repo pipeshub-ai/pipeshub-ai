@@ -17326,7 +17326,14 @@ class Neo4jProvider(IGraphDBProvider):
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
             if app is None:
                 return None
-            return app.get("createdBy")
+            user_id = app.get("createdBy")
+            if user_id is None:
+                return None
+            user_doc  =  await self.get_user_by_user_id(user_id)
+            if user_doc is None:
+                return None
+            # NOTE: This conversion of type can be removed once get_user_by_user_id returns User object
+            return  User.from_arango_user(user_doc) if isinstance(user_doc, dict) else user_doc
         except Exception as e:
             self.logger.error("❌ Failed to get app creator user: %s", str(e))
             return None

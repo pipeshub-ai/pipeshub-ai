@@ -4210,7 +4210,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             if not user_doc:
                 return None
-            return User.from_arango_user(user_doc)
+            # NOTE: This class of type can be removed once get_user_by_user_id returns User object
+            if isinstance(user_doc, dict):
+                user = User.from_arango_user(user_doc)
+            else:
+                user = user_doc
+            return user
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch user for {connector_id}: {str(e)}")
             return None
@@ -4315,7 +4320,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if results:
                 with contextlib.suppress(IndexError, StopIteration):
                     ref_record = results[0]
-
             if not ref_record:
                 self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
@@ -11512,7 +11516,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if not files:
             return []
         valid_files: list[dict] = []
-        valid_files: list[dict] = []
         for file_data in files:
             file_record = file_data.get("fileRecord") or {}
             record = file_data.get("record") or {}
@@ -14860,7 +14863,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         # Combine results: use internal_records if available, otherwise use child_rgs + direct_records
         all_children = internal_records or child_rgs + direct_records
-
         filtered_children = [
             node for node in all_children
             if not only_containers or node.get("hasChildren") or node.get("nodeType") in ["app", "recordGroup", "folder"]
