@@ -1,4 +1,4 @@
-from typing import List, Literal
+from typing import Literal
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -10,7 +10,7 @@ class AnswerWithMetadataDict(TypedDict):
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
     answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
-    blockNumbers: List[str]
+    blockNumbers: list[str]
 
 class AnswerWithMetadataJSON(BaseModel):
     """Schema for the answer with metadata"""
@@ -18,7 +18,7 @@ class AnswerWithMetadataJSON(BaseModel):
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
     answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
-    blockNumbers: List[str]
+    blockNumbers: list[str]
 
 qna_prompt = """
 <task>

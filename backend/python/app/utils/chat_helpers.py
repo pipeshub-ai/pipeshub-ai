@@ -1,7 +1,7 @@
 import asyncio
 import re
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -61,7 +61,7 @@ collection_map = {
                     RecordType.LINK.value: "links",
                 }
 
-def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Optional[Dict[str, Any]] = None) -> Optional[Record]:
+def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
     """
     Creates a Record subclass instance from a dictionary.
 
@@ -172,7 +172,7 @@ def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Opt
         logger.error(f"Error creating record instance: {str(e)}")
         return None
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: Optional[IGraphDBProvider] = None) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: dict[str, dict[str, Any]],virtual_to_record_map: dict[str, dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> list[dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
@@ -502,7 +502,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
     return flattened_results
 
-def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[str, Any]) -> Dict[str, Any]:
+def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any],meta:dict[str, Any]) -> dict[str, Any]:
         try:
             virtual_record_id = record.get("virtual_record_id", "")
             block_type = block.get("type")
@@ -611,7 +611,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
         except Exception as e:
             raise e
 
-def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
+def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:
         """Safely extract bounding box data from citation metadata"""
         if not citation_metadata or not citation_metadata.get("bounding_boxes"):
             return None
@@ -631,7 +631,7 @@ def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: Dict[str, Dict[str, Any]]=None,graph_provider: Optional[IGraphDBProvider] = None,frontend_url: Optional[str] = None) -> None:
+async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[str, dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: dict[str, dict[str, Any]]=None,graph_provider: IGraphDBProvider | None = None,frontend_url: str | None = None) -> None:
     try:
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
@@ -684,7 +684,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[st
     except Exception as e:
         raise e
 
-async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: str, virtual_record_id: str,blob_store: BlobStorage) -> Tuple[Dict[str, Any], Dict[str, int]]:
+async def create_record_from_vector_metadata(metadata: dict[str, Any], org_id: str, virtual_record_id: str,blob_store: BlobStorage) -> tuple[dict[str, Any], dict[str, int]]:
     try:
         # Lazy import to avoid circular dependency: chat_helpers -> ContainerUtils -> RetrievalService -> chat_helpers
         from app.containers.utils.utils import ContainerUtils
@@ -786,7 +786,7 @@ async def create_record_from_vector_metadata(metadata: Dict[str, Any], org_id: s
         raise e
 
 
-def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Dict[str, Any]:
+def create_block_from_metadata(metadata: dict[str, Any],page_content: str) -> dict[str, Any]:
     try:
         page_num = metadata.get("pageNum")
         if isinstance(page_num, (list,tuple)):
@@ -824,7 +824,7 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
 MAX_CELLS_IN_TABLE_THRESHOLD = 250  # Equivalent to ~700 words assuming ~2-3 words per cell
 
 
-def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], children: Union[Dict[str, Any], List[Dict[str, Any]]]) -> int | None:
+def _find_first_block_index_recursive(block_groups: list[dict[str, Any]], children: dict[str, Any] | list[dict[str, Any]]) -> int | None:
     """Recursively search through the first child to find the first block_index.
 
     Args:
@@ -873,9 +873,9 @@ def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], childr
 
 
 def _extract_text_content_recursive(
-    block_groups: List[Dict[str, Any]],
-    blocks: List[Dict[str, Any]],
-    children: Union[Dict[str, Any], List[Dict[str, Any]]],
+    block_groups: list[dict[str, Any]],
+    blocks: list[dict[str, Any]],
+    children: dict[str, Any] | list[dict[str, Any]],
     virtual_record_id: str = None,
     seen_chunks: set = None,
     depth: int = 0,
@@ -972,7 +972,7 @@ def _extract_text_content_recursive(
     return content
 
 
-def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, Any]], parent_index: int, virtual_record_id: str = None, seen_chunks: set = None) -> Tuple[str, int, str] | None:
+def build_group_text(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, seen_chunks: set = None) -> tuple[str, int, str] | None:
     """Extract grouped text content and first child index for supported group types.
 
     Returns (label, first_child_block_index, content) or None if invalid or unsupported.
@@ -1012,7 +1012,7 @@ def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, 
     return label, first_child_block_index, content
 
 
-def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, Any]], parent_index: int) -> List[Dict[str, Any]]:
+def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int) -> list[dict[str, Any]]:
     if parent_index < 0 or parent_index >= len(block_groups):
         return None
     parent_block = block_groups[parent_index]
@@ -1045,7 +1045,7 @@ def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str
     return result_blocks
 
 
-def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> str|None:
+def record_to_message_content(record: dict[str, Any], final_results: list[dict[str, Any]] = None) -> str|None:
     """
     Convert a record JSON object to message content format matching get_message_content.
 
@@ -1191,7 +1191,7 @@ Record blocks (sorted):\n\n"""
         raise Exception(f"Error in record_to_message_content: {e}") from e
 
 
-def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str, logger, mode: str = "json") -> str:
+def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, logger, mode: str = "json") -> str:
     content = []
 
     # Use simple prompt for quick mode
@@ -1356,7 +1356,7 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
 
 
 
-def _get_formatted_text(result: Dict[str, Any], record_number: int) -> str:
+def _get_formatted_text(result: dict[str, Any], record_number: int) -> str:
     block_type = result.get("block_type")
     block_index = result.get("block_index")
     block_number = f"R{record_number}-{block_index}"
@@ -1375,8 +1375,8 @@ def _get_formatted_text(result: Dict[str, Any], record_number: int) -> str:
     return formatted_text
 
 def _flatten_to_selectable_units(
-    flattened_results: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    flattened_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """
     Flatten blocks into selectable units, exploding tables into individual rows.
     """
@@ -1398,10 +1398,10 @@ def _flatten_to_selectable_units(
     return selectable_units
 
 def _select_units_by_score(
-    selectable_units: List[Dict[str, Any]],
+    selectable_units: list[dict[str, Any]],
     max_tokens_threshold: int,
-    virtual_record_id_to_record_number: Dict[str, int]
-) -> Tuple[List[Dict[str, Any]], int]:
+    virtual_record_id_to_record_number: dict[str, int]
+) -> tuple[list[dict[str, Any]], int]:
     # Sort by score (descending)
     sorted_units = sorted(selectable_units, key=lambda x: -x["score"])
 
@@ -1435,7 +1435,7 @@ def _select_units_by_score(
 
     return selected_units, cumulative_tokens
 
-def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], final_results: List[Dict[str,    Any]], max_tokens_threshold: int) -> dict[str, Any]:
+def get_message_content_for_tool(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], final_results: list[dict[str,    Any]], max_tokens_threshold: int) -> dict[str, Any]:
     # Initialize record number mapping
     virtual_record_id_to_record_number = {}
     seen_virtual_record_ids = set()
@@ -1529,7 +1529,7 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
 
 
 
-def count_tokens_in_messages(messages: List[Any]) -> int:
+def count_tokens_in_messages(messages: list[Any]) -> int:
     """
     Count the total number of tokens in a messages array.
     Supports both dict messages and LangChain message objects.
@@ -1593,7 +1593,7 @@ def count_tokens_text(text: str) -> int:
 
     return max(1, len(text) // 4)
 
-def count_tokens(messages: List[Any], message_contents: dict[str, Any]) -> Tuple[int, int]:
+def count_tokens(messages: list[Any], message_contents: dict[str, Any]) -> tuple[int, int]:
     current_message_tokens = count_tokens_in_messages(messages)
     new_tokens = 0
 
@@ -1608,7 +1608,7 @@ def count_tokens(messages: List[Any], message_contents: dict[str, Any]) -> Tuple
 FRAGMENT_WORD_COUNT = 8
 
 
-def extract_start_end_text(snippet: str) -> Tuple[str, str]:
+def extract_start_end_text(snippet: str) -> tuple[str, str]:
     if not snippet:
         return "", ""
 
