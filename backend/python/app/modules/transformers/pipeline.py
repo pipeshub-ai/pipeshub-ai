@@ -16,7 +16,7 @@ class IndexingPipeline:
             block_containers = record.block_containers
             blocks = block_containers.blocks
 
-            if blocks is not None and len(blocks) == 0:
+            if blocks is None or len(blocks) == 0:
                 record_id = record.id
                 record_dict = await self.document_extraction.arango_service.get_document(
                     record_id, CollectionNames.RECORDS.value
