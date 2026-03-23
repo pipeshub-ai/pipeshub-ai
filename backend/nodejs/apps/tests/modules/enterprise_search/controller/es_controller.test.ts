@@ -2713,7 +2713,9 @@ describe('Enterprise Search Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
         const response = res.json.firstCall.args[0]
-        expect(response).to.deep.equal([])
+        expect(response).to.have.property('success', true)
+        expect(response).to.have.property('agents').that.deep.equals([])
+        expect(response).to.have.property('pagination')
       }
     })
 

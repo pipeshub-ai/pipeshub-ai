@@ -13,6 +13,8 @@ import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { Logger } from '../../../../src/libs/services/logger.service';
 import { UserAccountController } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { JitProvisioningService } from '../../../../src/modules/auth/services/jit-provisioning.service';
+import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 
 describe('createSamlRouter', () => {
   let container: Container;
@@ -40,7 +42,10 @@ describe('createSamlRouter', () => {
     };
 
     const mockIamService = {
-      getUserByEmail: sinon.stub(),
+      getUserByEmail: sinon.stub().resolves({
+        statusCode: 200,
+        data: { _id: 'user123', email: 'test@example.com', orgId: 'org1', hasLoggedIn: true },
+      }),
       getUserById: sinon.stub(),
       updateUser: sinon.stub(),
       checkAdminUser: sinon.stub(),
@@ -49,10 +54,10 @@ describe('createSamlRouter', () => {
     };
 
     const mockSessionService = {
-      createSession: sinon.stub(),
+      createSession: sinon.stub().resolves({ userId: 'user123', orgId: 'org1' }),
       getSession: sinon.stub(),
       updateSession: sinon.stub(),
-      completeAuthentication: sinon.stub(),
+      completeAuthentication: sinon.stub().resolves(),
       deleteSession: sinon.stub(),
     };
 
@@ -60,6 +65,8 @@ describe('createSamlRouter', () => {
       signInViaSAML: sinon.stub(),
       getSamlEmailKeyByOrgId: sinon.stub(),
       updateSAMLStrategy: sinon.stub(),
+      parseRelayState: sinon.stub().returns({ orgId: 'org1', sessionToken: 'token123' }),
+      getSamlEmail: sinon.stub().returns('test@example.com'),
     };
 
     const mockMailService = {
@@ -67,7 +74,7 @@ describe('createSamlRouter', () => {
     };
 
     const mockConfigService = {
-      getConfig: sinon.stub(),
+      getConfig: sinon.stub().resolves({ statusCode: 200, data: { enableJit: false } }),
     };
 
     const mockAuthMiddleware = {
@@ -81,7 +88,7 @@ describe('createSamlRouter', () => {
       extractGoogleUserDetails: sinon.stub(),
       extractMicrosoftUserDetails: sinon.stub(),
       extractOAuthUserDetails: sinon.stub(),
-      extractSamlUserDetails: sinon.stub(),
+      extractSamlUserDetails: sinon.stub().returns({ fullName: 'Test User' }),
     };
 
     container.bind<AppConfig>('AppConfig').toConstantValue(mockConfig as any);
@@ -94,6 +101,16 @@ describe('createSamlRouter', () => {
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any);
     container.bind<UserAccountController>('UserAccountController').toConstantValue({} as any);
     container.bind<JitProvisioningService>('JitProvisioningService').toConstantValue(mockJitService as any);
+
+    // Stub Mongoose model statics used by the handler
+    sinon.stub(Org, 'findOne').returns({
+      lean: sinon.stub().returns({ exec: sinon.stub().resolves({ _id: 'org1', shortName: 'TestOrg' }) }),
+    } as any);
+    sinon.stub(OrgAuthConfig, 'findOne').resolves({
+      orgId: 'org1',
+      isDeleted: false,
+      authSteps: [{ allowedMethods: [{ type: 'samlSso' }] }],
+    } as any);
   });
 
   afterEach(() => {
@@ -412,17 +429,20 @@ describe('createSamlRouter', () => {
       expect(mockNext.calledOnce).to.be.true;
     });
 
-    it('POST /signIn/callback handler should call next when no session token in relay state', async () => {
+    it('POST /signIn/callback handler should redirect when no session token in relay state', async () => {
+      const mockSamlController = container.get<any>('SamlController');
+      mockSamlController.parseRelayState.returns({ orgId: 'org1' });
+
       const router = createSamlRouter(container);
       const handler = findRouteHandler(router, '/signIn/callback', 'post');
       expect(handler).to.not.be.undefined;
 
       const { mockReq, mockRes, mockNext } = createMockReqRes();
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1' })).toString('base64');
-      mockReq.body.RelayState = relayState;
+      mockReq.user = { email: 'test@example.com', orgId: 'org1' };
       await handler(mockReq, mockRes, mockNext);
 
-      expect(mockNext.calledOnce).to.be.true;
+      // With no session token, the handler creates a new session and redirects
+      expect(mockRes.redirect.calledOnce).to.be.true;
     });
 
     it('POST /updateAppConfig handler should update config and respond 200', async () => {

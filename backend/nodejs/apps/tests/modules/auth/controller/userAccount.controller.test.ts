@@ -364,6 +364,7 @@ describe('UserAccountController', () => {
         data: { _id: 'u1', email: 'user@example.com', orgId: 'o1' },
       });
 
+      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
       sinon.stub(OrgAuthConfig, 'findOne').resolves({
         orgId: 'o1',
         authSteps: [
@@ -392,7 +393,7 @@ describe('UserAccountController', () => {
       expect(jsonArg.message).to.equal('Authentication initialized');
     });
 
-    it('should call next(error) when org auth config is not found', async () => {
+    it('should fall back to password when org auth config is not found', async () => {
       const req: any = {
         body: { email: 'user@example.com' },
       };
@@ -402,12 +403,22 @@ describe('UserAccountController', () => {
         data: { _id: 'u1', email: 'user@example.com', orgId: 'o1' },
       });
 
+      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
       sinon.stub(OrgAuthConfig, 'findOne').resolves(null);
+
+      mockSessionService.createSession.resolves({
+        token: 'session-fallback-123',
+        userId: 'NOT_FOUND',
+        email: 'user@example.com',
+        authConfig: [{ order: 1, allowedMethods: [{ type: 'password' }] }],
+        currentStep: 0,
+      });
 
       await controller.initAuth(req, res, next);
 
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      expect(res.json.calledOnce).to.be.true;
+      const jsonArg = res.json.firstCall.args[0];
+      expect(jsonArg.allowedMethods).to.deep.include('password');
     });
 
     it('should call next(error) when session creation fails', async () => {
@@ -420,6 +431,7 @@ describe('UserAccountController', () => {
         data: { _id: 'u1', email: 'user@example.com', orgId: 'o1' },
       });
 
+      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
       sinon.stub(OrgAuthConfig, 'findOne').resolves({
         orgId: 'o1',
         authSteps: [
@@ -431,8 +443,9 @@ describe('UserAccountController', () => {
 
       await controller.initAuth(req, res, next);
 
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError);
+      // New behavior: session creation returning null doesn't throw,
+      // it just doesn't set the header and returns json
+      expect(res.json.calledOnce).to.be.true;
     });
   });
 
@@ -928,14 +941,14 @@ describe('UserAccountController', () => {
       );
     });
 
-    it('should call next(BadRequestError) when method is not allowed for current step', async () => {
+    it('should call next(BadRequestError) when OTP credentials are invalid', async () => {
       const req: any = {
         body: { method: 'otp', credentials: { otp: '123456' } },
         sessionInfo: {
           userId: 'u1',
           email: 'test@test.com',
           authConfig: [
-            { allowedMethods: [{ type: 'password' }] }, // only password allowed
+            { allowedMethods: [{ type: 'password' }] },
           ],
           currentStep: 0,
         },
@@ -947,12 +960,14 @@ describe('UserAccountController', () => {
         data: { _id: 'u1', email: 'test@test.com', orgId: 'o1' },
       });
 
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+
       await controller.authenticate(req, res, next);
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
       expect(next.firstCall.args[0].message).to.equal(
-        'Invalid authentication method for this step',
+        'Please request OTP before login',
       );
     });
 
@@ -1029,12 +1044,18 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
+      // getUserByEmail returns not found for the JIT user
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 404,
+        data: null,
+      });
+
       await controller.authenticate(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
       expect(next.firstCall.args[0].message).to.equal(
-        'Incorrect password, please try again.',
+        'User not found',
       );
     });
   });
@@ -1806,21 +1827,12 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 200,
-        data: { _id: 'u1', email: 'test@test.com', orgId: 'o1', hasLoggedIn: true },
-      });
-
-      mockSessionService.completeAuthentication.resolves();
-      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
-
       await controller.authenticate(req, res, next);
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-        const jsonArg = res.json.firstCall.args[0];
-        expect(jsonArg.message).to.equal('Fully authenticated');
-      }
+      // SAML SSO now does an early return without writing any response
+      expect(res.status.called).to.be.false;
+      expect(res.json.called).to.be.false;
+      expect(next.called).to.be.false;
     });
   });
 
@@ -1964,6 +1976,7 @@ describe('UserAccountController', () => {
         data: { _id: 'u1', email: 'user@example.com', orgId: 'o1' },
       });
 
+      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
       sinon.stub(OrgAuthConfig, 'findOne').resolves({
         orgId: 'o1',
         authSteps: [
@@ -2105,6 +2118,9 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
+      // Config fetch fails when orgId is empty
+      mockConfigService.getConfig.rejects(new BadRequestError('Organization not found'));
+
       await controller.authenticate(req, res, next);
 
       expect(next.calledOnce).to.be.true;
@@ -2126,11 +2142,19 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
+      // getUserByEmail returns not found for the unknown JIT user
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 404,
+        data: null,
+      });
+
       await controller.authenticate(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('Unsupported authentication method for JIT');
+      // New behavior: unknown_jit_method is not an external provider,
+      // so it falls through to user lookup which fails with NotFoundError
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      expect(next.firstCall.args[0].message).to.equal('User not found');
     });
   });
 
@@ -2241,6 +2265,7 @@ describe('UserAccountController', () => {
         data: { _id: 'u1', email: 'user@example.com', orgId: 'o1' },
       });
 
+      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
       sinon.stub(OrgAuthConfig, 'findOne').resolves({
         orgId: 'o1',
         authSteps: [
@@ -2282,6 +2307,7 @@ describe('UserAccountController', () => {
         data: { _id: 'u1', email: 'user@example.com', orgId: 'o1' },
       });
 
+      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
       sinon.stub(OrgAuthConfig, 'findOne').resolves({
         orgId: 'o1',
         authSteps: [
@@ -2323,6 +2349,7 @@ describe('UserAccountController', () => {
         data: { _id: 'u1', email: 'user@example.com', orgId: 'o1' },
       });
 
+      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
       sinon.stub(OrgAuthConfig, 'findOne').resolves({
         orgId: 'o1',
         authSteps: [
@@ -2332,6 +2359,7 @@ describe('UserAccountController', () => {
 
       mockConfigService.getConfig.resolves({
         data: {
+          enableJit: true,
           clientId: 'oauth-client-id',
           clientSecret: 'secret-should-not-appear',
           tokenEndpoint: 'https://oauth/token',
@@ -2556,10 +2584,9 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 200,
-        data: { _id: 'u1', email: 'user@test.com', orgId: 'o1' },
-      });
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve({ _id: 'o1', isDeleted: false }) }),
+      } as any);
 
       mockConfigService.getConfig.resolves({
         data: { clientId: 'id', clientSecret: 'secret', tokenEndpoint: '' },
@@ -2569,7 +2596,7 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('token endpoint');
+      expect(next.firstCall.args[0].message).to.include('not properly configured');
     });
 
     it('should call next(BadRequestError) when no oauth config data', async () => {
@@ -2583,10 +2610,9 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 200,
-        data: { _id: 'u1', email: 'user@test.com', orgId: 'o1' },
-      });
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve({ _id: 'o1', isDeleted: false }) }),
+      } as any);
 
       mockConfigService.getConfig.resolves({
         data: null,
@@ -2596,7 +2622,7 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('not configured');
+      expect(next.firstCall.args[0].message).to.include('not properly configured');
     });
   });
 
@@ -2889,7 +2915,7 @@ describe('UserAccountController', () => {
   // exchangeOAuthToken - JIT user flow
   // -----------------------------------------------------------------------
   describe('exchangeOAuthToken - JIT user flow', () => {
-    it('should call next(NotFoundError) when user not found and no org matches domain', async () => {
+    it('should call next(BadRequestError) when user not found and no org matches domain', async () => {
       const req: any = {
         body: {
           code: 'auth-code',
@@ -2900,17 +2926,15 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 404,
-        data: 'User not found',
-      });
-
-      sinon.stub(Org, 'findOne').resolves(null);
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve(null) }),
+      } as any);
 
       await controller.exchangeOAuthToken(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0].message).to.include('Organization not found');
     });
   });
 
@@ -3138,7 +3162,7 @@ describe('UserAccountController', () => {
   // exchangeOAuthToken - JIT flow with org and auth config found
   // -----------------------------------------------------------------------
   describe('exchangeOAuthToken - JIT with org found', () => {
-    it('should call next(NotFoundError) when orgAuthConfig missing', async () => {
+    it('should call next(BadRequestError) when oauth config is missing', async () => {
       const req: any = {
         body: {
           code: 'auth-code',
@@ -3149,24 +3173,21 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 404,
-        data: 'User not found',
-      });
-
-      sinon.stub(Org, 'findOne').resolves({
-        _id: 'org1',
-        isDeleted: false,
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve({ _id: 'org1', isDeleted: false }) }),
       } as any);
-      sinon.stub(OrgAuthConfig, 'findOne').resolves(null);
+
+      // Config returns null data, so oauthConfig is null
+      mockConfigService.getConfig.resolves({ data: null });
 
       await controller.exchangeOAuthToken(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0].message).to.include('not properly configured');
     });
 
-    it('should call next(NotFoundError) when oauth not in allowed methods', async () => {
+    it('should call next(BadRequestError) when oauth config has no tokenEndpoint', async () => {
       const req: any = {
         body: {
           code: 'auth-code',
@@ -3177,27 +3198,19 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 404,
-        data: 'User not found',
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve({ _id: 'org1', isDeleted: false }) }),
+      } as any);
+
+      mockConfigService.getConfig.resolves({
+        data: { clientId: 'id', clientSecret: 'secret', tokenEndpoint: '' },
       });
-
-      sinon.stub(Org, 'findOne').resolves({
-        _id: 'org1',
-        isDeleted: false,
-      } as any);
-
-      sinon.stub(OrgAuthConfig, 'findOne').resolves({
-        orgId: 'org1',
-        authSteps: [
-          { order: 1, allowedMethods: [{ type: 'password' }] },
-        ],
-      } as any);
 
       await controller.exchangeOAuthToken(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0].message).to.include('not properly configured');
     });
 
     it('should call next(NotFoundError) when JIT not enabled', async () => {
@@ -3211,34 +3224,50 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 404,
-        data: 'User not found',
-      });
-
-      sinon.stub(Org, 'findOne').resolves({
-        _id: 'org1',
-        isDeleted: false,
-      } as any);
-
-      sinon.stub(OrgAuthConfig, 'findOne').resolves({
-        orgId: 'org1',
-        authSteps: [
-          { order: 1, allowedMethods: [{ type: 'oauth' }] },
-        ],
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve({ _id: 'org1', isDeleted: false }) }),
       } as any);
 
       mockConfigService.getConfig.resolves({
-        data: { enableJit: false, clientId: 'id', clientSecret: 'secret' },
+        data: {
+          enableJit: false,
+          clientId: 'id',
+          clientSecret: 'secret',
+          tokenEndpoint: 'https://oauth/token',
+          userInfoEndpoint: 'https://oauth/userinfo',
+        },
       });
 
-      await controller.exchangeOAuthToken(req, res, next);
+      const originalFetch = global.fetch;
+      // Mock token exchange
+      const fetchStub = sinon.stub();
+      fetchStub.onFirstCall().resolves({
+        ok: true,
+        json: sinon.stub().resolves({ access_token: 'at', id_token: 'it', token_type: 'bearer', expires_in: 3600 }),
+      } as any);
+      // Mock user info
+      fetchStub.onSecondCall().resolves({
+        ok: true,
+        json: sinon.stub().resolves({ email: 'jit@example.com' }),
+      } as any);
+      global.fetch = fetchStub as any;
 
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      try {
+        mockIamService.getUserByEmail.resolves({
+          statusCode: 404,
+          data: 'User not found',
+        });
+
+        await controller.exchangeOAuthToken(req, res, next);
+
+        expect(next.calledOnce).to.be.true;
+        expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      } finally {
+        global.fetch = originalFetch;
+      }
     });
 
-    it('should call next(NotFoundError) when JIT config fetch fails', async () => {
+    it('should call next with error when JIT config fetch fails', async () => {
       const req: any = {
         body: {
           code: 'auth-code',
@@ -3249,21 +3278,8 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 404,
-        data: 'User not found',
-      });
-
-      sinon.stub(Org, 'findOne').resolves({
-        _id: 'org1',
-        isDeleted: false,
-      } as any);
-
-      sinon.stub(OrgAuthConfig, 'findOne').resolves({
-        orgId: 'org1',
-        authSteps: [
-          { order: 1, allowedMethods: [{ type: 'oauth' }] },
-        ],
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve({ _id: 'org1', isDeleted: false }) }),
       } as any);
 
       // Config fetch throws
@@ -3272,7 +3288,7 @@ describe('UserAccountController', () => {
       await controller.exchangeOAuthToken(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error);
     });
 
     it('should use skipDomainCheck to find org when configured', async () => {
@@ -3288,17 +3304,12 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 404,
-        data: 'User not found',
-      });
-
-      sinon.stub(Org, 'findOne').resolves({
-        _id: 'org1',
-        isDeleted: false,
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve({ _id: 'org1', isDeleted: false }) }),
       } as any);
 
-      sinon.stub(OrgAuthConfig, 'findOne').resolves(null);
+      // Config returns null data, so oauth is not properly configured
+      mockConfigService.getConfig.resolves({ data: null });
 
       await controller.exchangeOAuthToken(req, res, next);
 
@@ -3444,6 +3455,10 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve({ _id: 'o1', isDeleted: false }) }),
+      } as any);
+
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
         data: { _id: 'u1', email: 'user@test.com', orgId: 'o1' },
@@ -3454,12 +3469,17 @@ describe('UserAccountController', () => {
           clientId: 'id',
           clientSecret: 'secret',
           tokenEndpoint: 'https://oauth/token',
+          userInfoEndpoint: 'https://oauth/userinfo',
           providerName: 'TestOAuth',
         },
       });
 
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+
       const originalFetch = global.fetch;
-      global.fetch = sinon.stub().resolves({
+      const fetchStub = sinon.stub();
+      // First call: token exchange
+      fetchStub.onFirstCall().resolves({
         ok: true,
         json: sinon.stub().resolves({
           access_token: 'at-123',
@@ -3468,6 +3488,12 @@ describe('UserAccountController', () => {
           expires_in: 3600,
         }),
       } as any);
+      // Second call: user info
+      fetchStub.onSecondCall().resolves({
+        ok: true,
+        json: sinon.stub().resolves({ email: 'user@test.com' }),
+      } as any);
+      global.fetch = fetchStub as any;
 
       try {
         await controller.exchangeOAuthToken(req, res, next);
@@ -3494,10 +3520,9 @@ describe('UserAccountController', () => {
         ip: '127.0.0.1',
       };
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 200,
-        data: { _id: 'u1', email: 'user@test.com', orgId: 'o1' },
-      });
+      sinon.stub(Org, 'findOne').returns({
+        lean: () => ({ exec: () => Promise.resolve({ _id: 'o1', isDeleted: false }) }),
+      } as any);
 
       mockConfigService.getConfig.resolves({
         data: {

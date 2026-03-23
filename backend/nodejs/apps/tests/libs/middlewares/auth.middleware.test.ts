@@ -149,6 +149,8 @@ describe('AuthMiddleware', () => {
 
     beforeEach(() => {
       sinon.stub(jwt, 'decode').returns({ userId: 'user1', orgId: 'org1' })
+      const userQuery = createMockQuery({ _id: 'user1', orgId: 'org1', isDeleted: false })
+      sinon.stub(Users, 'findOne').returns(userQuery)
     })
 
     it('should authenticate and call next() on valid regular token with no logout/password activity', async () => {

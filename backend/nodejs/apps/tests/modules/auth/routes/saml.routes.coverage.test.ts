@@ -6,6 +6,7 @@ import { createSamlRouter } from '../../../../src/modules/auth/routes/saml.route
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
+import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema'
 
 describe('SAML Routes - handler coverage', () => {
   let container: Container
@@ -43,11 +44,14 @@ describe('SAML Routes - handler coverage', () => {
     mockSamlController = {
       signInViaSAML: sinon.stub().resolves(),
       getSamlEmailKeyByOrgId: sinon.stub().returns('email'),
+      parseRelayState: sinon.stub().returns({ orgId: 'org1', sessionToken: 'token123' }),
+      getSamlEmail: sinon.stub().returns('test@test.com'),
     }
 
     mockSessionService = {
       getSession: sinon.stub().resolves(null),
       completeAuthentication: sinon.stub().resolves(),
+      createSession: sinon.stub().resolves({ userId: 'u1', orgId: 'org1' }),
     }
 
     mockIamService = {
@@ -68,8 +72,21 @@ describe('SAML Routes - handler coverage', () => {
     container.bind<any>('JitProvisioningService').toConstantValue(mockJitProvisioningService)
     container.bind<Logger>('Logger').toConstantValue(mockLogger as any)
     // Need to bind ConfigurationManagerService for updateAppConfig handler
-    container.bind<any>('ConfigurationManagerService').toConstantValue({})
+    container.bind<any>('ConfigurationManagerService').toConstantValue({
+      getConfig: sinon.stub().resolves({ statusCode: 200, data: { enableJit: false } }),
+    })
     container.bind<any>('MailService').toConstantValue({ sendMail: sinon.stub() })
+
+    // Stub Mongoose model statics used by the new handler
+    const orgFindOneStub = sinon.stub(Org, 'findOne')
+    const orgLeanExecChain = { lean: sinon.stub().returns({ exec: sinon.stub().resolves({ _id: 'org1', shortName: 'TestOrg' }) }) }
+    orgFindOneStub.returns(orgLeanExecChain as any)
+
+    sinon.stub(OrgAuthConfig, 'findOne').resolves({
+      orgId: 'org1',
+      isDeleted: false,
+      authSteps: [{ allowedMethods: [{ type: 'samlSso' }] }],
+    } as any)
 
     router = createSamlRouter(container)
   })
@@ -155,10 +172,17 @@ describe('SAML Routes - handler coverage', () => {
 
     it('should call next when session token missing', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1' })).toString('base64')
+      // Override parseRelayState to return no sessionToken
+      mockSamlController.parseRelayState.returns({ orgId: 'org1' })
+
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 200,
+        data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: true },
+      })
+
       const req = {
-        user: { email: 'test@test.com' },
-        body: { RelayState: relayState },
+        user: { email: 'test@test.com', orgId: 'org1' },
+        body: {},
         query: {},
         headers: {},
         ip: '127.0.0.1',
@@ -167,17 +191,22 @@ describe('SAML Routes - handler coverage', () => {
       const next = sinon.stub()
 
       await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
+      // With no session token, the handler creates a new session and redirects
+      expect(res.redirect.calledOnce).to.be.true
     })
 
     it('should call next when session is null', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token' })).toString('base64')
       mockSessionService.getSession.resolves(null)
 
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 200,
+        data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: true },
+      })
+
       const req = {
-        user: { email: 'test@test.com' },
-        body: { RelayState: relayState },
+        user: { email: 'test@test.com', orgId: 'org1' },
+        body: {},
         query: {},
         headers: {},
         ip: '127.0.0.1',
@@ -186,21 +215,22 @@ describe('SAML Routes - handler coverage', () => {
       const next = sinon.stub()
 
       await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
+      // With null session, the handler creates a new session and redirects
+      expect(res.redirect.calledOnce).to.be.true
     })
 
-    it('should call next when auth method not allowed', async () => {
+    it('should redirect with error when auth method not allowed', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token' })).toString('base64')
-      mockSessionService.getSession.resolves({
-        currentStep: 0,
-        authConfig: [{ allowedMethods: [{ type: 'password' }] }],
-        email: 'test@test.com',
-      })
+      // Override OrgAuthConfig.findOne to return config without SAML
+      ;(OrgAuthConfig.findOne as sinon.SinonStub).resolves({
+        orgId: 'org1',
+        isDeleted: false,
+        authSteps: [{ allowedMethods: [{ type: 'password' }] }],
+      } as any)
 
       const req = {
-        user: { email: 'test@test.com' },
-        body: { RelayState: relayState },
+        user: { email: 'test@test.com', orgId: 'org1' },
+        body: {},
         query: {},
         headers: {},
         sessionInfo: null,
@@ -210,21 +240,25 @@ describe('SAML Routes - handler coverage', () => {
       const next = sinon.stub()
 
       await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
+      // The handler redirects with Saml_sso_disabled error when SAML not in allowed methods
+      expect(res.redirect.calledOnce).to.be.true
+      expect(res.redirect.firstCall.args[0]).to.include('Saml_sso_disabled')
     })
 
-    it('should call next when orgId missing', async () => {
+    it('should redirect with error when orgId missing and no default org', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ sessionToken: 'token' })).toString('base64')
-      mockSessionService.getSession.resolves({
-        currentStep: 0,
-        authConfig: [{ allowedMethods: [{ type: 'samlSso' }] }],
-        email: 'test@test.com',
+      // Override parseRelayState to return no orgId
+      mockSamlController.parseRelayState.returns({})
+      // Override Org.findOne to return no org (so orgId stays undefined)
+      ;(Org.findOne as sinon.SinonStub).returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves(null) }),
       })
+      // OrgAuthConfig.findOne with undefined orgId returns null
+      ;(OrgAuthConfig.findOne as sinon.SinonStub).resolves(null)
 
       const req = {
         user: { email: 'test@test.com' },
-        body: { RelayState: relayState },
+        body: {},
         query: {},
         headers: {},
         sessionInfo: null,
@@ -234,7 +268,9 @@ describe('SAML Routes - handler coverage', () => {
       const next = sinon.stub()
 
       await handler(req, res, next)
-      expect(next.calledOnce).to.be.true
+      // With no orgAuthConfig, samlAllowed is false, so redirect with Saml_sso_disabled
+      expect(res.redirect.calledOnce).to.be.true
+      expect(res.redirect.firstCall.args[0]).to.include('Saml_sso_disabled')
     })
   })
 
@@ -251,17 +287,13 @@ describe('SAML Routes - handler coverage', () => {
         userId: 'u1',
       })
 
-      mockSamlController.getSamlEmailKeyByOrgId.returns('email')
-
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
         data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: true },
       })
 
-      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any)
-
       const req = {
-        user: { email: 'test@test.com' },
+        user: { email: 'test@test.com', orgId: 'org1' },
         body: { RelayState: relayState },
         query: {},
         headers: {},
@@ -279,7 +311,7 @@ describe('SAML Routes - handler coverage', () => {
       }
     })
 
-    it('should redirect for first-time login and update hasLoggedIn', async () => {
+    it('should redirect for first-time login', async () => {
       const handler = findHandler('/signIn/callback', 'post')
       const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token123' })).toString('base64')
 
@@ -291,18 +323,13 @@ describe('SAML Routes - handler coverage', () => {
         userId: 'u1',
       })
 
-      mockSamlController.getSamlEmailKeyByOrgId.returns('email')
-
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
         data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: false },
       })
 
-      mockIamService.updateUser.resolves({ statusCode: 200 })
-      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any)
-
       const req = {
-        user: { email: 'test@test.com' },
+        user: { email: 'test@test.com', orgId: 'org1' },
         body: { RelayState: relayState },
         query: {},
         headers: {},
@@ -315,7 +342,6 @@ describe('SAML Routes - handler coverage', () => {
       await handler(req, res, next)
 
       if (!next.called) {
-        expect(mockIamService.updateUser.calledOnce).to.be.true
         expect(res.redirect.calledOnce).to.be.true
       }
     })
@@ -343,10 +369,9 @@ describe('SAML Routes - handler coverage', () => {
       sinon.stub(UserActivities, 'create').resolves({})
 
       mockIamService.updateUser.resolves({ statusCode: 200 })
-      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any)
 
       const req = {
-        user: { email: 'new@test.com' },
+        user: { email: 'new@test.com', orgId: 'org1' },
         body: { RelayState: relayState },
         query: {},
         headers: {},
@@ -366,7 +391,6 @@ describe('SAML Routes - handler coverage', () => {
 
     it('should redirect with error when email mismatch', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token123' })).toString('base64')
 
       mockSessionService.getSession.resolves({
         currentStep: 0,
@@ -376,7 +400,7 @@ describe('SAML Routes - handler coverage', () => {
         userId: 'u1',
       })
 
-      mockSamlController.getSamlEmailKeyByOrgId.returns('email')
+      mockSamlController.getSamlEmail.returns('different@test.com')
 
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
@@ -384,8 +408,8 @@ describe('SAML Routes - handler coverage', () => {
       })
 
       const req = {
-        user: { email: 'different@test.com' },
-        body: { RelayState: relayState },
+        user: { email: 'different@test.com', orgId: 'org1' },
+        body: {},
         query: {},
         headers: {},
         ip: '127.0.0.1',
@@ -396,7 +420,7 @@ describe('SAML Routes - handler coverage', () => {
 
       await handler(req, res, next)
 
-      // Should redirect with error or call next
+      // The new handler proceeds with the SAML email; should redirect or call next
       expect(res.redirect.called || next.called).to.be.true
     })
 
@@ -412,19 +436,16 @@ describe('SAML Routes - handler coverage', () => {
         userId: 'u1',
       })
 
-      mockSamlController.getSamlEmailKeyByOrgId.returns('customKey')
-
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
         data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: true },
       })
 
-      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any)
-
       const req = {
         user: {
           customKey: 'not-an-email',
           email: 'test@test.com',
+          orgId: 'org1',
         },
         body: { RelayState: relayState },
         query: {},
@@ -453,15 +474,13 @@ describe('SAML Routes - handler coverage', () => {
         userId: 'u1',
       })
 
-      mockSamlController.getSamlEmailKeyByOrgId.returns('email')
       mockIamService.getUserByEmail.resolves({
         statusCode: 200,
         data: { _id: 'u1', email: 'test@test.com', orgId: 'org1', hasLoggedIn: true },
       })
-      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any)
 
       const req = {
-        user: { email: 'test@test.com' },
+        user: { email: 'test@test.com', orgId: 'org1' },
         body: {},
         query: { RelayState: relayState },
         headers: {},
@@ -477,23 +496,15 @@ describe('SAML Routes - handler coverage', () => {
       expect(res.redirect.called || next.called).to.be.true
     })
 
-    it('should throw InternalServerError when no valid email in SAML response', async () => {
+    it('should throw BadRequestError when no valid email in SAML response', async () => {
       const handler = findHandler('/signIn/callback', 'post')
-      const relayState = Buffer.from(JSON.stringify({ orgId: 'org1', sessionToken: 'token123' })).toString('base64')
 
-      mockSessionService.getSession.resolves({
-        currentStep: 0,
-        authConfig: [{ allowedMethods: [{ type: 'samlSso' }] }],
-        email: undefined,
-        orgId: 'org1',
-        userId: 'u1',
-      })
-
-      mockSamlController.getSamlEmailKeyByOrgId.returns('customKey')
+      // getSamlEmail returns null when no valid email is found
+      mockSamlController.getSamlEmail.returns(null)
 
       const req = {
-        user: { customKey: 'not-an-email', noEmail: 'nope' },
-        body: { RelayState: relayState },
+        user: { customKey: 'not-an-email', noEmail: 'nope', orgId: 'org1' },
+        body: {},
         query: {},
         headers: {},
         ip: '127.0.0.1',
@@ -505,6 +516,7 @@ describe('SAML Routes - handler coverage', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('Invalid email in SAML attributes')
     })
   })
 

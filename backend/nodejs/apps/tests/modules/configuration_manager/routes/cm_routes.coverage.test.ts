@@ -62,6 +62,9 @@ describe('Configuration Manager Routes - handler coverage', () => {
     container.bind('SyncEventProducer').toConstantValue(mockSyncEventService as any)
     container.bind('ConfigService').toConstantValue(mockConfigService as any)
     container.bind(PrometheusService).toConstantValue(mockPrometheusService as any)
+    container.bind('SamlController').toConstantValue({
+      updateSamlStrategiesWithCallback: sinon.stub().resolves(),
+    })
 
     router = createConfigurationManagerRouter(container)
   })

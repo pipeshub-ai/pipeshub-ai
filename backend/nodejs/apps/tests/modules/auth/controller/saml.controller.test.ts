@@ -55,11 +55,8 @@ describe('SamlController', () => {
     };
 
     controller = new SamlController(
-      mockIamService,
       mockConfig,
       mockLogger,
-      mockConfigManagerService,
-      mockSessionService,
     );
 
     res = {
@@ -150,49 +147,23 @@ describe('SamlController', () => {
   });
 
   describe('signInViaSAML', () => {
-    it('should call next(error) when email is missing', async () => {
+    it('should call next(error) when org auth config not found and no email', async () => {
       const req: any = {
         query: {},
         body: {},
         headers: {},
       };
 
-      mockSessionService.getSession.resolves(null);
-
-      await controller.signInViaSAML(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      // Either BadRequestError for missing email or error from getSession
-      expect(next.firstCall.args[0]).to.be.instanceOf(Error);
-    });
-
-    it('should call next(NotFoundError) when user not found and JIT disabled', async () => {
-      const req: any = {
-        query: { email: 'user@example.com', sessionToken: 'token123' },
-        body: {},
-        headers: {},
+      const mockQuery: any = {
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
       };
-
-      mockSessionService.getSession.resolves({
-        orgId: 'o1',
-        email: 'user@example.com',
-      });
-
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 404,
-        data: { message: 'Not found' },
-      });
-
-      mockConfigManagerService.getConfig.resolves({
-        statusCode: 200,
-        data: { enableJit: false },
-      });
+      sinon.stub(OrgAuthConfig, 'findOne').returns(mockQuery);
 
       await controller.signInViaSAML(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
-      expect(next.firstCall.args[0].message).to.equal('User not found');
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error);
     });
 
     it('should call next(NotFoundError) when org auth config not found', async () => {
@@ -202,22 +173,11 @@ describe('SamlController', () => {
         headers: {},
       };
 
-      mockSessionService.getSession.resolves({
-        orgId: 'o1',
-        email: 'user@example.com',
-      });
-
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 200,
-        data: { _id: 'u1', email: 'user@example.com', orgId: 'o1' },
-      });
-
-      mockConfigManagerService.getConfig.resolves({
-        statusCode: 200,
-        data: { enableJit: false },
-      });
-
-      sinon.stub(OrgAuthConfig, 'findOne').resolves(null);
+      const mockQuery: any = {
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
+      };
+      sinon.stub(OrgAuthConfig, 'findOne').returns(mockQuery);
 
       await controller.signInViaSAML(req, res, next);
 
@@ -226,6 +186,25 @@ describe('SamlController', () => {
       expect(next.firstCall.args[0].message).to.equal(
         'Organisation configuration not found',
       );
+    });
+
+    it('should call passport.authenticate when org auth config found', async () => {
+      const req: any = {
+        query: { email: 'user@example.com', sessionToken: 'token123' },
+        body: {},
+        headers: {},
+      };
+
+      const mockQuery: any = {
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves({ orgId: 'o1', isDeleted: false }),
+      };
+      sinon.stub(OrgAuthConfig, 'findOne').returns(mockQuery);
+      sinon.stub(passport, 'authenticate').returns(sinon.stub());
+
+      await controller.signInViaSAML(req, res, next);
+
+      expect(passport.authenticate.calledOnce).to.be.true;
     });
 
     it('should call next(NotFoundError) when certificate is missing in credentials', async () => {

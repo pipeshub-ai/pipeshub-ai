@@ -687,7 +687,8 @@ describe('ConfigurationManager Controller', () => {
   describe('setSsoAuthConfig', () => {
     it('should save SSO config and clean certificate', async () => {
       const kvs = createMockKeyValueStore()
-      const handler = setSsoAuthConfig(kvs)
+      const mockSamlController = { updateSamlStrategiesWithCallback: sinon.stub().resolves() }
+      const handler = setSsoAuthConfig(kvs, mockSamlController as any)
       const req = createMockRequest({
         body: {
           entryPoint: 'https://sso.example.com/saml',
@@ -2590,7 +2591,8 @@ describe('ConfigurationManager Controller', () => {
   describe('setSsoAuthConfig (additional)', () => {
     it('should default enableJit to true when not provided', async () => {
       const kvs = createMockKeyValueStore()
-      const handler = setSsoAuthConfig(kvs)
+      const mockSamlController = { updateSamlStrategiesWithCallback: sinon.stub().resolves() }
+      const handler = setSsoAuthConfig(kvs, mockSamlController as any)
       const req = createMockRequest({
         body: {
           entryPoint: 'https://sso.example.com/saml',
@@ -2613,7 +2615,8 @@ describe('ConfigurationManager Controller', () => {
       const kvs = createMockKeyValueStore({
         set: sinon.stub().rejects(new Error('store failed')),
       })
-      const handler = setSsoAuthConfig(kvs)
+      const mockSamlController = { updateSamlStrategiesWithCallback: sinon.stub().resolves() }
+      const handler = setSsoAuthConfig(kvs, mockSamlController as any)
       const req = createMockRequest({
         body: { entryPoint: 'https://sso.example.com', certificate: 'ABC', emailKey: 'email' },
       })

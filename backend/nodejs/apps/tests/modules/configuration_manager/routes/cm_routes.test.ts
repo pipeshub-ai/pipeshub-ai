@@ -74,6 +74,9 @@ describe('ConfigurationManager Routes', () => {
     container.bind<ConfigService>('ConfigService').toConstantValue(mockConfigService)
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind(PrometheusService).toConstantValue(mockPrometheusService as any)
+    container.bind('SamlController').toConstantValue({
+      updateSamlStrategiesWithCallback: sinon.stub().resolves(),
+    })
   })
 
   afterEach(() => {
