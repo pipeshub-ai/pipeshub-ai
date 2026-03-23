@@ -15975,8 +15975,35 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get agent: {str(e)}")
             return None
 
-    async def get_all_agents(self, user_id: str, org_id: str, transaction: str | None = None) -> list[dict]:
-        """Get all agents accessible to a user via individual, team, or org access - flattened response with deduplication"""
+    async def get_all_agents(
+        self,
+        user_id: str,
+        org_id: str,
+        page: int | None = None,
+        limit: int | None = None,
+        search: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict] | dict[str, Any]:
+        """Get all agents accessible to a user via individual, team, or org access.
+
+        Pipeline:
+          1. Cypher UNION ALL — returns only permission-visible agents, with an
+             optional search clause pushed into *every* branch so only matching
+             rows are transferred from Neo4j to Python.
+          2. Python deduplication — keeps the best permission per agent
+             (INDIVIDUAL > TEAM > ORG).
+          3. Python org-sharing check (second DB query on the already-small
+             deduplicated list).
+          4. Python sort.
+          5. Python pagination — total_items is counted AFTER search so that
+             'page 2 of search results' always works correctly.
+
+        Returns:
+          - list[dict]            when page / limit are both None (backward-compat)
+          - dict[str, Any]        { "agents": [...], "totalItems": int }
+        """
         try:
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
@@ -15987,27 +16014,47 @@ class Neo4jProvider(IGraphDBProvider):
             user_key = user_id
             org_key = org_id
 
-            # Get user's teams first (needed for team permission check)
+            # Normalise search term once
+            q: str | None = search.strip().lower() if search and search.strip() else None
+
+            # ── Step 1a: resolve user's team memberships ──────────────────────
             user_teams_query = f"""
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(t:{team_label})
             WHERE p.type = 'USER'
             RETURN collect(t.id) AS team_ids
             """
-
             user_teams_result = await self.client.execute_query(
                 user_teams_query,
                 parameters={"user_key": user_key},
-                txn_id=transaction
+                txn_id=transaction,
             )
-            user_team_ids = user_teams_result[0]["team_ids"] if user_teams_result and user_teams_result[0].get("team_ids") else []
+            user_team_ids = (
+                user_teams_result[0]["team_ids"]
+                if user_teams_result and user_teams_result[0].get("team_ids")
+                else []
+            )
 
-            # Optimized query using UNION to combine all permission types in a single query
-            # Priority: INDIVIDUAL > TEAM > ORG (handled by ORDER BY and deduplication)
+            # ── Step 1b: build optional search filter clause ──────────────────
+            # Pushing search into Cypher avoids transferring every agent document
+            # over the network just to discard it in Python.  The clause is
+            # identical for all three UNION branches.
+            if q:
+                search_clause = """
+            AND (
+                (agent.name IS NOT NULL AND toLower(agent.name) CONTAINS $q)
+                OR (agent.description IS NOT NULL AND toLower(agent.description) CONTAINS $q)
+                OR (agent.tags IS NOT NULL AND ANY(tag IN agent.tags
+                    WHERE tag IS NOT NULL AND toLower(toString(tag)) CONTAINS $q))
+            )"""
+            else:
+                search_clause = ""
+
+            # ── Step 1c: fetch visible (and optionally search-filtered) agents ─
             combined_query = f"""
             // Individual user permissions
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(agent:{agent_label})
             WHERE p.type = 'USER'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false){search_clause}
             RETURN agent, p.role AS role, 'INDIVIDUAL' AS access_type, 1 AS priority
 
             UNION ALL
@@ -16016,7 +16063,7 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label})
             WHERE t.id IN $team_ids
             AND p.type = 'TEAM'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false){search_clause}
             RETURN agent, p.role AS role, 'TEAM' AS access_type, 2 AS priority
 
             UNION ALL
@@ -16024,24 +16071,38 @@ class Neo4jProvider(IGraphDBProvider):
             // Org permissions
             MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label})
             WHERE p.type = 'ORG'
-            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false){search_clause}
             RETURN agent, p.role AS role, 'ORG' AS access_type, 3 AS priority
             """
 
+            params: dict = {
+                "user_key": user_key,
+                "org_key": org_key,
+                "team_ids": user_team_ids,
+            }
+            if q:
+                params["q"] = q
+
             result = await self.client.execute_query(
                 combined_query,
-                parameters={"user_key": user_key, "org_key": org_key, "team_ids": user_team_ids},
-                txn_id=transaction
+                parameters=params,
+                txn_id=transaction,
             )
 
-            # Deduplicate by agent ID, keeping highest priority (lowest priority number)
-            agents_dict = {}
+            # ── Step 2: deduplicate (UNION ALL may return the same agent from
+            #            multiple permission sources; keep the highest-priority one)
+            agents_dict: dict = {}
             if result:
                 for row in result:
                     agent_data = dict(row["agent"])
                     agent_id = agent_data.get("id", "")
-                    if agent_id and (agent_id not in agents_dict or agents_dict[agent_id]["priority"] > row["priority"]):
-                        agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
+                    if agent_id and (
+                        agent_id not in agents_dict
+                        or agents_dict[agent_id]["priority"] > row["priority"]
+                    ):
+                        agent = self._neo4j_to_arango_node(
+                            agent_data, CollectionNames.AGENT_INSTANCES.value
+                        )
                         agent["access_type"] = row["access_type"]
                         agent["user_role"] = row["role"]
                         agent["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
@@ -16050,10 +16111,10 @@ class Neo4jProvider(IGraphDBProvider):
                         agent["can_view"] = True
                         agents_dict[agent_id] = {"agent": agent, "priority": row["priority"]}
 
-            # Convert dictionary to list (deduplicated)
             agents = [agents_dict[key]["agent"] for key in agents_dict]
 
-            # Bulk-check which agents are shared with the org (edge-based, not stored in doc)
+            # ── Step 3: bulk-check org sharing (edge-based, not stored on the doc)
+            #           Run only on the deduplicated (and already-filtered) list.
             if agents and org_key:
                 agent_ids = list(agents_dict.keys())
                 org_share_query = f"""
@@ -16065,16 +16126,57 @@ class Neo4jProvider(IGraphDBProvider):
                 org_share_result = await self.client.execute_query(
                     org_share_query,
                     parameters={"org_key": org_key, "agent_ids": agent_ids},
-                    txn_id=transaction
+                    txn_id=transaction,
                 )
-                org_shared_ids = set(org_share_result[0]["org_shared_ids"]) if org_share_result and org_share_result[0].get("org_shared_ids") else set()
+                org_shared_ids = (
+                    set(org_share_result[0]["org_shared_ids"])
+                    if org_share_result and org_share_result[0].get("org_shared_ids")
+                    else set()
+                )
                 for agent in agents:
                     agent["shareWithOrg"] = agent.get("_key", "") in org_shared_ids
             else:
                 for agent in agents:
                     agent["shareWithOrg"] = False
 
-            return agents
+            # ── Step 4: sort ──────────────────────────────────────────────────
+            # Sort is done in Python post-deduplication.  For large result sets
+            # with search, this is fast because Cypher already filtered rows down.
+            sort_field = sort_by or "updatedAtTimestamp"
+            is_asc = (sort_order or "desc").lower() == "asc"
+
+            def sort_key(doc: dict) -> Any:
+                primary = doc.get(sort_field)
+                # Fall back to updatedAt, then createdAt for stable ordering
+                if primary is None and sort_field != "updatedAtTimestamp":
+                    primary = doc.get("updatedAtTimestamp")
+                if primary is None:
+                    primary = doc.get("createdAtTimestamp")
+                return (primary,)
+
+            try:
+                agents.sort(key=sort_key, reverse=not is_asc)
+            except Exception:
+                # Best-effort sort; ignore when field types are incomparable
+                pass
+
+            # ── Step 5: paginate ──────────────────────────────────────────────
+            # Pagination is applied AFTER deduplication and (Cypher-side) search,
+            # so `total_items` correctly reflects the count of matching agents
+            # across ALL pages, not just the current page.
+            has_paging = page is not None and limit is not None
+            if not has_paging:
+                return agents
+
+            total_items = len(agents)          # count after search + dedup
+            start_index = max((page - 1) * limit, 0)
+            end_index = start_index + limit
+            paged = agents[start_index:end_index]
+
+            return {
+                "agents": paged,
+                "totalItems": total_items,    # used by the route to build the pagination envelope
+            }
 
         except Exception as e:
             self.logger.error(f"Failed to get all agents: {str(e)}")

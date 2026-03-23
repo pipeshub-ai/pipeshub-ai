@@ -183,6 +183,30 @@ const updateUserToolsetInstanceSchema = z.object({
   }),
 });
 
+
+/**
+ * Schema for getting my toolsets.
+ * HTTP query params always arrive as strings, so numeric fields must be
+ * coerced and boolean fields preprocessed — identical to toolsetListSchema.
+ */
+const getMyToolsetsSchema = z.object({
+  query: z.object({
+    page: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .optional(),
+    limit: z
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .optional(),
+    search: z.string().optional(),
+    includeRegistry: z
+      .preprocess((arg) => arg === 'true', z.boolean())
+      .optional(),
+    authStatus: z
+      .enum(['authenticated', 'not-authenticated'])
+      .optional(),
+  }),
+});
+
 // ============================================================================
 // Router Factory
 // ============================================================================
@@ -367,6 +391,7 @@ export function createToolsetsRouter(container: Container): Router {
     '/my-toolsets',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    ValidationMiddleware.validate(getMyToolsetsSchema),
     getMyToolsets(config)
   );
 

@@ -18210,8 +18210,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get agent: {str(e)}")
             return None
 
-    async def get_all_agents(self, user_id: str, org_id: str, transaction: str | None = None) -> list[dict]:
-        """Get all agents accessible to a user via individual, team, or org access - flattened response with deduplication"""
+    async def get_all_agents(
+        self,
+        user_id: str,
+        org_id: str,
+        page: int | None = None,
+        limit: int | None = None,
+        search: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict] | dict[str, Any]:
+        """Get agents accessible to a user with optional pagination and search.
+
+        The AQL pipeline guarantees correct search-aware pagination:
+          base     = all deduplicated permission-visible agents
+          filtered = search ? FILTER(base, query) : base
+          sorted   = SORT(filtered, sort_field, direction)
+          totalItems = LENGTH(sorted)            ← count AFTER search, used for
+                                                    totalPages / hasNext on all pages
+          agents   = do_page ? SLICE(sorted, offset, limit) : sorted
+
+        This means requesting 'page 2 while searching for X' correctly returns
+        the second chunk of X-matching agents with totalItems = count(X-matches).
+
+        Returns:
+          - List[dict]       when page / limit are both None  (backward-compat)
+          - Dict[str, Any]   {'agents': [...], 'totalItems': int}  otherwise
+        """
         try:
             query = f"""
             LET user_key = @user_id
@@ -18294,33 +18320,113 @@ class ArangoHTTPProvider(IGraphDBProvider):
             // Combine all permissions and deduplicate by agent_id, keeping highest priority
             LET combined = APPEND(APPEND(all_permissions, team_permissions), org_permissions)
 
-            // Deduplicate: group by agent_id and keep entry with lowest priority number
-            FOR perm_entry IN combined
-                COLLECT agent_id = perm_entry.agent_id INTO groups
-                LET best_entry = (
-                    FOR entry IN groups[*].perm_entry
-                        SORT entry.priority ASC
-                        LIMIT 1
-                        RETURN entry
-                )[0]
-                RETURN MERGE(best_entry.agent, {{
-                    access_type: best_entry.access_type,
-                    user_role: best_entry.role,
-                    can_edit: best_entry.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                    can_delete: best_entry.role == "OWNER",
-                    can_share: best_entry.role IN ["OWNER", "ORGANIZER"],
-                    can_view: true,
-                    shareWithOrg: best_entry.agent._id IN org_shared_agent_paths
-                }})
+            // Deduplicate into a base array
+            LET base = (
+                FOR perm_entry IN combined
+                    COLLECT agent_id = perm_entry.agent_id INTO groups
+                    LET best_entry = (
+                        FOR entry IN groups[*].perm_entry
+                            SORT entry.priority ASC
+                            LIMIT 1
+                            RETURN entry
+                    )[0]
+                    RETURN MERGE(best_entry.agent, {{
+                        access_type: best_entry.access_type,
+                        user_role: best_entry.role,
+                        can_edit: best_entry.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: best_entry.role == "OWNER",
+                        can_share: best_entry.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true,
+                        shareWithOrg: best_entry.agent._id IN org_shared_agent_paths
+                    }})
+            )
+
+            // Apply search filter if provided
+            LET filtered = (
+                @has_search
+                ? (
+                    FOR a IN base
+                        LET nameMatch = a.name != null && CONTAINS(LOWER(a.name), @q)
+                        LET descMatch = a.description != null && CONTAINS(LOWER(a.description), @q)
+                        LET tagsMatch = IS_ARRAY(a.tags) && LENGTH(
+                            FOR t IN a.tags
+                                FILTER t != null && CONTAINS(LOWER(t), @q)
+                                RETURN 1
+                        ) > 0
+                        FILTER nameMatch || descMatch || tagsMatch
+                        RETURN a
+                  )
+                : base
+            )
+
+            // Sort by requested field or sensible defaults
+            LET sorted = (
+                @sort_asc
+                ? (
+                    FOR a IN filtered
+                        LET sortValue = (
+                            HAS(a, @sort_by) && a[@sort_by] != null
+                            ? a[@sort_by]
+                            : (a.updatedAtTimestamp != null ? a.updatedAtTimestamp : a.createdAtTimestamp)
+                        )
+                        SORT sortValue ASC
+                        RETURN a
+                  )
+                : (
+                    FOR a IN filtered
+                        LET sortValue = (
+                            HAS(a, @sort_by) && a[@sort_by] != null
+                            ? a[@sort_by]
+                            : (a.updatedAtTimestamp != null ? a.updatedAtTimestamp : a.createdAtTimestamp)
+                        )
+                        SORT sortValue DESC
+                        RETURN a
+                  )
+            )
+
+            LET totalItems = LENGTH(sorted)
+
+            RETURN {{
+                agents: @do_page ? SLICE(sorted, @offset, @limit) : sorted,
+                totalItems: totalItems
+            }}
             """
+
+            # Normalise search term once so every downstream use is consistent.
+            q_norm: str = search.strip().lower() if search and search.strip() else ""
+            has_search: bool = bool(q_norm)
+
+            do_page: bool = page is not None and limit is not None
+            # offset / limit are only referenced by the AQL when do_page=True.
+            offset: int = max((page - 1) * limit, 0) if do_page else 0
+            page_limit: int = limit if do_page else 0  # 0 is safe; never used when do_page=False
 
             bind_vars = {
                 "user_id": user_id,
                 "org_id": org_id,
+                "has_search": has_search,
+                "q": q_norm,
+                "sort_by": (sort_by or "updatedAtTimestamp"),
+                "sort_asc": (sort_order or "desc").lower() == "asc",
+                "do_page": do_page,
+                "offset": offset,
+                "limit": page_limit,
             }
 
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-            return result if result else []
+            if not result:
+                return {"agents": [], "totalItems": 0} if do_page else []
+
+            # The AQL always returns a single envelope object.
+            payload = result[0] if isinstance(result, list) else result
+            if do_page:
+                return {
+                    "agents": payload.get("agents", []),
+                    # totalItems = count AFTER search filter (see docstring)
+                    "totalItems": payload.get("totalItems", 0),
+                }
+            # Backward-compat: no paging requested → flat list
+            return payload.get("agents", [])
 
         except Exception as e:
             self.logger.error(f"Failed to get all agents: {str(e)}")

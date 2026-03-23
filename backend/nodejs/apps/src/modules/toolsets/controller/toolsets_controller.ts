@@ -845,9 +845,22 @@ export const getMyToolsets =
       const { userId } = req.user || {};
       if (!userId) throw new UnauthorizedError('User authentication required');
 
-      const { search } = req.query;
+      const { search, includeRegistry, page, limit, authStatus } = req.query as {
+        search?: string;
+        includeRegistry?: boolean | string;
+        page?: number | string;
+        limit?: number | string;
+        authStatus?: string;
+      };
       const queryParams = new URLSearchParams();
       if (search) queryParams.append('search', String(search));
+      if (page !== undefined && page !== null) queryParams.append('page', String(page));
+      if (limit !== undefined && limit !== null) queryParams.append('limit', String(limit));
+      if (authStatus) queryParams.append('authStatus', String(authStatus));
+      // includeRegistry is boolean true after Zod coercion; also accept legacy string 'true'
+      if (includeRegistry === true || includeRegistry === 'true') {
+        queryParams.append('includeRegistry', 'true');
+      }
 
       logger.info(`Getting my toolsets for user ${userId}`);
 
