@@ -56,6 +56,8 @@ class ListMeetingsInput(BaseModel):
         description="End date (YYYY-MM-DD). Required to bound the meeting range.",
     )
     top: Optional[int] = Field(default=10, description="Maximum number of meetings to return.")
+    search: Optional[str] = Field(default=None, description="Search keyword to filter meetings by topic/name.")
+
 
 class GetMeetingInput(BaseModel):
     meeting_id: MeetingId = Field(description="Zoom meeting ID.")
@@ -146,11 +148,6 @@ class GetMeetingTranscriptInput(BaseModel):
     meeting_id: MeetingId = Field(description="Meeting ID or UUID of the recorded meeting.")
 
 
-class SearchMeetingsByNameInput(BaseModel):
-    query: str = Field(description="Meeting name or topic keyword to search for.")
-    user_id: str = Field(default="me", description="Zoom user ID or email. Use 'me' for the authenticated user.")
-
-
 class ListContactsInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)  # add this
     type_: Optional[Literal["company", "external", "personal"]] = Field(default=None, alias="type", description="Filter contacts by type: 'company' (same org), 'external' (outside contacts), or 'personal' (your contacts). Omit to return all.")
@@ -173,14 +170,6 @@ class ListFolderChildrenInput(BaseModel):
     page_size: Optional[int] = Field(default=50, ge=1, le=50, description="Results per page (max 50).")
 
 
-class ListRecordingsInput(BaseModel):
-    user_id: Optional[str] = Field(default="me")
-
-
-class GetMeetingRecordingsInput(BaseModel):
-    meeting_id: str
-
-
 class ListRecurringMeetingsEndingInput(BaseModel):
     from_: str = Field(alias="from_", description="Range start in ISO 8601 UTC (e.g. '2026-03-01T00:00:00Z').")
     to_: str = Field(alias="to_", description="Range end in ISO 8601 UTC (e.g. '2026-03-31T23:59:59Z').")
@@ -189,18 +178,6 @@ class ListRecurringMeetingsEndingInput(BaseModel):
 
 _STRIP_FIELDS = {"global_dial_in_numbers", "global_dial_in_countries", "dial_in_numbers"}
 
-def _ensure_aware(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value
-
-
-def _in_range(start_time: str, from_dt: datetime, to_dt: datetime) -> bool:
-    try:
-        start_dt = _ensure_aware(datetime.fromisoformat(start_time.replace("Z", "+00:00")))
-        return from_dt <= start_dt <= to_dt
-    except ValueError:
-        return False
 # ---------------------------------------------------------------------------
 # Toolset registration
 # ---------------------------------------------------------------------------
@@ -252,6 +229,9 @@ class Zoom:
     def __init__(self, client: ZoomClient) -> None:
         self.client = ZoomDataSource(client)
 
+    # ------------------------------------------------------------------
+    # Helper functions
+    # ------------------------------------------------------------------
 
     def _clean_response_data(self, data: object) -> object:
         """Strip noisy dial-in fields from any response data."""
@@ -326,6 +306,72 @@ class Zoom:
                 if payload is not None:
                     out[mid] = payload
         return out
+    
+    async def _fetch_text(self, url: str) -> str | None:
+        """Download a plain text/VTT file via the Zoom HTTP client."""
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=url,
+                headers={"Content-Type": "application/json"},
+            )
+            response = await self.client.http.execute(request)  # type: ignore[reportUnknownMemberType]
+            return response.text() if hasattr(response, "text") else str(response)
+        except Exception as e:
+            logger.error("Error downloading transcript VTT: %s", e)
+            return None
+
+    @staticmethod
+    def _parse_vtt(vtt: str) -> str:
+        """Convert WebVTT to readable text: each cue is one line ``[start - end] spoken text``."""
+        timecode_re = re.compile(r"^([\d:.]+)\s*-->\s*([\d:.]+)")
+        lines = vtt.splitlines()
+        segments: list[str] = []
+        current_start: str | None = None
+        current_end: str | None = None
+        current_text: list[str] = []
+
+        def flush() -> None:
+            nonlocal current_start, current_end, current_text
+            if current_start and current_text:
+                stamp = f"[{current_start} - {current_end}]" if current_end else f"[{current_start}]"
+                segments.append(f"{stamp} {' '.join(current_text)}")
+            current_start = None
+            current_end = None
+            current_text = []
+
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                flush()
+                continue
+            if line.startswith("WEBVTT") or line.startswith("NOTE"):
+                continue
+            timecode_match = timecode_re.match(line)
+            if timecode_match:
+                flush()
+                current_start = timecode_match.group(1)
+                current_end = timecode_match.group(2)
+                continue
+            if re.match(r"^\d+$", line):
+                continue
+            if current_start is not None:
+                current_text.append(line)
+
+        flush()
+        return "\n".join(segments)
+    
+    def _ensure_aware(self, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+    def _in_range(self, start_time: str, from_dt: datetime, to_dt: datetime) -> bool:
+        try:
+            start_dt = self._ensure_aware(datetime.fromisoformat(start_time.replace("Z", "+00:00")))
+            return from_dt <= start_dt <= to_dt
+        except ValueError:
+            return False
 
     # ------------------------------------------------------------------
     # User tools
@@ -367,7 +413,10 @@ class Zoom:
         app_name="zoom",
         tool_name="list_meetings",
         description="List Zoom meetings for a user.",
-        llm_description="Lists meetings for a user. Use user_id='me' for the authenticated user. Optional: type (scheduled/live/upcoming/all), page_size, from/to dates.",
+        llm_description=(
+            "Lists meetings for a user within a date range. Use user_id='me' for the authenticated user. "
+            "Optional: search keyword to filter by topic/name."
+        ),
         args_schema=ListMeetingsInput,
         returns="JSON with list of meetings and pagination token",
         primary_intent=ToolIntent.SEARCH,
@@ -375,63 +424,94 @@ class Zoom:
         when_to_use=[
             "User wants to see their Zoom meetings",
             "User asks for scheduled or upcoming meetings",
+            "User wants to find a meeting by name within a date range",
         ],
         when_not_to_use=[
             "User wants a single meeting's details (use get_meeting)",
             "User wants to create a meeting (use create_meeting)",
         ],
-        typical_queries=["List my Zoom meetings", "Show my scheduled meetings", "What Zoom meetings do I have?"],
+        typical_queries=["List my Zoom meetings", "Show my scheduled meetings", "Find my standup meetings this week"],
     )
     async def list_meetings(
         self,
         from_: str,
         to_: str,
-        top: int | None = 10,
+        top: int | None = 200,
+        search: str | None = None,
     ) -> Tuple[bool, str]:
-        """Return all meeting instances (including recurring occurrences) within [from_date, to_date]."""
+        """Return all meeting instances (including recurring occurrences) within [from_, to_], optionally filtered by topic."""
         try:
-            top = min(top or 10, 50)
-            from_dt = _ensure_aware(datetime.fromisoformat(from_.replace("Z", "+00:00")))
-            to_dt   = _ensure_aware(datetime.fromisoformat(to_.replace("Z", "+00:00"))) + timedelta(days=1)
+            top = min(top or 200, 200)
 
-            # Step 1 — fetch all parent meetings
+            from_dt = self._ensure_aware(datetime.fromisoformat(from_.replace("Z", "+00:00")))
+            to_dt   = self._ensure_aware(datetime.fromisoformat(to_.replace("Z", "+00:00"))) + timedelta(days=1)
+
+            now = datetime.now(timezone.utc)
+            search_lower = search.lower() if search else None
+
+            # Step 1 — fetch only required meeting types
+            meeting_types = []
+            if from_dt < now:
+                meeting_types.append("previous_meetings")
+            if to_dt >= now:
+                meeting_types.append("upcoming")
+            if not meeting_types:
+                meeting_types = ["upcoming"]
+
             all_parents: list[dict] = []
-            for meeting_type in ("upcoming", "previous_meetings"):
-                response = await self.client.meetings(userId="me", type_=meeting_type, page_size=100)
-                success, cleaned = self._handle_response(response, "ok")
-                if not success:
-                    continue
-                data = json.loads(cleaned)
-                all_parents.extend(data.get("data", data).get("meetings", []))
 
+            for meeting_type in meeting_types:
+                next_page_token = None
 
+                while True:
+                    response = await self.client.meetings(
+                        userId="me",
+                        type_=meeting_type,
+                        page_size=100,
+                        next_page_token=next_page_token,
+                    )
 
-            # Deduplicate parents by ID
+                    success, cleaned = self._handle_response(response, "ok")
+                    if not success:
+                        break
+
+                    data = json.loads(cleaned)
+                    payload = data.get("data", data)
+
+                    meetings = payload.get("meetings", [])
+                    all_parents.extend(meetings)
+
+                    next_page_token = payload.get("next_page_token")
+                    if not next_page_token:
+                        break
+
+            # Step 2 — deduplicate + early topic filter
             seen: set[str] = set()
             parents: list[dict] = []
+
             for parent in all_parents:
                 mid = str(parent.get("id", ""))
-                if mid not in seen:
-                    seen.add(mid)
-                    parents.append(parent)
+                if not mid or mid in seen:
+                    continue
 
-            # Recurring series need GET /meetings/{id} for occurrences; Zoom has no batch read, so fetch in parallel.
-            recurring_ids = [
-                str(meeting.get("id"))
-                for meeting in parents
-                if meeting.get("type") in (3, 8) and meeting.get("id") is not None
-            ]
-            details_by_id = await self._meeting_details_by_id(recurring_ids)
+                seen.add(mid)
+
+                if search_lower and search_lower not in str(parent.get("topic", "")).lower():
+                    continue
+
+                parents.append(parent)
 
             results: list[dict] = []
+            recurring_ids: list[str] = []
 
+            # Step 3 — process non-recurring + prune recurring early
             for meeting in parents:
-                meeting_type = meeting.get("type")
+                mtype = meeting.get("type")
 
-                # Non-recurring (type 2) — single start_time check
-                if meeting_type == 2:
+                # Non-recurring
+                if mtype == 2:
                     start = meeting.get("start_time")
-                    if start and _in_range(start, from_dt, to_dt):
+                    if start and self._in_range(start, from_dt, to_dt):
                         results.append({
                             "meeting_id": meeting.get("id"),
                             "topic": meeting.get("topic"),
@@ -441,27 +521,61 @@ class Zoom:
                             "recurring": False,
                         })
 
-                # Recurring (type 8 fixed, type 3 no-fixed-time) — expand occurrences
-                elif meeting_type in (3, 8):
-                    detail = details_by_id.get(str(meeting.get("id")))
-                    if not detail:
-                        continue
-                    occurrences = detail.get("occurrences", [])
+                        if len(results) >= top:
+                            break
 
-                    for occ in occurrences:
-                        occ_start = occ.get("start_time")
-                        if occ_start and _in_range(occ_start, from_dt, to_dt):
-                            results.append({
-                                "meeting_id": meeting.get("id"),
-                                "occurrence_id": occ.get("occurrence_id"),
-                                "topic": meeting.get("topic"),
-                                "start_time": occ_start,
-                                "duration": occ.get("duration"),
-                                "join_url": detail.get("join_url"),
-                                "recurring": True,
-                                "status": occ.get("status"),
-                            })
+                # Recurring
+                elif mtype in (3, 8):
+                    recurrence = meeting.get("recurrence") or {}
+                    end_date_time = recurrence.get("end_date_time")
 
+                    # Skip expired recurring meetings
+                    if end_date_time:
+                        try:
+                            end_dt = self._ensure_aware(datetime.fromisoformat(end_date_time.replace("Z", "+00:00")))
+                            if end_dt < from_dt:
+                                continue
+                        except Exception:
+                            pass
+
+                    recurring_ids.append(str(meeting.get("id")))
+
+            # Step 4 — fetch only required recurring details
+            details_by_id = await self._meeting_details_by_id(recurring_ids) if recurring_ids else {}
+
+            # Step 5 — expand occurrences (with early exit)
+            for meeting in parents:
+                if len(results) >= top:
+                    break
+
+                if meeting.get("type") not in (3, 8):
+                    continue
+
+                mid = str(meeting.get("id"))
+                detail = details_by_id.get(mid)
+
+                if not detail:
+                    continue
+
+                for occ in detail.get("occurrences") or []:
+                    if len(results) >= top:
+                        break
+
+                    occ_start = occ.get("start_time")
+
+                    if occ_start and self._in_range(occ_start, from_dt, to_dt):
+                        results.append({
+                            "meeting_id": mid,
+                            "occurrence_id": occ.get("occurrence_id"),
+                            "topic": meeting.get("topic"),
+                            "start_time": occ_start,
+                            "duration": occ.get("duration"),
+                            "join_url": detail.get("join_url"),
+                            "recurring": True,
+                            "status": occ.get("status"),
+                        })
+
+            # 🚀 Step 6 — sort + trim
             results.sort(key=lambda row: row["start_time"])
             trimmed = results[:top]
 
@@ -470,12 +584,12 @@ class Zoom:
                 "count": len(trimmed),
                 "from": from_,
                 "to": to_,
+                **({"search": search} if search else {}),
             })
 
         except Exception as e:
             logger.error("Error listing meetings in range: %s", e)
             return False, json.dumps({"error": str(e)})
-
 
     @tool(
         app_name="zoom",
@@ -731,69 +845,6 @@ class Zoom:
 
     @tool(
         app_name="zoom",
-        tool_name="search_meetings_by_name",
-        description="Search Zoom meetings by name or topic.",
-        llm_description=(
-            "Searches the user's scheduled and upcoming meetings by topic/name keyword. "
-            "Returns matching meetings with their IDs, join URLs, and start times. "
-            "Use when the user refers to a meeting by name rather than ID."
-        ),
-        args_schema=SearchMeetingsByNameInput,
-        returns="JSON list of meetings whose topic contains the search query",
-        primary_intent=ToolIntent.SEARCH,
-        category=ToolCategory.COMMUNICATION,
-        when_to_use=[
-            "User wants to find a meeting by name or topic",
-            "User refers to a meeting by title instead of ID",
-        ],
-        when_not_to_use=[
-            "User already knows the meeting ID (use get_meeting)",
-            "User wants past meetings (use list_past_meetings)",
-        ],
-        typical_queries=["Find my standup meeting", "Search for design review", "Which meeting is called sync?"],
-    )
-    async def search_meetings_by_name(self, query: str, user_id: str = "me") -> Tuple[bool, str]:
-        """Search scheduled/upcoming meetings by topic keyword."""
-        try:
-            logger.info("zoom.search_meetings_by_name called with query=%s user_id=%s", query, user_id)
-            query_lower = query.lower()
-            matched: list[dict] = []
-            MEETING_TYPES_SEARCH = ("upcoming", "previous_meetings")
-            for meeting_type in MEETING_TYPES_SEARCH:
-                response = await self.client.meetings(userId=user_id, type_=meeting_type, page_size=100)
-
-                success, cleaned = self._handle_response(response, "Meetings fetched successfully")
-                if not success:
-                    continue
-
-                data = json.loads(cleaned)
-                # _handle_response wraps under "data" key — unwrap it
-                meetings = data.get("data", data).get("meetings", [])
-
-                for meeting in meetings:
-                    if isinstance(meeting, dict) and query_lower in str(meeting.get("topic", "")).lower():
-                        matched.append(meeting)
-
-            # Deduplicate by meeting id, preserving all fields
-            seen: set[str] = set()
-            unique: list[dict] = []
-            for meeting in matched:
-                mid = str(meeting.get("id", ""))
-                if mid not in seen:
-                    seen.add(mid)
-                    unique.append(meeting)
-
-            if not unique:
-                return False, json.dumps({"error": f"No meetings found matching '{query}'"})
-
-            return True, json.dumps({"meetings": unique, "count": len(unique)})
-
-        except Exception as e:
-            logger.error("Error searching meetings by name: %s", e)
-            return False, json.dumps({"error": str(e)})
-
-    @tool(
-        app_name="zoom",
         tool_name="get_meeting_invitation",
         description="Get the invitation text for a Zoom meeting.",
         llm_description="Returns the invitation body (join URL, dial-in details). Use for sharing or displaying invite.",
@@ -846,82 +897,140 @@ class Zoom:
         self,
         from_: str,
         to_: str,
-        top: int | None = 10,
+        top: int | None = 200,
     ) -> Tuple[bool, str]:
         """Return recurring meetings whose series ends within [from_, to_]."""
         try:
-            top = min(top, 50)
-            from_dt = _ensure_aware(datetime.fromisoformat(from_.replace("Z", "+00:00")))
-            to_dt   = _ensure_aware(datetime.fromisoformat(to_.replace("Z", "+00:00")))
+            top = min(top or 200, 200)
 
-            # Step 1 — fetch all parent meetings and keep only recurring ones
+            from_dt = self._ensure_aware(datetime.fromisoformat(from_.replace("Z", "+00:00")))
+            to_dt   = self._ensure_aware(datetime.fromisoformat(to_.replace("Z", "+00:00")))
+
+            # Step 1 — fetch only necessary meeting types + paginate
             all_parents: list[dict] = []
-            for meeting_type in ("scheduled", "upcoming"):
-                response = await self.client.meetings(userId="me", type_=meeting_type, page_size=100)
-                success, cleaned = self._handle_response(response, "ok")
-                if not success:
-                    continue
-                data = json.loads(cleaned)
-                all_parents.extend(data.get("data", data).get("meetings", []))
 
-            # Deduplicate
+            for meeting_type in ("scheduled", "upcoming"):
+                next_page_token = None
+
+                while True:
+                    response = await self.client.meetings(
+                        userId="me",
+                        type_=meeting_type,
+                        page_size=100,
+                        next_page_token=next_page_token,
+                    )
+
+                    success, cleaned = self._handle_response(response, "ok")
+                    if not success:
+                        break
+
+                    data = json.loads(cleaned)
+                    payload = data.get("data", data)
+
+                    meetings = payload.get("meetings", [])
+                    all_parents.extend(meetings)
+
+                    next_page_token = payload.get("next_page_token")
+                    if not next_page_token:
+                        break
+
+            # Step 2 — deduplicate + filter recurring
             seen: set[str] = set()
             recurring_parents: list[dict] = []
+
             for parent in all_parents:
                 mid = str(parent.get("id", ""))
-                if mid not in seen and parent.get("type") in (3, 8):
-                    seen.add(mid)
+
+                if not mid or mid in seen:
+                    continue
+
+                seen.add(mid)
+
+                if parent.get("type") in (3, 8):
                     recurring_parents.append(parent)
 
-            # Parallel detail fetches — Zoom exposes only per-meeting GET, not a batch endpoint.
-            recurring_ids = [
-                str(r.get("id"))
-                for r in recurring_parents
-                if r.get("id") is not None
-            ]
-            details_by_id = await self._meeting_details_by_id(recurring_ids)
-
             results: list[dict] = []
+            recurring_ids: list[str] = []
 
-            for recurring in recurring_parents:
-                detail = details_by_id.get(str(recurring.get("id")))
-                if not detail:
-                    continue
-                recurrence = detail.get("recurrence", {})
-                occurrences = detail.get("occurrences", [])
+            # Step 3 — EARLY FILTER using recurrence.end_date_time
+            for meeting in recurring_parents:
+                recurrence = meeting.get("recurrence") or {}
+                end_date_time = recurrence.get("end_date_time")
 
-                # Resolve series end — prefer explicit end_date_time, fall back to last occurrence
-                series_end: str | None = recurrence.get("end_date_time")
+                if end_date_time:
+                    try:
+                        end_dt = self._ensure_aware(datetime.fromisoformat(end_date_time.replace("Z", "+00:00")))
 
-                if not series_end and occurrences:
-                    # occurrences are returned in ascending order by Zoom
-                    series_end = occurrences[-1].get("start_time")
+                        if not (from_dt <= end_dt <= to_dt):
+                            continue
 
-                if not series_end:
-                    continue
+                        # We already know it matches → NO API CALL NEEDED
+                        results.append({
+                            "meeting_id": meeting.get("id"),
+                            "topic": meeting.get("topic"),
+                            "series_end": end_date_time,
+                            "end_determined_by": "end_date_time",
+                            "recurrence_type": recurrence.get("type"),
+                            "repeat_interval": recurrence.get("repeat_interval"),
+                            "remaining_occurrences": [],  # skipped for perf
+                            "join_url": meeting.get("join_url"),
+                        })
 
-                if not _in_range(series_end, from_dt, to_dt):
-                    continue
+                        if len(results) >= top:
+                            break
 
-                results.append({
-                    "meeting_id": detail.get("id"),
-                    "topic": detail.get("topic"),
-                    "series_end": series_end,
-                    "end_determined_by": "end_date_time" if recurrence.get("end_date_time") else "last_occurrence",
-                    "recurrence_type": recurrence.get("type"),       # 1=daily 2=weekly 3=monthly
-                    "repeat_interval": recurrence.get("repeat_interval"),
-                    "remaining_occurrences": [
-                        {
-                            "occurrence_id": occ.get("occurrence_id"),
-                            "start_time": occ.get("start_time"),
-                            "duration": occ.get("duration"),
-                            "status": occ.get("status"),
-                        }
-                        for occ in occurrences
-                    ],
-                    "join_url": detail.get("join_url"),
-                })
+                    except Exception:
+                        pass
 
+                else:
+                    # Needs fallback → fetch details later
+                    recurring_ids.append(str(meeting.get("id")))
+
+            # Step 4 — fetch ONLY required details (fallback cases)
+            if len(results) < top and recurring_ids:
+                details_by_id = await self._meeting_details_by_id(recurring_ids)
+
+                for meeting in recurring_parents:
+                    if len(results) >= top:
+                        break
+
+                    mid = str(meeting.get("id"))
+                    if mid not in recurring_ids:
+                        continue
+
+                    detail = details_by_id.get(mid)
+                    if not detail:
+                        continue
+
+                    occurrences = detail.get("occurrences") or []
+                    if not occurrences:
+                        continue
+
+                    # fallback → last occurrence
+                    last_occ = max(
+                        occurrences,
+                        key=lambda o: o.get("start_time", "")
+                    )
+
+                    series_end = last_occ.get("start_time")
+                    if not series_end:
+                        continue
+
+                    if not self._in_range(series_end, from_dt, to_dt):
+                        continue
+
+                    results.append({
+                        "meeting_id": detail.get("id"),
+                        "topic": detail.get("topic"),
+                        "series_end": series_end,
+                        "end_determined_by": "last_occurrence",
+                        "recurrence_type": detail.get("recurrence", {}).get("type"),
+                        "repeat_interval": detail.get("recurrence", {}).get("repeat_interval"),
+                        "remaining_occurrences": occurrences,
+                        "join_url": detail.get("join_url"),
+                    })
+
+            # Step 5 — sort + trim
             results.sort(key=lambda row: row["series_end"])
             trimmed = results[:top]
 
@@ -1030,60 +1139,6 @@ class Zoom:
             logger.error("Error getting meeting transcript: %s", e)
             return False, json.dumps({"error": str(e)})
 
-    async def _fetch_text(self, url: str) -> str | None:
-        """Download a plain text/VTT file via the Zoom HTTP client."""
-        try:
-            request = HTTPRequest(
-                method="GET",
-                url=url,
-                headers={"Content-Type": "application/json"},
-            )
-            response = await self.client.http.execute(request)  # type: ignore[reportUnknownMemberType]
-            return response.text() if hasattr(response, "text") else str(response)
-        except Exception as e:
-            logger.error("Error downloading transcript VTT: %s", e)
-            return None
-
-    @staticmethod
-    def _parse_vtt(vtt: str) -> str:
-        """Convert WebVTT to readable text: each cue is one line ``[start - end] spoken text``."""
-        timecode_re = re.compile(r"^([\d:.]+)\s*-->\s*([\d:.]+)")
-        lines = vtt.splitlines()
-        segments: list[str] = []
-        current_start: str | None = None
-        current_end: str | None = None
-        current_text: list[str] = []
-
-        def flush() -> None:
-            nonlocal current_start, current_end, current_text
-            if current_start and current_text:
-                stamp = f"[{current_start} - {current_end}]" if current_end else f"[{current_start}]"
-                segments.append(f"{stamp} {' '.join(current_text)}")
-            current_start = None
-            current_end = None
-            current_text = []
-
-        for raw in lines:
-            line = raw.strip()
-            if not line:
-                flush()
-                continue
-            if line.startswith("WEBVTT") or line.startswith("NOTE"):
-                continue
-            timecode_match = timecode_re.match(line)
-            if timecode_match:
-                flush()
-                current_start = timecode_match.group(1)
-                current_end = timecode_match.group(2)
-                continue
-            if re.match(r"^\d+$", line):
-                continue
-            if current_start is not None:
-                current_text.append(line)
-
-        flush()
-        return "\n".join(segments)
-    
     # ------------------------------------------------------------------
     # Contact tools
     # ------------------------------------------------------------------

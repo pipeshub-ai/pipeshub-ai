@@ -3551,7 +3551,6 @@ ZOOM_GUIDANCE = r"""
 ### Meetings
 - **list_meetings** — List scheduled/live/upcoming/previous_meetings/all meetings for a user.
 - **list_upcoming_meetings** — Shorthand for upcoming meetings only.
-- **search_meetings_by_name** — Search meetings by topic keyword. Use when user refers to a meeting by name instead of ID.
 - **get_meeting** — Get full details of a specific meeting by ID.
 - **get_meeting_invitation** — Get the invitation text/join link for a meeting.
 - **create_meeting** — Create a new scheduled meeting.
