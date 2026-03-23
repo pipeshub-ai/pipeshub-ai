@@ -241,9 +241,7 @@ class GithubConnector(BaseConnector):
         if record.record_type == RecordType.TICKET:
             self.logger.info("🟣🟣🟣 STREAM_TICKET_MARKER 🟣🟣🟣")
 
-            blocks_container, remaining_attachments_updates= await self._build_ticket_blocks(record)
-            self.logger.info(f"Sending remaining {len(remaining_attachments_updates)} attachments to process of issues")
-            await self._process_new_records(remaining_attachments_updates)
+            blocks_container= await self._build_ticket_blocks(record)
 
             async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
                 json_str = blocks_container.model_dump_json(indent=2)
@@ -262,9 +260,8 @@ class GithubConnector(BaseConnector):
         elif record.record_type == RecordType.PULL_REQUEST:
             self.logger.info("🟣🟣🟣 STREAM_GITHUB_PULL_REQUEST_MARKER 🟣🟣🟣")
 
-            block_container, remaining_attachment_updates= await self._build_pull_request_blocks(record)
-            self.logger.info(f"Sending remaining {len(remaining_attachment_updates)} attachments to process of pull request")
-            await self._process_new_records(remaining_attachment_updates)
+            block_container= await self._build_pull_request_blocks(record)
+
 
             async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
                 json_str = block_container.model_dump_json(indent=2)
@@ -638,7 +635,7 @@ class GithubConnector(BaseConnector):
             )
             return None
 
-    async def _build_ticket_blocks(self, record: Record) -> tuple[BlocksContainer, list[RecordUpdate]]:
+    async def _build_ticket_blocks(self, record: Record) ->BlocksContainer:
         """_summary_
 
         Args:
@@ -654,11 +651,6 @@ class GithubConnector(BaseConnector):
         issue_res = self.data_source.get_issue(
             owner=username, repo=repo_name, number=issue_number
         )
-        # if not issue_res.success or not issue_res.data:
-        #     self.logger.error(
-        #         f"Failed to fetch issue details for record {record.external_record_id}: {issue_res.error}"
-        #     )
-        #     return BlocksContainer(blocks=[], block_groups=[])
         if not issue_res.success:
             raise Exception(f"❌❌ Failed to fetch issue details for record {record.external_record_id}: {issue_res.error}")
         if not issue_res.data:
@@ -700,7 +692,9 @@ class GithubConnector(BaseConnector):
         block_groups.extend(comments_bg)
         block_group_number += len(comments_bg)
         list_remaining_records.extend(remaining_record_updates)
-        return BlocksContainer(blocks=blocks, block_groups=block_groups), list_remaining_records
+        self.logger.info(f"Sending remaining {len(list_remaining_records)} attachments to process of issues")
+        await self._process_new_records(list_remaining_records)
+        return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     async def _sync_records_incremental(self) -> None:
         """_summary_
@@ -1169,9 +1163,10 @@ class GithubConnector(BaseConnector):
                 block_groups.append(bg_n)
                 block_group_number += 1
 
-        blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
-        self.logger.info(f"Blocks container created for pr{pr_number}")
-        return blocks_container , list_remaining_records
+        self.logger.info(f"Blocks container created for pull request {pr_number}")
+        self.logger.info(f"Sending remaining {len(list_remaining_records)} attachments to process of pull request")
+        await self._process_new_records(list_remaining_records)
+        return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     # ---------------------------Attachment functions-----------------------------------#
     async def embed_images_as_base64(self, body_content: str) -> str:

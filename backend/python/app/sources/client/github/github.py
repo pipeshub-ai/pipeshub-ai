@@ -169,7 +169,7 @@ class GitHubClient(IClient):
                 if not token:
                     raise ValueError("Token required for token auth type")
 
-                client_via_token = GitHubClientViaToken(token=token,per_page=30)
+                client_via_token = GitHubClientViaToken(token=token,per_page=90)
                 client_via_token.create_client()
                 client =client_via_token
             elif auth_type == "OAUTH":
