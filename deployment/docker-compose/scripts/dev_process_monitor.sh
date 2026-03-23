@@ -84,12 +84,12 @@ check_process() {
 
 cleanup() {
     log "Shutting down all DEV services..."
-    [ -n "$NODEJS_PID" ]    && kill -- -$(ps -o pgid= $NODEJS_PID    | grep -o [0-9]*) 2>/dev/null || true
-    [ -n "$FRONTEND_PID" ]  && kill -- -$(ps -o pgid= $FRONTEND_PID  | grep -o [0-9]*) 2>/dev/null || true
-    [ -n "$DOCLING_PID" ]   && kill -- -$(ps -o pgid= $DOCLING_PID   | grep -o [0-9]*) 2>/dev/null || true
-    [ -n "$INDEXING_PID" ]  && kill -- -$(ps -o pgid= $INDEXING_PID  | grep -o [0-9]*) 2>/dev/null || true
-    [ -n "$CONNECTOR_PID" ] && kill -- -$(ps -o pgid= $CONNECTOR_PID | grep -o [0-9]*) 2>/dev/null || true
-    [ -n "$QUERY_PID" ]     && kill -- -$(ps -o pgid= $QUERY_PID     | grep -o [0-9]*) 2>/dev/null || true
+    [ -n "$NODEJS_PID" ]    && kill -- -$(ps -o pgid= $NODEJS_PID    | tr -d '[:space:]') 2>/dev/null || true
+    [ -n "$FRONTEND_PID" ]  && kill -- -$(ps -o pgid= $FRONTEND_PID  | tr -d '[:space:]') 2>/dev/null || true
+    [ -n "$DOCLING_PID" ]   && kill -- -$(ps -o pgid= $DOCLING_PID   | tr -d '[:space:]') 2>/dev/null || true
+    [ -n "$INDEXING_PID" ]  && kill -- -$(ps -o pgid= $INDEXING_PID  | tr -d '[:space:]') 2>/dev/null || true
+    [ -n "$CONNECTOR_PID" ] && kill -- -$(ps -o pgid= $CONNECTOR_PID | tr -d '[:space:]') 2>/dev/null || true
+    [ -n "$QUERY_PID" ]     && kill -- -$(ps -o pgid= $QUERY_PID     | tr -d '[:space:]') 2>/dev/null || true
     wait
     log "All services stopped."
     exit 0
@@ -105,7 +105,7 @@ log "  Python   → watchmedo watches /app/python/app/**/*.py"
 # Start Connector and Query first — Node backend health-checks depend on them
 start_connector
 start_query
-sleep 3
+sleep 15  # Give Python services time to boot before Node.js health-checks them
 start_nodejs
 start_frontend
 start_indexing

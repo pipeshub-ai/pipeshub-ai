@@ -87,8 +87,6 @@ RUN npm config set legacy-peer-deps true && \
     npm cache clean --force
 
 COPY frontend/ ./
-# Set backend URL so Vite dev server proxies to Node backend correctly
-RUN printf 'VITE_BACKEND_URL=http://localhost:3000\nVITE_AUTH_URL=http://localhost:3000\nVITE_IAM_URL=http://localhost:3000\n' > .env
 # DEV: no npm run build — runtime uses "npm run dev" (Vite HMR) for hot reload
 
 # -----------------------------------------------------------------------------
@@ -153,8 +151,6 @@ RUN mkdir -p ./backend/dist/public
 
 # Copy Python application code (will be overridden by bind-mount in docker-compose)
 COPY backend/python/app/ /app/python/app/
-
-RUN chmod -R +x /app/python/app/ || true
 
 EXPOSE 3000 3001 8000 8088 8091 8081
 

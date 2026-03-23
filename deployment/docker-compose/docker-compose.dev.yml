@@ -141,16 +141,13 @@ services:
       - pipeshub_root_local:/root/.local
       # ── Hot Reload: bind-mount source code so watchers pick up file saves ──
       - ./scripts/dev_process_monitor.sh:/app/dev_process_monitor.sh
-      - ../../backend/nodejs/apps/src:/app/backend/src
-      - ../../backend/nodejs/apps/package.json:/app/backend/package.json
       - ../../backend/python/app:/app/python/app
-      - ../../frontend/src:/app/frontend/src
-      - ../../frontend/index.html:/app/frontend/index.html
-      - ../../frontend/package.json:/app/frontend/package.json
-      - ../../frontend/vite.config.ts:/app/frontend/vite.config.ts
-      - ../../frontend/tsconfig.json:/app/frontend/tsconfig.json
-      - ../../frontend/tsconfig.node.json:/app/frontend/tsconfig.node.json
-      - ../../frontend/public:/app/frontend/public
+      # Mount entire source directories — picks up all config file additions automatically
+      - ../../backend/nodejs/apps:/app/backend
+      - ../../frontend:/app/frontend
+      # Anonymous volumes protect container node_modules from being overwritten by host
+      - /app/backend/node_modules
+      - /app/frontend/node_modules
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
