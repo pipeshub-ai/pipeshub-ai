@@ -1,17 +1,22 @@
 import json
+import asyncio
 import logging
 from io import BytesIO
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from app.agents.actions.util.parse_file import FileContentParser
-from app.modules.agents.qna.chat_state import ChatState
-from msgraph.generated.drives.item.items.item.checkin.checkin_post_request_body import (  # type: ignore
-    CheckinPostRequestBody,
+from app.agents.actions.util.parse_file import (
+    FileContentParser,
 )
+from app.modules.agents.qna.chat_state import ChatState
 from msgraph.generated.models.drive_item import DriveItem  # type: ignore
+from msgraph.generated.models.drive_recipient import DriveRecipient  # type: ignore
 from msgraph.generated.models.folder import Folder  # type: ignore
 from msgraph.generated.models.item_reference import ItemReference  # type: ignore
+from msgraph.generated.drives.item.items.item.invite.invite_post_request_body import InvitePostRequestBody  # type: ignore
 from pydantic import BaseModel, Field
+
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.models.entities import FileRecord, RecordType
 
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
@@ -29,7 +34,6 @@ from app.connectors.core.registry.tool_builder import (
 )
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSource
-from app.api.routes.chatbot import get_model_config
 
 logger = logging.getLogger(__name__)
 
@@ -146,48 +150,17 @@ def _response_json(response: object) -> str:
         out["message"] = message
     return json.dumps(out)
 
-def _generate_office_bytes(ft: str, content: Optional[str]) -> bytes:
-
+def _generate_word_docx_bytes(content: Optional[str]) -> bytes:
+    """Generate a Word document (docx) from text content."""
     text = content or ""
-
-    if ft == "word":
-        from docx import Document
-        doc = Document()
-        if text:
-            for para in text.split("\n"):
-                doc.add_paragraph(para)
-        buf = BytesIO()
-        doc.save(buf)
-        return buf.getvalue()
-
-    elif ft == "excel":
-        from openpyxl import Workbook
-        wb = Workbook()
-        ws = wb.active
-        if text:
-            for i, line in enumerate(text.split("\n"), start=1):
-                ws.cell(row=i, column=1, value=line)
-        buf = BytesIO()
-        wb.save(buf)
-        return buf.getvalue()
-
-    elif ft == "powerpoint":
-        from pptx import Presentation
-        from pptx.util import Inches
-        prs = Presentation()
-        if text:
-            for line in text.split("\n\n"):  # each paragraph = new slide
-                slide = prs.slides.add_slide(prs.slide_layouts[1])
-                slide.shapes.title.text = line[:100]
-                tf = slide.placeholders[1].text_frame
-                tf.text = line
-        else:
-            prs.slides.add_slide(prs.slide_layouts[5])  # blank slide
-        buf = BytesIO()
-        prs.save(buf)
-        return buf.getvalue()
-
-    return b""
+    from docx import Document
+    doc = Document()
+    if text:
+        for para in text.split("\n"):
+            doc.add_paragraph(para)
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
 # ---------------------------------------------------------------------------
 # Pydantic schemas
 # ---------------------------------------------------------------------------
@@ -280,18 +253,21 @@ class GetVersionsInput(BaseModel):
     item_id: str = Field(description="The ID of the file")
 
 
-class GetRecentFilesInput(BaseModel):
-    """Schema for getting recently accessed files"""
-    drive_id: str = Field(description="The ID of the drive")
-    top: Optional[int] = Field(default=None, description="Maximum number of recent files to return")
-    select: Optional[str] = Field(default=None, description="Comma-separated list of fields to return")
-
-
 class GetSharedWithMeInput(BaseModel):
     """Schema for getting files shared with the current user"""
     top: Optional[int] = Field(default=None, description="Maximum number of items to return")
-    select: Optional[str] = Field(default=None, description="Comma-separated list of fields to return")
 
+
+
+class ShareItemInput(BaseModel):
+    """Schema for sharing a file or folder with specific users"""
+    drive_id: str = Field(description="The ID of the drive containing the item")
+    item_id: str = Field(description="The ID of the file or folder to share")
+    emails: List[str] = Field(description="List of email addresses to share the item with")
+    role: str = Field(default="read", description="Permission role: 'read' (view only), 'write' (edit), or 'owner' (full control)")
+    message: Optional[str] = Field(default=None, description="Optional personal message to include in the invitation email")
+    require_sign_in: bool = Field(default=True, description="Whether recipients must sign in to access the item")
+    send_invitation: bool = Field(default=True, description="Whether to send an email invitation to recipients")
 
 
 class GetSpecificVersionInput(BaseModel):
@@ -307,14 +283,6 @@ class RestoreVersionInput(BaseModel):
     drive_id: str = Field(description="The ID of the drive")
     item_id: str = Field(description="The ID of the file")
     version_id: str = Field(description="The ID of the version to restore as the current version")
-
-
-# class CheckinFileInput(BaseModel):
-#     """Schema for checking in a file"""
-#     drive_id: str = Field(description="The ID of the drive")
-#     item_id: str = Field(description="The ID of the file to check in")
-#     comment: Optional[str] = Field(default=None, description="Optional comment for the new version created on check-in")
-#     check_in_as: Optional[str] = Field(default=None, description="Version type: 'published' or 'unspecified'")
 
 
 class CopyItemInput(BaseModel):
@@ -604,31 +572,60 @@ class OneDrive:
         top: Optional[int] = None,
         skip: Optional[int] = None,
     ) -> tuple[bool, str]:
-        """List all OneDrive drives accessible to the user
-
-        Args:
-            search: Search query to filter drives
-            filter: OData filter query
-            orderby: Field to order results by
-            select: Fields to return
-            top: Max number of results
-            skip: Results to skip for pagination
-        Returns:
-            tuple[bool, str]: Success flag and JSON response
-        """
         try:
-            response = await self.client.me_list_drives(
-                search=search,
-                filter=filter,
-                orderby=orderby,
-                select=select,
-                top=top,
-                skip=skip,
+            # Run both concurrently
+            response, (shared_success, shared_data, shared_drive_ids) = await asyncio.gather(
+                self.client.me_list_drives(
+                    search=search,
+                    filter=filter,
+                    orderby=orderby,
+                    select=select,
+                    top=top,
+                    skip=skip,
+                ),
+                self.shared_with_data(top),
             )
-            print(f"[get_drives] response: {_response_json(response)}")
-            if response.success:
-                return True, _response_json(response)
-            return False, _response_json(response)
+
+            if not response.success:
+                return False, _response_json(response)
+
+            response_dict = json.loads(_response_json(response))
+            own_drives: list[dict] = response_dict.get("data", {}).get("value", [])
+            own_drive_ids = {d["id"] for d in own_drives if d.get("id")}
+
+            # Fetch metadata for each shared drive (dedupe against own drives)
+            novel_shared_ids = [drive_id for drive_id in shared_drive_ids if drive_id not in own_drive_ids]
+
+            async def fetch_drive_metadata(drive_id: str) -> Optional[dict]:
+                try:
+                    drive_response = await self.client.drives_drive_get_drive(drive_id = drive_id)
+                    if not drive_response.success:
+                        return None
+                    drive_data = json.loads(_response_json(drive_response))
+                    return drive_data.get("data") or drive_data
+                except Exception as e:
+                    logger.warning(f"Failed to fetch metadata for drive {drive_id}: {e}")
+                    return None
+
+            # Batch fetch shared drive metadata in batches of 10
+            shared_drives: list[dict] = []
+            batch_size = 10
+            for i in range(0, len(novel_shared_ids), batch_size):
+                batch = novel_shared_ids[i : i + batch_size]
+                batch_results = await asyncio.gather(
+                    *[fetch_drive_metadata(did) for did in batch],
+                    return_exceptions=False,
+                )
+                shared_drives.extend(r for r in batch_results if r is not None)
+
+            # Merge own + shared into unified value/results arrays
+            all_drives = own_drives + shared_drives
+
+            response_dict["data"]["value"] = all_drives
+            response_dict["data"]["results"] = all_drives
+
+            return True, json.dumps(response_dict, default=str)
+
         except Exception as e:
             logger.error(f"Failed to get drives: {e}")
             return False, json.dumps({"error": str(e)})
@@ -928,69 +925,129 @@ class OneDrive:
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
-    # Recent & shared files
+    # Shared files/folders
     # ------------------------------------------------------------------
-
-    @tool(
-        app_name="onedrive",
-        tool_name="get_recent_files",
-        description="Get files recently accessed or modified by the user in OneDrive",
-        args_schema=GetRecentFilesInput,
-        when_to_use=[
-            "User asks for recently opened or modified OneDrive files",
-            "User says 'show my recent files' or 'what did I work on recently'",
-        ],
-        when_not_to_use=[
-            "User wants to browse all files (use get_files)",
-            "User wants to search (use search_files)",
-        ],
-        primary_intent=ToolIntent.SEARCH,
-        typical_queries=[
-            "Show my recent OneDrive files",
-            "What did I last work on in OneDrive?",
-            "List recently modified files",
-        ],
-        category=ToolCategory.FILE_STORAGE,
-    )
-    async def get_recent_files(
+    async def shared_with_data(
         self,
-        drive_id: str,
-        top: Optional[int] = None,
-        select: Optional[str] = None,
-    ) -> tuple[bool, str]:
-        """Get recently accessed or modified files
-
-        Args:
-            drive_id: The ID of the drive
-            top: Max number of results
-            select: Fields to return
+        top: Optional[int] = 10
+    ) -> tuple[bool, str, list[str]]:
+        """
         Returns:
-            tuple[bool, str]: Success flag and JSON response
+            tuple[bool, str, list[str]]: (success, json_data, unique_drive_ids)
         """
         try:
-            response = await self.client.drives_drive_recent(
-                drive_id=drive_id,
-                select=[select] if isinstance(select, str) else select,
+            response = await self.client.me_insights_shared()
+            if not response.success:
+                return False, _response_json(response), []
+
+            user_response = await self.client.me()
+            user_data = json.loads(_response_json(user_response))
+            current_user_email = (
+                user_data.get("data", {}).get("mail")
+                or user_data.get("data", {}).get("userPrincipalName")
             )
-            if response.success:
-                raw = response.data
-                logger.warning(f"[get_recent_files] response.data type: {type(raw)}")
-                logger.warning(f"[get_recent_files] response.data value attr: {getattr(raw, 'value', 'NO VALUE ATTR')}")
-                serialized = _serialize_graph_obj(raw)
-                logger.warning(f"[get_recent_files] serialized type: {type(serialized)}, keys: {serialized.keys() if isinstance(serialized, dict) else 'N/A'}")
-                if isinstance(serialized, dict):
-                    items = serialized.get("value", [])
-                    logger.warning(f"[get_recent_files] items count: {len(items) if isinstance(items, list) else 'NOT A LIST'}")
-                if top:
-                    data = serialized
-                    if isinstance(data, dict) and "value" in data:
-                        data["value"] = data["value"][:top]
-                        return True, json.dumps({"success": True, "data": data})
-                return True, _response_json(response)
-            return False, _response_json(response)
+
+            raw = response.data
+            items = raw.value or []
+            top = min(top, 50)
+            items = items[:top]
+
+            spo_items = [item for item in items if (item.id or "").startswith("SPO@")]
+
+            enriched = []
+            drive_ids: list[str] = []
+
+            # Fire all resource fetches concurrently
+            async def fetch_item(item) -> Optional[dict]:
+                last_shared = item.last_shared
+                shared_by_address = (
+                    last_shared.shared_by.address
+                    if last_shared and last_shared.shared_by
+                    else None
+                )
+
+                # Skip items shared by the authenticated user themselves
+                if (
+                    shared_by_address
+                    and current_user_email
+                    and shared_by_address.lower() == current_user_email.lower()
+                ):
+                    return None
+
+                insight_id = item.id
+                resource_response = await self.client.me_insights_shared_resource(insight_id)
+                if not resource_response.success:
+                    return None
+
+                resource_json = json.loads(_response_json(resource_response))
+                resource_data = resource_json.get("data", resource_json)
+                mime_type = resource_data.get("file", {}).get("mimeType", "")
+
+                if "folder" in resource_data:
+                    item_type = "Folder"
+                elif mime_type:
+                    item_type = mime_type.split("/")[-1].upper()
+                else:
+                    item_type = "Unknown"
+
+                parent_ref = resource_data.get("parentReference", {})
+                drive_id = parent_ref.get("driveId")
+
+                return {
+                    "enriched": {
+                        "name": resource_data.get("name"),
+                        "webUrl": resource_data.get("webUrl"),
+                        "type": item_type,
+                        "sharedBy": {
+                            "displayName": (
+                                last_shared.shared_by.display_name
+                                if last_shared and last_shared.shared_by
+                                else None
+                            ),
+                            "address": shared_by_address,
+                        },
+                        "sharedOnIST": str(last_shared.shared_date_time) if last_shared else None,
+                        "sharingType": last_shared.sharing_type if last_shared else None,
+                        "location": (
+                            parent_ref.get("path", "").split("root:")[-1].strip("/")
+                            or parent_ref.get("name")
+                        ),
+                        "sizeBytes": resource_data.get("size"),
+                        "lastModifiedIST": resource_data.get("lastModifiedDateTime"),
+                        "remoteItem": {
+                            "driveId": drive_id,
+                        },
+                    },
+                    "drive_id": drive_id,
+                }
+
+            # Run all fetches concurrently
+            # Run fetches in batches of 5
+            batch_size = 5
+            results = []
+            for i in range(0, len(spo_items), batch_size):
+                batch = spo_items[i : i + batch_size]
+                batch_results = await asyncio.gather(
+                    *[fetch_item(item) for item in batch],
+                    return_exceptions=False
+                )
+                results.extend(batch_results)
+
+            seen_drive_ids: set[str] = set()
+            for result in results:
+                if result is None:
+                    continue
+                enriched.append(result["enriched"])
+                drive_id = result["drive_id"]
+                if drive_id and drive_id not in seen_drive_ids:
+                    seen_drive_ids.add(drive_id)
+                    drive_ids.append(drive_id)
+
+            return True, json.dumps({"value": enriched}, default=str), drive_ids
+
         except Exception as e:
-            logger.error(f"Failed to get recent files: {e}")
-            return False, json.dumps({"error": str(e)})
+            logger.error(f"Failed to get shared-with-me items: {e}")
+            return False, json.dumps({"error": str(e)}), []
 
     @tool(
         app_name="onedrive",
@@ -1016,45 +1073,14 @@ class OneDrive:
     )
     async def get_shared_with_me(
         self,
-        top: Optional[int] = 10,
-        select: Optional[str] = None,
+        top: Optional[int] = 10
     ) -> tuple[bool, str]:
         try:
-            response = await self.client.me_insights_shared()
-            if not response.success:
-                return False, _response_json(response)
-
-            data  = _response_json(response)
-            raw = response.data  # SharedInsightCollectionResponse object
-            items = raw.value or []  # ✅ Kiota object — use .value not .get("value")
-
-            top = min(top,50)
-
-            if top:
-                items = items[:top]
-
-            # Only process SPO items (OneDrive/SharePoint files), skip email attachments
-            spo_items = [item for item in items if (item.id or "").startswith("SPO@")]
-
-            enriched = []
-            for item in spo_items:
-                insight_id = item.id
-                resource_response = await self.client.me_insights_shared_resource(insight_id)
-                data  = _response_json(resource_response)
-                enriched.append({
-                    "id": insight_id,
-                    "lastShared": {
-                        "sharedBy": {
-                            "displayName": item.last_shared.shared_by.display_name if item.last_shared and item.last_shared.shared_by else None,
-                            "address": item.last_shared.shared_by.address if item.last_shared and item.last_shared.shared_by else None,
-                        },
-                        "sharedDateTime": str(item.last_shared.shared_date_time) if item.last_shared else None,
-                        "sharingType": item.last_shared.sharing_type if item.last_shared else None,
-                    },
-                    "resource": _serialize_graph_obj(resource_response.data) if resource_response.success else None,
-                })
-
-            return True, json.dumps({"value": enriched}, default=str)
+             success, data, drive_ids = await self.shared_with_data(top)
+             if success:
+                return True, json.dumps({"value": data}, default=str)
+             else:
+                return False, json.dumps({"error": data})
 
         except Exception as e:
             logger.error(f"Failed to get shared-with-me items: {e}")
@@ -1201,16 +1227,24 @@ class OneDrive:
         item_id: str,
         new_name: str,
     ) -> tuple[bool, str]:
-        """Rename a file or folder in OneDrive
-
-        Args:
-            drive_id: The ID of the drive
-            item_id: The ID of the item to rename
-            new_name: The new name for the item
-        Returns:
-            tuple[bool, str]: Success flag and JSON response
-        """
         try:
+            # Fetch current item to get its existing extension
+            current_response = await self.client.drives_get_items(
+                drive_id=drive_id,
+                driveItem_id=item_id,
+            )
+            if current_response.success:
+                current_data = json.loads(_response_json(current_response))
+                current_name = current_data.get("data", {}).get("name", "")
+
+                # Extract extension from current name
+                current_ext = current_name.rsplit(".", 1)[-1] if "." in current_name else ""
+
+                # Append extension only if new_name doesn't already have one
+                new_ext = new_name.rsplit(".", 1)[-1] if "." in new_name else ""
+                if current_ext and not new_ext:
+                    new_name = f"{new_name}.{current_ext}"
+
             body = DriveItem()
             body.name = new_name
             response = await self.client.drives_update_items(
@@ -1346,61 +1380,6 @@ class OneDrive:
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
-    # Followed items
-    # ------------------------------------------------------------------
-
-    # @tool(
-    #     app_name="onedrive",
-    #     tool_name="get_followed_items",
-    #     description="Get files and folders the current user is following in OneDrive",
-    #     args_schema=GetRecentFilesInput,
-    #     when_to_use=[
-    #         "User asks 'what files am I following in OneDrive'",
-    #         "User wants to see bookmarked or followed items",
-    #         "User mentions 'followed' files or folders in OneDrive context",
-    #     ],
-    #     when_not_to_use=[
-    #         "User wants their own files (use get_files)",
-    #         "User wants files shared with them (use get_shared_with_me)",
-    #         "User wants recent files (use get_recent_files)",
-    #     ],
-    #     primary_intent=ToolIntent.SEARCH,
-    #     typical_queries=[
-    #         "Show files I'm following in OneDrive",
-    #         "List my followed OneDrive items",
-    #         "What OneDrive files have I bookmarked?",
-    #     ],
-    #     category=ToolCategory.FILE_STORAGE,
-    # )
-    # async def get_followed_items(
-    #     self,
-    #     drive_id: str,
-    #     top: Optional[int] = None,
-    #     select: Optional[str] = None,
-    # ) -> tuple[bool, str]:
-    #     """Get files and folders the user is following in OneDrive
-
-    #     Args:
-    #         drive_id: The ID of the drive
-    #         top: Maximum number of results to return
-    #         select: Comma-separated list of fields to return
-    #     Returns:
-    #         tuple[bool, str]: Success flag and JSON response
-    #     """
-    #     try:
-    #         response = await self.client.drives_list_following(
-    #             drive_id=drive_id,
-    #             top=top,
-    #             select=select,
-    #         )
-    #         if response.success:
-    #             return True, _response_json(response)
-    #         return False, _response_json(response)
-    #     except Exception as e:
-    #         logger.error(f"Failed to get followed items: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-    # ------------------------------------------------------------------
     # Copy item
     # ------------------------------------------------------------------
 
@@ -1527,6 +1506,87 @@ class OneDrive:
             logger.error(f"Failed to get permissions for item {item_id}: {e}")
             return False, json.dumps({"error": str(e)})
 
+    @tool(
+        app_name="onedrive",
+        tool_name="share_item",
+        description="Share a OneDrive file or folder with specific users by email, granting them read, write, or owner access. Requires drive_id and item_id — resolve via get_drives and search_files first if unknown.",
+        args_schema=ShareItemInput,
+        when_to_use=[
+            "User wants to share a file or folder with someone in OneDrive",
+            "User says 'share this file with', 'give access to', or 'invite someone to' a OneDrive item",
+            "User wants to grant read, write, or owner permissions to specific people",
+            "Cascade: get_drives → search_files (to find item_id) → share_item",
+        ],
+        when_not_to_use=[
+            "User only wants to view existing permissions (use get_permissions)",
+            "drive_id or item_id is unknown — call get_drives and/or search_files first to resolve them",
+            "User wants to create a public sharing link (use get_permissions to inspect existing links)",
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Share this file with john@example.com",
+            "Give Alice edit access to my OneDrive document",
+            "Invite someone to view my OneDrive folder",
+            "Share my presentation with my team",
+        ],
+        category=ToolCategory.FILE_STORAGE,
+    )
+    async def share_item(
+        self,
+        drive_id: str,
+        item_id: str,
+        emails: List[str],
+        role: str = "read",
+        message: Optional[str] = None,
+        require_sign_in: bool = True,
+        send_invitation: bool = True,
+    ) -> tuple[bool, str]:
+        """Share a file or folder in OneDrive with specific users.
+
+        Args:
+            drive_id: The ID of the drive containing the item
+            item_id: The ID of the file or folder to share
+            emails: List of email addresses to share with
+            role: Permission role - "read", "write", or "owner" (default: "read")
+            message: Optional message to include in the invitation email
+            require_sign_in: Whether recipients must sign in to access (default: True)
+            send_invitation: Whether to send an email invitation (default: True)
+        Returns:
+            tuple[bool, str]: Success flag and JSON response
+        """
+        try:
+            valid_roles = {"read", "write", "owner"}
+            if role not in valid_roles:
+                return False, json.dumps({
+                    "error": f"Invalid role '{role}'. Must be one of: {', '.join(valid_roles)}"
+                })
+
+            if not emails:
+                return False, json.dumps({"error": "At least one email address is required"})
+
+            request_body = InvitePostRequestBody()
+            request_body.recipients = [
+                DriveRecipient(additional_data={"email": email.strip()})
+                for email in emails
+            ]
+            request_body.roles = [role]
+            request_body.require_sign_in = require_sign_in
+            request_body.send_invitation = send_invitation
+            if message:
+                request_body.message = message
+
+            response = await self.client.drives_items_invite(
+                drive_id=drive_id,
+                driveItem_id=item_id,
+                request_body=request_body,
+            )
+            if response.success:
+                return True, _response_json(response)
+            return False, _response_json(response)
+        except Exception as e:
+            logger.error(f"Failed to share item {item_id}: {e}")
+            return False, json.dumps({"error": str(e)})
+
     # ------------------------------------------------------------------
     # Download URL
     # ------------------------------------------------------------------
@@ -1593,13 +1653,13 @@ class OneDrive:
             return False, json.dumps({"error": str(e)})
 
     # ------------------------------------------------------------------
-    # Read text file content
+    # Read file content
     # ------------------------------------------------------------------
 
     @tool(
         app_name="onedrive",
         tool_name="get_file_content",
-        description="Download and return the text content of a OneDrive file. Use for PDF, DOCX, XLSX, PPTX, HTML, XML, CSV, TSV, MD, MDX, TXT, DOC, XLS, PPT, etc. to read, summarise, or answer questions about them.",
+        description="Download and return the text content of a OneDrive file.",
         args_schema=GetFileContentInput,
         when_to_use=[
             "User wants to read, summarise, or ask questions about a OneDrive file",
@@ -1639,12 +1699,6 @@ class OneDrive:
             model_key = self.state.get("model_key")
             configuration_service = self.state.get("config_service")
 
-            model_config, ai_models_config = await get_model_config(configuration_service, model_key, model_name)
-            context_length = (model_config or {}).get("contextLength") or 128_000
-
-            print(f"\033[92m[get_file_content] context_length: {context_length}\033[0m")
-            max_bytes = int(context_length*0.8)
-
             # response.data is a typed DriveItem object, not a dict
             data  = _response_json(file_info)
             data_dict = json.loads(data)
@@ -1666,8 +1720,36 @@ class OneDrive:
                 raw = response.data
                 if not isinstance(raw, (bytes, bytearray)):
                     return True, json.dumps({"content": str(raw), "truncated": False})
-                return FileContentParser().parse(raw,file_extension, max_bytes)
 
+                ext = (file_extension or "").strip().lower().lstrip(".")
+
+                record_name = data_dict.get("data", {}).get("name", f"document.{ext}")
+                file_record = FileRecord(
+                    id=item_id,
+                    org_id="",
+                    record_name=record_name,
+                    record_type=RecordType.FILE,
+                    external_record_id=item_id,
+                    version=1,
+                    origin=OriginTypes.CONNECTOR,
+                    connector_name=Connectors.ONEDRIVE,
+                    connector_id=drive_id or "onedrive",
+                    mime_type=mime_type or "application/octet-stream",
+                    extension=ext,
+                    is_file=True,
+                )
+
+                parser = FileContentParser(logger=logger, config_service=configuration_service)
+                status, payload = await parser.parse(
+                    file_record,
+                    bytes(raw),
+                    model_name,
+                    model_key,
+                    configuration_service,
+                )
+                if status:
+                    return True, json.dumps({"content": payload})
+                return False, json.dumps({"error": payload})
             return False, _response_json(response)
         except Exception as e:
             logger.error(f"Failed to get content for item {item_id}: {e}")
@@ -1814,14 +1896,10 @@ class OneDrive:
         # These are the smallest valid empty containers recognized by OneDrive/Office
         _OFFICE_MIME = {
             "word": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "excel": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "powerpoint": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             "onenote": None,  # Uses Graph API, not file upload
         }
         _OFFICE_EXT = {
             "word": ".docx",
-            "excel": ".xlsx",
-            "powerpoint": ".pptx",
             "onenote": "",  # No extension — OneNote notebooks are containers, not files
         }
 
@@ -1829,7 +1907,7 @@ class OneDrive:
             ft = file_type.lower().strip()
             if ft not in _OFFICE_MIME:
                 return False, json.dumps({
-                    "error": f"Unsupported file_type '{file_type}'. Must be 'word', 'excel', or 'powerpoint'."
+                    "error": f"Unsupported file_type '{file_type}'. Must be 'word' or 'onenote'."
                 })
 
             # Ensure the file name has the correct extension
@@ -1839,7 +1917,7 @@ class OneDrive:
 
             parent_id = parent_folder_id or "root"
 
-            file_bytes = _generate_office_bytes(ft, content)
+            file_bytes = _generate_word_docx_bytes(content)
 
             # Use PUT /drives/{id}/items/{parent-id}:/{filename}:/content
             # with empty bytes — OneDrive creates a valid blank Office file
@@ -1925,122 +2003,4 @@ class OneDrive:
     #         return False, _response_json(response)
     #     except Exception as e:
     #         logger.error(f"Failed to permanently delete item {item_id}: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-    # ------------------------------------------------------------------
-    # Check in
-    # ------------------------------------------------------------------
-
-    # @tool(
-    #     app_name="onedrive",
-    #     tool_name="checkin_file",
-    #     description="Check in a checked-out OneDrive file, making it available to others and optionally publishing a version comment",
-    #     args_schema=CheckinFileInput,
-    #     when_to_use=[
-    #         "User wants to check in a file they previously checked out in OneDrive",
-    #         "User says 'check in', 'release lock', or 'publish changes' on a OneDrive file",
-    #         "User finished editing an exclusively locked OneDrive document",
-    #     ],
-    #     when_not_to_use=[
-    #         "File is not currently checked out (use get_file to verify status first)",
-    #         "User wants to check out a file (use checkout_file)",
-    #     ],
-    #     primary_intent=ToolIntent.ACTION,
-    #     typical_queries=[
-    #         "Check in my OneDrive document",
-    #         "Release the lock on this file and check it in",
-    #         "Publish my changes and check in the file",
-    #     ],
-    #     category=ToolCategory.FILE_STORAGE,
-    # )
-    # async def checkin_file(
-    #     self,
-    #     drive_id: str,
-    #     item_id: str,
-    #     comment: Optional[str] = None,
-    #     check_in_as: Optional[str] = None,
-    # ) -> tuple[bool, str]:
-    #     """Check in a checked-out OneDrive file
-
-    #     Args:
-    #         drive_id: The ID of the drive
-    #         item_id: The ID of the file to check in
-    #         comment: Optional comment to attach to the new version
-    #         check_in_as: Version type to check in as ('published' or 'unspecified')
-    #     Returns:
-    #         tuple[bool, str]: Success flag and JSON response
-    #     """
-    #     try:
-    #         body = CheckinPostRequestBody()
-    #         if comment:
-    #             body.comment = comment
-    #         if check_in_as:
-    #             body.check_in_as = check_in_as
-
-    #         response = await self.client.drives_drive_items_drive_item_checkin(
-    #             drive_id=drive_id,
-    #             driveItem_id=item_id,
-    #             request_body=body,
-    #         )
-    #         if response.success:
-    #             return True, json.dumps({
-    #                 "message": f"Item {item_id} checked in successfully"
-    #             })
-    #         return False, _response_json(response)
-    #     except Exception as e:
-    #         logger.error(f"Failed to check in item {item_id}: {e}")
-    #         return False, json.dumps({"error": str(e)})
-
-    # ------------------------------------------------------------------
-    # Check out
-    # ------------------------------------------------------------------
-
-    # @tool(
-    #     app_name="onedrive",
-    #     tool_name="checkout_file",
-    #     description="Check out a OneDrive file to get an exclusive edit lock, preventing others from modifying it until it is checked back in",
-    #     args_schema=DeleteItemInput,
-    #     when_to_use=[
-    #         "User wants to lock a OneDrive file for exclusive editing",
-    #         "User says 'check out', 'lock this file', or 'get exclusive access' in OneDrive",
-    #         "User needs to ensure nobody else edits a document while they work on it",
-    #     ],
-    #     when_not_to_use=[
-    #         "File is already checked out by this user (check file status first)",
-    #         "User wants to check in a file (use checkin_file)",
-    #         "File ID is unknown (use get_files or search_files first)",
-    #     ],
-    #     primary_intent=ToolIntent.ACTION,
-    #     typical_queries=[
-    #         "Check out this OneDrive file so I can edit it exclusively",
-    #         "Lock the document so no one else can change it",
-    #         "Get exclusive access to this OneDrive file",
-    #     ],
-    #     category=ToolCategory.FILE_STORAGE,
-    # )
-    # async def checkout_file(
-    #     self,
-    #     drive_id: str,
-    #     item_id: str,
-    # ) -> tuple[bool, str]:
-    #     """Check out a OneDrive file for exclusive editing
-
-    #     Args:
-    #         drive_id: The ID of the drive
-    #         item_id: The ID of the file to check out
-    #     Returns:
-    #         tuple[bool, str]: Success flag and JSON response
-    #     """
-    #     try:
-    #         response = await self.client.drives_drive_items_drive_item_checkout(
-    #             drive_id=drive_id,
-    #             driveItem_id=item_id,
-    #         )
-    #         if response.success:
-    #             return True, json.dumps({
-    #                 "message": f"Item {item_id} checked out successfully"
-    #             })
-    #         return False, _response_json(response)
-    #     except Exception as e:
-    #         logger.error(f"Failed to check out item {item_id}: {e}")
     #         return False, json.dumps({"error": str(e)})

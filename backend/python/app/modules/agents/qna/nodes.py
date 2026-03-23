@@ -3296,9 +3296,7 @@ get_drives → search_files (to find folder_id) → get_files(folder_id=...)
 ---
 #### `get_folder_children`
 > Needs `drive_id` + `folder_id`.
-```
-get_drives → search_files (to find folder_id) → get_folder_children
-```
+
 ---
 #### `get_file`
 > Needs `drive_id` + `item_id`.
@@ -3309,13 +3307,7 @@ get_drives → search_files (to find item_id) → get_file
 #### `search_files`
 > Needs `drive_id` only.
 ```
-get_drives → search_files
-```
----
-#### `get_recent_files`
-> Needs `drive_id`.
-```
-get_drives → get_recent_files
+get_drives → search_files (search in all drives if not specified)
 ```
 ---
 #### `get_shared_with_me`
@@ -3358,18 +3350,6 @@ get_drives → search_files (find item_id) → search_files (find destination_fo
 get_drives → search_files (to find item_id) → get_versions
 ```
 ---
-#### `get_specific_version`
-> Needs `drive_id` + `item_id` + `version_id`.
-```
-get_drives → search_files (to find item_id) → get_versions (to find version_id) → get_specific_version
-```
----
-#### `restore_version`
-> Needs `drive_id` + `item_id` + `version_id`.
-```
-get_drives → search_files (to find item_id) → get_versions (to find version_id) → restore_version
-```
----
 #### `get_permissions`
 > Needs `drive_id` + `item_id`.
 ```
@@ -3380,12 +3360,6 @@ get_drives → search_files (to find item_id) → get_permissions
 > Needs `drive_id` + `item_id`.
 ```
 get_drives → search_files (to find item_id) → get_download_url
-```
----
-#### `get_thumbnails`
-> Needs `drive_id` + `item_id`.
-```
-get_drives → search_files (to find item_id) → get_thumbnails
 ```
 ---
 #### `get_file_content`

@@ -26132,3 +26132,30 @@ class OneDriveDataSource:
                 success=False,
                 error=f"OneNote API call failed: {str(e)}",
             )
+    
+    async def drives_items_invite(
+        self,
+        drive_id: str,
+        driveItem_id: str,
+        request_body: Dict[str, Any]
+    ) -> OneDriveResponse:
+        try:
+            response = await self.client.drives \
+                .by_drive_id(drive_id) \
+                .items.by_drive_item_id(driveItem_id) \
+                .invite.post(body=request_body)
+
+            return self._handle_onedrive_response(response)
+
+        except Exception as e:
+            return OneDriveResponse(
+                success=False,
+                error=f"Invite failed: {str(e)}"
+            )
+
+    async def me(self) -> OneDriveResponse:
+        try:
+            response = await self.client.me.get()
+            return self._handle_onedrive_response(response)
+        except Exception as e:
+            return OneDriveResponse(success=False, error=str(e))

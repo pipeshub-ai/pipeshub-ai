@@ -1,5 +1,6 @@
 import builtins
 import os
+import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, TypeVar
@@ -375,6 +376,35 @@ class FileRecord(Record):
             lines.extend(specific_lines)
 
         return "\n".join(lines)
+
+    def to_llm_full_context(self, frontend_url: str | None = None) -> str:
+        """File record metadata (via :meth:`to_llm_context`) plus block_groups and blocks.
+
+        Does not mutate ``block_containers``. Every block group and every block
+        gets the same weburl: ``records/{record_id}`` (empty string if no id).
+        """
+        base = self.to_llm_context(frontend_url=frontend_url)
+        container = self.block_containers
+        record_id = self.id
+
+        record_page_weburl = f"records/{record_id}" if record_id else ""
+
+        parts: list[str] = ["block_groups:"]
+        for bg_idx, bg in enumerate(container.block_groups):
+            d = bg.model_dump(mode="json")
+            d["weburl"] = record_page_weburl
+            parts.append(f"[{bg_idx}]")
+            parts.append(json.dumps(d, indent=2, default=str, ensure_ascii=False))
+        parts.append("")
+        parts.append("blocks:")
+        for idx, block in enumerate(container.blocks):
+            d = block.model_dump(mode="json")
+            d["weburl"] = record_page_weburl
+            parts.append(f"[{idx}]")
+            parts.append(json.dumps(d, indent=2, default=str, ensure_ascii=False))
+
+        block_text = "\n".join(parts)
+        return f"{base}\n\nBlock container (with weburls):\n{block_text}"
 
     def to_arango_record(self) -> dict:
         return {

@@ -156,10 +156,10 @@ def build_deep_agent_state(
         graph_provider,
         reranker_service,
         config_service,
+        model_name,
+        model_key,
         org_info,
         graph_type="deep",
-        model_name=model_name,
-        model_key=model_key,
     )
 
     # Overlay deep-agent fields
