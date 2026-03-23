@@ -1,6 +1,7 @@
+from collections.abc import Callable
 from enum import Enum
 from inspect import isclass
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
@@ -25,31 +26,16 @@ class Permissions(str, Enum):
     COMMENTER = "COMMENTER"
 
 
-
-class IndexingStatus(str, Enum):
-    """Status of indexing operations."""
-    NOT_STARTED = "NOT_STARTED"
-    IN_PROGRESS = "IN_PROGRESS"
-    PAUSED = "PAUSED"
-    COMPLETED = "COMPLETED"
-    FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
-    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
-    FAILED = "FAILED"
-    ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
-    QUEUED = "QUEUED"
-    CONNECTOR_DISABLED = "CONNECTOR_DISABLED"
-
-
 def Connector(
     name: str,
     app_group: str,
-    supported_auth_types: Union[str, List[str]],  # Supported auth types (user selects one during creation)
+    supported_auth_types: str | list[str],  # Supported auth types (user selects one during creation)
     app_description: str = "",
-    app_categories: Optional[List[str]] = None,
-    config: Optional[Dict[str, Any]] = None,
-    connector_scopes: Optional[List[ConnectorScope]] = None,
-    connector_info: Optional[str] = None
-) -> Callable[[Type], Type]:
+    app_categories: list[str] | None = None,
+    config: dict[str, Any] | None = None,
+    connector_scopes: list[ConnectorScope] | None = None,
+    connector_info: str | None = None
+) -> Callable[[type], type]:
     """
     Decorator to register a connector with metadata and configuration schema.
 
@@ -79,7 +65,7 @@ def Connector(
         class GmailConnector:
             pass
     """
-    def decorator(cls: Type) -> Type:
+    def decorator(cls: type) -> type:
         # Normalize supported auth types
         if isinstance(supported_auth_types, str):
             supported_auth_types_list = [supported_auth_types]
@@ -130,11 +116,11 @@ class ConnectorRegistry:
         """
         self.container = container
         self.logger = container.logger()
-        self._graph_provider: Optional[IGraphDBProvider] = None
+        self._graph_provider: IGraphDBProvider | None = None
         self._collection_name = CollectionNames.APPS.value
 
         # In-memory storage for connector metadata
-        self._connectors: Dict[str, Dict[str, Any]] = {}
+        self._connectors: dict[str, dict[str, Any]] = {}
 
     async def _get_graph_provider(self) -> IGraphDBProvider:
         """
@@ -148,7 +134,7 @@ class ConnectorRegistry:
             self._graph_provider = data_store.graph_provider
         return self._graph_provider
 
-    def register_connector(self, connector_class: Type) -> bool:
+    def register_connector(self, connector_class: type) -> bool:
         """
         Register a connector class with the registry.
 
@@ -180,7 +166,7 @@ class ConnectorRegistry:
             )
             return False
 
-    def discover_connectors(self, module_paths: List[str]) -> None:
+    def discover_connectors(self, module_paths: list[str]) -> None:
         """
         Discover and register all connector classes from specified modules.
 
@@ -229,7 +215,7 @@ class ConnectorRegistry:
         """
         return name.replace(' ', '').lower()
 
-    def _get_beta_connector_names(self) -> List[str]:
+    def _get_beta_connector_names(self) -> list[str]:
         """
         Get list of normalized beta connector names from ConnectorFactory.
 
@@ -256,9 +242,10 @@ class ConnectorRegistry:
 
     async def _can_access_connector(
         self,
-        connector_instance: Dict[str, Any],
+        connector_instance: dict[str, Any],
         user_id: str,
-        is_admin: bool
+        *,
+        is_admin: bool,
     ) -> bool:
         """
         Check if user can access a connector instance.
@@ -331,7 +318,7 @@ class ConnectorRegistry:
     async def _get_connector_instance_from_db(
         self,
         connector_id: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Get connector instance document from database.
 
@@ -343,11 +330,10 @@ class ConnectorRegistry:
         """
         try:
             graph_provider = await self._get_graph_provider()
-            document = await graph_provider.get_document(
+            return await graph_provider.get_document(
                 connector_id,
                 self._collection_name
             )
-            return document
 
         except Exception as e:
             self.logger.debug(
@@ -359,12 +345,12 @@ class ConnectorRegistry:
         self,
         connector_type: str,
         instance_name: str,
-        metadata: Dict[str, Any],
+        metadata: dict[str, Any],
         scope: str,
         created_by: str,
         org_id: str,
-        selected_auth_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        selected_auth_type: str | None = None
+    ) -> dict[str, Any] | None:
         """
         Create a new connector instance in the database.
 
@@ -591,10 +577,10 @@ class ConnectorRegistry:
     def _build_connector_info(
         self,
         connector_type: str,
-        metadata: Dict[str, Any],
-        instance_data: Optional[Dict[str, Any]] = None,
-        scope: Optional[str] = None
-    ) -> Dict[str, Any]:
+        metadata: dict[str, Any],
+        instance_data: dict[str, Any] | None = None,
+        scope: str | None = None
+    ) -> dict[str, Any]:
         """
         Build connector information dictionary from metadata and instance data.
 
@@ -636,6 +622,7 @@ class ConnectorRegistry:
                 'isAgentActive': instance_data.get('isAgentActive', False),
                 'isConfigured': instance_data.get('isConfigured', False),
                 'isAuthenticated': instance_data.get('isAuthenticated', False),
+                'status': instance_data.get('status'),
                 'createdAtTimestamp': instance_data.get('createdAtTimestamp'),
                 'updatedAtTimestamp': instance_data.get('updatedAtTimestamp'),
                 '_key': instance_data.get('_key') or instance_data.get('id'),
@@ -643,11 +630,12 @@ class ConnectorRegistry:
                 'scope': instance_data.get('scope', ConnectorScope.PERSONAL.value),
                 'createdBy': instance_data.get('createdBy'),
                 'updatedBy': instance_data.get('updatedBy'),
+                'isLocked': instance_data.get('isLocked', False),
             })
 
         return connector_info
 
-    async def _get_all_connector_instances(self, user_id: str, org_id: str) -> List[Dict[str, Any]]:
+    async def _get_all_connector_instances(self, user_id: str, org_id: str) -> list[dict[str, Any]]:
         """
         Get all connector instances from the database.
 
@@ -679,13 +667,14 @@ class ConnectorRegistry:
 
     async def get_all_registered_connectors(
         self,
+        *,
         is_admin: bool,
-        scope: Optional[str] = None,
+        scope: str | None = None,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        account_type: Optional[str] = None
-    ) -> Dict[str, Any]:
+        search: str | None = None,
+        account_type: str | None = None
+    ) -> dict[str, Any]:
         """
         Get all registered connectors from the registry (without instance status).
 
@@ -706,23 +695,21 @@ class ConnectorRegistry:
         connectors = []
 
         # Prepare search tokens (case-insensitive, AND across tokens)
-        tokens: List[str] = []
+        tokens: list[str] = []
         if search:
             tokens = [t.strip().lower() for t in str(search).split() if t.strip()]
 
-        def matches_search(info: Dict[str, Any]) -> bool:
+        def matches_search(info: dict[str, Any]) -> bool:
             if not tokens:
                 return True
-            haystacks: List[str] = []
+            haystacks: list[str] = []
             haystacks.append(str(info.get('name', '')).lower())
             haystacks.append(str(info.get('type', '')).lower())
             haystacks.append(str(info.get('appGroup', '')).lower())
             haystacks.append(str(info.get('appDescription', '')).lower())
             # Search in supported auth types
-            for auth_type in info.get('supportedAuthTypes', []) or []:
-                haystacks.append(str(auth_type).lower())
-            for cat in info.get('appCategories', []) or []:
-                haystacks.append(str(cat).lower())
+            haystacks.extend(str(auth_type).lower() for auth_type in (info.get('supportedAuthTypes', []) or []))
+            haystacks.extend(str(cat).lower() for cat in (info.get('appCategories', []) or []))
             combined = ' '.join(haystacks)
             return all(tok in combined for tok in tokens)
 
@@ -825,12 +812,13 @@ class ConnectorRegistry:
         self,
         user_id: str,
         org_id: str,
+        *,
         is_admin: bool,
-        scope: Optional[str] = None,
+        scope: str | None = None,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None
-    ) -> Dict[str, Any]:
+        search: str | None = None
+    ) -> dict[str, Any]:
         """
         Get all configured connector instances with scope-based filtering.
 
@@ -924,7 +912,7 @@ class ConnectorRegistry:
         self,
         user_id: str,
         org_id: str,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get all active connector instances (isActive = true) with scope-based filtering.
 
@@ -948,12 +936,13 @@ class ConnectorRegistry:
         self,
         user_id: str,
         org_id: str,
+        *,
         is_admin: bool,
-        scope: Optional[str] = None,
+        scope: str | None = None,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None
-    ) -> Dict[str, Any]:
+        search: str | None = None
+    ) -> dict[str, Any]:
         """
         Get all active agent connector instances (isAgentActive = true) with scope-based filtering.
 
@@ -968,7 +957,9 @@ class ConnectorRegistry:
         Returns:
             Dictionary with active agent connector instances and pagination info
         """
-        result = await self.get_all_connector_instances(user_id, org_id, is_admin, scope, page, limit * 2, search)
+        result = await self.get_all_connector_instances(
+            user_id, org_id, is_admin=is_admin, scope=scope, page=page, limit=limit * 2, search=search
+        )
 
         active_agent_connector_instances = [
             instance for instance in result["connectors"]
@@ -1002,7 +993,7 @@ class ConnectorRegistry:
         self,
         user_id: str,
         org_id: str,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Get all inactive connector instances (isActive = false) with scope-based filtering.
 
@@ -1027,12 +1018,13 @@ class ConnectorRegistry:
         self,
         user_id: str,
         org_id: str,
+        *,
         is_admin: bool,
-        scope: Optional[str] = None,
+        scope: str | None = None,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None
-    ) -> Dict[str, Any]:
+        search: str | None = None
+    ) -> dict[str, Any]:
         """
         Get all configured connector instances (isConfigured = true) with scope-based filtering.
 
@@ -1047,7 +1039,9 @@ class ConnectorRegistry:
         Returns:
             Dictionary with configured connector instances and pagination info
         """
-        result = await self.get_all_connector_instances(user_id, org_id, is_admin, scope, page, limit * 2, search)
+        result = await self.get_all_connector_instances(
+            user_id, org_id, is_admin=is_admin, scope=scope, page=page, limit=limit * 2, search=search
+        )
 
         configured_instances = [
             instance for instance in result["connectors"]
@@ -1077,7 +1071,7 @@ class ConnectorRegistry:
             "scopeCounts": result.get("scopeCounts", {"personal": 0, "team": 0})
         }
 
-    async def get_connector_metadata(self, connector_type: str, instance_data: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    async def get_connector_metadata(self, connector_type: str, instance_data: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """
         Get connector metadata by type from the registry.
 
@@ -1098,8 +1092,9 @@ class ConnectorRegistry:
         connector_id: str,
         user_id: str,
         org_id: str,
+        *,
         is_admin: bool,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Get a specific connector instance by its key with access control.
 
@@ -1121,7 +1116,7 @@ class ConnectorRegistry:
                 return None
 
             # Check access
-            has_access = await self._can_access_connector(document, user_id, is_admin)
+            has_access = await self._can_access_connector(document, user_id, is_admin=is_admin)
 
             if not has_access:
                 self.logger.warning(
@@ -1151,10 +1146,10 @@ class ConnectorRegistry:
         app_group: str,
         user_id: str,
         org_id: str,
-        scope: Optional[str] = None,
+        scope: str | None = None,
         page: int = 1,
         limit: int = 20
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Get all connector instances in a specific group with scope-based filtering.
 
@@ -1192,24 +1187,24 @@ class ConnectorRegistry:
             }
         }
 
-    async def get_filter_options(self) -> Dict[str, List[str]]:
+    async def get_filter_options(self) -> dict[str, list[str]]:
         """
         Get available filter options for connectors.
 
         Returns:
             Dictionary containing lists of available filter values
         """
-        app_groups = list(set(
+        app_groups = list({
             metadata['appGroup']
             for metadata in self._connectors.values()
-        ))
+        })
 
         # Collect all supported auth types from all connectors
         all_auth_types = set()
         for metadata in self._connectors.values():
             supported_types = metadata.get('supportedAuthTypes', [])
             all_auth_types.update(supported_types)
-        auth_types = sorted(list(all_auth_types))
+        auth_types = sorted(all_auth_types)
 
         connector_names = list(self._connectors.keys())
 
@@ -1231,9 +1226,10 @@ class ConnectorRegistry:
         scope: str,
         created_by: str,
         org_id: str,
+        *,
         is_admin: bool,
-        selected_auth_type: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        selected_auth_type: str | None = None,
+    ) -> dict[str, Any] | None:
         """
         Create a connector instance when it's being configured.
 
@@ -1270,11 +1266,12 @@ class ConnectorRegistry:
     async def update_connector_instance(
         self,
         connector_id: str,
-        updates: Dict[str, Any],
+        updates: dict[str, Any],
         user_id: str,
         org_id: str,
+        *,
         is_admin: bool,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Update a connector instance in the database with access control.
 
@@ -1308,7 +1305,7 @@ class ConnectorRegistry:
             has_access = await self._can_access_connector(
                 existing_document,
                 user_id,
-                is_admin
+                is_admin=is_admin,
             )
 
             if not has_access:

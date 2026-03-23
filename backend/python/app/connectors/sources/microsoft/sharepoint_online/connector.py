@@ -55,6 +55,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -80,7 +81,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -365,7 +365,7 @@ class CountryToRegionMapper:
         #     description="Enable indexing of lists",
         #     default_value=True
         # ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
@@ -1125,7 +1125,7 @@ class SharePointConnector(BaseConnector):
                                 yield (None, [], record_update)
                             elif record_update.record:
                                 if not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS, default=True):
-                                    record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                    record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                                 yield (record_update.record, record_update.new_permissions or [], record_update)
                                 self.stats['items_processed'] += 1
@@ -1909,7 +1909,7 @@ class SharePointConnector(BaseConnector):
                     if page_record:
                         permissions = await self._get_page_permissions(site_id, page.id)
                         if not self.indexing_filters.is_enabled(IndexingFilterKey.PAGES, default=True):
-                            page_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                            page_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                         yield (page_record, permissions, RecordUpdate(
                             record=page_record,

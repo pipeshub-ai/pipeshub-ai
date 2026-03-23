@@ -19,7 +19,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -41,6 +41,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -63,7 +64,6 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -143,7 +143,7 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             'https://docs.pipeshub.com/connectors/confluence/confluence',
             'pipeshub'
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
@@ -902,7 +902,7 @@ class ConfluenceConnector(BaseConnector):
 
                         # Set indexing status based on filter
                         if not content_indexing_enabled:
-                            webpage_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                            webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                         # Only set inherit_permissions to False if there are READ restrictions
                         # EDIT-only restrictions should still inherit from space for READ access
@@ -944,7 +944,7 @@ class ConfluenceConnector(BaseConnector):
                                 # Set indexing status for comments if disabled
                                 for comment_record, comment_permissions in comments:
                                     if not content_comments_indexing_enabled:
-                                        comment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                        comment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                                 records_with_permissions.extend(comments)
                                 total_comments_synced += len(comments)
 
@@ -979,7 +979,7 @@ class ConfluenceConnector(BaseConnector):
                                     if attachment_record:
                                         # Set indexing status based on filter
                                         if not content_attachments_indexing_enabled:
-                                            attachment_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                            attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                                         # Attachments inherit permissions from parent
                                         records_with_permissions.append((attachment_record, permissions))
                                         total_attachments_synced += 1

@@ -16,6 +16,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -37,6 +38,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -58,7 +60,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -178,7 +179,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
             default_value=True,
         ))
         .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED", "COLLABORATION.CREATED", "COLLABORATION.ACCEPTED", "COLLABORATION.REMOVED"])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_agent_support(False)
         .with_sync_support(True)
@@ -460,7 +461,7 @@ class BoxConnector(BaseConnector):
                     and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED_WITH_ME, default=True)
                 )
                 if shared_disabled or shared_with_me_disabled:
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                    file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             # Link shared-with-me records to the user's "Shared with Me" record group (for future collaboration sync)
             if file_record.is_shared_with_me and user_email:

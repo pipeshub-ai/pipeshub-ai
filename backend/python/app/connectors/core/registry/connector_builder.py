@@ -28,6 +28,12 @@ class ConnectorScope(str, Enum):
     PERSONAL = "personal"
     TEAM = "team"
 
+class SyncStrategy(str, Enum):
+    """Sync strategy types."""
+    MANUAL = "MANUAL"
+    SCHEDULED = "SCHEDULED"
+    WEBHOOK = "WEBHOOK"
+
 
 class ConnectorConfigBuilder:
     """Generic builder for creating connector configurations"""
@@ -54,8 +60,8 @@ class ConnectorConfigBuilder:
                 "conditionalDisplay": {}
             },
             "sync": {
-                "supportedStrategies": ["MANUAL"],
-                "selectedStrategy": "MANUAL",
+                "supportedStrategies": [SyncStrategy.MANUAL.value],
+                "selectedStrategy": SyncStrategy.MANUAL.value,
                 "webhookConfig": {
                     "supported": False,
                     "webhookUrl": "",
@@ -224,10 +230,10 @@ class ConnectorConfigBuilder:
 
         return self
 
-    def with_sync_strategies(self, strategies: List[str], selected: str = "MANUAL") -> 'ConnectorConfigBuilder':
+    def with_sync_strategies(self, strategies: List[SyncStrategy], selected: SyncStrategy = SyncStrategy.MANUAL) -> 'ConnectorConfigBuilder':
         """Configure sync strategies"""
-        self.config["sync"]["supportedStrategies"] = strategies
-        self.config["sync"]["selectedStrategy"] = selected
+        self.config["sync"]["supportedStrategies"] = [strategy.value for strategy in strategies]
+        self.config["sync"]["selectedStrategy"] = selected.value
         return self
 
     def with_webhook_config(self, supported: bool = True, events: Optional[List[str]] = None) -> 'ConnectorConfigBuilder':
@@ -236,7 +242,7 @@ class ConnectorConfigBuilder:
         if events:
             self.config["sync"]["webhookConfig"]["events"] = events
         if supported and "WEBHOOK" not in self.config["sync"]["supportedStrategies"]:
-            self.config["sync"]["supportedStrategies"].append("WEBHOOK")
+            self.config["sync"]["supportedStrategies"].append(SyncStrategy.WEBHOOK.value)
         return self
 
     def with_scheduled_config(self, supported: bool = True, interval_minutes: int = 60) -> 'ConnectorConfigBuilder':
@@ -244,7 +250,7 @@ class ConnectorConfigBuilder:
         if supported:
             self.config["sync"]["scheduledConfig"]["intervalMinutes"] = interval_minutes
             if "SCHEDULED" not in self.config["sync"]["supportedStrategies"]:
-                self.config["sync"]["supportedStrategies"].append("SCHEDULED")
+                self.config["sync"]["supportedStrategies"].append(SyncStrategy.SCHEDULED.value)
         return self
 
     def add_sync_custom_field(self, field: CustomField) -> 'ConnectorConfigBuilder':
@@ -257,7 +263,8 @@ class ConnectorConfigBuilder:
             "required": field.required,
             "defaultValue": field.default_value,
             "validation": {},
-            "isSecret": field.is_secret
+            "isSecret": field.is_secret,
+            "nonEditable": field.non_editable
         }
 
         if field.options:
@@ -691,7 +698,6 @@ class CommonFields:
             category=FilterCategory.SYNC,
             description=description
             or "Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
-            default_value=[],
             default_operator=MultiselectOperator.IN.value,
             option_source_type=OptionSourceType.STATIC,
             options=[

@@ -718,7 +718,7 @@ export default function RecordDetails() {
                         '& .MuiChip-label': { px: 1 },
                       }}
                     />
-                    {record.indexingStatus === 'FAILED' &&
+                    {(record.indexingStatus === 'FAILED' || record.indexingStatus === 'AUTO_INDEX_OFF') &&
                       record.reason &&
                       record.reason.length > 0 && (
                         <Tooltip title={record.reason} arrow>
@@ -1109,7 +1109,13 @@ export default function RecordDetails() {
                           >
                             Origin
                           </Typography>
-                          <Typography variant="body2">{record.origin}</Typography>
+                          <Typography variant="body2">
+                            {record.origin === 'COLLECTION' || record.origin === 'KB'
+                              ? 'Collection'
+                              : record.origin === 'CONNECTOR'
+                                ? 'Connector'
+                                : record.origin}
+                          </Typography>
                         </Box>
 
                         <Box>

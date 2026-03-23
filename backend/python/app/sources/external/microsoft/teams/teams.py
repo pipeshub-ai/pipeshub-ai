@@ -836,6 +836,33 @@ class TeamsDataSource:
             logger.error(f"Error in teams_list_members: {e}")
             return TeamsResponse(success=False, error=str(e))
 
+    async def teams_list_channel_members(
+        self,
+        team_id: str,
+        channel_id: str,
+    ) -> TeamsResponse:
+
+        """
+        List members in a channel.
+        Teams operation: GET /teams/{team-id}/channels/{channel-id}/members
+        Operation type: members
+        Args:
+        team_id: Teams team id identifier
+        channel_id: Teams channel id identifier
+        Returns:
+            TeamsResponse: Teams API response with success status and data (member list in data.value)
+        """
+        try:
+            response = await (
+                self.client.teams.by_team_id(team_id)
+                .channels.by_channel_id(channel_id)
+                .members.get()
+            )
+            return self._handle_teams_response(response)
+        except Exception as e:
+            logger.error(f"Error in teams_list_channel_members: {e}")
+            return TeamsResponse(success=False, error=str(e))
+
     async def teams_send_channel_message(
         self,
         team_id: str,
@@ -5621,7 +5648,23 @@ class TeamsDataSource:
             TeamsResponse: Teams API response with success status and data
         """
         try:
-            response = await self.client.teams.by_team_id(team_id).channels.by_channel_id(channel_id).members.post(body=body)
+            payload: Any = body
+            if isinstance(body, dict):
+                member_payload = AadUserConversationMember()
+                roles_value = body.get("roles")
+                if isinstance(roles_value, list):
+                    member_payload.roles = roles_value
+
+                # Preserve Graph binding fields like user@odata.bind.
+                additional_data: Dict[str, Any] = {}
+                if "user@odata.bind" in body:
+                    additional_data["user@odata.bind"] = body.get("user@odata.bind")
+                if "@odata.type" in body:
+                    additional_data["@odata.type"] = body.get("@odata.type")
+                member_payload.additional_data = additional_data
+                payload = member_payload
+
+            response = await self.client.teams.by_team_id(team_id).channels.by_channel_id(channel_id).members.post(body=payload)
             return self._handle_teams_response(response)
         except Exception as e:
             logger.error(f"Error in teams_channels_create_members: {e}")
@@ -7775,7 +7818,23 @@ class TeamsDataSource:
             TeamsResponse: Teams API response with success status and data
         """
         try:
-            response = await self.client.teams.by_team_id(team_id).members.post(body=body)
+            payload: Any = body
+            if isinstance(body, dict):
+                member_payload = AadUserConversationMember()
+                roles_value = body.get("roles")
+                if isinstance(roles_value, list):
+                    member_payload.roles = roles_value
+
+                # Preserve Graph binding fields like user@odata.bind.
+                additional_data: Dict[str, Any] = {}
+                if "user@odata.bind" in body:
+                    additional_data["user@odata.bind"] = body.get("user@odata.bind")
+                if "@odata.type" in body:
+                    additional_data["@odata.type"] = body.get("@odata.type")
+                member_payload.additional_data = additional_data
+                payload = member_payload
+
+            response = await self.client.teams.by_team_id(team_id).members.post(body=payload)
             return self._handle_teams_response(response)
         except Exception as e:
             logger.error(f"Error in teams_create_members: {e}")
@@ -15043,7 +15102,23 @@ class TeamsDataSource:
             TeamsResponse: Teams API response with success status and data
         """
         try:
-            response = await self.client.me.joined_teams.by_joinedTeam_id(team_id).channels.by_channel_id(channel_id).members.post(body=body)
+            payload: Any = body
+            if isinstance(body, dict):
+                member_payload = AadUserConversationMember()
+                roles_value = body.get("roles")
+                if isinstance(roles_value, list):
+                    member_payload.roles = roles_value
+
+                # Preserve Graph binding fields like user@odata.bind.
+                additional_data: Dict[str, Any] = {}
+                if "user@odata.bind" in body:
+                    additional_data["user@odata.bind"] = body.get("user@odata.bind")
+                if "@odata.type" in body:
+                    additional_data["@odata.type"] = body.get("@odata.type")
+                member_payload.additional_data = additional_data
+                payload = member_payload
+
+            response = await self.client.me.joined_teams.by_joinedTeam_id(team_id).channels.by_channel_id(channel_id).members.post(body=payload)
             return self._handle_teams_response(response)
         except Exception as e:
             logger.error(f"Error in me_joined_teams_channels_create_members: {e}")

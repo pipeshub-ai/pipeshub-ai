@@ -12,12 +12,14 @@ Enterprise-grade agent system with:
 
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Literal, Union
+from uuid import UUID
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -26,8 +28,9 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langgraph.types import StreamWriter
 
+from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.qna.chat_state import ChatState
-from app.modules.agents.qna.stream_utils import safe_stream_write
+from app.modules.agents.qna.stream_utils import safe_stream_write, send_keepalive
 from app.modules.qna.response_prompt import create_response_messages
 from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
 
@@ -51,6 +54,17 @@ BOT_RESPONSE_MAX_LENGTH = 20000  # Increased significantly to preserve full bot 
 MAX_TOOL_RESULT_PREVIEW_LENGTH = 500
 MAX_AVAILABLE_TOOLS_DISPLAY = 20
 MAX_CONVERSATION_HISTORY = 20  # Number of user+bot message pairs to include (sliding window)
+
+# Truncation / display limits
+_RAW_DATA_SIZE_LIMIT = 8000
+_TOOL_LOG_LIMIT = 5
+_PARAM_DESC_TRUNCATE = 60
+_REASONING_DISPLAY_LEN = 200
+
+# Orchestration status taxonomy (metadata fields on tool result dicts)
+ORCHESTRATION_STATUS_RESOLVED = "resolved"
+ORCHESTRATION_STATUS_PARTIAL = "partial_failure"
+ORCHESTRATION_STATUS_CASCADE_BROKEN = "cascade_broken"
 
 # Content detection constants
 MIN_CONTENT_LENGTH_FOR_REUSE = 500  # Minimum chars for content to be considered reusable
@@ -139,7 +153,7 @@ def clean_tool_result(result: object) -> object:
         for key, value in result.items():
             if key in REMOVE_FIELDS or key.lower() in REMOVE_FIELDS:
                 continue
-            if key.startswith("_") or key.startswith("$"):
+            if key.startswith(("_", "$")):
                 continue
 
             if isinstance(value, dict):
@@ -183,7 +197,7 @@ class ToolResultExtractor:
     """Reliable extraction of data from tool results"""
 
     @staticmethod
-    def extract_success_status(result: Union[Dict[str, Any], str, Tuple[bool, Any], None]) -> bool:
+    def extract_success_status(result: dict[str, Any] | str | tuple[bool, Any] | None) -> bool:
         """
         Reliably detect if a tool execution succeeded.
 
@@ -196,9 +210,8 @@ class ToolResultExtractor:
             return False
 
         # Tuple format: (success, data)
-        if isinstance(result, tuple) and len(result) >= 1:
-            if isinstance(result[0], bool):
-                return result[0]
+        if isinstance(result, tuple) and len(result) >= 1 and isinstance(result[0], bool):
+            return result[0]
 
         # Dict format
         if isinstance(result, dict):
@@ -227,7 +240,7 @@ class ToolResultExtractor:
         return not any(ind in result_str for ind in error_indicators)
 
     @staticmethod
-    def extract_data_from_result(result: Union[Dict[str, Any], str, Tuple[bool, Any], List[Any], None]) -> Union[Dict[str, Any], str, List[Any], None]:
+    def extract_data_from_result(result: dict[str, Any] | str | tuple[bool, Any] | list[Any] | None) -> dict[str, Any] | str | list[Any] | None:
         """
         Extract the actual data from a tool result.
 
@@ -244,8 +257,7 @@ class ToolResultExtractor:
         # Handle JSON strings
         if isinstance(result, str):
             try:
-                parsed = json.loads(result)
-                return parsed
+                return json.loads(result)
             except (json.JSONDecodeError, TypeError):
                 # ✅ NEW: Return the string directly (for retrieval tool)
                 # Retrieval returns formatted string, not JSON
@@ -254,7 +266,7 @@ class ToolResultExtractor:
         return result
 
     @staticmethod
-    def extract_field_from_data(data: Union[Dict[str, Any], List[Any], str, None], field_path: List[str]) -> Optional[Union[Dict[str, Any], List[Any], str, int, float, bool]]:
+    def extract_field_from_data(data: dict[str, Any] | list[Any] | str | None, field_path: list[str]) -> dict[str, Any] | list[Any] | str | int | float | bool | None:
         """
         Extract a specific field from data using a field path.
 
@@ -480,6 +492,61 @@ class ToolResultExtractor:
         return current
 
 
+def _is_semantically_empty(result: object) -> bool:
+    """Check if a tool result succeeded but contains no meaningful data.
+
+    Used for cascading chain analysis — an empty source tool means
+    downstream tools will receive no useful input.
+    """
+    if result is None:
+        return True
+
+    data = ToolResultExtractor.extract_data_from_result(result)
+    if data is None:
+        return True
+
+    if isinstance(data, dict):
+        inner = data.get("data")
+        if isinstance(inner, dict):
+            for key in ("results", "items", "values"):
+                lst = inner.get(key)
+                if isinstance(lst, list) and len(lst) == 0:
+                    return True
+        elif isinstance(inner, list) and len(inner) == 0:
+            return True
+        for key in ("results", "items", "values", "records"):
+            if key in data and isinstance(data[key], list) and len(data[key]) == 0:
+                return True
+
+    if isinstance(data, list) and len(data) == 0:
+        return True
+
+    return False
+
+
+def _underscore_to_dotted(name: str) -> str:
+    """Convert a sanitized tool name back to its most likely dotted form.
+
+    'jira_search_users' → 'jira.search_users'
+    'confluence_get_page_content' → 'confluence.get_page_content'
+    'knowledgehub_list_files' → 'knowledgehub.list_files'
+
+    Tool names follow 'app.tool_name' format.  The first underscore
+    that corresponds to the app/tool separator is replaced with a dot.
+    
+    If the name already contains a dot, return it as-is (don't create invalid names).
+    """
+    # If name already has a dot, don't convert (avoid creating invalid names like calculator.calculate.single_operand)
+    if '.' in name:
+        return name
+
+    parts = name.split('_')
+    if len(parts) >= 2:
+        # First underscore is the app.tool separator
+        return parts[0] + '.' + '_'.join(parts[1:])
+    return name
+
+
 # ============================================================================
 # PLACEHOLDER RESOLUTION - SIMPLIFIED & RELIABLE
 # ============================================================================
@@ -497,7 +564,7 @@ class PlaceholderResolver:
     PLACEHOLDER_PATTERN = re.compile(r'\{\{([^}]+)\}\}')
 
     @classmethod
-    def has_placeholders(cls, args: Dict[str, Any]) -> bool:
+    def has_placeholders(cls, args: dict[str, Any]) -> bool:
         """Check if args contain any placeholders"""
         args_str = json.dumps(args, default=str)
         return bool(cls.PLACEHOLDER_PATTERN.search(args_str))
@@ -505,8 +572,8 @@ class PlaceholderResolver:
     @classmethod
     def strip_unresolved(
         cls,
-        args: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], List[str]]:
+        args: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[str]]:
         """
         Replace any remaining unresolved {{...}} placeholders with None.
 
@@ -517,7 +584,7 @@ class PlaceholderResolver:
         Returns:
             (cleaned_args, list_of_placeholder_names_that_were_stripped)
         """
-        stripped: List[str] = []
+        stripped: list[str] = []
 
         def clean_value(value: object) -> object:
             if isinstance(value, str):
@@ -546,10 +613,10 @@ class PlaceholderResolver:
     @classmethod
     def resolve_all(
         cls,
-        args: Dict[str, Any],
-        results_by_tool: Dict[str, Any],
+        args: dict[str, Any],
+        results_by_tool: dict[str, Any],
         log: logging.Logger
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Resolve all placeholders in args using results from previous tools.
 
@@ -587,7 +654,7 @@ class PlaceholderResolver:
     def _resolve_string_value(
         cls,
         value: str,
-        results_by_tool: Dict[str, Any],
+        results_by_tool: dict[str, Any],
         log: logging.Logger
     ) -> str:
         """Resolve all placeholders in a string value"""
@@ -608,9 +675,9 @@ class PlaceholderResolver:
     def _resolve_single_placeholder(
         cls,
         placeholder: str,
-        results_by_tool: Dict[str, Any],
+        results_by_tool: dict[str, Any],
         log: logging.Logger
-    ) -> Optional[Union[Dict[str, Any], List[Any], str, int, float, bool]]:
+    ) -> dict[str, Any] | list[Any] | str | int | float | bool | None:
         """
         Resolve a single placeholder to its value.
 
@@ -677,8 +744,8 @@ class PlaceholderResolver:
     def _parse_placeholder(
         cls,
         placeholder: str,
-        results_by_tool: Dict[str, Any]
-    ) -> Tuple[Optional[str], List[str]]:
+        results_by_tool: dict[str, Any]
+    ) -> tuple[str | None, list[str]]:
         """
         Parse placeholder into tool_name and field_path.
 
@@ -692,7 +759,7 @@ class PlaceholderResolver:
             (tool_name, field_path) or (None, []) if can't parse
         """
         # Helper function to parse field path with array indices
-        def parse_field_path(path_str: str) -> List[str]:
+        def parse_field_path(path_str: str) -> list[str]:
             """Parse field path handling array indices like [0], [1], [?], [*].
 
             Non-numeric indices ([?], [*], etc.) are normalised to '0' so that
@@ -746,33 +813,63 @@ class PlaceholderResolver:
         sorted_tools = sorted(results_by_tool.keys(), key=len, reverse=True)
 
         for tool_name in sorted_tools:
+            # Original exact match
             if placeholder.startswith(tool_name + '.'):
-                # Extract field path
                 remaining = placeholder[len(tool_name) + 1:]
                 field_path = parse_field_path(remaining)
-                # Don't remove .results here - let extract_field_from_data handle it
-                # It will check if results exists and only fallback if it doesn't
                 return tool_name, field_path
 
-        # Fuzzy match - find tool that matches end of placeholder
+            # Auto-resolve dotted ↔ underscore tool names.
+            # Planner generates dotted names (jira.search_users) but results
+            # may be stored under sanitized names (jira_search_users), or
+            # vice versa.  Try both forms to avoid false mismatches.
+
+            # Try dotted form if stored name uses underscores
+            # e.g., stored: "jira_search_users" → try matching "jira.search_users."
+            dotted_form = _underscore_to_dotted(tool_name)
+            if dotted_form != tool_name and placeholder.startswith(dotted_form + '.'):
+                remaining = placeholder[len(dotted_form) + 1:]
+                field_path = parse_field_path(remaining)
+                return tool_name, field_path  # Return the ACTUAL stored key
+
+            # Try underscore form if stored name uses dots
+            # e.g., stored: "jira.search_users" → try matching "jira_search_users."
+            underscore_form = tool_name.replace('.', '_')
+            if underscore_form != tool_name and placeholder.startswith(underscore_form + '.'):
+                remaining = placeholder[len(underscore_form) + 1:]
+                field_path = parse_field_path(remaining)
+                return tool_name, field_path
+
+        # Fuzzy match: try progressively longer dot-prefixes (3, 2, 1 segments)
+        # This avoids the old single-segment prefix bug where e.g. "jira" matched
+        # "jira_search_users" but leaked "search_users" into the field path.
         parts = placeholder.split('.')
         if len(parts) >= MIN_PLACEHOLDER_PARTS:
-            # Try matching the first part against tool names
-            prefix = parts[0]
-            # Reconstruct remaining path and parse it
-            remaining = '.'.join(parts[1:])
-            field_path = parse_field_path(remaining)
-            # Don't remove .results here - let extract_field_from_data handle it
+            for prefix_len in range(min(len(parts) - 1, 3), 0, -1):
+                prefix_candidate = '.'.join(parts[:prefix_len])
+                remaining = '.'.join(parts[prefix_len:])
+                field_path = parse_field_path(remaining)
 
-            for tool_name in sorted_tools:
-                # Normalize for comparison
-                normalized_tool = tool_name.lower().replace('_', '').replace('.', '')
-                normalized_prefix = prefix.lower().replace('_', '')
+                for tool_name in sorted_tools:
+                    normalized_tool = tool_name.lower().replace('_', '').replace('.', '')
+                    normalized_prefix = prefix_candidate.lower().replace('_', '').replace('.', '')
 
-                if normalized_prefix in normalized_tool or normalized_tool.endswith(normalized_prefix):
-                    return tool_name, field_path
+                    if normalized_prefix == normalized_tool:
+                        return tool_name, field_path
 
         return None, []
+
+    @classmethod
+    def _extract_source_tool_name(cls, placeholder: str) -> str | None:
+        """Extract the source tool name from a placeholder string.
+
+        'jira.search_users.data.results[0].accountId' -> 'jira.search_users'
+        'jira_search_users.data.results[0].accountId' -> 'jira_search_users'
+        """
+        parts = placeholder.split(".")
+        if len(parts) >= 2:
+            return f"{parts[0]}.{parts[1]}"
+        return parts[0] if parts else None
 
 
 # ============================================================================
@@ -783,7 +880,7 @@ class ToolExecutor:
     """Handles tool execution with cascading support"""
 
     @staticmethod
-    def _format_args_preview(args: Dict[str, Any], max_len: int = 220) -> str:
+    def _format_args_preview(args: dict[str, Any], max_len: int = 220) -> str:
         """Return a compact JSON preview for tool args in logs."""
         try:
             preview = json.dumps(args, default=str, ensure_ascii=False)
@@ -795,14 +892,14 @@ class ToolExecutor:
 
     @staticmethod
     async def execute_tools(
-        planned_tools: List[Dict[str, Any]],
-        tools_by_name: Dict[str, Any],
+        planned_tools: list[dict[str, Any]],
+        tools_by_name: dict[str, Any],
         llm: BaseChatModel,
         state: ChatState,
         log: logging.Logger,
         writer: StreamWriter,
         config: RunnableConfig
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Execute tools - sequentially if cascading, parallel otherwise.
 
@@ -827,14 +924,14 @@ class ToolExecutor:
 
     @staticmethod
     async def _execute_sequential(
-        planned_tools: List[Dict[str, Any]],
-        tools_by_name: Dict[str, Any],
+        planned_tools: list[dict[str, Any]],
+        tools_by_name: dict[str, Any],
         llm: BaseChatModel,
         state: ChatState,
         log: logging.Logger,
         writer: StreamWriter,
         config: RunnableConfig
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Execute tools sequentially with placeholder resolution"""
         from app.modules.agents.qna.tool_system import _sanitize_tool_name_if_needed
 
@@ -846,11 +943,19 @@ class ToolExecutor:
             tool_name = tool_call.get("name", "")
             tool_args = tool_call.get("args", {})
 
-            # Normalize tool name
-            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
-            actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
+            # Resolve tool name: tools_by_name contains both sanitized (underscore)
+            # and original (dot) names, so a direct lookup covers the common cases.
+            # Fall back to sanitizing the LLM name (replaces dots→underscores) in
+            # case the LLM used the dotted form but only the sanitized key is stored.
+            actual_tool_name = None
+            if tool_name in tools_by_name:
+                actual_tool_name = tool_name
+            else:
+                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
+                if normalized_name in tools_by_name:
+                    actual_tool_name = normalized_name
 
-            if actual_tool_name not in tools_by_name:
+            if actual_tool_name is None:
                 log.warning(f"❌ Tool not found: {tool_name}")
                 tool_results.append({
                     "tool_name": tool_name,
@@ -873,6 +978,34 @@ class ToolExecutor:
                 # that end up as None will be rejected by Pydantic validation.
                 resolved_args, stripped_placeholders = PlaceholderResolver.strip_unresolved(resolved_args)
                 log.debug(f"  Stripped {len(stripped_placeholders)} placeholder(s): {stripped_placeholders}")
+
+                # Cascading dependency check: if any stripped placeholder
+                # references a tool in this execution chain, it is NOT optional
+                # — it means the cascading chain broke.  Skip execution.
+                if stripped_placeholders:
+                    cascade_failures = []
+                    planned_tool_names = {t.get("name", "") for t in planned_tools}
+                    planned_tool_names_sanitized = {n.replace(".", "_") for n in planned_tool_names}
+                    all_known = planned_tool_names | planned_tool_names_sanitized | set(results_by_tool.keys())
+
+                    for ph in stripped_placeholders:
+                        source = PlaceholderResolver._extract_source_tool_name(ph)
+                        if source and (source in all_known or source.replace(".", "_") in all_known):
+                            cascade_failures.append(ph)
+
+                    if cascade_failures:
+                        log.error(
+                            f"CASCADE FAILURE: {actual_tool_name} depends on unresolved "
+                            f"cascading placeholders: {cascade_failures}. Skipping execution."
+                        )
+                        tool_results.append({
+                            "tool_name": actual_tool_name,
+                            "result": f"Cascade failure: dependent data not available from {cascade_failures}",
+                            "status": "cascade_error",
+                            "tool_id": f"call_{i}_{actual_tool_name}",
+                            "orchestration_status": ORCHESTRATION_STATUS_CASCADE_BROKEN,
+                        })
+                        continue  # Skip execution — result would be meaningless
 
                 # If placeholders still remain after stripping (shouldn't happen),
                 # something is structurally wrong – fail the tool call.
@@ -997,6 +1130,10 @@ class ToolExecutor:
                     "data": {"status": "error", "message": f"Operation failed: {error_msg[:100]}"}
                 }, config)
 
+            # Set default orchestration status
+            if "orchestration_status" not in result_dict:
+                result_dict["orchestration_status"] = ORCHESTRATION_STATUS_RESOLVED
+
             # Store successful results for next placeholder resolution
             if result_dict.get("status") == "success":
                 # Extract clean data for placeholder resolution
@@ -1017,6 +1154,22 @@ class ToolExecutor:
                     storage_key = f"{actual_tool_name}_{suffix_number}"
                     results_by_tool[storage_key] = result_data
                     log.debug(f"✅ Stored result for {storage_key} (keys: {list(result_data.keys()) if isinstance(result_data, dict) else type(result_data).__name__})")
+
+                # Detect empty cascade sources: if this tool returned empty
+                # results and a downstream tool depends on its output via
+                # placeholder, mark as a broken cascade source.
+                if _is_semantically_empty(result_data):
+                    dotted_name = tool_call.get("name", "")
+                    remaining_tools = planned_tools[i + 1:]
+                    for downstream in remaining_tools:
+                        args_str = json.dumps(downstream.get("args", {}), default=str)
+                        if actual_tool_name in args_str or dotted_name in args_str:
+                            log.warning(
+                                f"SEMANTIC FAILURE: {actual_tool_name} returned empty "
+                                f"results but downstream tool depends on its output"
+                            )
+                            result_dict["orchestration_status"] = "empty_cascade_source"
+                            break
             else:
                 log.debug(f"❌ Skipped storing failed tool: {actual_tool_name}")
 
@@ -1024,12 +1177,12 @@ class ToolExecutor:
 
     @staticmethod
     async def _execute_parallel(
-        planned_tools: List[Dict[str, Any]],
-        tools_by_name: Dict[str, Any],
+        planned_tools: list[dict[str, Any]],
+        tools_by_name: dict[str, Any],
         llm: BaseChatModel,
         state: ChatState,
         log: logging.Logger
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Execute tools in parallel"""
         from app.modules.agents.qna.tool_system import _sanitize_tool_name_if_needed
 
@@ -1039,11 +1192,16 @@ class ToolExecutor:
             tool_name = tool_call.get("name", "")
             tool_args = tool_call.get("args", {})
 
-            # Normalize tool name
-            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
-            actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
+            # Resolve tool name: same 2-step strategy as sequential executor.
+            actual_tool_name = None
+            if tool_name in tools_by_name:
+                actual_tool_name = tool_name
+            else:
+                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
+                if normalized_name in tools_by_name:
+                    actual_tool_name = normalized_name
 
-            if actual_tool_name not in tools_by_name:
+            if actual_tool_name is None:
                 log.warning(f"❌ Tool not found: {tool_name}")
                 # Create error result directly
                 tasks.append(asyncio.create_task(asyncio.sleep(0, result={
@@ -1097,11 +1255,11 @@ class ToolExecutor:
     async def _execute_single_tool(
         tool: object,
         tool_name: str,
-        tool_args: Dict[str, Any],
+        tool_args: dict[str, Any],
         tool_id: str,
         state: ChatState,
         log: logging.Logger
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Execute a single tool with proper timeout and error handling.
 
@@ -1202,9 +1360,9 @@ class ToolExecutor:
     async def _validate_and_normalize_args(
         tool: object,
         tool_name: str,
-        tool_args: Dict[str, Any],
+        tool_args: dict[str, Any],
         log: logging.Logger
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Validate and normalize tool args using Pydantic schema"""
         try:
             # Get schema
@@ -1224,7 +1382,7 @@ class ToolExecutor:
             return None
 
     @staticmethod
-    async def _run_tool(tool: object, args: Dict[str, Any]) -> Union[Dict[str, Any], str, Tuple[bool, str], List[Any], None]:
+    async def _run_tool(tool: object, args: dict[str, Any]) -> dict[str, Any] | str | tuple[bool, str] | list[Any] | None:
         """Run tool using appropriate method - all tools run in the same event loop as FastAPI"""
         if hasattr(tool, 'arun'):
             # Tool has async arun() - use it directly (no thread executor)
@@ -1238,7 +1396,7 @@ class ToolExecutor:
             return tool.run(**args)
 
     @staticmethod
-    def _process_retrieval_output(result: Union[Dict[str, Any], str, Tuple[bool, str], List[Any], None], state: ChatState, log: logging.Logger) -> str:
+    def _process_retrieval_output(result: dict[str, Any] | str | tuple[bool, str] | list[Any] | None, state: ChatState, log: logging.Logger) -> str:
         """Process retrieval tool output and update state (accumulates results from multiple retrieval calls)"""
         try:
             from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
@@ -2130,7 +2288,7 @@ GITHUB_GUIDANCE = r"""
 **"Reviews on my PRs" / "Reviews on repo X PRs" (no "every"/"all"):** get_owner → list_pull_requests → **one** get_pull_request_reviews(owner, repo, number=**list_pull_requests.data[0].number**).
 
 **"Give repo details then all PR details and every PR reviews" / "Every PR reviews" / "All PRs and every PR reviews":** get_owner(owner="me") → get_repository(owner, repo) → list_pull_requests(owner, repo, state="all") → then **one get_pull_request_reviews per PR**: plan get_pull_request_reviews(owner, repo, number=**list_pull_requests.data[0].number**), get_pull_request_reviews(owner, repo, number=**list_pull_requests.data[1].number**), … up to **list_pull_requests.data[9].number** (indices 0–9). Executor skips steps where the index does not exist.
-**"Review comments on PR 
+**"Review comments on PR
 **"Comment on this PR" / "Add a review comment on PR
 **"Review this PR" / "What changes in this PR?" / "What files changed in PR
 **"Approve this PR" / "Approve PR
@@ -2178,6 +2336,144 @@ GITHUB_GUIDANCE = r"""
 
 **R-GITHUB-14: Next-page pagination.** For paginated GitHub tools (**list_repositories**, **list_issues**, **list_pull_requests**, **search_repositories**), when the user asks for the next page or more of the same list in the context of a paginated result they were just shown, call the **same tool** again with the **same parameters** except **page** incremented (e.g. if they saw page 1, use page=2). Infer which tool and which parameters from conversation context.
 
+"""
+
+CLICKUP_GUIDANCE = r"""
+## ClickUp Tools
+
+### Available Tools
+- get_authorized_user — current authenticated user (id, name, email)
+- get_authorized_teams_workspaces — all workspaces (team_id, name) and team members
+- get_spaces — spaces in a workspace
+- get_folders — folders in a space
+- get_lists — lists in a folder
+- get_folderless_lists — lists directly in a space (no folder)
+- get_tasks — filter/search tasks across workspace, space, folder, or list
+- get_task — full details of a single task
+- search_tasks — find tasks by keyword (name, description, custom field text)
+- create_task — create a new task in a list
+- update_task — update fields on an existing task
+- get_comments — comments on a task or replies to a comment
+- create_task_comment — add a comment or reply to a comment on a task
+- create_checklist — add a checklist to a task
+- create_checklist_item — add an item to a checklist
+- update_checklist_item — check/uncheck or rename a checklist item
+- get_workspace_docs — all docs in a workspace
+- get_doc_pages — pages in a doc
+- get_doc_page — full content of a single page
+- create_doc — create a new doc
+- create_doc_page — add a page to a doc
+- update_doc_page — edit content or title of a page
+- create_space — create a new space in a workspace
+- create_folder — create a new folder in a space
+- create_list — create a new list in a folder or folderless list in a space
+- update_list — rename or update settings of a list
+
+### Dependencies
+- get_spaces              depends on: get_authorized_teams_workspaces
+- get_folders             depends on: get_spaces
+- get_lists               depends on: get_folders
+- get_folderless_lists    depends on: get_spaces
+- get_tasks               depends on: get_authorized_teams_workspaces
+- get_task                depends on: get_tasks | search_tasks | create_task
+- search_tasks            depends on: get_authorized_teams_workspaces
+- create_task             depends on: get_lists | get_folderless_lists
+- update_task             depends on: get_tasks | search_tasks | create_task
+- get_comments            depends on: get_tasks | search_tasks
+- create_task_comment     depends on: get_tasks | search_tasks
+- create_checklist        depends on: get_tasks | search_tasks
+- create_checklist_item   depends on: create_checklist | get_task
+- update_checklist_item   depends on: create_checklist | get_task
+- get_workspace_docs      depends on: get_authorized_teams_workspaces
+- get_doc_pages           depends on: get_workspace_docs | create_doc
+- get_doc_page            depends on: get_doc_pages
+- create_doc              depends on: get_authorized_teams_workspaces
+- create_doc_page         depends on: get_workspace_docs | create_doc
+- update_doc_page         depends on: get_doc_pages | create_doc_page
+- create_space            depends on: get_authorized_teams_workspaces
+- create_folder           depends on: get_spaces
+- create_list             depends on: get_folders
+- update_list             depends on: get_lists | get_folderless_lists
+- get_workspace_members   depends on: get_authorized_teams_workspaces (use for all members of a workspace; not list-specific)
+
+### Critical Rules
+- team_id and workspace_id are the same value — from get_authorized_teams_workspaces
+- A space has two kinds of lists: folder lists (get_folders → get_lists) and folderless lists (get_folderless_lists). Both must be checked when searching all lists in a space.
+- **Task by name:** Call **search_tasks**(team_id, keyword) first to get task_id, then use it for get_task, update_task, create_task_comment, get_comments, create_checklist, create_checklist_item, update_checklist_item. Subtask: search_tasks → get_task for list_id → create_task(list_id, name, parent=task_id).
+- When creating a task as a subtask, pass the parent task_id in the parent field. The list_id must be the same list the parent task belongs to (get it from get_task(parent_id)).
+- Never fabricate IDs — always obtain team_id, space_id, folder_id, list_id, task_id, doc_id, page_id, checklist_id, checklist_item_id from a prior tool call or explicit user input.
+- get_authorized_user is the source for the current user's id — use it when the user says "me", "my tasks", or "assign to me".
+"""
+MARIADB_GUIDANCE = r"""
+## MariaDB-Specific Guidance
+
+### Core Rules
+- Use MariaDB tools when the user asks for database data, table details, SQL results, or table definitions.
+- Prefer read-safe operations (`SELECT`, metadata introspection tools).
+- Do not run destructive SQL (`DROP`, `TRUNCATE`, `DELETE`, `ALTER`) unless the user explicitly asks.
+- If table/column context is unclear, discover structure first before executing SQL.
+- In multi-step tasks, execute in a strict tool loop: one tool call, inspect result, then choose next tool.
+
+### Tool Action Loop (MANDATORY)
+For MariaDB work, follow this loop every time:
+1. Choose exactly one next best tool.
+2. Call that tool with concrete parameters (no placeholders).
+3. Read the returned data/errors.
+4. Decide the next single tool call.
+5. Repeat until the task is complete.
+- Never guess columns/table names when schema tools can confirm them.
+- If a step fails, recover with introspection tools (`list_tables`, `fetch_db_schema`, `get_tables_schema`) before retrying SQL.
+
+### Recommended Tool Order by Scenario
+
+#### Case A: User asks a data question but table/column context is unknown
+1. `mariadb.fetch_db_schema`
+2. `mariadb.execute_query` (final SQL)
+
+#### Case B: User gives table name but not columns
+1. `mariadb.get_tables_schema`
+2. `mariadb.execute_query`
+
+#### Case C: User asks for table structure / DDL
+1. `mariadb.get_table_ddl` (single table)
+
+#### Case D: User asks "show full DB structure"
+1. `mariadb.fetch_db_schema`
+2. Optionally narrow with `mariadb.get_tables_schema` for key tables
+
+#### Case E: User asks "list what exists"
+1. `mariadb.list_tables`
+
+### SQL Construction Guidance
+- Select only needed columns; avoid `SELECT *` unless user explicitly wants all fields.
+- Add sensible limits for exploratory reads (for example `LIMIT 50`), unless user requests full result.
+- Use discovered column names/types from schema tools before writing joins/filters.
+- For time-based requests, use explicit date predicates and clear sorting.
+
+### Error Recovery (MariaDB)
+- If SQL fails due to missing table/column:
+    1. Run `mariadb.list_tables`
+    2. Run `mariadb.get_tables_schema`
+    3. Retry `mariadb.execute_query` with corrected identifiers
+- If results are empty:
+    1. Verify filters/date range
+    2. Re-check columns/types via `mariadb.get_tables_schema`
+    3. Retry with adjusted query
+- If permissions fail, report clearly and stop retry loops.
+
+### Planning Examples (one tool after another)
+
+Example 1: "Show total orders by status for last 30 days"
+1. `mariadb.fetch_db_schema`
+2. `mariadb.get_tables_schema(tables=["orders"])`
+3. `mariadb.execute_query(query="SELECT status, COUNT(*) AS total_orders FROM orders WHERE created_at >= NOW() - INTERVAL 30 DAY GROUP BY status ORDER BY total_orders DESC")`
+
+Example 2: "What columns are in invoice?"
+1. `mariadb.get_tables_schema(tables=["invoice"])`
+2. Optional follow-up: `mariadb.execute_query` only if user asks for row data
+
+Example 3: "Give me the DDL for invoice"
+1. `mariadb.get_table_ddl(table="invoice")`
 """
 
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
@@ -2235,12 +2531,40 @@ Examples of retrieval queries:
 - **Action requests:** "create/update/delete [resource]" → Use service tools
 - **DUAL-SOURCE:** If the query references a service that is BOTH indexed AND has live API → use BOTH retrieval + service search API in parallel
 
+**⚠️ DUAL-SOURCE TRIGGER PHRASES (use BOTH retrieval + service API when the service is indexed):**
+- "[topic] from [service]" → e.g., "holidays from confluence" → BOTH retrieval + confluence.search_content
+- "[topic] in [service]" → e.g., "docs in confluence" → BOTH retrieval + confluence.search_content
+- "find [topic] on [service]" → BOTH retrieval + matching service search tool
+- "[topic] tickets/issues/pages" (service resource noun) → BOTH retrieval + matching service search tool
+
 **⚠️ SERVICE NOUN OVERRIDE:** When the query contains a service-specific resource noun (tickets, issues, bugs, epics, stories, pages, spaces, emails, messages; or in GitHub context: repos, repositories, issue, PR, pull request), it ALWAYS triggers the matching service tool — even if the query otherwise seems ambiguous or like a general information request. The "retrieval DEFAULT" rule does NOT apply when a service noun is present.
 
 **Important:** Service data might also be indexed in the knowledge base. When it is:
 - User uses a service resource noun ("[topic] tickets", "[topic] pages") → BOTH retrieval + service search tool (parallel)
+- User mentions "[topic] from/in [service]" (service name) → BOTH retrieval + service search tool (parallel)
 - User wants current/live data with filters (status, assigned, sprint) → Service tools only
-- User wants information/explanation with no service resource noun → Retrieval only
+- User wants information/explanation with no service reference → Retrieval only
+
+**⚠️ TOPIC DISCOVERY RULE (HIGHEST PRIORITY):**
+
+When the user query contains a **topic, keyword, or concept** AND requests discovery of related items (list, find, show, search, browse), perform **hybrid search** by calling ALL available search dimensions in parallel:
+
+1. **Metadata search** → `knowledgehub.list_files` (finds items by name/metadata in the index)
+2. **Semantic content search** → service search tools like `*.search_content`, `*.search_issues`, etc (searches within documents via live API)
+3. **Content retrieval** → `retrieval.search_internal_knowledge` (searches within indexed document content)
+
+**Apply this rule regardless of:**
+- Which specific word the user uses ("files", "pages", "docs", "items", etc.)
+- Whether the user names a specific service or not
+- Whether the topic matches a known service noun or not
+
+**Only skip a dimension if its tool is not available.**
+
+**When NOT to apply (use specific tools instead):**
+- Exact ID lookup → live API only ("get page 12345")
+- Write actions → live API write tool only ("create a page")
+- Filtered stateful queries → live API only ("my open tickets this sprint")
+- Simple greetings/meta-questions → can_answer_directly
 
 ## Available Tools
 {available_tools}
@@ -2517,8 +2841,18 @@ Generate:
 {outlook_guidance}
 {teams_guidance}
 {github_guidance}
+{clickup_guidance}
+{mariadb_guidance}
 
 ## Planning Best Practices
+
+**Search Query Formulation (CRITICAL):**
+- Use concise, natural-language search queries (2-5 words)
+- DO NOT stuff multiple synonyms into one query — this reduces search relevance
+- For broader coverage, make MULTIPLE tool calls with DIFFERENT focused queries
+- For optional parameters you don't need: OMIT them entirely, do not pass empty strings ""
+  - ❌ WRONG: {{"space_id": ""}}
+  - ✅ CORRECT: {{}} (omit space_id)
 
 **Retrieval:**
 - Max 2-3 calls per request
@@ -2611,6 +2945,10 @@ WRONG (don't do this):
 **User asking about themselves:**
 - Use provided user info directly
 - Set `can_answer_directly: true`
+
+**User asking about capabilities:**
+- When users ask about capabilities, available tools, knowledge sources, or what actions you can perform
+- Set `can_answer_directly: true` and answer using the Capability Summary section below
 
 ## Output (JSON only)
 {{
@@ -2923,27 +3261,42 @@ If the user has multiple drives and specifies which one (e.g., "my OneDrive (Bus
 OUTLOOK_GUIDANCE = r"""
 ## Outlook-Specific Guidance
 
-### Tool Selection — Use the Right Outlook Tool for Every Task
+**Tool Selection**
+| User intent | Tool | Required fields | Optional fields |
+|---|---|---|---|
+| Send new email | `send_email` | `to_recipients`, `subject`, `body` | `body_type`, `cc_recipients`, `bcc_recipients` |
+| Reply to email | `reply_to_message` | `message_id`, `comment` | — |
+| Reply-all | `reply_all_to_message` | `message_id`, `comment` | — |
+| Forward email | `forward_message` | `message_id`, `to_recipients` | `comment` |
+| Search/list emails | `search_messages` | at least one of `search` or `filter` | `top`, `orderby` |
+| Get specific email | `get_message` | `message_id` | — |
+| List calendar events | `get_calendar_events` | `start_datetime`, `end_datetime` | `top` |
+| Create calendar event | `create_calendar_event` | `subject`, `start_datetime`, `end_datetime` | `timezone`, `body`, `location`, `attendees`, `is_online_meeting`, `recurrence` |
+| Get specific event | `get_calendar_event` | `event_id` | — |
+| Update event | `update_calendar_event` | `event_id` + at least one field to change | `subject`, `start_datetime`, `end_datetime`, `timezone`, `body`, `location`, `attendees`, `is_online_meeting`, `recurrence` |
+| Delete event | `delete_calendar_event` | `event_id` | — |
+| Search events by name | `search_calendar_events_in_range` | `keyword`, `start_datetime`, `end_datetime` | `top` |
+| Get recurring events ending | `get_recurring_events_ending` | `end_before` | `end_after`, `timezone`, `top` |
+| Delete recurring occurrences | `delete_recurring_event_occurrence` | `event_id`, `occurrence_dates` | `timezone` |
+| Get free time slots | `get_free_time_slots` | `start_datetime`, `end_datetime` | `timezone`, `slot_duration_minutes` |
+| List mail folders | `get_mail_folders` | — | `top` |
 
-| User intent | Correct Outlook tool | Key parameters |
-|---|---|---|
-| Send a new email | `outlook.send_email` | `to_recipients`, `subject`, `body` |
-| Reply to an email | `outlook.reply_to_message` | `message_id`, `comment` |
-| Reply-all to an email | `outlook.reply_all_to_message` | `message_id`, `comment` |
-| Forward an email | `outlook.forward_message` | `message_id`, `to_recipients` |
-| Search / list emails | `outlook.search_messages` | `search` or `filter`, `top` |
-| Get a specific email | `outlook.get_message` | `message_id` |
-| List calendar events | `outlook.get_calendar_events` | `start_datetime`, `end_datetime` |
-| Create a calendar event | `outlook.create_calendar_event` | `subject`, `start_datetime`, `end_datetime` |
-| Get a specific event | `outlook.get_calendar_event` | `event_id` |
-| Update a calendar event | `outlook.update_calendar_event` | `event_id`, fields to update |
-| Delete a calendar event | `outlook.delete_calendar_event` | `event_id` |
-| Search events by name in range | `outlook.search_calendar_events_in_range` | `keyword`, `start_datetime`, `end_datetime` |
-| Get recurring events ending soon | `outlook.get_recurring_events_ending` | `end_before` |
-| Delete recurring event occurrences | `outlook.delete_recurring_event_occurrence` | `event_id`, `occurrence_dates` |
-| Get free time slots | `outlook.get_free_time_slots` | `start_datetime`, `end_datetime` |
-| List mail folders | `outlook.get_mail_folders` | (no required args) |
+**⚠️ Never assume or fabricate required field values — always resolve them via the decision tree below.**
 
+---
+---
+**Date Handling**
+
+If a date includes a full month and day (e.g. "March 30"), use it directly.
+If only a day is given (e.g. "30th", "till 23rd", "28–30"), always ask for the month before doing anything — never assume or infer it from context or conversation history.
+Year always defaults to the current year — never ask the user for the year.
+All other date values (e.g. "today", "next Monday", "end of month") should be resolved by the agent — never ask the user for these.
+Never perform any create, update, or delete action on an ambiguous date
+---
+
+**R-OUT-0: Data Resolution — Fetch-Before-Ask (MANDATORY)**
+
+The Fetch-Before-Ask Decision Tree (run this for every unresolved parameter):
 
 
 ## R-OUT-0: Universal Data Resolution Hierarchy (CRITICAL — applies to EVERY tool call)
@@ -3015,79 +3368,19 @@ Is the value stated or computable from the user's message?
                   NO  → ask the user (Tier 5)
 ```
 
-This hierarchy is non-negotiable. Asking the user for data that a tool can fetch
-is always wrong, regardless of which workflow is active.
-
-**R-OUT-1: NEVER use `retrieval.search_internal_knowledge` for Outlook email or calendar queries.**
-Outlook queries always use Outlook service tools, not retrieval.
-- ❌ "What emails do I have?" → Do NOT use retrieval → ✅ Use `outlook.search_messages`
-- ❌ "Show my calendar" → Do NOT use retrieval → ✅ Use `outlook.get_calendar_events`
-- ❌ "Search emails about X" → Do NOT use retrieval → ✅ Use `outlook.search_messages` with `search` param
+This hierarchy is non-negotiable. Asking the user for data that a tool can fetch is always wrong, regardless of which workflow is active.
 
 ---
 
-**R-OUT-2: `message_id` resolution — NEVER ask the user for a message ID.**
-Users don't know message IDs. Always resolve them automatically:
-1. Check conversation history / Reference Data for a previously retrieved `message_id` → use directly
-2. If the user describes an email ("the email from John", "the meeting invite") → call `outlook.search_messages` first, then cascade
-3. NEVER fabricate or guess a message ID
+**R-OUT-1:** Never use `retrieval.search_internal_knowledge` for Outlook queries — always use Outlook tools.
 
-```json
-{
-  "tools": [
-    {"name": "outlook.search_messages", "args": {"search": "from:john@example.com budget report", "top": 5}},
-    {"name": "outlook.reply_to_message", "args": {"message_id": "{{outlook.search_messages.data.results[0].id}}", "comment": "Thanks, I'll review this."}}
-  ]
-}
-```
+**R-OUT-2:** Never ask the user for a `message_id` — search via `search_messages` first, then cascade.
 
----
+**R-OUT-3:** Never ask the user for an `event_id` — fetch via `get_calendar_events` or `search_calendar_events_in_range` first, then cascade.
 
-**R-OUT-3: `event_id` resolution — NEVER ask the user for an event ID.**
-Users don't know event IDs. Always resolve them automatically:
-1. Check conversation history / Reference Data for a previously retrieved `event_id` → use directly
-2. If the user describes an event ("tomorrow's standup", "the 2pm meeting") → call `outlook.get_calendar_events` with a narrow time range first, then cascade
-3. NEVER fabricate or guess an event ID
+**R-OUT-4:** Use `search` for keyword queries, `filter` for OData conditions (e.g. `isRead eq false`, date filters).
 
-```json
-{
-  "tools": [
-    {"name": "outlook.get_calendar_events", "args": {"start_datetime": "2026-03-03T00:00:00", "end_datetime": "2026-03-03T23:59:59", "top": 10}},
-    {"name": "outlook.update_calendar_event", "args": {"event_id": "{{outlook.get_calendar_events.data.results[0].id}}", "location": "Conference Room B"}}
-  ]
-}
-```
-
----
-
-**R-OUT-4: Email search — use `search` for keyword queries, `filter` for OData conditions.**
-- `search` (OData `$search`): keyword-based, natural language → e.g., `"budget report"`, `"from:john@example.com"`
-- `filter` (OData `$filter`): structured conditions → e.g., `"isRead eq false"`, `"receivedDateTime ge 2026-03-01T00:00:00Z"`
-- Use `search` for "find emails about X" queries
-- Use `filter` for "unread emails", "emails from today", "emails after date" queries
-- Both can be combined with `top` and `orderby`
-
-```json
-// Keyword search
-{"name": "outlook.search_messages", "args": {"search": "project proposal", "top": 10}}
-
-// Structured filter
-{"name": "outlook.search_messages", "args": {"filter": "isRead eq false", "orderby": "receivedDateTime desc", "top": 20}}
-
-// Emails from a specific date
-{"name": "outlook.search_messages", "args": {"filter": "receivedDateTime ge 2026-03-01T00:00:00Z", "top": 25}}
-```
-
----
-
-**R-OUT-5: Calendar events — ALWAYS provide both `start_datetime` and `end_datetime`.**
-`get_calendar_events` requires both. Infer sensible defaults from user intent:
-- "today's meetings" → `start_datetime: today 00:00:00`, `end_datetime: today 23:59:59`
-- "this week's events" → `start_datetime: Monday 00:00:00`, `end_datetime: Sunday 23:59:59`
-- "meetings tomorrow" → `start_datetime: tomorrow 00:00:00`, `end_datetime: tomorrow 23:59:59`
-- "next 7 days" → `start_datetime: today 00:00:00`, `end_datetime: 7 days from now 23:59:59`
-- Use ISO 8601 format: `2026-03-03T09:00:00`
-- Always include `timezone` matching the user's context (default `"UTC"` if unknown)
+**R-OUT-5:** Always provide both `start_datetime` and `end_datetime` for calendar tools. Infer sensible defaults from user intent. Use ISO 8601 without `Z`: `2026-03-03T09:00:00`.
 
 ---
 
@@ -3175,231 +3468,22 @@ The `recurrence` field is a plain Python dict (not a nested model). All keys are
 
 ---
 
-**R-OUT-7: Cross-service cascade — fetch from Outlook, act in another service (or vice versa).**
-When the user asks to fetch email/calendar data AND post/use it elsewhere, plan BOTH tools in sequence.
+**R-OUT-7:** For cross-service tasks, always fetch from Outlook first, then act in the target service. Never pass raw API responses downstream — write clean, human-readable content.
 
-Pattern: "[fetch email/event] and [post/create/update in Service B]"
+**R-OUT-8:** Use ISO 8601 without `Z` suffix: ✅ `2026-03-03T09:00:00` ❌ `2026-03-03T09:00:00Z`. Always pair with an explicit `timezone` field.
 
-Step 1 → fetch with Outlook tool
-Step 2 → act in Service B with clean, formatted content
+**R-OUT-9/10:** Use `reply_to_message` for replies, `reply_all_to_message` for reply-all, `forward_message` for forwards. Never use `send_email` for replies or forwards.
 
-Key rules:
-- Always fetch FIRST, act SECOND
-- NEVER pass raw Outlook API response as content to another service
-- Write clean, human-readable content for the downstream tool
+**R-OUT-11:** `search_messages` defaults to `top: 10`, max 50 per call. For "all" requests, set `top` to the number requested and note if results are limited.
 
-Example — "Get the meeting invite from John and create a Jira ticket":
-```json
-{
-  "tools": [
-    {"name": "outlook.search_messages", "args": {"search": "from:john meeting invite", "top": 3}},
-    {"name": "jira.create_issue", "args": {
-      "project_key": "PA",
-      "summary": "Meeting: {{outlook.search_messages.data.results[0].subject}}",
-      "issue_type": "Task",
-      "description": "Follow-up from meeting invite received via email."
-    }}
-  ]
-}
-```
+**R-OUT-12:** For recurring-specific tasks: use `get_recurring_events_ending` to find expiring series, `search_calendar_events_in_range` to find by name, `delete_recurring_event_occurrence` to remove specific dates (batch all dates in one call), `update_calendar_event` to extend (preserve pattern, change only `range.endDate`). Always use `seriesMasterId` for series operations.
 
----
+**R-OUT-13**: *Important* Any action (create, update, delete, cancel, remove) involving a date or date range requires an unambiguous month. If the user provides only a day or day range (e.g. "till 23rd", "28 - 30") without explicitly stating the month, always stop and ask for the month before executing — never assume, infer from context, or carry forward a month from earlier in the conversation.
+This applies equally to start dates, end dates, and recurrence end dates.A wrong action on the wrong date cannot always be undone.
 
-**R-OUT-8: Datetime format — always use ISO 8601 without `Z` suffix for Outlook.**
-- ✅ CORRECT: `"2026-03-03T09:00:00"`
-- ❌ WRONG: `"2026-03-03T09:00:00Z"` (trailing Z may cause timezone conflicts with explicit `timezone` param)
-- Always pair `start_datetime`/`end_datetime` with an explicit `timezone` field
-- Use `"UTC"` as default if user timezone is unknown; use IANA or Windows timezone names for known zones
-  - IANA: `"America/New_York"`, `"Asia/Kolkata"`
-  - Windows: `"Eastern Standard Time"`, `"India Standard Time"`
+**R-OUT-14**: Never ask the user for timezone — always use the user's timezone that is injected into the system prompt. Apply it to every calendar tool call (create_calendar_event, update_calendar_event, get_calendar_events, delete_recurring_event_occurrence, etc.) without exception.
 
----
-
-**R-OUT-9: Reply vs Reply-All vs Forward — use the exact right tool.**
-- User says "reply", "respond to" → `outlook.reply_to_message` (replies only to sender)
-- User says "reply all", "respond to everyone" → `outlook.reply_all_to_message`
-- User says "forward", "send to someone else" → `outlook.forward_message`
-- NEVER use `send_email` for replies or forwards — it creates a new unthreaded message
-
----
-
-**R-OUT-10: `send_email` is for NEW emails only — not replies or forwards.**
-- ❌ "Reply to John's email" → Do NOT use `send_email` → ✅ Use `reply_to_message`
-- ❌ "Forward this to Sarah" → Do NOT use `send_email` → ✅ Use `forward_message`
-- ✅ "Send an email to X about Y" (new message, no thread) → Use `send_email`
-
----
-
-**R-OUT-11: Pagination for email search.**
-`outlook.search_messages` defaults to `top: 10`. If user asks for "all", "complete", or a large number:
-- Set `top` to the number requested (max 50 per call)
-- If more needed, note that results are limited and present what was fetched
-
----
-
-**Common Planning Patterns:**
-
-**Pattern: Read and reply to an email**
-```json
-{
-  "tools": [
-    {"name": "outlook.search_messages", "args": {"search": "from:boss@company.com Q4 report", "top": 3}},
-    {"name": "outlook.reply_to_message", "args": {
-      "message_id": "{{outlook.search_messages.data.results[0].id}}",
-      "comment": "Thanks for sending this over. I'll review and follow up by EOD."
-    }}
-  ]
-}
-```
-
-**Pattern: Create a one-time meeting**
-```json
-{
-  "tools": [
-    {"name": "outlook.create_calendar_event", "args": {
-      "subject": "Team Sync",
-      "start_datetime": "2026-03-05T14:00:00",
-      "end_datetime": "2026-03-05T15:00:00",
-      "timezone": "India Standard Time",
-      "attendees": ["alice@example.com", "bob@example.com"],
-      "is_online_meeting": true
-    }}
-  ]
-}
-```
-
-**Pattern: Create a recurring weekly meeting**
-```json
-{
-  "tools": [
-    {"name": "outlook.create_calendar_event", "args": {
-      "subject": "Weekly Standup",
-      "start_datetime": "2026-03-02T09:00:00",
-      "end_datetime": "2026-03-02T09:30:00",
-      "timezone": "India Standard Time",
-      "recurrence": {
-        "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["Monday"]},
-        "range": {"type": "endDate", "startDate": "2026-03-02", "endDate": "2026-12-28"}
-      }
-    }}
-  ]
-}
-```
-
-**Pattern: Create a recurring daily event (30 times)**
-```json
-{
-  "tools": [
-    {"name": "outlook.create_calendar_event", "args": {
-      "subject": "Daily Standup",
-      "start_datetime": "2026-03-01T09:00:00",
-      "end_datetime": "2026-03-01T09:15:00",
-      "timezone": "India Standard Time",
-      "recurrence": {
-        "pattern": {"type": "daily", "interval": 1},
-        "range": {"type": "numbered", "startDate": "2026-03-01", "numberOfOccurrences": 30}
-      }
-    }}
-  ]
-}
-```
-
-**Pattern: Create a recurring monthly event (first Monday, forever)**
-```json
-{
-  "tools": [
-    {"name": "outlook.create_calendar_event", "args": {
-      "subject": "Monthly Planning",
-      "start_datetime": "2026-03-02T10:00:00",
-      "end_datetime": "2026-03-02T11:00:00",
-      "timezone": "India Standard Time",
-      "recurrence": {
-        "pattern": {"type": "relativeMonthly", "interval": 1, "daysOfWeek": ["Monday"], "index": "first"},
-        "range": {"type": "noEnd", "startDate": "2026-03-02"}
-      }
-    }}
-  ]
-}
-```
-
-**Pattern: Reschedule a meeting by name**
-```json
-{
-  "tools": [
-    {"name": "outlook.get_calendar_events", "args": {
-      "start_datetime": "2026-03-01T00:00:00",
-      "end_datetime": "2026-03-07T23:59:59"
-    }},
-    {"name": "outlook.update_calendar_event", "args": {
-      "event_id": "{{outlook.get_calendar_events.data.results[0].id}}",
-      "start_datetime": "2026-03-04T15:00:00",
-      "end_datetime": "2026-03-04T16:00:00",
-      "timezone": "India Standard Time"
-    }}
-  ]
-}
-```
-
-**Pattern: Delete a meeting by searching first**
-```json
-{
-  "tools": [
-    {"name": "outlook.get_calendar_events", "args": {
-      "start_datetime": "2026-03-03T00:00:00",
-      "end_datetime": "2026-03-03T23:59:59"
-    }},
-    {"name": "outlook.delete_calendar_event", "args": {
-      "event_id": "{{outlook.get_calendar_events.data.results[0].id}}"
-    }}
-  ]
-}
-```
-
----
-
-**R-OUT-12: Recurring event tools — use the right tool for recurring-specific tasks.**
-
-| Task | Tool | Notes |
-|---|---|---|
-| Find recurring events ending within a date range | `outlook.get_recurring_events_ending` | Use `end_before` (required), `end_after` (optional, defaults to now) |
-| Search for a recurring event by name | `outlook.search_calendar_events_in_range` | Use `keyword` to match subject |
-| Delete specific occurrences of a recurring event | `outlook.delete_recurring_event_occurrence` | Pass `event_id` (series master) + `occurrence_dates` (list of YYYY-MM-DD) |
-| Extend a recurring event | `outlook.update_calendar_event` | Update the `recurrence.range.endDate` to a new date |
-
-**Pattern: Get recurring events ending this week**
-```json
-{
-  "tools": [
-    {"name": "outlook.get_recurring_events_ending", "args": {
-      "end_before": "2026-03-08T23:59:59",
-      "end_after": "2026-03-02T00:00:00",
-      "timezone": "India Standard Time",
-      "top": 20
-    }}
-  ]
-}
-```
-
-**Pattern: Extend a recurring event and delete weekend/holiday occurrences**
-Step 1: Find the event → Get `seriesMasterId` from results
-Step 2: Update recurrence end date:
-```json
-{"name": "outlook.update_calendar_event", "args": {
-  "event_id": "<seriesMasterId>",
-  "recurrence": {
-    "pattern": {"type": "weekly", "interval": 1, "daysOfWeek": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]},
-    "range": {"type": "endDate", "startDate": "2026-03-02", "endDate": "2026-04-30"}
-  }
-}}
-```
-Step 3: Delete holiday/weekend occurrences:
-```json
-{"name": "outlook.delete_recurring_event_occurrence", "args": {
-  "event_id": "<seriesMasterId>",
-  "occurrence_dates": ["2026-03-14", "2026-03-15", "2026-03-21", "2026-03-22"],
-  "timezone": "India Standard Time"
-}}
-```
+**R-OUT-15**: Never report an action as completed unless a tool call was actually executed and returned a success response. Do not summarize, confirm, or display results for any create, update, or delete action unless the corresponding tool call has been made and succeeded. If a required clarification (e.g. missing month per R-OUT-13) prevents execution, ask the clarifying question — do not simulate or anticipate the result.
 
 **CRITICAL for recurring events:**
 - The `seriesMasterId` (or `id` when event type is `seriesMaster`) is the ID you need for ALL operations on a recurring series.
@@ -3567,6 +3651,8 @@ async def planner_node(
     outlook_guidance = OUTLOOK_GUIDANCE if _has_outlook_tools(state) else ""
     teams_guidance = TEAMS_GUIDANCE if _has_teams_tools(state) else ""
     github_guidance = GITHUB_GUIDANCE if _has_github_tools(state) else ""
+    clickup_guidance = CLICKUP_GUIDANCE if _has_clickup_tools(state) else ""
+    mariadb_guidance = MARIADB_GUIDANCE if _has_mariadb_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
@@ -3576,13 +3662,19 @@ async def planner_node(
         onedrive_guidance=onedrive_guidance,
         outlook_guidance=outlook_guidance,
         teams_guidance=teams_guidance,
-        github_guidance=github_guidance
+        github_guidance=github_guidance,
+        clickup_guidance=clickup_guidance,
+        mariadb_guidance=mariadb_guidance
     )
+
+    # Add capability summary so LLM can answer "what can you do?" questions
+    capability_summary = build_capability_summary(state)
+    system_prompt += f"\n\n{capability_summary}"
 
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
     agent_tools = state.get("tools", []) or []
     has_user_tools = bool(agent_tools)
-    has_knowledge = bool(state.get("kb") or state.get("apps") or state.get("agent_knowledge"))
+    has_knowledge = state.get("has_knowledge", False)
 
     if not has_knowledge:
         if not has_user_tools:
@@ -3715,59 +3807,6 @@ async def planner_node(
         "can_answer_directly": plan.get("can_answer_directly", False),
     }
 
-    # ── TWO-PHASE ENFORCEMENT ──────────────────────────────────────────────────
-    # If the plan has BOTH retrieval.search_internal_knowledge AND write tools,
-    # strip the write tools from this cycle. Let retrieval run first; in the
-    # continue cycle the planner will see the actual KB content in context and
-    # can write grounded email/comment/page content inline — no hallucination.
-    #
-    # Skip this enforcement if retrieval has already run in a previous iteration
-    # (meaning we're in Phase 2 and the planner should proceed with write tools).
-    plan_tools = plan.get("tools", [])
-    executed_tool_names = state.get("executed_tool_names", [])
-
-    def _is_retrieval_tool(name: str) -> bool:
-        n = name.lower()
-        return "retrieval" in n or "search_internal_knowledge" in n
-
-    retrieval_already_run = any(_is_retrieval_tool(t) for t in executed_tool_names)
-    has_retrieval_in_plan = any(
-        _is_retrieval_tool(t.get("name", ""))
-        for t in plan_tools if isinstance(t, dict)
-    )
-    has_write_in_plan = any(
-        _is_write_tool(t.get("name", ""))
-        for t in plan_tools if isinstance(t, dict)
-    )
-
-    if has_retrieval_in_plan and has_write_in_plan and not retrieval_already_run:
-        retrieval_tools = [
-            t for t in plan_tools
-            if isinstance(t, dict) and _is_retrieval_tool(t.get("name", ""))
-        ]
-        write_tools = [
-            t for t in plan_tools
-            if isinstance(t, dict) and _is_write_tool(t.get("name", ""))
-        ]
-        log.info(
-            f"⚡ TWO-PHASE PLAN: {len(plan_tools)} total tools detected. "
-            f"Deferring {len(write_tools)} write tool(s) to Phase 2 so LLM "
-            f"generates content from actual retrieval results (not hallucination). "
-            f"Running {len(retrieval_tools)} retrieval tool(s) in Phase 1."
-        )
-        plan["tools"] = retrieval_tools
-        state["execution_plan"] = plan
-        state["planned_tool_calls"] = retrieval_tools
-        state["pending_tool_calls"] = bool(retrieval_tools)
-        # Mark that this is Phase 1 of a genuine two-phase plan (retrieval first,
-        # then write action). The reflect node uses this to correctly determine
-        # whether a continue is needed vs. the task being read-only.
-        state["is_two_phase_plan"] = True
-    else:
-        # Not a two-phase plan (or Phase 2 is running) — clear the flag.
-        state["is_two_phase_plan"] = False
-    # ─────────────────────────────────────────────────────────────────────────
-
     # Handle clarification request
     if plan.get("needs_clarification"):
         state["reflection_decision"] = "respond_clarify"
@@ -3783,7 +3822,7 @@ async def planner_node(
 
     return state
 
-def _build_conversation_messages(conversations: List[Dict], log: logging.Logger) -> List[Union[HumanMessage, AIMessage]]:
+def _build_conversation_messages(conversations: list[dict], log: logging.Logger) -> list[HumanMessage | AIMessage]:
     """Convert conversation history to LangChain messages with sliding window
 
     Uses a sliding window of MAX_CONVERSATION_HISTORY user+bot pairs (40 messages total),
@@ -3868,7 +3907,7 @@ def _build_conversation_messages(conversations: List[Dict], log: logging.Logger)
     return messages
 
 
-def _format_reference_data(all_reference_data: List[Dict], log: logging.Logger) -> str:
+def _format_reference_data(all_reference_data: list[dict], log: logging.Logger) -> str:
     """
     Format reference data for inclusion in planner messages.
 
@@ -3945,7 +3984,7 @@ def _format_reference_data(all_reference_data: List[Dict], log: logging.Logger) 
     return "\n".join(lines)
 
 
-def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> List[Union[HumanMessage, AIMessage, SystemMessage]]:
+def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> list[HumanMessage | AIMessage | SystemMessage]:
     """Build LangChain messages for planner with conversation context - using message format for better context awareness
 
     Returns:
@@ -3962,11 +4001,7 @@ def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -
 
     # Build current query message
     user_context = _format_user_context(state)
-    if user_context:
-        # Combine query and user context
-        query_content = f"{query}\n\n{user_context}"
-    else:
-        query_content = query
+    query_content = f"{query}\n\n{user_context}" if user_context else query
 
     # Add current query as HumanMessage
     messages.append(HumanMessage(content=query_content))
@@ -4019,7 +4054,7 @@ def _format_user_context(state: ChatState) -> str:
     return "\n".join(parts)
 
 
-def _extract_missing_params_from_error(error_msg: str) -> List[str]:
+def _extract_missing_params_from_error(error_msg: str) -> list[str]:
     """Extract missing parameter names from validation error"""
     missing = []
 
@@ -4037,7 +4072,7 @@ def _extract_missing_params_from_error(error_msg: str) -> List[str]:
     return list(set(missing))  # Remove duplicates
 
 
-def _extract_invalid_params_from_args(args: Dict, error_msg: str) -> List[str]:
+def _extract_invalid_params_from_args(args: dict, error_msg: str) -> list[str]:
     """Detect parameters that were provided but not expected"""
     # This is harder - would need to compare against schema
     # For now, just return empty
@@ -4208,18 +4243,18 @@ def _build_continue_context(state: ChatState, log: logging.Logger) -> str:
         parts.append("")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Section 3 — Duplicate-prevention guard for write/action tools
+    # Section 3 — Duplicate-prevention guard for already-completed tools
     # ══════════════════════════════════════════════════════════════════════════
-    completed_writes = [
+    completed_tools = [
         r.get("tool_name", "unknown")
         for r in tool_results
-        if r.get("status") == "success" and _is_write_tool(r.get("tool_name", ""))
+        if r.get("status") == "success"
     ]
-    if completed_writes:
+    if completed_tools:
         parts.append(
             "⚠️ ALREADY COMPLETED — DO NOT REPEAT: The following tools already "
             "succeeded. Planning them again will create duplicates:\n" +
-            "\n".join(f"  ✅ {t}" for t in completed_writes) +
+            "\n".join(f"  ✅ {t}" for t in completed_tools) +
             "\nOnly plan the remaining incomplete steps."
         )
         parts.append("")
@@ -4252,13 +4287,13 @@ def _build_continue_context(state: ChatState, log: logging.Logger) -> str:
 async def _plan_with_validation_retry(
     llm: BaseChatModel,
     system_prompt: str,
-    messages: List[Union[HumanMessage, AIMessage, SystemMessage]],
+    messages: list[HumanMessage | AIMessage | SystemMessage],
     state: ChatState,
     log: logging.Logger,
     query: str,
-    writer: Optional[StreamWriter] = None,
-    config: Optional[RunnableConfig] = None
-) -> Dict[str, Any]:
+    writer: StreamWriter | None = None,
+    config: RunnableConfig | None = None
+) -> dict[str, Any]:
     """
     Plan with tool validation retry loop.
 
@@ -4280,29 +4315,12 @@ async def _plan_with_validation_retry(
     while validation_retry_count <= max_retries:
         try:
             # Build message list: SystemMessage + conversation history + current query
-            llm_messages = [SystemMessage(content=system_prompt)] + messages
+            llm_messages = [SystemMessage(content=system_prompt), *messages]
 
-            # Start periodic status updates task if writer is available
-            update_task = None
-            if writer and config:
-                async def send_periodic_updates() -> None:
-                    """Send periodic status updates during long planning operations"""
-                    try:
-                        await asyncio.sleep(3)  # Wait 3 seconds before first update
-                        safe_stream_write(writer, {
-                            "event": "status",
-                            "data": {"status": "planning", "message": "Still analyzing... this may take a moment"}
-                        }, config)
-                        await asyncio.sleep(5)  # Wait 5 more seconds
-                        safe_stream_write(writer, {
-                            "event": "status",
-                            "data": {"status": "planning", "message": "Reviewing available tools and planning steps..."}
-                        }, config)
-                    except asyncio.CancelledError:
-                        pass
-
-                update_task = asyncio.create_task(send_periodic_updates())
-
+            # Keepalive prevents SSE timeout during LLM planning call
+            keepalive_task = asyncio.create_task(
+                send_keepalive(writer, config, "Planning actions...")
+            )
             try:
                 # Call LLM with full conversation context as messages
                 response = await asyncio.wait_for(
@@ -4310,13 +4328,9 @@ async def _plan_with_validation_retry(
                     timeout=NodeConfig.PLANNER_TIMEOUT_SECONDS
                 )
             finally:
-                # Cancel update task if it's still running
-                if update_task and not update_task.done():
-                    update_task.cancel()
-                    try:
-                        await update_task
-                    except asyncio.CancelledError:
-                        pass
+                keepalive_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await keepalive_task
 
             # Parse response
             plan = _parse_planner_response(
@@ -4329,10 +4343,9 @@ async def _plan_with_validation_retry(
 
             # Fix empty retrieval queries in fallback plans
             for tool in tools:
-                if "retrieval" in tool.get("name", "").lower():
-                    if not tool.get("args", {}).get("query", "").strip():
-                        tool["args"]["query"] = query  # Use original user query
-                        log.info(f"🔧 Fixed empty retrieval query with user query: {query[:50]}")
+                if "retrieval" in tool.get("name", "").lower() and not tool.get("args", {}).get("query", "").strip():
+                    tool["args"]["query"] = query  # Use original user query
+                    log.info(f"🔧 Fixed empty retrieval query with user query: {query[:50]}")
 
             is_valid, invalid_tools, available_tool_names = _validate_planned_tools(tools, state, log)
 
@@ -4404,7 +4417,7 @@ Choose tools ONLY from the available list above.
     return fallback
 
 
-def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]:
+def _parse_planner_response(content: str, log: logging.Logger) -> dict[str, Any]:
     """Parse planner JSON response with error handling"""
     content = content.strip()
 
@@ -4436,14 +4449,15 @@ def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]
                     try:
                         json_str = content[start_idx:i+1]
                         test_plan = json.loads(json_str)
-                        if isinstance(test_plan, dict):
+                        if isinstance(test_plan, dict) and (
                             # Prefer objects with "tools" field, but accept any valid dict
-                            if "tools" in test_plan or not found_valid:
-                                content = json_str  # Use this JSON object
-                                found_valid = True
-                                log.debug(f"Extracted first complete JSON object from multiple JSON responses (length: {len(json_str)})")
-                                if "tools" in test_plan:
-                                    break  # Found one with tools, use it
+                            "tools" in test_plan or not found_valid
+                        ):
+                            content = json_str  # Use this JSON object
+                            found_valid = True
+                            log.debug(f"Extracted first complete JSON object from multiple JSON responses (length: {len(json_str)})")
+                            if "tools" in test_plan:
+                                break  # Found one with tools, use it
                     except json.JSONDecodeError:
                         continue
         # If we found a valid one, content is already updated
@@ -4463,13 +4477,11 @@ def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]
             plan.setdefault("tools", [])
 
             # Normalize tools
-            normalized_tools = []
-            for tool in plan.get("tools", []):
-                if isinstance(tool, dict) and "name" in tool:
-                    normalized_tools.append({
-                        "name": tool["name"],
-                        "args": tool.get("args", {})
-                    })
+            normalized_tools = [
+                {"name": tool["name"], "args": tool.get("args", {})}
+                for tool in plan.get("tools", [])
+                if isinstance(tool, dict) and "name" in tool
+            ]
 
             # Limit retrieval queries
             retrieval_tools = [t for t in normalized_tools if "retrieval" in t.get("name", "").lower()]
@@ -4497,7 +4509,7 @@ def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]
     return _create_fallback_plan("")
 
 
-def _create_fallback_plan(query: str, state: "ChatState | None" = None) -> Dict[str, Any]:
+def _create_fallback_plan(query: str, state: "ChatState | None" = None) -> dict[str, Any]:
     """Create a context-aware fallback plan when the planner times out or fails.
 
     Decision tree:
@@ -4514,11 +4526,7 @@ def _create_fallback_plan(query: str, state: "ChatState | None" = None) -> Dict[
     has_knowledge = False
     if state:
         all_tool_results = state.get("all_tool_results", []) or []
-        has_knowledge = bool(
-            state.get("agent_knowledge")
-            or state.get("kb")
-            or state.get("apps")
-        )
+        has_knowledge = state.get("has_knowledge", False)
 
     executed_names = {
         r.get("tool_name", "") for r in all_tool_results if isinstance(r, dict)
@@ -4611,10 +4619,10 @@ def _create_fallback_plan(query: str, state: "ChatState | None" = None) -> Dict[
 
 
 def _validate_planned_tools(
-    planned_tools: List[Dict[str, Any]],
+    planned_tools: list[dict[str, Any]],
     state: ChatState,
     log: logging.Logger
-) -> Tuple[bool, List[str], List[str]]:
+) -> tuple[bool, list[str], list[str]]:
     """
     Validate planned tool names against available tools.
 
@@ -4630,17 +4638,27 @@ def _validate_planned_tools(
         tools = get_agent_tools_with_schemas(state)
         llm = state.get("llm")
 
-        # Get available tool names
-        available_tool_names = {getattr(tool, 'name', str(tool)) for tool in tools}
+        # Get available tool names (both sanitized and original, like tools_by_name in execution)
+        available_tool_names = set()
+        for tool in tools:
+            sanitized_name = getattr(tool, 'name', str(tool))
+            available_tool_names.add(sanitized_name)
+            # Also add original name if different (like tools_by_name does)
+            original_name = getattr(tool, '_original_name', sanitized_name)
+            if original_name != sanitized_name:
+                available_tool_names.add(original_name)
 
-        # Check for invalid tools
+        # Check for invalid tools — same 2-step resolution as execution
         invalid_tools = []
         for tool_call in planned_tools:
             if isinstance(tool_call, dict):
                 tool_name = tool_call.get('name', '')
-                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name
-
-                if normalized_name not in available_tool_names and tool_name not in available_tool_names:
+                found = (
+                    tool_name in available_tool_names
+                    or (_sanitize_tool_name_if_needed(tool_name, llm, state) if llm else tool_name)
+                    in available_tool_names
+                )
+                if not found:
                     invalid_tools.append(tool_name)
 
         is_valid = len(invalid_tools) == 0
@@ -4690,6 +4708,17 @@ def _has_github_tools(state: ChatState) -> bool:
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "github" in ts.get("name", "").lower() for ts in agent_toolsets)
 
+def _has_mariadb_tools(state: ChatState) -> bool:
+    """Check if MariaDB tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "mariadb" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
+def _has_clickup_tools(state: ChatState) -> bool:
+    """Check if ClickUp tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "clickup" in ts.get("name", "").lower() for ts in agent_toolsets)
+
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     """
@@ -4709,7 +4738,7 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     # ── 1. Classify knowledge sources ────────────────────────────────────────
     # KB = document stores; everything else = app connector snapshot
     kb_sources: list[str] = []
-    indexed_apps: list[dict] = []   # {"label": str, "type_key": str}
+    indexed_apps: list[dict] = []   # {"label": str, "type_key": str, "connector_id": str}
 
     for k in agent_knowledge:
         if not isinstance(k, dict):
@@ -4717,14 +4746,15 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
         name     = k.get("displayName") or k.get("name") or ""
         ktype    = (k.get("type") or "").strip()
         ktype_up = ktype.upper()
+        connector_id = (k.get("connectorId") or "").strip()
 
         if ktype_up == "KB":
-            kb_sources.append(name or "Knowledge Base")
+            kb_sources.append(name or "Knowledge Base (Collection)")
         else:
             # Normalise to lowercase single-word key (e.g. "DRIVE WORKSPACE" → "drive")
             type_key = ktype.lower().split()[0] if ktype else ""
             label    = name or type_key.capitalize() or "App Connector"
-            indexed_apps.append({"label": label, "type_key": type_key})
+            indexed_apps.append({"label": label, "type_key": type_key, "connector_id": connector_id})
 
     indexed_type_keys = {a["type_key"] for a in indexed_apps if a["type_key"]}
 
@@ -4742,13 +4772,11 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
         # Normalise toolset name to type_key (same logic as knowledge)
         ts_key   = ts_name.split()[0]
         ts_tools = ts.get("tools", [])
-        tool_names = []
-        for t in ts_tools:
-            if isinstance(t, dict):
-                tool_names.append(
-                    t.get("fullName") or
-                    f"{ts_key}.{t.get('toolName') or t.get('name', '')}"
-                )
+        tool_names = [
+            t.get("fullName") or f"{ts_key}.{t.get('toolName') or t.get('name', '')}"
+            for t in ts_tools
+            if isinstance(t, dict)
+        ]
         if not tool_names:
             tool_names = [f"{ts_key}.*"]
 
@@ -4776,16 +4804,17 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
 
         if kb_sources:
             lines.append("\n**Knowledge Bases (always searched, no filter needed):**")
-            for kb in kb_sources:
-                lines.append(f"  - 📄 {kb}")
+            lines.extend(f"  - 📄 {kb}" for kb in kb_sources)
 
         if indexed_apps:
             lines.append(
                 "\n**Indexed App Connectors** (text is searchable via retrieval):\n"
-                "  ⚠️  Only these app names are valid in `filters.apps` for retrieval:"
+                "  Use the type_key or connector_id in `filters.apps` for retrieval:"
             )
-            for app in indexed_apps:
-                lines.append(f"  - 🔗 `{app['type_key']}` ({app['label']})")
+            lines.extend(
+                f"  - 🔗 `{app['type_key']}` ({app['label']}) — connector_id: `{app['connector_id']}`"
+                for app in indexed_apps
+            )
         else:
             lines.append(
                 "\n⚠️  **NO app connectors are indexed** — only Knowledge Bases above are available.\n"
@@ -4917,7 +4946,7 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
     return "\n".join(lines)
 
 # Tool description caching
-_tool_description_cache: Dict[str, str] = {}
+_tool_description_cache: dict[str, str] = {}
 
 
 def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
@@ -4926,7 +4955,7 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
     agent_toolsets = state.get("agent_toolsets", [])
     llm = state.get("llm")
 
-    has_knowledge = bool(state.get("kb") or state.get("apps") or state.get("agent_knowledge"))
+    has_knowledge = state.get("has_knowledge", False)
 
     from app.modules.agents.qna.tool_system import (
         _requires_sanitized_tool_names,
@@ -4956,7 +4985,7 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
         return "### retrieval.search_internal_knowledge\n  ✅ Use: Search company knowledge"
 
 
-def _get_field_type_name(field_info) -> str:
+def _get_field_type_name(field_info: object) -> str:
     """Get type name from Pydantic v2 field"""
     try:
         annotation = field_info.annotation
@@ -4976,13 +5005,12 @@ def _get_field_type_name(field_info) -> str:
         else:
             type_str = str(annotation).lower()
             # Clean up common type representations
-            type_str = type_str.replace('<class ', '').replace('>', '').replace("'", "")
-            return type_str
+            return type_str.replace('<class ', '').replace('>', '').replace("'", "")
     except Exception:
         return "any"
 
 
-def _get_field_type_name_v1(field_info) -> str:
+def _get_field_type_name_v1(field_info: object) -> str:
     """Get type name from Pydantic v1 field"""
     try:
         type_ = field_info.outer_type_
@@ -5001,7 +5029,7 @@ def _get_field_type_name_v1(field_info) -> str:
         return "any"
 
 
-def _extract_parameters_from_schema(schema: Union[Dict[str, Any], type], log: logging.Logger) -> Dict[str, Dict[str, Any]]:
+def _extract_parameters_from_schema(schema: dict[str, Any] | type, log: logging.Logger) -> dict[str, dict[str, Any]]:
     """
     Extract parameter information from Pydantic schema.
 
@@ -5075,7 +5103,7 @@ def _extract_parameters_from_schema(schema: Union[Dict[str, Any], type], log: lo
     return {}
 
 
-def _format_tool_descriptions(tools: List, log: logging.Logger) -> str:
+def _format_tool_descriptions(tools: list, log: logging.Logger) -> str:
     """
     Format tool descriptions for planner with parameter schemas.
 
@@ -5095,7 +5123,7 @@ def _format_tool_descriptions(tools: List, log: logging.Logger) -> str:
         lines.append(f"### {name}")
         if description:
             # Truncate long descriptions
-            desc_text = description[:MAX_TOOL_DESCRIPTION_LENGTH] if len(description) > MAX_TOOL_DESCRIPTION_LENGTH else description
+            desc_text = description
             lines.append(f"  {desc_text}")
 
         # Extract parameter schema
@@ -5104,6 +5132,8 @@ def _format_tool_descriptions(tools: List, log: logging.Logger) -> str:
             if schema:
                 params_info = _extract_parameters_from_schema(schema, log)
                 if params_info:
+                    # Add blank line between description and parameters
+                    lines.append("")
                     lines.append("  **Parameters:**")
                     for param_name, param_info in params_info.items():
                         required_marker = "**required**" if param_info.get("required") else "optional"
@@ -5112,7 +5142,7 @@ def _format_tool_descriptions(tools: List, log: logging.Logger) -> str:
 
                         # Format: - param_name (required): description [TYPE]
                         if param_desc:
-                            lines.append(f"  - `{param_name}` ({required_marker}): {param_desc[:80]} [{param_type}]")
+                            lines.append(f"  - `{param_name}` ({required_marker}): {param_desc} [{param_type}]")
                         else:
                             lines.append(f"  - `{param_name}` ({required_marker}) [{param_type}]")
         except Exception as e:
@@ -5208,12 +5238,17 @@ async def execute_node(
         tools = get_agent_tools_with_schemas(state)
         llm = state.get("llm")
 
-        # Build tool mapping
+        # Build tool mapping: both sanitized (underscore) and original (dot) names.
+        # _underscore_to_dotted is NOT applied here because it only replaces the
+        # first underscore, which is wrong for multi-word app names like
+        # knowledge_hub (knowledge_hub_list_files → knowledge.hub_list_files ✗).
+        # The two-entry map (sanitized + original) is sufficient: the LLM outputs
+        # either the sanitized or the original name and step-1 lookup always hits.
         tools_by_name = {}
         for t in tools:
             sanitized_name = getattr(t, 'name', str(t))
-            tools_by_name[sanitized_name] = t
             original_name = getattr(t, '_original_name', sanitized_name)
+            tools_by_name[sanitized_name] = t
             if original_name != sanitized_name:
                 tools_by_name[original_name] = t
 
@@ -5296,14 +5331,48 @@ async def reflect_node(
     # Count successes and failures
     successful = [r for r in tool_results if r.get("status") == "success"]
     failed = [r for r in tool_results if r.get("status") == "error"]
+    cascade_errors = [r for r in tool_results if r.get("status") == "cascade_error"]
 
-    log.info(f"📊 Tool results: {len(successful)} ✓, {len(failed)} ✗")
+    log.info(f"📊 Tool results: {len(successful)} ✓, {len(failed)} ✗, {len(cascade_errors)} cascade")
 
     # Log details for debugging
     for r in successful:
         log.info(f"  ✅ {r.get('tool_name')}")
     for r in failed:
-        log.info(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))}")
+        log.info(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))[:300]}")
+    for r in cascade_errors:
+        log.info(f"  🔗❌ {r.get('tool_name')}: cascade broken")
+
+    # ========================================================================
+    # PRE-CHECK: Orchestration failures override all other decisions
+    # ========================================================================
+
+    cascade_broken = [r for r in tool_results
+                      if r.get("orchestration_status") == ORCHESTRATION_STATUS_CASCADE_BROKEN]
+    empty_cascade_sources = [r for r in tool_results
+                             if r.get("orchestration_status") == "empty_cascade_source"]
+
+    if cascade_errors or cascade_broken:
+        log.info(f"🔗 ORCHESTRATION FAILURE: {len(cascade_errors)} cascade errors detected")
+        state["reflection_decision"] = "respond_error"
+        state["reflection"] = {
+            "decision": "respond_error",
+            "reasoning": (
+                f"Cascading tool chain broke: "
+                f"{[r.get('tool_name') for r in (cascade_errors or cascade_broken)]}. "
+                f"A multi-step operation failed because intermediate results were unavailable."
+            ),
+            "error_context": "cascade_broken",
+            "task_complete": False,
+        }
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log.info(f"⚡ Reflect: respond_error (cascade) - {duration_ms:.0f}ms")
+        return state
+
+    if empty_cascade_sources:
+        log.info(f"🔗 EMPTY CASCADE SOURCE: {[r.get('tool_name') for r in empty_cascade_sources]}")
+        # Don't hard-fail — mark state so downstream reflection knows
+        state["_cascade_source_empty"] = True
 
     # ========================================================================
     # DECISION 1: Partial Success (some succeeded, some failed)
@@ -5370,25 +5439,49 @@ async def reflect_node(
 
     planned_tools = state.get("planned_tool_calls", [])
     if planned_tools and len(planned_tools) > 0 and len(successful) > 0:
-        primary_tool_name = planned_tools[0].get("name", "").lower()
+        # GUARD: If this is a cascading chain, primary tool success alone
+        # does NOT mean the task is complete.  Check the LAST tool instead.
+        has_cascading = PlaceholderResolver.has_placeholders({"tools": planned_tools})
 
-        # Check if primary (first) tool succeeded
-        for result in successful:
-            tool_name = result.get("tool_name", "").lower()
-            normalized_primary = primary_tool_name.replace('.', '_')
-            normalized_tool = tool_name.replace('.', '_')
-
-            if tool_name == primary_tool_name or normalized_tool == normalized_primary:
-                log.info(f"✅ Primary action succeeded: {tool_name}")
+        if has_cascading:
+            # For cascading chains, success = last tool succeeded with meaningful data
+            last_result = tool_results[-1] if tool_results else None
+            if (last_result
+                    and last_result.get("status") == "success"
+                    and not _is_semantically_empty(last_result.get("result"))):
+                log.info("✅ Cascading chain completed: last tool has data")
                 state["reflection_decision"] = "respond_success"
                 state["reflection"] = {
                     "decision": "respond_success",
-                    "reasoning": "Primary action succeeded (dependent tools failed but task complete)",
+                    "reasoning": "Cascading chain completed — last tool returned meaningful data",
                     "task_complete": True
                 }
                 duration_ms = (time.perf_counter() - start_time) * 1000
-                log.info(f"⚡ Reflect: respond_success (primary) - {duration_ms:.0f}ms")
+                log.info(f"⚡ Reflect: respond_success (cascade complete) - {duration_ms:.0f}ms")
                 return state
+            else:
+                log.info("🔗 Cascading chain: last tool empty/failed — skipping primary-success shortcut")
+                # Fall through to error handling / LLM reflection
+        else:
+            # Non-cascading: original primary tool check
+            primary_tool_name = planned_tools[0].get("name", "").lower()
+
+            for result in successful:
+                tool_name = result.get("tool_name", "").lower()
+                normalized_primary = primary_tool_name.replace('.', '_')
+                normalized_tool = tool_name.replace('.', '_')
+
+                if tool_name == primary_tool_name or normalized_tool == normalized_primary:
+                    log.info(f"✅ Primary action succeeded: {tool_name}")
+                    state["reflection_decision"] = "respond_success"
+                    state["reflection"] = {
+                        "decision": "respond_success",
+                        "reasoning": "Primary action succeeded (dependent tools failed but task complete)",
+                        "task_complete": True
+                    }
+                    duration_ms = (time.perf_counter() - start_time) * 1000
+                    log.info(f"⚡ Reflect: respond_success (primary) - {duration_ms:.0f}ms")
+                    return state
 
     # ========================================================================
     # DECISION 4: Fast Path Error Detection
@@ -5495,13 +5588,21 @@ async def reflect_node(
             "data": {"status": "analyzing", "message": "Analyzing results..."}
         }, config)
 
-        response = await asyncio.wait_for(
-            llm.ainvoke([
-                SystemMessage(content=prompt),
-                HumanMessage(content="Analyze and decide.")
-            ]),
-            timeout=NodeConfig.REFLECTION_TIMEOUT_SECONDS
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, "Analyzing results...")
         )
+        try:
+            response = await asyncio.wait_for(
+                llm.ainvoke([
+                    SystemMessage(content=prompt),
+                    HumanMessage(content="Analyze and decide.")
+                ]),
+                timeout=NodeConfig.REFLECTION_TIMEOUT_SECONDS
+            )
+        finally:
+            keepalive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await keepalive_task
 
         reflection = _parse_reflection_response(response.content, log)
 
@@ -5529,7 +5630,7 @@ async def reflect_node(
     return state
 
 
-def _parse_reflection_response(content: str, log: logging.Logger) -> Dict[str, Any]:
+def _parse_reflection_response(content: str, log: logging.Logger) -> dict[str, Any]:
     """Parse reflection JSON response"""
     content = content.strip()
 
@@ -5564,7 +5665,7 @@ def _parse_reflection_response(content: str, log: logging.Logger) -> Dict[str, A
     }
 
 
-def _check_primary_tool_success(query: str, successful: List[Dict], log: logging.Logger) -> bool:
+def _check_primary_tool_success(query: str, successful: list[dict], log: logging.Logger) -> bool:
     """
     In a partial-success scenario (some tools succeeded, some failed), determine
     whether the *primary* / most important tool for the user's intent succeeded.
@@ -5586,7 +5687,7 @@ def _check_primary_tool_success(query: str, successful: List[Dict], log: logging
 
     # Intent verb → tool-name segment that signals the primary action completed.
     # Order matters: more specific intents first.
-    intent_to_tool_segment: List[tuple] = [
+    intent_to_tool_segment: list[tuple] = [
         # (query keywords that signal this intent, tool-name segment to look for)
         (["create", "new"],              "create"),
         (["update", "modify", "change", "edit"], "update"),
@@ -5619,140 +5720,45 @@ def _check_primary_tool_success(query: str, successful: List[Dict], log: logging
     return len(successful) > 0
 
 
-def _is_write_tool(tool_name: str) -> bool:
-    """
-    Return True if the tool performs a write / action / side-effect operation.
-
-    Detection is done by inspecting the verb prefix of the tool's action segment
-    (the part after the service prefix, e.g. "slack.", "jira.", "confluence.").
-    Prefix matching is reliable because all service tools follow the convention
-    <service>.<verb>_<object> (e.g. slack.send_message, jira.create_issue).
-    """
-    name = tool_name.lower()
-    # Strip service prefix (e.g. "slack.", "jira.", "confluence.", "retrieval.")
-    if "." in name:
-        name = name.split(".", 1)[1]
-    _WRITE_PREFIXES = (
-        "create_", "update_", "delete_", "add_", "send_", "reply_",
-        "set_", "assign_", "transition_", "publish_", "post_",
-        "remove_", "move_", "archive_", "upload_", "comment_",
-        "edit_", "modify_", "write_", "submit_",
-    )
-    return any(name.startswith(p) for p in _WRITE_PREFIXES)
-
-
-def _is_read_tool(tool_name: str) -> bool:
-    """
-    Return True if the tool is a read-only / information-gathering operation.
-    """
-    name = tool_name.lower()
-    if "." in name:
-        name = name.split(".", 1)[1]
-    _READ_PREFIXES = (
-        "get_", "search_", "list_", "fetch_", "retrieve_",
-        "find_", "query_", "read_",
-    )
-    return any(name.startswith(p) for p in _READ_PREFIXES)
-
-
-# Compiled regex for detecting write-action intent in the user query.
-# Design: match ONLY when the verb is used as an action command, not a noun/modifier.
-# - We require the write verb to appear either at the sentence start (after optional
-#   polite preamble) OR after a conjunction ("and", "then", "also").
-# - Removed "upload", "message", "write", "comment", "add" from the top-level match
-#   because they appear routinely as nouns/adjectives in search queries
-#   (e.g. "upload failure tickets", "comment count", "write permission error").
-# - "set status" is kept as a phrase since it's always an action.
-_WRITE_INTENT_RE = re.compile(
-    r"(?:"
-    # Pattern A: verb at start of sentence (optional polite prefix)
-    r"^(?:please\s+|can\s+you\s+|could\s+you\s+|i\s+(?:need|want|would\s+like)\s+(?:you\s+)?to\s+)?"
-    r"\b(send|reply|create|update|publish|notify|assign|post|set\s+status)\b"
-    r"|"
-    # Pattern B: verb after a conjunction (e.g. "find X and then send email")
-    r"\b(?:and|then|also|after\s+that)\b\s+\b(send|reply|create|update|publish|notify|assign|post|set\s+status)\b"
-    r")",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-# Additional fallback: explicit write-action verbs that are unambiguous anywhere
-_UNAMBIGUOUS_WRITE_RE = re.compile(
-    r"\b(add\s+comment|add\s+a\s+comment|leave\s+a\s+comment|write\s+(?:an?\s+)?email|"
-    r"upload\s+(?:the\s+)?file|comment\s+on\s+(?:the\s+|this\s+)?(?:ticket|issue|pr|pull\s+request))\b",
-    re.IGNORECASE,
-)
-
-
 def _check_if_task_needs_continue(
     query: str,
-    executed_tools: List[str],
-    tool_results: List[Dict[str, Any]],
+    executed_tools: list[str],
+    tool_results: list[dict[str, Any]],
     log: logging.Logger,
-    state: Optional[Dict[str, Any]] = None
+    state: dict[str, Any] | None = None
 ) -> bool:
     """
-    Determine whether the agent needs another planning cycle to complete the task.
+    Determine whether the agent needs another planning cycle.
 
-    Logic (in order):
-    1. If at least one write/action tool already executed → task action phase done.
-    2. If this is Phase 1 of a genuine two-phase plan (retrieval before write) →
-       continue so the planner can execute the write action in Phase 2.
-    3. If the planner planned ONLY retrieval tools (no write plan at all) →
-       this is a read-only task regardless of what the regex detects. Return False.
-    4. If the query clearly signals a write/action intent (via tightened regex)
-       and no write tool has run yet → continue.
-    5. Default → False (task complete or read-only).
+    Returns True if there are planned tools that have not yet been executed.
+    Returns False if all planned tools have been executed.
     """
-    query_lower = (query or "").lower()
-    state = state or {}
-
-    # ── 1. Was any write/action tool executed? ────────────────────────────────
-    action_completed = any(_is_write_tool(t) for t in executed_tools)
-    if action_completed:
-        log.debug(
-            "Task complete: write/action tool already executed → no continue needed. "
-            f"Executed: {executed_tools}"
-        )
+    if not state:
         return False
 
-    # ── 2. Is this Phase 1 of a genuine two-phase plan? ─────────────────────
-    # The planner_node sets is_two_phase_plan=True when it strips write tools
-    # from the plan so that retrieval can run first. In that case we MUST continue
-    # to execute the deferred write tools in Phase 2.
-    if state.get("is_two_phase_plan"):
-        log.debug(
-            "Task incomplete: two-phase plan in Phase 1 — write tools deferred to Phase 2. "
-            f"Executed: {executed_tools}"
-        )
+    planned_tools = state.get("planned_tool_calls", [])
+    if not planned_tools:
+        return False
+
+    # Normalize tool names for comparison (handle both dotted and underscored formats)
+    planned_names = set()
+    for tool in planned_tools:
+        if isinstance(tool, dict):
+            name = tool.get("name", "")
+            planned_names.add(name)
+            planned_names.add(name.replace(".", "_"))
+            planned_names.add(name.replace("_", "."))
+
+    executed_names = set(executed_tools)
+    for tool_name in executed_tools:
+        executed_names.add(tool_name.replace(".", "_"))
+        executed_names.add(tool_name.replace("_", "."))
+
+    if not planned_names.issubset(executed_names):
+        missing = planned_names - executed_names
+        log.debug(f"Some planned tools not yet executed: {missing}")
         return True
 
-    # ── 3. Did the planner choose ONLY retrieval tools (read-only signal)? ───
-    # planned_tool_calls reflects what the planner actually decided to do.
-    # If it contains ONLY retrieval tools, the LLM determined this is a read-only
-    # task — trust it and don't force a continuation based on regex alone.
-    planned_tools = state.get("planned_tool_calls", []) or []
-    if planned_tools:
-        all_planned_are_retrieval = all(
-            _is_retrieval_tool(t.get("name", "")) if isinstance(t, dict)
-            else "retrieval" in str(t).lower()
-            for t in planned_tools
-        )
-        if all_planned_are_retrieval:
-            log.debug(
-                "Task complete: planner only planned retrieval tools → read-only task. "
-                f"Executed: {executed_tools}"
-            )
-            return False
-
-    # ── 4. Does the query signal a write/action intent (tightened regex)? ────
-    if _WRITE_INTENT_RE.search(query_lower) or _UNAMBIGUOUS_WRITE_RE.search(query_lower):
-        log.debug(
-            "Task incomplete: query indicates a write/action intent but no action "
-            f"tool has executed yet. Executed: {executed_tools}"
-        )
-        return True
-
-    # ── 5. Default: task is complete (read-only or already handled) ───────────
     return False
 
 
@@ -5779,14 +5785,15 @@ async def prepare_retry_node(
 
     # Extract errors
     tool_results = state.get("all_tool_results", [])
-    errors = []
-    for r in tool_results:
-        if r.get("status") == "error":
-            errors.append({
-                "tool_name": r.get("tool_name", "unknown"),
-                "args": r.get("args", {}),
-                "error": str(r.get("result", ""))[:300]
-            })
+    errors = [
+        {
+            "tool_name": r.get("tool_name", "unknown"),
+            "args": r.get("args", {}),
+            "error": str(r.get("result", ""))[:300],
+        }
+        for r in tool_results
+        if r.get("status") == "error"
+    ]
 
     state["execution_errors"] = errors
 
@@ -5867,9 +5874,9 @@ async def prepare_continue_node(
 # ============================================================================
 
 def merge_and_number_retrieval_results(
-    final_results: List[Dict[str, Any]],
+    final_results: list[dict[str, Any]],
     log: logging.Logger
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Merge and deduplicate retrieval results from multiple parallel calls.
 
@@ -5900,11 +5907,11 @@ def merge_and_number_retrieval_results(
         return []
 
     # Step 1: Deduplicate by (virtual_record_id, block_index)
-    seen_blocks: Dict[tuple, Any] = {}
+    seen_blocks: dict[tuple, Any] = {}
     # Track the best score seen for each document (used for document ordering)
-    doc_best_score: Dict[str, float] = {}
+    doc_best_score: dict[str, float] = {}
     # Track the earliest position each document appeared in the results list
-    doc_first_position: Dict[str, int] = {}
+    doc_first_position: dict[str, int] = {}
 
     for position, result in enumerate(final_results):
         virtual_record_id = result.get("virtual_record_id")
@@ -5938,7 +5945,7 @@ def merge_and_number_retrieval_results(
     # Within each document, sort blocks by block_index for natural reading order.
     deduplicated = list(seen_blocks.values())
 
-    def sort_key(x: Dict[str, Any]) -> tuple:
+    def sort_key(x: dict[str, Any]) -> tuple:
         vid = x.get("virtual_record_id") or x.get("metadata", {}).get("virtualRecordId", "")
         best_score = doc_best_score.get(vid, 0.0)
         first_pos = doc_first_position.get(vid, 999999)
@@ -6017,16 +6024,7 @@ async def respond_node(
     tool_results = state.get("all_tool_results", [])
 
     if execution_plan.get("can_answer_directly") and not tool_results:
-        response = await _generate_direct_response(state, llm, log, writer, config)
-        completion = {
-            "answer": response,
-            "citations": [],
-            "confidence": "High",
-            "answerMatchType": "Direct Response"
-        }
-        safe_stream_write(writer, {"event": "complete", "data": completion}, config)
-        state["response"] = response
-        state["completion_data"] = completion
+        await _generate_direct_response(state, llm, log, writer, config)
         return state
 
     # Handle clarification
@@ -6231,7 +6229,6 @@ async def respond_node(
         r for r in tool_results
         if r.get("status") == "success"
         and "retrieval" not in r.get("tool_name", "").lower()
-        and "knowledge" not in r.get("tool_name", "").lower()
     ]
     failed_results = [r for r in tool_results if r.get("status") == "error"]
 
@@ -6256,11 +6253,21 @@ async def respond_node(
         # Include sub-agent analyses (deep agent: pre-analyzed summaries)
         if _sub_analyses:
             analyses_text = "\n## Sub-Agent Analysis\n\n"
-            analyses_text += "The following analysis was generated by specialized sub-agents. "
+            analyses_text += (
+                "The following detailed analysis was produced by specialized sub-agents "
+                "that studied the raw data in depth. "
+            )
             if has_api_results:
-                analyses_text += "Use it as a guide, but refer to the raw API data above for exact details and links.\n\n"
+                analyses_text += (
+                    "Preserve ALL items and findings from this analysis in your response. "
+                    "Cross-reference with the raw API data above for exact details, links, "
+                    "and any additional information.\n\n"
+                )
             else:
-                analyses_text += "Use this analysis to generate the response.\n\n"
+                analyses_text += (
+                    "Preserve ALL items and findings from this analysis in your response. "
+                    "Include every data point, link, and detail.\n\n"
+                )
             for analysis in _sub_analyses[:5]:
                 analyses_text += f"{analysis}\n\n"
             context = analyses_text + context
@@ -6308,12 +6315,10 @@ async def respond_node(
         config_service = state.get("config_service")
         context_length = DEFAULT_CONTEXT_LENGTH
         if config_service:
-            try:
+            with contextlib.suppress(Exception):
                 # Try to get context length from LLM config if available
                 # This is a fallback - ideally it should be stored in state
                 context_length = DEFAULT_CONTEXT_LENGTH
-            except Exception:
-                pass
 
         # Construct all_queries from state
         query = state.get("query", "")
@@ -6349,6 +6354,7 @@ async def respond_node(
             "blob_store": blob_store,
             "graph_provider": graph_provider,
             "org_id": org_id,
+            "conversation_id": state.get("conversation_id"),
         }
 
         answer_text = ""
@@ -6374,6 +6380,7 @@ async def respond_node(
             target_words_per_chunk=1,
             mode="json",
             is_agent=True,  # Use agent schemas (with referenceData support)
+            conversation_id=state.get("conversation_id"),
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})
@@ -6399,7 +6406,7 @@ async def respond_node(
                 if _raw_answer:
                     try:
                         from app.utils.citations import (
-                            normalize_citations_and_chunks_for_agent as _ncc_agent,  # noqa: PLC0415
+                            normalize_citations_and_chunks_for_agent as _ncc_agent,
                         )
                         _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [])
                         if _enriched:
@@ -6487,9 +6494,16 @@ async def _generate_direct_response(
     llm: BaseChatModel,
     log: logging.Logger,
     writer: StreamWriter,
-    config: RunnableConfig
-) -> str:
-    """Generate direct response with full conversation context as LangChain messages"""
+    config: RunnableConfig,
+) -> None:
+    """Generate direct response with full conversation context.
+
+    Streams the LLM response to the frontend, sends the completion event,
+    and stores the result in state. Fully self-contained — the caller just
+    needs to ``return state`` after this returns.
+    """
+    from app.utils.streaming import stream_llm_response
+
     query = state.get("query", "")
     previous = state.get("previous_conversations", [])
 
@@ -6538,6 +6552,10 @@ async def _generate_direct_response(
         if user_context:
             system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
 
+    # Add capability summary so direct responses can answer "what can you do?"
+    capability_summary = build_capability_summary(state)
+    system_content += f"\n\n{capability_summary}"
+
     messages.append(SystemMessage(content=system_content))
 
     # Add conversation history as LangChain messages (with sliding window)
@@ -6552,59 +6570,55 @@ async def _generate_direct_response(
         user_content += f"\n\n{user_context}"
     messages.append(HumanMessage(content=user_content))
 
+    answer_text = ""
+    citations: list = []
+
     try:
-        full_content = ""
-        opik_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
+        async for stream_event in stream_llm_response(
+            llm=llm,
+            messages=messages,
+            final_results=[],
+            logger=log,
+            target_words_per_chunk=1,
+            mode="simple",
+        ):
+            event_type = stream_event.get("event")
+            event_data = stream_event.get("data", {})
 
-        if hasattr(llm, 'astream'):
-            async for chunk in llm.astream(messages, config=opik_config):
-                if not chunk:
-                    continue
+            safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
 
-                chunk_text = ""
-                if hasattr(chunk, 'content'):
-                    content = chunk.content
-                    if isinstance(content, str):
-                        chunk_text = content
-                    elif isinstance(content, list):
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "text":
-                                chunk_text += part.get("text", "")
-                            elif isinstance(part, str):
-                                chunk_text += part
-
-                if chunk_text:
-                    full_content += chunk_text
-                    safe_stream_write(writer, {
-                        "event": "answer_chunk",
-                        "data": {"chunk": chunk_text, "accumulated": full_content, "citations": []}
-                    }, config)
-        else:
-            response = await llm.ainvoke(messages, config=opik_config)
-            full_content = response.content if hasattr(response, 'content') else str(response)
-            safe_stream_write(writer, {
-                "event": "answer_chunk",
-                "data": {"chunk": full_content, "accumulated": full_content, "citations": []}
-            }, config)
-
-        return full_content
+            if event_type == "complete":
+                answer_text = event_data.get("answer", "")
+                citations = event_data.get("citations", [])
 
     except Exception as e:
-        log.error(f"💥 Direct response failed: {e}")
-        fallback = "I'm here to help! How can I assist you today?"
+        log.error("Direct response failed: %s", e, exc_info=True)
+        answer_text = "I'm here to help! How can I assist you today?"
         safe_stream_write(writer, {
             "event": "answer_chunk",
-            "data": {"chunk": fallback, "accumulated": fallback, "citations": []}
+            "data": {"chunk": answer_text, "accumulated": answer_text, "citations": []},
         }, config)
-        return fallback
+        safe_stream_write(writer, {
+            "event": "complete",
+            "data": {"answer": answer_text, "citations": [], "confidence": "Low"},
+        }, config)
+
+    answer = answer_text.strip() or "I'm here to help! How can I assist you today?"
+    state["response"] = answer
+    state["completion_data"] = {
+        "answer": answer,
+        "citations": citations,
+        "confidence": "High",
+        "answerMatchType": "Direct Response",
+    }
 
 
 async def _generate_fast_api_response(
     state: ChatState,
     llm: BaseChatModel,
     query: str,
-    tool_results: List[Dict],
-    sub_agent_analyses: List[str],
+    tool_results: list[dict],
+    sub_agent_analyses: list[str],
     log: logging.Logger,
     writer: StreamWriter,
     config: RunnableConfig,
@@ -6637,8 +6651,8 @@ async def _generate_fast_api_response(
         else:
             content_str = str(content)
         # Limit raw data size to keep the prompt small
-        if len(content_str) > 8000:
-            content_str = content_str[:8000] + "\n... (truncated)"
+        if len(content_str) > _RAW_DATA_SIZE_LIMIT:
+            content_str = content_str[:_RAW_DATA_SIZE_LIMIT] + "\n... (truncated)"
         raw_data_parts.append(f"### {tool_name}\n```json\n{content_str}\n```")
 
     raw_data_text = "\n\n".join(raw_data_parts) if raw_data_parts else ""
@@ -6656,22 +6670,44 @@ async def _generate_fast_api_response(
 
     system_prompt = (
         f"{instructions_prefix}{role_prefix}"
-        "You are a helpful AI assistant. Format the provided analysis and data into a clear, "
-        "professional markdown response for the user.\n\n"
-        "Rules:\n"
-        "- Output ONLY the markdown response — no JSON wrapper, no code fences around the whole response\n"
-        "- Present data in clean markdown (tables for lists, bullet points for details)\n"
-        "- Include ALL clickable links: scan raw data for ANY URL field (http:// or https://) "
-        "and format as `[Title](url)`\n"
-        "- Be specific: show exact dates, times, names, emails, statuses\n"
-        "- Do NOT fabricate data — only use what is provided\n"
+        "You are an expert data analyst producing comprehensive, detailed reports.\n\n"
+        "You will receive:\n"
+        "1. **Sub-Agent Analysis** — pre-analyzed, structured findings from specialized agents "
+        "that have already studied the raw data in depth\n"
+        "2. **Raw API Data** — the original data for cross-referencing and extracting additional "
+        "details (links, exact values) that the analysis may reference\n\n"
+        "## Objective\n"
+        "Produce a thorough, detailed response — NOT a brief summary. The user expects "
+        "deep analysis with every relevant data point preserved.\n\n"
+        "## Quality Standards\n"
+        "- **Comprehensive**: Include EVERY item, finding, and data point from the analysis. "
+        "Do not drop, skip, or summarize away any items\n"
+        "- **Accurate**: Cross-reference the sub-agent analysis with raw API data to verify "
+        "details and extract additional information (exact timestamps, IDs, URLs, emails)\n"
+        "- **Specific**: Use exact values — dates, times, names, emails, statuses, priorities, "
+        "counts. Never use vague quantifiers ('several', 'multiple', 'some') when exact "
+        "counts are available\n"
+        "- **Linked**: Include ALL clickable URLs found in BOTH the analysis AND raw data. "
+        "Format as `[Title](url)`. Links are mandatory for every item that has one\n"
+        "- **Well-structured**: Use tables for list data, headers for sections, bullet points "
+        "for details. Choose the format that best presents each type of data\n"
+        "- **Actionable**: Surface critical items prominently (overdue, high-priority, errors, "
+        "action required). Include follow-ups and recommendations where supported by data\n"
+        "- **No fabrication**: Only use data that is explicitly provided\n"
+        "- Output ONLY markdown — no JSON wrapper, no code fences around the whole response\n"
     )
 
     user_content = f"**User Query**: {query}\n\n"
     user_content += f"## Sub-Agent Analysis\n{analyses_text}\n\n"
     if raw_data_text:
-        user_content += f"## Raw API Data (for extracting links and details)\n{raw_data_text}\n\n"
-    user_content += "Respond with a well-formatted markdown answer. Do NOT wrap in JSON."
+        user_content += (
+            f"## Raw API Data (for cross-referencing and extracting exact details)\n"
+            f"{raw_data_text}\n\n"
+        )
+    user_content += (
+        "Produce a comprehensive, detailed markdown response. Preserve ALL items and data points "
+        "from the analysis. Cross-reference with raw data for accuracy and links. Do NOT wrap in JSON."
+    )
 
     messages = [
         SystemMessage(content=system_prompt),
@@ -6680,36 +6716,28 @@ async def _generate_fast_api_response(
 
     full_content = ""
     reference_data = []
-    opik_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
 
-    if hasattr(llm, "astream"):
-        async for chunk in llm.astream(messages, config=opik_config):
-            if not chunk:
-                continue
-            chunk_text = ""
-            if hasattr(chunk, "content"):
-                content = chunk.content
-                if isinstance(content, str):
-                    chunk_text = content
-                elif isinstance(content, list):
-                    for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            chunk_text += part.get("text", "")
-                        elif isinstance(part, str):
-                            chunk_text += part
-            if chunk_text:
-                full_content += chunk_text
-                safe_stream_write(writer, {
-                    "event": "answer_chunk",
-                    "data": {"chunk": chunk_text, "accumulated": full_content, "citations": []},
-                }, config)
-    else:
-        response = await llm.ainvoke(messages, config=opik_config)
-        full_content = response.content if hasattr(response, "content") else str(response)
-        safe_stream_write(writer, {
-            "event": "answer_chunk",
-            "data": {"chunk": full_content, "accumulated": full_content, "citations": []},
-        }, config)
+    try:
+        async for stream_event in stream_llm_response(
+            llm=llm,
+            messages=messages,
+            final_results=[],
+            logger=log,
+            target_words_per_chunk=1,
+            mode="simple",
+        ):
+            event_type = stream_event.get("event")
+            event_data = stream_event.get("data", {})
+
+            if event_type == "complete":
+                # Capture the full answer but don't forward — we emit our own complete event below
+                full_content = event_data.get("answer", "")
+            else:
+                safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
+
+    except Exception as e:
+        log.error("Fast API response generation failed: %s", e, exc_info=True)
+        full_content = ""
 
     if not full_content.strip():
         return False
@@ -6720,8 +6748,19 @@ async def _generate_fast_api_response(
         content = r.get("result", "")
         _extract_urls_for_reference_data(content, reference_data)
 
+    answer_text = full_content.strip()
+    conversation_id = state.get("conversation_id")
+    if conversation_id:
+        try:
+            from app.utils.conversation_tasks import await_and_collect_results
+            from app.utils.streaming import _append_task_markers
+            task_results = await await_and_collect_results(conversation_id)
+            answer_text = _append_task_markers(answer_text, task_results)
+        except Exception as e:
+            log.warning("Fast-path: conversation tasks failed: %s", e)
+
     completion_data = {
-        "answer": full_content.strip(),
+        "answer": answer_text,
         "citations": [],
         "confidence": "High",
         "answerMatchType": "Derived From Tool Execution",
@@ -6730,12 +6769,12 @@ async def _generate_fast_api_response(
         completion_data["referenceData"] = reference_data
 
     safe_stream_write(writer, {"event": "complete", "data": completion_data}, config)
-    state["response"] = full_content.strip()
+    state["response"] = answer_text
     state["completion_data"] = completion_data
     return True
 
 
-def _extract_urls_for_reference_data(content: Any, reference_data: List[Dict]) -> None:
+def _extract_urls_for_reference_data(content: object, reference_data: list[dict]) -> None:
     """Extract URLs from tool result content and add to referenceData list."""
     if isinstance(content, str):
         try:
@@ -6758,8 +6797,9 @@ def _extract_urls_for_reference_data(content: Any, reference_data: List[Dict]) -
 
 
 def _build_tool_results_context(
-    tool_results: List[Dict],
-    final_results: List[Dict],
+    tool_results: list[dict],
+    final_results: list[dict],
+    *,
     has_retrieval_in_context: bool = False,
 ) -> str:
     """Build context from tool results for response generation.
@@ -6836,7 +6876,7 @@ def _build_tool_results_context(
 
             parts.append(f"### {tool_name}\n")
             parts.append(f"```json\n{content_str}\n```\n\n")
-    
+
 
 
     parts.append("\n---\n## 📝 RESPONSE INSTRUCTIONS\n\n")
@@ -6865,6 +6905,13 @@ def _build_tool_results_context(
         parts.append(
             "**API DATA**: Transform into professional markdown. "
             "Show user-facing IDs (keys), hide internal IDs.\n"
+        )
+
+    if len(non_retrieval) > 1:
+        parts.append(
+            "\n**IMPORTANT**: You have results from MULTIPLE tools. "
+            "Merge and present results from ALL tools — do NOT ignore any tool's output. "
+            "Deduplicate overlapping items but ensure every unique result is included.\n"
         )
 
     parts.append(
@@ -7013,7 +7060,7 @@ def _process_retrieval_output(result: object, state: ChatState, log: logging.Log
     return str(result)
 
 
-def _detect_tool_result_status(result_content: Any) -> str:
+def _detect_tool_result_status(result_content: object) -> str:
     """
     Detect whether a tool result indicates success or error.
 
@@ -7050,7 +7097,7 @@ def _detect_tool_result_status(result_content: Any) -> str:
                 return "error"
 
             # Check for error key
-            if "error" in parsed and parsed["error"]:
+            if parsed.get("error"):
                 return "error"
 
             # Check for success=False pattern (tuple-style result)
@@ -7058,9 +7105,8 @@ def _detect_tool_result_status(result_content: Any) -> str:
                 return "error"
 
         # Check tuple-style: (False, "error message")
-        if isinstance(parsed, (list, tuple)) and len(parsed) >= 2:
-            if parsed[0] is False:
-                return "error"
+        if isinstance(parsed, (list, tuple)) and len(parsed) >= TOOL_RESULT_TUPLE_LENGTH and parsed[0] is False:
+            return "error"
 
     except Exception:
         pass  # If we can't parse it, assume success
@@ -7081,14 +7127,14 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
     the context conflicts that occur with nested agent.astream() calls.
     """
 
-    def __init__(self, writer: StreamWriter, config: RunnableConfig, log: logging.Logger):
+    def __init__(self, writer: StreamWriter, config: RunnableConfig, log: logging.Logger) -> None:
         super().__init__()
         self.writer = writer
         self.config = config
         self.log = log
-        self._tool_names: Dict[str, str] = {}  # run_id -> tool_name
+        self._tool_names: dict[str, str] = {}  # run_id -> tool_name
 
-    def _write_event(self, event_data: Dict[str, Any]) -> bool:
+    def _write_event(self, event_data: dict[str, Any]) -> bool:
         """Write event to the outer graph's stream with context restoration."""
         token = var_child_runnable_config.set(self.config)
         try:
@@ -7101,7 +7147,7 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
             var_child_runnable_config.reset(token)
 
     async def on_tool_start(
-        self, serialized: Dict[str, Any], input_str: str, *, run_id, **kwargs
+        self, serialized: dict[str, Any], input_str: str, *, run_id: UUID, **kwargs: object
     ) -> None:
         tool_name = serialized.get("name", kwargs.get("name", "unknown"))
         self._tool_names[str(run_id)] = tool_name
@@ -7112,7 +7158,7 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
             "data": {"status": "executing", "message": status_msg}
         })
 
-    async def on_tool_end(self, output, *, run_id, **kwargs) -> None:
+    async def on_tool_end(self, output: object, *, run_id: UUID, **kwargs: object) -> None:
         tool_name = self._tool_names.pop(str(run_id), kwargs.get("name", "unknown"))
         tool_status = _detect_tool_result_status(output)
         result_preview = str(output)[:MAX_TOOL_RESULT_PREVIEW_LENGTH]
@@ -7137,7 +7183,7 @@ class _ToolStreamingCallback(AsyncCallbackHandler):
             }
         })
 
-    async def on_tool_error(self, error, *, run_id, **kwargs) -> None:
+    async def on_tool_error(self, error: BaseException, *, run_id: UUID, **kwargs: object) -> None:
         tool_name = self._tool_names.pop(str(run_id), kwargs.get("name", "unknown"))
         error_msg = str(error)[:200]
         self.log.info(f"Streaming tool error: {tool_name} -> {error_msg}")
@@ -7187,8 +7233,8 @@ async def react_agent_node(
         log.info(f"ReAct agent loaded {len(tools)} tools with schemas")
 
         # Stream tool count info
-        tool_names_for_log = [getattr(t, 'name', str(t)) for t in tools[:5]]
-        log.info(f"Available tools: {tool_names_for_log}{'...' if len(tools) > 5 else ''}")
+        tool_names_for_log = [getattr(t, 'name', str(t)) for t in tools[:_TOOL_LOG_LIMIT]]
+        log.info(f"Available tools: {tool_names_for_log}{'...' if len(tools) > _TOOL_LOG_LIMIT else ''}")
 
         # Build system prompt
         system_prompt = _build_react_system_prompt(state, log)
@@ -7228,10 +7274,18 @@ async def react_agent_node(
             "callbacks": react_callbacks,
         }
 
-        result = await agent.ainvoke(
-            {"messages": messages},
-            config=agent_config,
+        keepalive_task = asyncio.create_task(
+            send_keepalive(writer, config, "Processing with tools...")
         )
+        try:
+            result = await agent.ainvoke(
+                {"messages": messages},
+                config=agent_config,
+            )
+        finally:
+            keepalive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await keepalive_task
 
         # Extract messages from the agent result
         final_messages = result.get("messages", [])
@@ -7312,10 +7366,12 @@ async def react_agent_node(
         }
 
         execution_plan = state.get("execution_plan") or {}
-        # Temporary guard: do not let respond_node take direct-answer shortcut
-        # after ReAct handoff; this avoids fallback-style responses when ReAct
-        # decides not to call tools in the first pass.
-        execution_plan["can_answer_directly"] = False
+        # When react agent answered directly without calling any tools (e.g.
+        # capability questions, greetings), let respond_node use the
+        # _generate_direct_response path which has the capability summary and
+        # user context.  When tools WERE called, keep can_answer_directly=False
+        # so the full synthesis pipeline runs with citations and tool results.
+        execution_plan["can_answer_directly"] = (total_tools == 0)
         state["execution_plan"] = execution_plan
 
         duration_ms = (time.perf_counter() - start_time) * 1000
@@ -7380,7 +7436,7 @@ def _build_tool_schema_reference(state: ChatState, log: logging.Logger) -> str:
                     for pname, pinfo in params_info.items():
                         ptype = pinfo.get("type", "any")
                         desc = pinfo.get("description", "")
-                        short_desc = (desc[:60] + "...") if len(desc) > 60 else desc
+                        short_desc = (desc[:_PARAM_DESC_TRUNCATE] + "...") if len(desc) > _PARAM_DESC_TRUNCATE else desc
                         entry = f"`{pname}` ({ptype})"
                         if short_desc:
                             entry += f": {short_desc}"
@@ -7595,6 +7651,8 @@ You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
 ### Before giving your final response:
 1. **COMPLETENESS CHECK**: Did I accomplish EVERYTHING the user asked for? Don't stop partway.
 2. **DATA ACCURACY**: Am I presenting accurate data from actual tool results? Never fabricate data.
+   - **NEVER generate fake data from conversation history.** If user asks for "more results", "next page", or "page 2", you MUST call the tool again with updated pagination parameters (e.g., page=2, limit=50). Do NOT invent rows from memory.
+   - Previous tool results in conversation history are READ-ONLY context — use them to understand what was already shown, but ALWAYS call tools to fetch new data.
 3. **FORMATTING**: Use clear, professional markdown formatting.
 
 ## Write-Action Field Quick Reference
@@ -7657,14 +7715,32 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
    - "update"/"modify"/"change"/"extend"/"reschedule" → UPDATE tools
    - "delete"/"remove"/"cancel" → DELETE tools
 
-3. **ID Resolution — NEVER ask users for internal IDs**:
+3. **Topic Discovery — Hybrid Search** (HIGHEST PRIORITY):
+   When the user query contains a topic/keyword and asks to discover related items
+   (list, find, show, search, browse), call ALL available search dimensions in parallel:
+   - `knowledgehub.list_files` → finds items by name/metadata in the index
+   - Service search tools → searches live data via the service API
+   - `retrieval_search_internal_knowledge` → searches within indexed document content
+
+   This applies regardless of what word the user uses ("files", "pages", "docs", etc.)
+   and regardless of whether they name a specific service.
+   Only skip a dimension if its tool is not available.
+
+   **Exceptions (use specific tools only):**
+   - Exact ID lookup → live API only
+   - Write actions → live API write tool only
+   - Filtered stateful queries ("my open tickets") → live API only
+
+4. **ID Resolution — NEVER ask users for internal IDs**:
    - Users don't know event_id, message_id, page_id, space_id, drive_id, etc.
    - ALWAYS resolve IDs by searching/listing first, then using the result.
    - Check conversation history and reference data for previously retrieved IDs before searching again.
 
-4. **Task Completion**: Continue calling tools until the user's request is FULLY satisfied. Do not stop partway through a multi-step task.
+5. **Task Completion**: Continue calling tools until the user's request is FULLY satisfied. Do not stop partway through a multi-step task.
 
-5. **Response Format**:
+6. **Pagination**: When the user asks for "more", "next page", or additional results from a previous tool call, you MUST call the same tool again with the correct pagination parameters (page, limit, offset). NEVER fabricate additional results from memory or conversation history.
+
+7. **Response Format**:
    - For API tool results: Transform data into professional markdown (tables, lists, summaries).
    - For retrieval/internal knowledge: Include inline citations like [R1-1] after each fact.
    - Store technical IDs in referenceData for follow-up queries.
@@ -7756,7 +7832,7 @@ When you have internal knowledge from retrieval tools:
 """
 
     # ── Hybrid search strategy ──────────────────────────────────────────────
-    has_knowledge = bool(state.get("agent_knowledge"))
+    has_knowledge = state.get("has_knowledge", False)
     has_service_tools = any([
         _has_jira_tools(state),
         _has_confluence_tools(state),
@@ -7764,6 +7840,8 @@ When you have internal knowledge from retrieval tools:
         _has_outlook_tools(state),
         _has_slack_tools(state),
         _has_teams_tools(state),
+        _has_github_tools(state),
+        _has_clickup_tools(state),
     ])
 
     if has_knowledge and has_service_tools:
@@ -7814,6 +7892,11 @@ Use this decision tree to choose the right approach:
     if _has_outlook_tools(state):
         base_prompt += "\n" + OUTLOOK_GUIDANCE
 
+    if _has_clickup_tools(state):
+        base_prompt += "\n" + CLICKUP_GUIDANCE
+    if _has_mariadb_tools(state):
+        base_prompt += "\n" + MARIADB_GUIDANCE
+
     # ── Multi-step workflow patterns ─────────────────────────────────────────
     workflow_patterns = _build_workflow_patterns(state)
     if workflow_patterns:
@@ -7838,6 +7921,10 @@ Use this decision tree to choose the right approach:
         if timezone:
             time_parts.append(f"User timezone: {timezone}")
         base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
+
+    # ── Capability summary ────────────────────────────────────────────────────
+    capability_summary = build_capability_summary(state)
+    base_prompt += "\n\n" + capability_summary
 
     # ── User context ─────────────────────────────────────────────────────────
     user_context = _format_user_context(state)
@@ -7900,100 +7987,7 @@ def _get_tool_status_message(tool_name: str) -> str:
     return f"{action_readable}..."
 
 
-def _process_react_chunk(
-    chunk: Dict,
-    writer: StreamWriter,
-    config: RunnableConfig,
-    state: ChatState,
-    log: logging.Logger
-) -> None:
-    """
-    Process ReAct agent chunk for streaming.
-
-    Streams rich status events to the frontend matching the legacy planner's
-    format: descriptive status messages for each tool call, error detection
-    on results, and AI reasoning/content streaming.
-    """
-    try:
-        messages = chunk.get("messages", [])
-
-        for msg in messages:
-            # Stream tool calls with descriptive status messages
-            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                for tool_call in msg.tool_calls:
-                    tool_name = tool_call.get("name", "unknown")
-
-                    # Stream a human-readable status event (like legacy planner)
-                    status_msg = _get_tool_status_message(tool_name)
-                    safe_stream_write(writer, {
-                        "event": "status",
-                        "data": {"status": "executing", "message": status_msg}
-                    }, config)
-
-                    # Also stream the detailed tool_call event
-                    safe_stream_write(writer, {
-                        "event": "tool_call",
-                        "data": {
-                            "tool": tool_name,
-                            "args": tool_call.get("args", {}),
-                            "id": tool_call.get("id", "")
-                        }
-                    }, config)
-
-            # Stream tool results with error detection
-            if isinstance(msg, ToolMessage):
-                tool_name = getattr(msg, 'name', 'unknown')
-                tool_status = _detect_tool_result_status(msg.content)
-
-                # Stream status update based on result
-                if tool_status == "error":
-                    safe_stream_write(writer, {
-                        "event": "status",
-                        "data": {
-                            "status": "executing",
-                            "message": f"Retrying {tool_name.split('.', 1)[-1].replace('_', ' ')} with corrected parameters..."
-                        }
-                    }, config)
-
-                safe_stream_write(writer, {
-                    "event": "tool_result",
-                    "data": {
-                        "tool": tool_name,
-                        "result": msg.content[:MAX_TOOL_RESULT_PREVIEW_LENGTH] if len(msg.content) > MAX_TOOL_RESULT_PREVIEW_LENGTH else msg.content,
-                        "status": tool_status
-                    }
-                }, config)
-
-            # Stream AI reasoning and responses
-            if isinstance(msg, AIMessage) and msg.content:
-                # If the message also has tool_calls, this is reasoning before a tool call
-                # Stream it as a thinking/status event rather than content
-                if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                    # This is the LLM's reasoning text before making a tool call
-                    reasoning = msg.content.strip()
-                    if reasoning:
-                        safe_stream_write(writer, {
-                            "event": "status",
-                            "data": {
-                                "status": "thinking",
-                                "message": reasoning[:200] + ("..." if len(reasoning) > 200 else "")
-                            }
-                        }, config)
-                else:
-                    # This is the final response — stream as content chunks
-                    content = msg.content
-                    chunk_size = 10
-                    for i in range(0, len(content), chunk_size):
-                        chunk_text = content[i:i + chunk_size]
-                        safe_stream_write(writer, {
-                            "event": "content",
-                            "data": {"text": chunk_text}
-                        }, config)
-    except Exception as e:
-        log.warning(f"Error processing ReAct chunk: {e}")
-
-
-def _extract_final_response(messages: List, log: logging.Logger) -> str:
+def _extract_final_response(messages: list, log: logging.Logger) -> str:
     """Extract final response from agent messages"""
     # Find last AIMessage with content that is NOT a tool-calling message
     # (tool-calling messages have non-empty tool_calls lists — their content is reasoning, not the answer)
@@ -8012,353 +8006,6 @@ def _extract_final_response(messages: List, log: logging.Logger) -> str:
     return "I completed the task, but couldn't generate a response."
 
 
-def _extract_citations_and_metadata(
-    tool_results: List[Dict],
-    final_results: List[Dict],
-    has_retrieval: bool,
-    api_tools: List[Dict],
-    response: str,
-    log: logging.Logger,
-    virtual_record_map: Optional[Dict[str, Dict[str, Any]]] = None
-) -> tuple[List[Dict], List[str], List[Dict], str]:
-    """
-    Extract citations, block numbers, reference data, and determine answerMatchType.
-
-    Returns:
-        Tuple of (citations, block_numbers, reference_data, answer_match_type)
-    """
-    citations = []
-    block_numbers = []
-    reference_data = []
-
-    # Extract block numbers from response (e.g., [R1-1], [R2-3])
-    import re
-    block_pattern = re.compile(r'\[R(\d+)-(\d+)\]')
-    matches = block_pattern.findall(response)
-    for match in matches:
-        block_num = f"R{match[0]}-{match[1]}"
-        if block_num not in block_numbers:
-            block_numbers.append(block_num)
-
-    # Extract citations from retrieval results (same as old system)
-    if has_retrieval and final_results:
-        # Use block_number from results if available (set by retrieval tool)
-        for result in final_results:
-            block_num = result.get("block_number")
-            if not block_num:
-                # Fallback: generate block number from virtual_record_id
-                virtual_id = result.get("virtual_record_id", "")
-                if virtual_id and virtual_record_map:
-                    # Try to get record number from virtual_record_map
-                    record_data = virtual_record_map.get(virtual_id, {})
-                    record_num = record_data.get("record_number", 1)
-                    block_index = result.get("block_index", 0)
-                    block_num = f"R{record_num}-{block_index}"
-                else:
-                    # Last resort: use index
-                    idx = final_results.index(result) if result in final_results else 0
-                    block_num = f"R1-{idx+1}"
-
-            citations.append({
-                "source": result.get("source", "internal_knowledge"),
-                "type": "retrieval",
-                "content": str(result.get("content", ""))[:200],
-                "virtual_id": result.get("virtual_record_id", ""),
-                "block_id": block_num
-            })
-
-            # Add to block_numbers if not already there
-            if block_num and block_num not in block_numbers:
-                block_numbers.append(block_num)
-
-    # Extract reference data from API tool results
-    for tool_result in api_tools:
-        if tool_result.get("status") == "success":
-            result = tool_result.get("result", "")
-            ref_data = _extract_reference_data_from_result(result, tool_result.get("tool_name", ""))
-            if ref_data:
-                reference_data.extend(ref_data)
-
-    # Determine answerMatchType
-    if has_retrieval and api_tools:
-        answer_match_type = "Derived From Blocks"  # Mixed: retrieval + API
-    elif has_retrieval:
-        answer_match_type = "Derived From Blocks"  # Only retrieval
-    elif api_tools:
-        answer_match_type = "Derived From Tool Execution"  # Only API tools
-    else:
-        answer_match_type = "Direct Answer"  # No tools used
-
-    return citations, block_numbers, reference_data, answer_match_type
-
-
-def _extract_reference_data_from_result(result: object, tool_name: str) -> List[Dict]:
-    """
-    Extract reference data (IDs, keys, timestamps) from tool results so they can
-    be surfaced to the planner for follow-up queries.
-
-    Each returned dict has at minimum: {"type": str, "name": str} and usually "id"
-    and/or "key" fields that the planner can reference directly.
-    """
-    reference_data = []
-    tn_lower = tool_name.lower()
-
-    try:
-        # ── Normalise result to a Python object ─────────────────────────────
-        if isinstance(result, str):
-            try:
-                result = json.loads(result)
-            except (json.JSONDecodeError, ValueError):
-                return reference_data
-
-        # Unwrap tuple format (success, data)
-        # Tools return (bool, str) tuple - extract the data part
-        if isinstance(result, tuple) and len(result) == 2:  # noqa: PLR2004
-            result = result[1]
-            if isinstance(result, str):
-                try:
-                    result = json.loads(result)
-                except (json.JSONDecodeError, ValueError):
-                    return reference_data
-
-        # ── Confluence spaces ────────────────────────────────────────────────
-        # confluence.get_spaces → {"data": {"results": [{id, key, name, _links, ...}]}}
-        if "confluence" in tn_lower and "space" in tn_lower:
-            if isinstance(result, dict):
-                data = result.get("data", {})
-                spaces_list: List = []
-                # Extract base URL from the root _links (Confluence v2 API)
-                confluence_base_url = ""
-                if isinstance(data, dict):
-                    root_links = data.get("_links", {})
-                    if isinstance(root_links, dict):
-                        confluence_base_url = root_links.get("base", "")
-                    spaces_list = data.get("results", [])
-                elif isinstance(data, list):
-                    spaces_list = data
-                for space in spaces_list:
-                    if not isinstance(space, dict):
-                        continue
-                    # Confluence v2 API may return id as integer or string
-                    raw_id = space.get("id")
-                    space_id = str(raw_id).strip() if raw_id is not None else ""
-                    space_key = space.get("key", "")
-                    space_name = space.get("name", "")
-                    # Build web URL from _links.webui
-                    space_url = ""
-                    space_links = space.get("_links", {})
-                    if isinstance(space_links, dict):
-                        webui = space_links.get("webui", "")
-                        if webui and confluence_base_url:
-                            space_url = f"{confluence_base_url.rstrip('/')}{webui}"
-                        elif webui:
-                            space_url = webui
-                    if space_id or space_key:
-                        ref_entry: Dict[str, Any] = {
-                            "name": space_name,
-                            "id": space_id,
-                            "key": space_key,
-                            "type": "confluence_space",
-                        }
-                        if space_url:
-                            ref_entry["url"] = space_url
-                        reference_data.append(ref_entry)
-            return reference_data
-
-        # ── Confluence pages ─────────────────────────────────────────────────
-        # confluence.get_pages_in_space / search_pages / get_page_content
-        if "confluence" in tn_lower and any(k in tn_lower for k in ("page", "search", "child")):
-            if isinstance(result, dict):
-                data = result.get("data", {})
-                pages_list: List = []
-                # Extract base URL from the root _links (Confluence v2 API)
-                confluence_base_url = ""
-                if isinstance(data, dict):
-                    root_links = data.get("_links", {})
-                    if isinstance(root_links, dict):
-                        confluence_base_url = root_links.get("base", "")
-                    pages_list = data.get("results", [])
-                    # Single-page result: get_page_content embeds metadata in data
-                    if not pages_list and "id" in data:
-                        pages_list = [data]
-                elif isinstance(data, list):
-                    pages_list = data
-                for page in pages_list:
-                    if not isinstance(page, dict):
-                        continue
-                    raw_id = page.get("id")
-                    page_id = str(raw_id).strip() if raw_id is not None else ""
-                    page_title = page.get("title", "") or page.get("name", "")
-                    space_key = ""
-                    if isinstance(page.get("space"), dict):
-                        space_key = page["space"].get("key", "")
-                    if page_id:
-                        reference_data.append({
-                            "name": page_title,
-                            "id": page_id,
-                            "key": space_key,
-                            "type": "confluence_page",
-                        })
-            return reference_data
-
-        # ── Slack channels ───────────────────────────────────────────────────
-        if "slack" in tn_lower and "channel" in tn_lower:
-            if isinstance(result, dict):
-                data = result.get("data", {})
-                channels_list: List = []
-                if isinstance(data, dict):
-                    channels_list = data.get("channels", data.get("results", []))
-                elif isinstance(data, list):
-                    channels_list = data
-                for ch in channels_list:
-                    if not isinstance(ch, dict):
-                        continue
-                    ch_id = ch.get("id", "")
-                    ch_name = ch.get("name", "")
-                    # Slack deep link for channels (workspace-agnostic)
-                    ch_url = ch.get("permalink") or ch.get("url", "")
-                    if ch_id:
-                        ref_entry = {
-                            "name": f"#{ch_name}" if ch_name else ch_id,
-                            "id": ch_id,
-                            "type": "slack_channel",
-                        }
-                        if ch_url:
-                            ref_entry["url"] = ch_url
-                        reference_data.append(ref_entry)
-            return reference_data
-
-        # ── Slack messages / threads ─────────────────────────────────────────
-        # send_message / reply_to_message return the message timestamp ("ts")
-        # which is needed for threading (reply_to_message thread_ts).
-        if "slack" in tn_lower and any(k in tn_lower for k in ("message", "reply", "send")):
-            if isinstance(result, dict):
-                data = result.get("data", {})
-                if not isinstance(data, dict):
-                    data = {}
-                ts = data.get("ts") or result.get("ts", "")
-                channel = data.get("channel") or result.get("channel", "")
-                permalink = data.get("permalink") or result.get("permalink", "")
-                if ts:
-                    msg_ref: Dict[str, Any] = {
-                        "name": "Posted message timestamp",
-                        "id": str(ts),
-                        "type": "slack_message_ts",
-                    }
-                    if permalink:
-                        msg_ref["url"] = permalink
-                    reference_data.append(msg_ref)
-                if channel:
-                    reference_data.append({
-                        "name": channel,
-                        "id": channel,
-                        "type": "slack_channel",
-                    })
-            return reference_data
-
-        # ── Jira ─────────────────────────────────────────────────────────────
-        # Only process Jira data when the tool is actually a Jira tool.
-        # Without this guard, Confluence results that happen to contain a "key"
-        # field would be misclassified as Jira entities.
-        if "jira" in tn_lower and isinstance(result, dict):
-            data = result.get("data", {})
-
-            # Issues list: {"data": {"issues": [...]}}
-            if isinstance(data, dict):
-                issues = data.get("issues", [])
-                if isinstance(issues, list):
-                    for issue in issues:
-                        if not isinstance(issue, dict):
-                            continue
-                        issue_id = issue.get("id", "")
-                        issue_key = issue.get("key", "")
-                        issue_url = issue.get("url", "")
-                        if issue_key or issue_id:
-                            ref: Dict[str, Any] = {
-                                "name": issue.get("summary", ""),
-                                "key": issue_key,
-                                "type": "jira_issue",
-                            }
-                            if issue_id:
-                                ref["id"] = str(issue_id)
-                            if issue_url:
-                                ref["url"] = issue_url
-                            reference_data.append(ref)
-
-            # Single issue at data level (get_issue / create_issue response)
-            if isinstance(data, dict) and "key" in data:
-                issue_key = data.get("key", "")
-                issue_id = data.get("id", "")
-                issue_url = data.get("url", "")
-                if issue_key or issue_id:
-                    ref = {
-                        "name": data.get("summary", ""),
-                        "key": issue_key,
-                        "type": "jira_issue",
-                    }
-                    if issue_id:
-                        ref["id"] = str(issue_id)
-                    if issue_url:
-                        ref["url"] = issue_url
-                    reference_data.append(ref)
-
-            # Projects list: {"data": [...]}
-            if isinstance(data, list):
-                for project in data:
-                    if not isinstance(project, dict):
-                        continue
-                    project_id = project.get("id", "")
-                    project_key = project.get("key", "")
-                    if project_key or project_id:
-                        ref = {
-                            "name": project.get("name", ""),
-                            "key": project_key,
-                            "type": "jira_project",
-                        }
-                        if project_id:
-                            ref["id"] = str(project_id)
-                        reference_data.append(ref)
-
-            # Direct issue / project at result top-level (e.g. create_issue response)
-            if "key" in result:
-                item_id = result.get("id", "")
-                item_key = result.get("key", "")
-                item_url = result.get("url", "")
-                if item_key or item_id:
-                    ref = {
-                        "name": result.get("summary") or result.get("name", ""),
-                        "key": item_key,
-                        "type": "jira_issue" if "summary" in result else "jira_project",
-                    }
-                    if item_id:
-                        ref["id"] = str(item_id)
-                    if item_url:
-                        ref["url"] = item_url
-                    reference_data.append(ref)
-
-        elif "jira" in tn_lower and isinstance(result, list):
-            for item in result:
-                if not isinstance(item, dict) or "key" not in item:
-                    continue
-                item_id = item.get("id", "")
-                item_key = item.get("key", "")
-                item_url = item.get("url", "")
-                if item_key or item_id:
-                    ref = {
-                        "name": item.get("summary") or item.get("name", ""),
-                        "key": item_key,
-                        "type": "jira_issue" if "summary" in item else "jira_project",
-                    }
-                    if item_id:
-                        ref["id"] = str(item_id)
-                    if item_url:
-                        ref["url"] = item_url
-                    reference_data.append(ref)
-
-    except Exception as e:
-        logger.debug(f"Error extracting reference data from {tool_name}: {e}")
-
-    return reference_data
 
 
 # ============================================================================

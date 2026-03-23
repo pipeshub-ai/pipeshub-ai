@@ -116,6 +116,8 @@ tags:
     description: Document CRUD and retrieval operations
   - name: Knowledge Bases
     description: Knowledge base management operations
+  - name: Knowledge Hub
+    description: Unified browse API for root and child nodes (apps, record groups, folders, records) with filtering and search
   - name: Folders
     description: Folder organization and management
   - name: Records
@@ -304,9 +306,6 @@ components:
             connector:delete: Delete connectors
             config:read: Read system configuration
             config:write: Update system configuration
-            document:read: Read documents
-            document:write: Upload and update documents
-            document:delete: Delete documents
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
             crawl:delete: Delete crawling jobs
@@ -347,9 +346,6 @@ components:
             connector:delete: Delete connectors
             config:read: Read system configuration
             config:write: Update system configuration
-            document:read: Read documents
-            document:write: Upload and update documents
-            document:delete: Delete documents
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
 
@@ -2290,25 +2286,280 @@ components:
               items:
                 type: object
 
-    KnowledgeHubNode:
+    FilterOption:
       type: object
-      description: A node in the knowledge hub tree structure
+      description: A single filter option for knowledge hub filters
       properties:
         id:
           type: string
-        name:
+          description: Filter ID value to send in requests
+        label:
           type: string
+          description: Display label for the filter
         type:
           type: string
-          enum: [KB, FOLDER, RECORD, CONNECTOR, APP]
+          nullable: true
+        connectorType:
+          type: string
+          nullable: true
+
+    KnowledgeHubNode:
+      type: object
+      description: A node in the knowledge hub tree structure (NodeItem)
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the node
+        name:
+          type: string
+          description: Display name of the node
+        nodeType:
+          type: string
+          enum: [app, recordGroup, folder, record]
+          description: Type of the node
         parentId:
           type: string
+          nullable: true
+          description: ID of the parent node
+        origin:
+          type: string
+          enum: [COLLECTION, CONNECTOR]
+          description: Origin type
+        connector:
+          type: string
+          nullable: true
+          description: Connector name (only for CONNECTOR origin)
+        recordType:
+          type: string
+          nullable: true
+        recordGroupType:
+          type: string
+          nullable: true
+        indexingStatus:
+          type: string
+          nullable: true
+        createdAt:
+          type: integer
+          description: Creation timestamp (epoch ms)
+        updatedAt:
+          type: integer
+          description: Update timestamp (epoch ms)
+        sizeInBytes:
+          type: integer
+          nullable: true
+        mimeType:
+          type: string
+          nullable: true
+        extension:
+          type: string
+          nullable: true
+        webUrl:
+          type: string
+          nullable: true
         hasChildren:
           type: boolean
-        childCount:
-          type: integer
-        metadata:
+        previewRenderable:
+          type: boolean
+          nullable: true
+        permission:
           type: object
+          nullable: true
+          properties:
+            role:
+              type: string
+            canEdit:
+              type: boolean
+            canDelete:
+              type: boolean
+        sharingStatus:
+          type: string
+          nullable: true
+
+    KnowledgeHubNodesResponse:
+      type: object
+      description: Response for Knowledge Hub nodes API
+      properties:
+        success:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+        id:
+          type: string
+          nullable: true
+          description: Current parent node ID (null for root)
+        currentNode:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            nodeType:
+              type: string
+            subType:
+              type: string
+              nullable: true
+        parentNode:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            nodeType:
+              type: string
+            subType:
+              type: string
+              nullable: true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeHubNode'
+        pagination:
+          type: object
+          nullable: true
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalItems:
+              type: integer
+            totalPages:
+              type: integer
+            hasNext:
+              type: boolean
+            hasPrev:
+              type: boolean
+        filters:
+          type: object
+          nullable: true
+          properties:
+            applied:
+              type: object
+              properties:
+                q:
+                  type: string
+                  nullable: true
+                nodeTypes:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                recordTypes:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                origins:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                connectorIds:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                indexingStatus:
+                  type: array
+                  items:
+                    type: string
+                  nullable: true
+                createdAt:
+                  type: object
+                  nullable: true
+                updatedAt:
+                  type: object
+                  nullable: true
+                size:
+                  type: object
+                  nullable: true
+                sortBy:
+                  type: string
+                sortOrder:
+                  type: string
+            available:
+              type: object
+              nullable: true
+              properties:
+                nodeTypes:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                recordTypes:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                origins:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                connectors:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                indexingStatus:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                sortBy:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+                sortOrder:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/FilterOption'
+        breadcrumbs:
+          type: array
+          nullable: true
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              nodeType:
+                type: string
+              subType:
+                type: string
+                nullable: true
+        counts:
+          type: object
+          nullable: true
+          properties:
+            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  label:
+                    type: string
+                  count:
+                    type: integer
+            total:
+              type: integer
+        permissions:
+          type: object
+          nullable: true
+          properties:
+            role:
+              type: string
+            canUpload:
+              type: boolean
+            canCreateFolders:
+              type: boolean
+            canEdit:
+              type: boolean
+            canDelete:
+              type: boolean
+            canManagePermissions:
+              type: boolean
 
     KBPermission:
       type: object
@@ -9576,7 +9827,7 @@ paths:
       operationId: downloadDocument
       security:
         - bearerAuth: []
-        - oauth2: [document:read]
+        - oauth2: [kb:read]
       parameters:
         - name: documentId
           in: path
@@ -9650,7 +9901,7 @@ paths:
   #     operationId: uploadDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     requestBody:
   #       required: true
   #       content:
@@ -9688,7 +9939,7 @@ paths:
   #     operationId: createPlaceholderDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     requestBody:
   #       required: true
   #       description: "Request payload"
@@ -9721,7 +9972,7 @@ paths:
   #     operationId: getDocumentById
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:read]
+  #       - oauth2: [kb:read]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -9751,7 +10002,7 @@ paths:
   #     operationId: deleteDocumentById
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:delete]
+  #       - oauth2: [kb:delete]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -9785,7 +10036,7 @@ paths:
   #     operationId: uploadNextVersionDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -9829,7 +10080,7 @@ paths:
   #     operationId: rollBackToPreviousVersion
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -9872,7 +10123,7 @@ paths:
   #     operationId: getDocumentBuffer
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:read]
+  #       - oauth2: [kb:read]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -9903,7 +10154,7 @@ paths:
   #     operationId: createDocumentBuffer
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -9951,7 +10202,7 @@ paths:
   #     operationId: uploadDirectDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -9994,7 +10245,7 @@ paths:
   #     operationId: documentDiffChecker
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:read]
+  #       - oauth2: [kb:read]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -11990,44 +12241,111 @@ paths:
   /knowledgeBase/knowledge-hub/nodes:
     get:
       tags:
-        - Knowledge Bases
+        - Knowledge Hub
       summary: Get knowledge hub root nodes
       description: |
-        Retrieve root-level nodes for unified knowledge hub browsing.<br><br>
+        Retrieve root-level nodes (Apps) or search across all nodes for unified knowledge hub browsing.<br><br>
         <b>Overview:</b><br>
-        Provides a unified view across all knowledge sources - KBs, connectors, and apps. Use for building file browser UIs.<br><br>
+        Provides a unified view across all knowledge sources - Collections, connectors, and apps. Use for building file browser UIs.<br><br>
         <b>Node Types:</b><br>
         <ul>
-        <li><b>KB:</b> Knowledge bases</li>
-        <li><b>CONNECTOR:</b> External connector instances</li>
-        <li><b>APP:</b> Connected applications</li>
+        <li><b>Collection:</b> Local collections (formerly Knowledge Bases)</li>
+        <li><b>Connector:</b> External connector instances</li>
+        <li><b>App:</b> Connected applications</li>
         </ul>
       operationId: getKnowledgeHubRootNodes
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
       parameters:
-        - name: view
+        - name: only_containers
           in: query
-          description: View mode
+          description: Only return nodes with children (for sidebar)
           schema:
-            type: string
+            type: boolean
+            default: false
         - name: page
           in: query
+          description: Page number (1-indexed)
           schema:
             type: integer
+            minimum: 1
+            default: 1
         - name: limit
           in: query
+          description: Items per page
           schema:
             type: integer
-        - name: nodeTypes
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: sort_by
+          in: query
+          description: Sort field (name, createdAt, updatedAt, size, type)
+          schema:
+            type: string
+            default: updatedAt
+        - name: sort_order
+          in: query
+          description: Sort order (asc or desc)
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+        - name: q
+          in: query
+          description: Full-text search query
+          schema:
+            type: string
+        - name: node_types
           in: query
           description: Filter by node types (comma-separated)
           schema:
             type: string
-        - name: q
+        - name: record_types
           in: query
-          description: Search query
+          description: Comma-separated record types
+          schema:
+            type: string
+        - name: origins
+          in: query
+          description: Comma-separated origins (COLLECTION, CONNECTOR)
+          schema:
+            type: string
+        - name: connector_ids
+          in: query
+          description: Comma-separated connector instance IDs
+          schema:
+            type: string
+        - name: indexing_status
+          in: query
+          description: Comma-separated indexing statuses
+          schema:
+            type: string
+        - name: created_at
+          in: query
+          description: Created date range (gte:timestamp,lte:timestamp)
+          schema:
+            type: string
+        - name: updated_at
+          in: query
+          description: Updated date range (gte:timestamp,lte:timestamp)
+          schema:
+            type: string
+        - name: size
+          in: query
+          description: Size range (gte:bytes,lte:bytes)
+          schema:
+            type: string
+        - name: flattened
+          in: query
+          description: Return flattened view with all nested children
+          schema:
+            type: boolean
+            default: false
+        - name: include
+          in: query
+          description: Comma-separated includes (breadcrumbs, counts, availableFilters, permissions)
           schema:
             type: string
       responses:
@@ -12036,107 +12354,24 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  error:
-                    type: string
-                    nullable: true
-                  id:
-                    type: string
-                    nullable: true
-                  currentNode:
-                    type: object
-                    nullable: true
-                  parentNode:
-                    type: object
-                    nullable: true
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        name:
-                          type: string
-                        nodeType:
-                          type: string
-                          enum: [kb, folder, record, connector, app]
-                        parentId:
-                          type: string
-                          nullable: true
-                        origin:
-                          type: string
-                        connector:
-                          type: string
-                        recordType:
-                          type: string
-                          nullable: true
-                        indexingStatus:
-                          type: string
-                          nullable: true
-                        createdAt:
-                          type: integer
-                        updatedAt:
-                          type: integer
-                        sizeInBytes:
-                          type: integer
-                          nullable: true
-                        mimeType:
-                          type: string
-                          nullable: true
-                        extension:
-                          type: string
-                          nullable: true
-                        webUrl:
-                          type: string
-                        hasChildren:
-                          type: boolean
-                        sharingStatus:
-                          type: string
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      totalItems:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filters:
-                    type: object
-                    nullable: true
-                  breadcrumbs:
-                    type: array
-                    nullable: true
-                    items:
-                      type: object
-                  counts:
-                    type: object
-                    nullable: true
-                  permissions:
-                    type: object
-                    nullable: true
+                $ref: '#/components/schemas/KnowledgeHubNodesResponse'
+        '400':
+          description: Bad request (invalid parameters or validation error)
         '401':
           description: Unauthorized
+        '500':
+          description: Internal server error
 
   /knowledgeBase/knowledge-hub/nodes/{parentType}/{parentId}:
     get:
       tags:
-        - Knowledge Bases
+        - Knowledge Hub
       summary: Get knowledge hub child nodes
       description: |
-        Retrieve child nodes under a specific parent in the knowledge hub tree.<br><br>
+        Get children of a specific node. Retrieve child nodes under a specific parent in the knowledge hub tree.<br><br>
         <b>Navigation:</b><br>
-        Use this to drill down into KBs, folders, and connector hierarchies.
+        Use this to drill down into collections, folders, and connector hierarchies.<br><br>
+        parent_type must be one of: app, recordGroup, folder, record.
       operationId: getKnowledgeHubChildNodes
       security:
         - bearerAuth: []
@@ -12145,26 +12380,104 @@ paths:
         - name: parentType
           in: path
           required: true
-          description: Type of parent node (KB, FOLDER, CONNECTOR, APP)
+          description: Type of parent node (app, recordGroup, folder, record)
           schema:
             type: string
+            enum: [app, recordGroup, folder, record]
         - name: parentId
           in: path
           required: true
-          description: ID of parent node
+          description: ID of parent node (UUID or knowledgeBase_<orgId> for Collection app)
           schema:
             type: string
+        - name: only_containers
+          in: query
+          description: Only return nodes with children (for sidebar)
+          schema:
+            type: boolean
+            default: false
         - name: page
           in: query
+          description: Page number (1-indexed)
           schema:
             type: integer
+            minimum: 1
+            default: 1
         - name: limit
           in: query
+          description: Items per page
           schema:
             type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: sort_by
+          in: query
+          description: Sort field (name, createdAt, updatedAt, size, type)
+          schema:
+            type: string
+            default: updatedAt
+        - name: sort_order
+          in: query
+          description: Sort order (asc or desc)
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
         - name: q
           in: query
-          description: Search query
+          description: Full-text search query
+          schema:
+            type: string
+        - name: node_types
+          in: query
+          description: Filter by node types (comma-separated)
+          schema:
+            type: string
+        - name: record_types
+          in: query
+          description: Comma-separated record types
+          schema:
+            type: string
+        - name: origins
+          in: query
+          description: Comma-separated origins (COLLECTION, CONNECTOR)
+          schema:
+            type: string
+        - name: connector_ids
+          in: query
+          description: Comma-separated connector instance IDs
+          schema:
+            type: string
+        - name: indexing_status
+          in: query
+          description: Comma-separated indexing statuses
+          schema:
+            type: string
+        - name: created_at
+          in: query
+          description: Created date range (gte:timestamp,lte:timestamp)
+          schema:
+            type: string
+        - name: updated_at
+          in: query
+          description: Updated date range (gte:timestamp,lte:timestamp)
+          schema:
+            type: string
+        - name: size
+          in: query
+          description: Size range (gte:bytes,lte:bytes)
+          schema:
+            type: string
+        - name: flattened
+          in: query
+          description: Return flattened view with all nested children
+          schema:
+            type: boolean
+            default: false
+        - name: include
+          in: query
+          description: Comma-separated includes (breadcrumbs, counts, availableFilters, permissions)
           schema:
             type: string
       responses:
@@ -12173,18 +12486,15 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  nodes:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/KnowledgeHubNode'
-                  parent:
-                    $ref: '#/components/schemas/KnowledgeHubNode'
+                $ref: '#/components/schemas/KnowledgeHubNodesResponse'
+        '400':
+          description: Bad request (invalid parent_type or parameters)
         '401':
           description: Unauthorized
         '404':
           description: Parent node not found
+        '500':
+          description: Internal server error
 
   # ==================== ENTERPRISE SEARCH ENDPOINTS ====================
 
@@ -15234,6 +15544,12 @@ paths:
                     type: boolean
                   config:
                     $ref: '#/components/schemas/ConnectorConfig'
+                  message:
+                    type: string
+                    description: Success message
+                  syncFiltersChanged:
+                    type: boolean
+                    description: Indicates whether sync filters changed, requiring a full resync
         '401':
           description: Unauthorized
         '404':
@@ -16307,6 +16623,44 @@ paths:
           description: Instance not found
 
   /toolsets/instances/{instanceId}/credentials:
+    put:
+      tags:
+        - Toolset Instances
+      summary: Update toolset credentials
+      operationId: updateToolsetCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                auth:
+                  type: object
+                  properties:
+                    apiToken:
+                      type: string
+                    username:
+                      type: string
+                    password:
+                      type: string
+      responses:
+        '200':
+          description: Credentials updated successfully
+        '400':
+          description: Invalid credentials payload
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
     delete:
       tags:
         - Toolset Instances

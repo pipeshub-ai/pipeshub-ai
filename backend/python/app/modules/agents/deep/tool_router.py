@@ -8,7 +8,7 @@ reducing LLM confusion and improving accuracy.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.modules.agents.deep.state import DeepAgentState, SubAgentTask
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 UTILITY_DOMAINS = {"calculator", "datetime", "utility", "web_search"}
 
 # Domain aliases (normalize variations)
-_DOMAIN_ALIASES: Dict[str, str] = {
+_DOMAIN_ALIASES: dict[str, str] = {
     "googledrive": "google_drive",
     "google_drive": "google_drive",
     "google-drive": "google_drive",
@@ -37,7 +37,7 @@ _MAX_PARAM_DESC_LEN = 80
 _MAX_TOOLS_PER_TASK = 8
 
 
-def group_tools_by_domain(state: DeepAgentState) -> Dict[str, List[str]]:
+def group_tools_by_domain(state: DeepAgentState) -> dict[str, list[str]]:
     """
     Group available tools by their domain (app name).
 
@@ -69,8 +69,8 @@ def group_tools_by_domain(state: DeepAgentState) -> Dict[str, List[str]]:
 
     # Build groups using the ORIGINAL (dot-separated) names for domain extraction,
     # and build the schema map for build_domain_description
-    groups: Dict[str, List[str]] = {}
-    schema_tool_map: Dict[str, Any] = {}
+    groups: dict[str, list[str]] = {}
+    schema_tool_map: dict[str, Any] = {}
 
     for tool in schema_tools:
         sanitized_name = getattr(tool, "name", "")
@@ -107,10 +107,10 @@ def group_tools_by_domain(state: DeepAgentState) -> Dict[str, List[str]]:
 
 
 def assign_tools_to_tasks(
-    tasks: List[SubAgentTask],
-    tool_groups: Dict[str, List[str]],
+    tasks: list[SubAgentTask],
+    tool_groups: dict[str, list[str]],
     state: DeepAgentState,
-) -> List[SubAgentTask]:
+) -> list[SubAgentTask]:
     """
     Assign relevant tools to each task based on its domain.
 
@@ -122,18 +122,21 @@ def assign_tools_to_tasks(
     4. Includes retrieval tools if knowledge is configured and domain is retrieval
     """
     log = state.get("logger", logger)
-    has_knowledge = bool(
-        state.get("kb") or state.get("apps") or state.get("agent_knowledge")
-    )
+    has_knowledge = state.get("has_knowledge", False)
 
     # Get schema tool map for description-based filtering
     schema_tool_map = state.get("schema_tool_map", {})
 
     for task in tasks:
         task_domains = {d.lower() for d in task.get("domains", [])}
-        assigned: List[str] = []
+        assigned: list[str] = []
 
         # Add domain-specific tools
+        # Multi-step tasks get ALL domain tools (each step may need different
+        # tools, and keyword-based filtering against the combined description
+        # can incorrectly exclude tools needed by individual steps).
+        is_multi_step = bool(task.get("multi_step") and task.get("sub_steps"))
+
         for domain in task_domains:
             normalized = _DOMAIN_ALIASES.get(domain, domain)
             domain_tools = []
@@ -143,7 +146,8 @@ def assign_tools_to_tasks(
                 domain_tools = tool_groups[domain]
 
             # Filter tools by relevance when a domain has many tools
-            if len(domain_tools) > _MAX_TOOLS_PER_TASK:
+            # Skip filtering for multi-step tasks — they need the full set
+            if not is_multi_step and len(domain_tools) > _MAX_TOOLS_PER_TASK:
                 filtered = _filter_tools_by_relevance(
                     domain_tools, task, schema_tool_map, log,
                 )
@@ -156,13 +160,16 @@ def assign_tools_to_tasks(
             assigned.extend(tool_groups["utility"])
 
         # Add retrieval if domain requests it OR if it's a knowledge task
-        if has_knowledge and ("retrieval" in task_domains or _is_knowledge_task(task)):
-            if "retrieval" in tool_groups:
-                assigned.extend(tool_groups["retrieval"])
+        if has_knowledge and ("retrieval" in task_domains or _is_knowledge_task(task)) and "retrieval" in tool_groups:
+            assigned.extend(tool_groups["retrieval"])
+
+        # Add knowledgehub if domain requests it OR if it's a knowledge listing task
+        if has_knowledge and ("knowledgehub" in task_domains) and "knowledgehub" in tool_groups:
+            assigned.extend(tool_groups["knowledgehub"])
 
         # De-duplicate while preserving order
-        seen: Set[str] = set()
-        unique_tools: List[str] = []
+        seen: set[str] = set()
+        unique_tools: list[str] = []
         for name in assigned:
             if name not in seen:
                 seen.add(name)
@@ -180,9 +187,9 @@ def assign_tools_to_tasks(
 
 
 def get_tools_for_sub_agent(
-    assigned_tool_names: List[str],
+    assigned_tool_names: list[str],
     state: DeepAgentState,
-) -> List:
+) -> list:
     """
     Get StructuredTool objects for a sub-agent, filtered to its assigned tools.
 
@@ -218,7 +225,7 @@ def get_tools_for_sub_agent(
 
 
 def build_domain_description(
-    tool_groups: Dict[str, List[str]],
+    tool_groups: dict[str, list[str]],
     state: DeepAgentState | None = None,
 ) -> str:
     """
@@ -232,7 +239,7 @@ def build_domain_description(
     4. Ask the user for missing required parameters
     """
     # Get schema tool map stashed by group_tools_by_domain
-    schema_tool_map: Dict[str, Any] = {}
+    schema_tool_map: dict[str, Any] = {}
     if state:
         schema_tool_map = state.get("schema_tool_map", {})
 
@@ -282,7 +289,7 @@ def build_domain_description(
 # Parameter schema formatting
 # ---------------------------------------------------------------------------
 
-def _format_tool_params(tool: Any) -> str:
+def _format_tool_params(tool: object) -> str:
     """
     Format the parameter schema of a StructuredTool for the orchestrator prompt.
 
@@ -313,8 +320,8 @@ def _format_tool_params(tool: Any) -> str:
 
 
 def _extract_params(
-    schema: Union[Dict[str, Any], type],
-) -> Dict[str, Dict[str, Any]]:
+    schema: dict[str, Any] | type,
+) -> dict[str, dict[str, Any]]:
     """
     Extract parameter info from a Pydantic schema (v1 or v2) or dict schema.
 
@@ -376,7 +383,7 @@ def _extract_params(
     return {}
 
 
-def _get_type_name(field_info: Any) -> str:
+def _get_type_name(field_info: object) -> str:
     """Get type name from Pydantic v2 field."""
     try:
         from typing import Union
@@ -393,7 +400,7 @@ def _get_type_name(field_info: Any) -> str:
         return "any"
 
 
-def _get_type_name_v1(field_info: Any) -> str:
+def _get_type_name_v1(field_info: object) -> str:
     """Get type name from Pydantic v1 field."""
     try:
         from typing import Union
@@ -411,11 +418,11 @@ def _get_type_name_v1(field_info: Any) -> str:
 
 
 def _filter_tools_by_relevance(
-    domain_tools: List[str],
+    domain_tools: list[str],
     task: SubAgentTask,
-    schema_tool_map: Dict[str, Any],
+    schema_tool_map: dict[str, Any],
     log: logging.Logger,
-) -> List[str]:
+) -> list[str]:
     """
     Filter tools within a large domain to only those relevant to the task.
 
@@ -431,7 +438,7 @@ def _filter_tools_by_relevance(
     desc_words = [w for w in desc_lower.split() if len(w) > 2]
 
     # Score each tool by relevance to the task description
-    scored: List[tuple] = []
+    scored: list[tuple] = []
     for tool_name in domain_tools:
         score = 0
         # Extract the action part (e.g., "get_recurring_events_ending" from "outlook.get_recurring_events_ending")

@@ -13,12 +13,12 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
-    from app.modules.agents.deep.state import DeepAgentState, SubAgentTask
+    from app.modules.agents.deep.state import SubAgentTask
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,203 @@ logger = logging.getLogger(__name__)
 MAX_RESULT_CHARS = 3000  # Max chars per tool result in compacted form
 MAX_SUMMARY_WORDS = 200
 MAX_RECENT_PAIRS = 5  # Keep last N conversation pairs verbatim
+_USER_MSG_TRUNCATE = 200
+_BOT_MSG_TRUNCATE = 300
+_STR_VALUE_MAX_LEN = 200
+_MIN_BUDGET_FOR_NESTED = 100
+_LIST_PREVIEW_ITEMS = 3
+_MAX_SUMMARIES_TEXT_LEN = 50000
 TRUNCATION_MARKER = "\n... [truncated for brevity]"
+MAX_CONVERSATION_PAIRS = 20  # Match react agent's MAX_CONVERSATION_HISTORY
+
+
+# ---------------------------------------------------------------------------
+# Shared: Conversation History → LangChain Messages
+# ---------------------------------------------------------------------------
+
+def build_conversation_messages(
+    conversations: List[Dict[str, Any]],
+    log: logging.Logger,
+    max_pairs: int = MAX_CONVERSATION_PAIRS,
+    include_reference_data: bool = False,
+) -> list:
+    """Convert flat conversation history to LangChain messages with sliding window.
+
+    This is the single source of truth for converting ChatState's
+    ``previous_conversations`` (flat format with ``role``/``content`` keys)
+    into alternating HumanMessage/AIMessage suitable for LLM prompts.
+
+    Mirrors the react agent's ``_build_conversation_messages`` in nodes.py:
+    groups items into user+bot pairs, applies a sliding window, and
+    optionally extracts reference data from the full history.
+
+    Args:
+        conversations: Flat list — each item has ``role`` ("user_query" or
+            "bot_response") and ``content``.
+        log: Logger instance.
+        max_pairs: Maximum number of user+bot pairs to keep (default 20).
+        include_reference_data: If True, append formatted reference data
+            (IDs, keys, URLs) from the full history to the last AI message
+            so the LLM can reuse them without re-fetching.
+
+    Returns:
+        List of HumanMessage / AIMessage.
+    """
+    if not conversations:
+        return []
+
+    all_reference_data: List[Dict[str, Any]] = []
+
+    if include_reference_data:
+        for conv in conversations:
+            if conv.get("role") == "bot_response":
+                ref_data = conv.get("referenceData", [])
+                if ref_data:
+                    all_reference_data.extend(ref_data)
+
+    # Group into user+bot pairs
+    pairs: List[List[Dict[str, Any]]] = []
+    current_pair: List[Dict[str, Any]] = []
+
+    for conv in conversations:
+        role = conv.get("role", "")
+        if role == "user_query":
+            if current_pair:
+                pairs.append(current_pair)
+            current_pair = [conv]
+        elif role == "bot_response":
+            if current_pair:
+                current_pair.append(conv)
+                pairs.append(current_pair)
+                current_pair = []
+            else:
+                pairs.append([conv])
+
+    if current_pair:
+        pairs.append(current_pair)
+
+    # Sliding window: keep last N pairs
+    if len(pairs) > max_pairs:
+        pairs = pairs[-max_pairs:]
+        log.debug("Conversation sliding window: kept last %d pairs", max_pairs)
+
+    # Convert to LangChain messages
+    messages: list = []
+    for pair in pairs:
+        for conv in pair:
+            role = conv.get("role", "")
+            content = conv.get("content", "")
+            if not content:
+                continue
+            if role == "user_query":
+                messages.append(HumanMessage(content=content))
+            elif role == "bot_response":
+                messages.append(AIMessage(content=content))
+
+    # Append reference data so the LLM can reuse IDs/keys
+    if all_reference_data:
+        ref_text = _format_reference_data(all_reference_data)
+        if ref_text and messages and isinstance(messages[-1], AIMessage):
+            messages[-1].content = messages[-1].content + "\n\n" + ref_text
+        elif ref_text:
+            messages.append(AIMessage(content=ref_text))
+
+    if messages:
+        log.info(
+            "Built %d conversation messages (%d pairs) for LLM context",
+            len(messages), len(pairs),
+        )
+
+    return messages
+
+
+def _format_reference_data(reference_data: List[Dict[str, Any]]) -> str:
+    """Format reference data so the LLM can reuse IDs and keys."""
+    if not reference_data:
+        return ""
+    lines = ["[Reference data from previous responses — use these IDs/keys directly]"]
+    for item in reference_data[:50]:  # Cap to avoid bloat
+        item_type = item.get("type", "unknown")
+        parts = [f"type={item_type}"]
+        for key in ("id", "key", "name", "title", "number", "owner", "repo", "url"):
+            val = item.get(key)
+            if val:
+                parts.append(f"{key}={val}")
+        lines.append("  " + ", ".join(parts))
+    return "\n".join(lines)
+
+
+def build_respond_conversation_context(
+    previous_conversations: List[Dict[str, Any]],
+    conversation_summary: Optional[str],
+    log: logging.Logger,
+    max_recent_pairs: int = 5,
+) -> list:
+    """Build compact conversation context for the respond node.
+
+    Unlike ``build_conversation_messages`` (which sends raw full-length
+    messages), this function keeps the LLM focused on the current task by:
+
+    1. Using the pre-computed ``conversation_summary`` for older turns
+       (compact, no multi-thousand-char bot responses).
+    2. Including only the last ``max_recent_pairs`` turns as actual
+       messages, with bot responses truncated to 500 chars.
+    3. Keeping the total history footprint small so the current task's
+       data (retrieval blocks, tool results, analyses) gets the most
+       attention.
+
+    Args:
+        previous_conversations: Flat list from ChatState.
+        conversation_summary: Pre-computed summary from the orchestrator
+            (stored in ``state["conversation_summary"]``).  May be None
+            for short conversations.
+        log: Logger.
+        max_recent_pairs: Number of recent user+bot pairs to include as
+            full messages (default 3).
+
+    Returns:
+        List of HumanMessage / AIMessage.
+    """
+    messages: list = []
+
+    # 1. Older context via summary (compact — avoids flooding with long
+    #    bot responses from previous turns)
+    if conversation_summary:
+        messages.append(
+            HumanMessage(content=f"[Previous conversation context]\n{conversation_summary}")
+        )
+
+    # 2. Recent turns as actual messages (for immediate conversational
+    #    flow).  Bot responses are truncated so they don't overwhelm the
+    #    retrieval blocks / tool results that follow.
+    if not previous_conversations:
+        return messages
+
+    keep_count = max_recent_pairs * 2
+    recent = previous_conversations[-keep_count:]
+
+    for conv in recent:
+        role = conv.get("role", "")
+        content = conv.get("content", "")
+        if not content:
+            continue
+        if role == "user_query":
+            messages.append(HumanMessage(content=content))
+        elif role == "bot_response":
+            # Truncate long bot responses — the current task's data is
+            # the priority, not full previous answers.
+            if len(content) > 500:
+                content = content[:500] + "\n... [previous response truncated]"
+            messages.append(AIMessage(content=content))
+
+    if messages:
+        log.debug(
+            "Respond conversation context: summary=%s, %d recent messages",
+            "yes" if conversation_summary else "no",
+            len(recent),
+        )
+
+    return messages
 
 
 # ---------------------------------------------------------------------------
@@ -44,8 +240,11 @@ def compact_conversation_history(
     """
     Split conversation history into a summary + recent messages.
 
-    For short histories (<=max_recent_pairs), returns (None, all_messages).
-    For longer histories, summarizes older messages via LLM.
+    previous_conversations uses the FLAT format from ChatState:
+        [{"role": "user_query", "content": "..."}, {"role": "bot_response", "content": "..."}, ...]
+
+    Each pair = 2 items (one user_query + one bot_response), so we keep
+    the last max_recent_pairs*2 items and summarize the rest.
 
     Returns:
         (summary_text_or_None, recent_messages)
@@ -53,12 +252,14 @@ def compact_conversation_history(
     if not previous_conversations:
         return None, []
 
-    if len(previous_conversations) <= max_recent_pairs:
+    # Each pair = 2 flat items; compare by pair count
+    keep_count = max_recent_pairs * 2
+    if len(previous_conversations) <= keep_count:
         return None, previous_conversations
 
     # Split: older messages get summarized, recent ones kept verbatim
-    older = previous_conversations[:-max_recent_pairs]
-    recent = previous_conversations[-max_recent_pairs:]
+    older = previous_conversations[:-keep_count]
+    recent = previous_conversations[-keep_count:]
 
     # Build summary text from older messages
     summary = _summarize_conversations_sync(older, log)
@@ -72,7 +273,10 @@ async def compact_conversation_history_async(
     max_recent_pairs: int = MAX_RECENT_PAIRS,
 ) -> Tuple[Optional[str], List[Dict[str, Any]]]:
     """
-    Async version: summarize older messages using LLM.
+    Async version of compact_conversation_history.
+
+    previous_conversations uses the FLAT format from ChatState:
+        [{"role": "user_query", "content": "..."}, {"role": "bot_response", "content": "..."}, ...]
 
     Returns:
         (summary_text_or_None, recent_messages)
@@ -80,11 +284,12 @@ async def compact_conversation_history_async(
     if not previous_conversations:
         return None, []
 
-    if len(previous_conversations) <= max_recent_pairs:
+    keep_count = max_recent_pairs * 2
+    if len(previous_conversations) <= keep_count:
         return None, previous_conversations
 
-    older = previous_conversations[:-max_recent_pairs]
-    recent = previous_conversations[-max_recent_pairs:]
+    older = previous_conversations[:-keep_count]
+    recent = previous_conversations[-keep_count:]
 
     summary = await _summarize_conversations_async(older, llm, log)
     return summary, recent
@@ -97,21 +302,21 @@ def _summarize_conversations_sync(
     """
     Build a simple text summary without LLM (fast path).
 
-    Extracts key points from older messages to create a compact context.
+    Handles the FLAT format: each item has "role" and "content" keys.
     """
     parts = []
     for conv in conversations:
-        user_msg = conv.get("user", conv.get("query", ""))
-        bot_msg = conv.get("bot", conv.get("response", conv.get("answer", "")))
+        role = conv.get("role", "")
+        content = conv.get("content", "")
+        if not content:
+            continue
 
-        if user_msg:
-            # Truncate long messages
-            user_short = user_msg[:200] + "..." if len(user_msg) > 200 else user_msg
-            parts.append(f"User: {user_short}")
-
-        if bot_msg:
-            bot_short = bot_msg[:300] + "..." if len(bot_msg) > 300 else bot_msg
-            parts.append(f"Assistant: {bot_short}")
+        if role == "user_query":
+            short = content[:_USER_MSG_TRUNCATE] + "..." if len(content) > _USER_MSG_TRUNCATE else content
+            parts.append(f"User: {short}")
+        elif role == "bot_response":
+            short = content[:_BOT_MSG_TRUNCATE] + "..." if len(content) > _BOT_MSG_TRUNCATE else content
+            parts.append(f"Assistant: {short}")
 
     return "Previous conversation summary:\n" + "\n".join(parts)
 
@@ -121,18 +326,23 @@ async def _summarize_conversations_async(
     llm: BaseChatModel,
     log: logging.Logger,
 ) -> str:
-    """Summarize older conversations using LLM for higher quality."""
+    """Summarize older conversations using LLM for higher quality.
+
+    Handles the FLAT format: each item has "role" and "content" keys.
+    """
     from app.modules.agents.deep.prompts import SUMMARY_PROMPT
 
-    # Build conversation text
+    # Build conversation text from flat format
     conv_text = ""
     for conv in conversations:
-        user_msg = conv.get("user", conv.get("query", ""))
-        bot_msg = conv.get("bot", conv.get("response", conv.get("answer", "")))
-        if user_msg:
-            conv_text += f"User: {user_msg[:500]}\n"
-        if bot_msg:
-            conv_text += f"Assistant: {bot_msg[:500]}\n"
+        role = conv.get("role", "")
+        content = conv.get("content", "")
+        if not content:
+            continue
+        if role == "user_query":
+            conv_text += f"User: {content[:500]}\n"
+        elif role == "bot_response":
+            conv_text += f"Assistant: {content[:500]}\n"
 
     if not conv_text.strip():
         return ""
@@ -226,18 +436,18 @@ def _compact_dict(d: Dict, max_chars: int) -> Dict:
             budget -= len(str(value))
         elif isinstance(value, (str, int, float, bool, type(None))):
             val_str = str(value)
-            if len(val_str) <= 200:
+            if len(val_str) <= _STR_VALUE_MAX_LEN:
                 compacted[key] = value
                 budget -= len(val_str)
             else:
-                compacted[key] = val_str[:200] + "..."
-                budget -= 200
+                compacted[key] = val_str[:_STR_VALUE_MAX_LEN] + "..."
+                budget -= _STR_VALUE_MAX_LEN
         elif isinstance(value, dict):
-            if budget > 100:
+            if budget > _MIN_BUDGET_FOR_NESTED:
                 compacted[key] = _compact_dict(value, min(budget, 500))
                 budget -= 500
         elif isinstance(value, list):
-            if budget > 100:
+            if budget > _MIN_BUDGET_FOR_NESTED:
                 compacted[key] = _compact_list(value, min(budget, 500))
                 budget -= 500
 
@@ -253,10 +463,10 @@ def _compact_list(lst: List, max_chars: int) -> List:
     except (TypeError, ValueError):
         pass
 
-    # Keep first 3 items, note total
-    result = lst[:3]
-    if len(lst) > 3:
-        result.append({"_note": f"... and {len(lst) - 3} more items"})
+    # Keep first few items, note total
+    result = lst[:_LIST_PREVIEW_ITEMS]
+    if len(lst) > _LIST_PREVIEW_ITEMS:
+        result.append({"_note": f"... and {len(lst) - _LIST_PREVIEW_ITEMS} more items"})
     return result
 
 
@@ -270,6 +480,7 @@ def build_sub_agent_context(
     conversation_summary: Optional[str],
     query: str,
     log: logging.Logger,
+    recent_conversations: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """
     Build isolated context for a sub-agent.
@@ -279,6 +490,7 @@ def build_sub_agent_context(
     - Results from dependency tasks (compacted)
     - A compact conversation summary (not full history)
     - The original user query for reference
+    - Recent conversation turns (for retrieval tasks that need context)
 
     This prevents context bloating - each sub-agent sees only what it needs.
     """
@@ -286,6 +498,24 @@ def build_sub_agent_context(
 
     # Original query
     parts.append(f"Original user query: {query}")
+
+    # Recent conversation turns (for retrieval tasks — helps the LLM
+    # understand follow-up queries and formulate meaningful search terms)
+    if recent_conversations:
+        conv_parts = []
+        for conv in recent_conversations[-3:]:
+            role = conv.get("role", "")
+            content = conv.get("content", "")
+            if role == "user_query" and content:
+                conv_parts.append(f"User: {content[:300]}")
+            elif role == "bot_response" and content:
+                # Include enough of the response to understand the topic
+                conv_parts.append(f"Assistant: {content[:500]}")
+        if conv_parts:
+            parts.append(
+                "\nRecent conversation (for context):\n"
+                + "\n".join(conv_parts)
+            )
 
     # Conversation summary (if any)
     if conversation_summary:
@@ -455,8 +685,8 @@ async def consolidate_batch_summaries(
     summaries_text = "\n\n".join(summaries_parts)
 
     # Cap total input to prevent context overflow
-    if len(summaries_text) > 50000:
-        summaries_text = summaries_text[:50000] + "\n\n[... additional batches truncated]"
+    if len(summaries_text) > _MAX_SUMMARIES_TEXT_LEN:
+        summaries_text = summaries_text[:_MAX_SUMMARIES_TEXT_LEN] + "\n\n[... additional batches truncated]"
 
     prompt = DOMAIN_CONSOLIDATION_PROMPT.format(
         domain=domain,

@@ -71,6 +71,8 @@ export type ChatInputProps = {
   activeConnectors: Connector[];
   chatMode: ChatMode;
   onChatModeChange: (mode: ChatMode) => void;
+  conversationId: string | null;
+  clearInputTrigger: number;
 };
 
 const CHAT_MODES: { key: ChatMode; label: string; icon: any; tooltip: string }[] = [
@@ -153,6 +155,8 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   activeConnectors,
   chatMode,
   onChatModeChange,
+  conversationId,
+  clearInputTrigger,
 }) => {
   const [localValue, setLocalValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -175,8 +179,41 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevConversationIdRef = useRef<string | null | undefined>(undefined);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+
+  const clearInput = useCallback(() => {
+    setLocalValue('');
+    setHasText(false);
+    if (inputRef.current) {
+      inputRef.current.style.height = '40px';
+    }
+  }, []);
+
+  // Clear input text when user actively switches conversations (sidebar click)
+  // Skip: initial mount (prevRef starts as undefined)
+  // Skip: null→id transition (backend assigning ID to the current new conversation — user may be typing next message)
+  useEffect(() => {
+    const prev = prevConversationIdRef.current;
+    if (prev !== undefined && prev !== conversationId) {
+      const isNewConversationCreated = prev === null && conversationId !== null;
+      if (!isNewConversationCreated) {
+        clearInput();
+      }
+    }
+    prevConversationIdRef.current = conversationId;
+  }, [conversationId, clearInput]);
+
+  // Clear input text on explicit trigger (e.g. "New Chat" when already on a new chat)
+  // Skip the first render (trigger starts at 0)
+  const prevClearTriggerRef = useRef(clearInputTrigger);
+  useEffect(() => {
+    if (prevClearTriggerRef.current !== clearInputTrigger) {
+      clearInput();
+      prevClearTriggerRef.current = clearInputTrigger;
+    }
+  }, [clearInputTrigger, clearInput]);
 
   // Note: Model and chat mode defaults are handled by the parent component (agent-chat.tsx)
   // The parent will set the model from conversation if available, or set defaults if not

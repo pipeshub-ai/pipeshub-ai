@@ -1,4 +1,8 @@
 """
+
+#### DEPRECATED: This migration is no longer needed as the toolset instance path migration is now handled by the connector app.
+#### This file is kept here for reference only.
+
 Toolset Instance Migration Service
 
 Migrates from old per-user toolset architecture to new instance-based architecture.
@@ -286,10 +290,9 @@ class ToolsetInstanceMigrationService:
 
         # Check if instance already exists for this toolset type
         for inst in instances:
-            if isinstance(inst, dict):
-                if inst.get("toolsetType", "").lower() == toolset_type.lower():
-                    self.logger.info(f"ℹ️ Instance already exists for {toolset_type}")
-                    return inst.get("_id", str(uuid.uuid4()))
+            if isinstance(inst, dict) and inst.get("toolsetType", "").lower() == toolset_type.lower():
+                self.logger.info(f"ℹ️ Instance already exists for {toolset_type}")
+                return inst.get("_id", str(uuid.uuid4()))
 
         # Create new instance with actual admin user as creator
         instance_id = str(uuid.uuid4())
@@ -559,7 +562,7 @@ class ToolsetInstanceMigrationService:
             if not creator_user_id:
                 self.logger.info(f"⏭️ Skipping {toolset_type}: no admin user found, only deleting non-admin users")
                 # Still delete non-admin user keys
-                for key_path, user_id, config in keys_for_type:
+                for key_path, _user_id, _config in keys_for_type:
                     users_deleted += 1
                     try:
                         await self.config_service.delete_config(key_path)

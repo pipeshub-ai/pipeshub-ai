@@ -16,7 +16,6 @@ import {
   DialogContent,
   DialogTitle,
   TextField,
-  Button as MuiButton,
   Button,
   Paper,
   IconButton,
@@ -53,7 +52,9 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
     // State
     connector,
     connectorConfig,
-    loading,
+    initialLoading,
+    refreshing,
+    statsRefreshCallbackRef,
     error,
     success,
     successMessage,
@@ -120,8 +121,8 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
 
   const [configMode, setConfigMode] = React.useState<'auth' | 'sync' | 'syncSettings' | null>(null);
 
-  // Loading state with skeleton
-  if (loading) {
+  // Show skeleton only on initial load before any data is available
+  if (initialLoading) {
     return <ConnectorLoadingSkeleton showStats={showStats} />;
   }
 
@@ -375,7 +376,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
         }}
       >
         {/* Header */}
-        <ConnectorHeader connector={connector} loading={loading} onRefresh={handleRefresh} />
+        <ConnectorHeader connector={connector} refreshing={refreshing} onRefresh={handleRefresh} />
 
         {/* Content */}
         <Box sx={{ p: 2 }}>
@@ -426,7 +427,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                 <ConnectorActionsSidebar
                   connector={connector}
                   isAuthenticated={isAuthenticated}
-                  loading={loading}
+                  loading={refreshing}
                   onAuthenticate={handleAuthenticate}
                   onConfigureAuth={() => {
                     setConfigMode('auth');
@@ -493,6 +494,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                   connector={connector}
                   showUploadTab={false}
                   showActions={isActive}
+                  refreshCallbackRef={statsRefreshCallbackRef}
                 />
               </Box>
             )}
@@ -799,7 +801,22 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
           }}
         >
           <Box sx={{ mb: 3 }}>
-            {connector?.isActive ? (
+            {connector?.status === 'DELETING' ? (
+              <Alert
+                severity="info"
+                icon={<Iconify icon={warningIcon} width={20} height={20} />}
+                sx={{
+                  borderRadius: 1.25,
+                }}
+              >
+                <Typography variant="body2" sx={{ fontWeight: 600, mb: 0.5, fontSize: '0.875rem' }}>
+                  Deletion Already in Progress
+                </Typography>
+                <Typography variant="body2" sx={{ fontSize: '0.8125rem', lineHeight: 1.5 }}>
+                  <strong>&quot;{connector?.name}&quot;</strong> is already being deleted. You can close this dialog.
+                </Typography>
+              </Alert>
+            ) : connector?.isActive ? (
               <Stack spacing={2}>
                 <Alert
                   severity="warning"
@@ -951,7 +968,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                 setDeleteLoading(false);
               }
             }}
-            disabled={deleteLoading || connector?.isActive}
+            disabled={deleteLoading || connector?.isActive || connector?.status === 'DELETING'}
             sx={{
               bgcolor: theme.palette.error.main,
               boxShadow: 'none',

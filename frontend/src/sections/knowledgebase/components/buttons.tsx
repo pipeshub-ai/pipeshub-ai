@@ -63,8 +63,6 @@ const getReindexTooltip = (status: string): string => {
       return 'Document has no content.';
     case 'ENABLE_MULTIMODAL_MODELS':
       return 'Enable Multimodal LLM or Embedding Model to index document.';
-    case 'CONNECTOR_DISABLED':
-      return 'Connector was disabled. Click to retry (will check if connector is now enabled).';
     default:
       return 'Reindex document to update search indexes';
   }
@@ -93,8 +91,7 @@ export const ReindexButton: React.FC<ReindexButtonProps> = ({
     indexingStatus === 'FAILED' ||
     indexingStatus === 'QUEUED' ||
     indexingStatus === 'EMPTY' ||
-    indexingStatus === 'ENABLE_MULTIMODAL_MODELS' ||
-    indexingStatus === 'CONNECTOR_DISABLED';
+    indexingStatus === 'ENABLE_MULTIMODAL_MODELS';
   const isForceReindex = indexingStatus === 'COMPLETED';
 
   // Get base button styles based on variant

@@ -1134,7 +1134,7 @@ export const toggleConnectorInstance =
   ): Promise<void> => {
     try {
       const { connectorId } = req.params;
-      const { type } = req.body;
+      const { type, fullSync } = req.body;
 
       if (!connectorId) {
         throw new BadRequestError('Connector ID is required');
@@ -1151,11 +1151,15 @@ export const toggleConnectorInstance =
         ...(req.headers as Record<string, string>),
         'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
+      const body: { type: string; fullSync?: boolean } = { type };
+      if (typeof fullSync === 'boolean') {
+        body.fullSync = fullSync;
+      }
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/toggle`,
         HttpMethod.POST,
         headers,
-        { type },
+        body,
       );
 
       handleConnectorResponse(
