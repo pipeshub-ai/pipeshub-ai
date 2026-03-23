@@ -1,11 +1,11 @@
 import asyncio
 import base64
 import hashlib
-import random
 import re
 import uuid
-from enum import Enum
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from enum import Enum
 from io import BytesIO
 from logging import Logger
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
@@ -81,10 +81,10 @@ class RecordUpdate:
     metadata_changed: bool
     content_changed: bool
     permissions_changed: bool
-    old_permissions: Optional[List[Permission]] = None
-    new_permissions: Optional[List[Permission]] = None
-    external_record_id: Optional[str] = None
-    html_bytes: Optional[bytes] = None
+    old_permissions: list[Permission] | None = None
+    new_permissions: list[Permission] | None = None
+    external_record_id: str | None = None
+    html_bytes: bytes | None = None
 
 @dataclass
 class RetryUrl:
@@ -340,11 +340,11 @@ class WebConnector(BaseConnector):
         self.url_should_contain: list[str] = []
 
         # Crawling state
-        self.visited_urls: Set[str] = set()
+        self.visited_urls: set[str] = set()
         self.retry_urls: dict[str, RetryUrl] = {}
         self.processed_urls: int = 0
-        self.base_domain: Optional[str] = None
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.base_domain: str | None = None
+        self.session: aiohttp.ClientSession | None = None
 
         # Batch processing
         self.batch_size: int = 50
@@ -1005,7 +1005,7 @@ class WebConnector(BaseConnector):
 
     async def _fetch_and_process_url(
         self, url: str, depth: int, referer: str | None = None
-    ) -> Optional[RecordUpdate]:
+    ) -> RecordUpdate | None:
         """Fetch URL content using multi-strategy fallback and create a RecordUpdate."""
         try:
             if self.session is None:
