@@ -16525,6 +16525,19 @@ paths:
       operationId: getMyToolsets
       security:
         - bearerAuth: []
+      parameters:
+        - name: includeRegistry
+          in: query
+          required: false
+          description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
+          schema:
+            type: boolean
+        - name: search
+          in: query
+          required: false
+          description: Optional search filter applied to instanceName, displayName, or toolsetType.
+          schema:
+            type: string
       responses:
         '200':
           description: Toolsets retrieved successfully
@@ -16532,7 +16545,63 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  toolsets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        instanceId:
+                          type: string
+                          description: Empty string for registry-only (synthetic) entries.
+                        instanceName:
+                          type: string
+                        toolsetType:
+                          type: string
+                        authType:
+                          type: string
+                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
+                        oauthConfigId:
+                          type: string
+                          nullable: true
+                        displayName:
+                          type: string
+                        description:
+                          type: string
+                        iconPath:
+                          type: string
+                        category:
+                          type: string
+                          example: app
+                        supportedAuthTypes:
+                          type: array
+                          items:
+                            type: string
+                        toolCount:
+                          type: integer
+                        tools:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              name:
+                                type: string
+                              fullName:
+                                type: string
+                              description:
+                                type: string
+                        isConfigured:
+                          type: boolean
+                        isAuthenticated:
+                          type: boolean
+                        isFromRegistry:
+                          type: boolean
+                          description: true for registry-only (synthetic) entries.
         '401':
           description: Unauthorized
 

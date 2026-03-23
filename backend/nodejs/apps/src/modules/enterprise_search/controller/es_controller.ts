@@ -4409,8 +4409,17 @@ export const listAgents =
       if (!userId) {
         throw new BadRequestError('User ID is required');
       }
+      // Forward pagination/search params
+      const { page, limit, search, sort_by, sort_order } = req.query as Record<string, string | undefined>;
+      const queryParams = new URLSearchParams();
+      if (page) queryParams.set('page', page);
+      if (limit) queryParams.set('limit', limit);
+      if (search) queryParams.set('search', search);
+      if (sort_by) queryParams.set('sort_by', sort_by);
+      if (sort_order) queryParams.set('sort_order', sort_order);
+      const qs = queryParams.toString();
       const aiCommandOptions: AICommandOptions = {
-        uri: `${appConfig.aiBackend}/api/v1/agent/`,
+        uri: `${appConfig.aiBackend}/api/v1/agent/${qs ? `?${qs}` : ''}`,
         method: HttpMethod.GET,
         headers: {
           ...(req.headers as Record<string, string>),
@@ -4420,11 +4429,10 @@ export const listAgents =
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
       if (aiResponse && aiResponse.statusCode !== 200) {
-        res.status(HTTP_STATUS.OK).json([]);
+        res.status(HTTP_STATUS.OK).json({ success: true, agents: [], pagination: { currentPage: Number(page ?? 1), limit: Number(limit ?? 20), totalItems: 0, totalPages: 0, hasNext: false, hasPrev: false } });
         return;
       }
-      const agents = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agents);
+      res.status(HTTP_STATUS.OK).json(aiResponse.data);
     } catch (error: any) {
       logger.error('Error getting agents', {
         requestId,
