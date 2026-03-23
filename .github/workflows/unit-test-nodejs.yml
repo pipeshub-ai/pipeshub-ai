@@ -1,0 +1,46 @@
+name: unit-test-nodejs
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/nodejs/apps/src/**'
+      - 'backend/nodejs/apps/tests/**'
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/nodejs/apps/package-lock.json'
+      - 'backend/nodejs/apps/tsconfig*.json'
+      - 'backend/nodejs/apps/.mocharc.yaml'
+      - 'backend/nodejs/apps/.c8rc.json'
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [20]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd backend/nodejs/apps
+          npm ci
+
+      - name: Run unit tests with coverage
+        run: |
+          cd backend/nodejs/apps
+          npm run test:ci
