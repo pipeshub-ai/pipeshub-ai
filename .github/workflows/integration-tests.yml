@@ -288,7 +288,7 @@ jobs:
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
           subject: "IT Integration Testing Workflow - ${{ steps.test-results.outputs.TRIGGER_LABEL }}"
-          to: ${{ secrets.PIPESHUB_EMAIL }}
+          to: ${{ secrets.PIPESHUB_ENG_GROUP_EMAIL }}
           from: PipesHub CI <${{ secrets.SMTP_FROM_EMAIL }}>
           attachments: integration-tests/reports.zip
           html_body: |
