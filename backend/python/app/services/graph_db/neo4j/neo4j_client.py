@@ -7,7 +7,7 @@ handling connection pooling, transaction management, and query execution.
 
 import asyncio
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 from neo4j import AsyncGraphDatabase
 from neo4j.exceptions import ServiceUnavailable
@@ -43,9 +43,9 @@ class Neo4jClient:
         self.username = username
         self.password = password
         self.database = database
-        self.driver: Optional[Any] = None
-        self._active_sessions: Dict[str, Any] = {}  # Track active transaction sessions
-        self._session_locks: Dict[str, asyncio.Lock] = {}  # Lock per transaction to prevent concurrent access
+        self.driver: Any | None = None
+        self._active_sessions: dict[str, Any] = {}  # Track active transaction sessions
+        self._session_locks: dict[str, asyncio.Lock] = {}  # Lock per transaction to prevent concurrent access
 
         # Log connection details
         self.logger.info(f"🔌 Connecting to Neo4j at {uri}")
@@ -57,6 +57,7 @@ class Neo4jClient:
     async def connect(self) -> bool:
         """
         Create Neo4j driver and test connection.
+        If the specified database doesn't exist, it will be created automatically.
 
         Returns:
             bool: True if connection successful
@@ -71,6 +72,10 @@ class Neo4jClient:
             await self.driver.verify_connectivity()
             server_info = await self.driver.get_server_info()
             self.logger.info(f"✅ Connected to Neo4j {server_info}")
+
+            # Check if database exists and create if needed
+            await self._ensure_database_exists()
+
             return True
 
         except ServiceUnavailable as e:
@@ -79,6 +84,33 @@ class Neo4jClient:
         except Exception as e:
             self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
             return False
+
+    async def _ensure_database_exists(self) -> None:
+        """
+        Check if the database exists, and create it if it doesn't.
+        This method connects to the 'system' database to check and create databases.
+        """
+        try:
+            # Connect to system database to check if our target database exists
+            async with self.driver.session(database="system") as session:
+                # Query to check if database exists
+                result = await session.run(
+                    "SHOW DATABASES WHERE name = $dbName",
+                    {"dbName": self.database}
+                )
+                databases = await result.data()
+
+                if not databases:
+                    # Database doesn't exist, create it
+                    self.logger.info(f"📦 Database '{self.database}' not found. Creating it...")
+                    await session.run(f"CREATE DATABASE `{self.database}` IF NOT EXISTS")
+                    self.logger.info(f"✅ Database '{self.database}' created successfully")
+                else:
+                    self.logger.info(f"✅ Database '{self.database}' already exists")
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not verify/create database '{self.database}': {str(e)}")
+            self.logger.warning("This may be expected if using Neo4j Community Edition (single database only)")
 
     async def disconnect(self) -> None:
         """Close Neo4j driver and all sessions"""
@@ -99,7 +131,7 @@ class Neo4jClient:
         except Exception as e:
             self.logger.error(f"❌ Error disconnecting from Neo4j: {str(e)}")
 
-    async def begin_transaction(self, read: List[str], write: List[str]) -> str:
+    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
         """
         Begin a Neo4j transaction session.
 
@@ -167,9 +199,9 @@ class Neo4jClient:
     async def execute_query(
         self,
         query: str,
-        parameters: Optional[Dict[str, Any]] = None,
-        txn_id: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        parameters: dict[str, Any] | None = None,
+        txn_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """
         Execute a Cypher query.
 
@@ -200,19 +232,16 @@ class Neo4jClient:
                 # Serialize access to the session to prevent concurrent operations
                 async with lock:
                     result = await session.run(query, parameters)
-                    records = await result.data()
-                    return records
+                    return await result.data()
             else:
                 # Fallback if lock doesn't exist (shouldn't happen)
                 result = await session.run(query, parameters)
-                records = await result.data()
-                return records
+                return await result.data()
         else:
             # Auto-commit transaction
             async with self.driver.session(database=self.database) as session:
                 result = await session.run(query, parameters)
-                records = await result.data()
-                return records
+                return await result.data()
 
     def get_session(self, txn_id: str) -> "AsyncSession":
         """
