@@ -146,8 +146,8 @@ class TestS3Connector:
             "incremental-test/new-file-alpha.csv": b"id,name,value\n1,alpha,100\n2,bravo,200\n",
             "incremental-test/new-file-beta.csv": b"id,name,value\n1,charlie,300\n2,delta,400\n",
         }
-        for key, data in new_files.items():
-            s3_storage.upload_object(bucket_name, key, data, content_type="text/csv")
+        for object_key, file_bytes in new_files.items():
+            s3_storage.upload_object(bucket_name, object_key, file_bytes, content_type="text/csv")
 
         logger.info(
             "Uploaded %d new files for incremental sync (connector %s)",
@@ -178,13 +178,14 @@ class TestS3Connector:
             len(all_names), all_names[:20], connector_id,
         )
 
-        new_names = [Path(k).name for k in new_files]
+        new_names = [Path(object_key).name for object_key in new_files]
         for name in new_names:
             found = record_paths_or_names_contain(neo4j_driver, connector_id, [name])
             if not found:
                 logger.warning(
-                    "New file '%s' not found by exact name in graph (connector %s)",
-                    name, connector_id,
+                    "New file '%s' not found by exact name in graph "
+                    "(bucket %s, connector %s)",
+                    name, bucket_name, connector_id,
                 )
 
         assert after_count >= before_count, (

@@ -35,7 +35,6 @@ from graph_assertions import (  # type: ignore[import-not-found]  # noqa: E402
     assert_min_records,
     assert_no_orphan_records,
     assert_record_groups_and_edges,
-    assert_record_not_exists,
     assert_record_paths_or_names_contain,
     count_permission_edges,
     count_records,
@@ -146,8 +145,8 @@ class TestAzureFilesConnector:
             "incremental-test/new-file-alpha.csv": b"id,name,value\n1,alpha,100\n2,bravo,200\n",
             "incremental-test/new-file-beta.csv": b"id,name,value\n1,charlie,300\n2,delta,400\n",
         }
-        for key, data in new_files.items():
-            azure_files_storage.upload_file(share_name, key, data)
+        for path_key, file_bytes in new_files.items():
+            azure_files_storage.upload_file(share_name, path_key, file_bytes)
 
         logger.info(
             "Uploaded %d new files for incremental sync (connector %s)",
@@ -178,13 +177,14 @@ class TestAzureFilesConnector:
             len(all_names), all_names[:20], connector_id,
         )
 
-        new_names = [Path(k).name for k in new_files]
+        new_names = [Path(path_key).name for path_key in new_files]
         for name in new_names:
             found = record_paths_or_names_contain(neo4j_driver, connector_id, [name])
             if not found:
                 logger.warning(
-                    "New file '%s' not found by exact name in graph (connector %s)",
-                    name, connector_id,
+                    "New file '%s' not found by exact name in graph "
+                    "(share %s, connector %s)",
+                    name, share_name, connector_id,
                 )
 
         assert after_count >= before_count, (
@@ -318,10 +318,8 @@ class TestAzureFilesConnector:
 
         assert_record_paths_or_names_contain(neo4j_driver, connector_id, [new_name])
 
-        # Note: Azure Files rename is implemented as copy+delete at the storage level.
-        # The connector may not detect this as a rename (no content hash match like GCS/S3),
-        # so the old record may persist until the next full sync cleans it up.
-        # We still set move_source_key so TC-MOVE can proceed.
+        # Rename uses server-side File Rename (see AzureFilesStorageHelper) so SMB file_id
+        # is preserved and the connector can treat it as the same Record path update.
         azure_files_connector["move_source_key"] = new_key
         azure_files_connector["move_source_name"] = new_name
         logger.info(

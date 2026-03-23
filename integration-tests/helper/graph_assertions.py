@@ -290,13 +290,29 @@ def record_name_path_contains(
     path_substring: str,
 ) -> bool:
     """
-    True if the Record named *record_name* has a File.path containing *path_substring*.
+    True if some Record named *record_name* has a File.path containing *path_substring*.
 
     Use after object-store moves: bucket/container/share maps to one RecordGroup; prefixes
     are path segments, not extra RecordGroups.
+
+    When the same basename exists on multiple paths (e.g. Azure Files copy+delete move
+    before the old path is deleted from the graph), we must not use LIMIT 1 on name
+    alone — that can return the stale path and miss the move.
     """
-    path = record_file_path_for_name(driver, connector_id, record_name)
-    return bool(path and path_substring in path)
+    cypher = """
+    MATCH (r:Record {connectorId: $cid})
+    WHERE coalesce(r.recordName, r.name) = $name
+    OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(f:File)
+    WITH r, f
+    WHERE f.path IS NOT NULL AND f.path CONTAINS $sub
+    RETURN count(*) AS c
+    """
+    with driver.session() as session:
+        result = session.run(
+            cypher, cid=connector_id, name=record_name, sub=path_substring
+        )
+        rec = result.single()
+        return int(rec["c"]) > 0 if rec else False
 
 
 def record_paths_or_names_contain(

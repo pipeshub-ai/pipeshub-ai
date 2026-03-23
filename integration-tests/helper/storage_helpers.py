@@ -411,31 +411,35 @@ class AzureFilesStorageHelper:
         }
 
     def rename_object(self, share: str, old_path: str, new_path: str) -> None:
-        self._copy_and_delete(share, old_path, new_path)
+        self._rename_within_share(share, old_path, new_path)
 
     def move_object(self, share: str, old_path: str, new_path: str) -> None:
-        self._copy_and_delete(share, old_path, new_path)
+        self._rename_within_share(share, old_path, new_path)
 
-    def _copy_and_delete(self, share: str, old_path: str, new_path: str) -> None:
+    def _rename_within_share(self, share: str, old_path: str, new_path: str) -> None:
+        """
+        Rename/move using the File service Rename API (not copy+delete).
+
+        Copy+delete creates a new file with a new SMB file_id, so the connector cannot
+        match the new object to the existing Record via external_revision_id (file_id).
+        Server-side rename preserves file_id, which matches how real clients move files
+        and allows move/rename detection in AzureFilesConnector._process_azure_files_item.
+        """
         share_client = self._service.get_share_client(share)
-
         old_dir, _, old_name = old_path.rpartition("/")
-        new_dir, _, new_name = new_path.rpartition("/")
-
-        src_dir_client = share_client.get_directory_client(old_dir) if old_dir else share_client.get_directory_client("")  # type: ignore[call-arg]
-        src_file_client = src_dir_client.get_file_client(old_name)
-
-        data = src_file_client.download_file().readall()
+        new_dir, _, _new_name = new_path.rpartition("/")
 
         if new_dir:
-            dest_dir_client = self._ensure_azure_files_directory(share_client, new_dir)
-        else:
-            dest_dir_client = share_client.get_directory_client("")
+            self._ensure_azure_files_directory(share_client, new_dir)
 
-        dest_file_client = dest_dir_client.get_file_client(new_name)
-        dest_file_client.upload_file(data)
-
-        src_file_client.delete_file()
+        src_dir_client = (
+            share_client.get_directory_client(old_dir)
+            if old_dir
+            else share_client.get_directory_client("")  # type: ignore[call-arg]
+        )
+        src_file_client = src_dir_client.get_file_client(old_name)
+        dest_path = new_path.strip("/")
+        src_file_client.rename_file(dest_path, overwrite=True)
 
     def clear_objects(self, share: str) -> None:
         """Delete all files in the share without deleting the share itself."""

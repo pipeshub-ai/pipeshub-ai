@@ -11,13 +11,17 @@ Provides:
 
 import logging
 import os
+import random
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Generator, Optional
 
 import pytest
+import requests
 from neo4j import Driver, GraphDatabase
+from neo4j.exceptions import Neo4jError
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
@@ -33,11 +37,52 @@ from graph_assertions import (  # type: ignore[import-not-found]  # noqa: E402
 )
 from pipeshub_client import (  # type: ignore[import-not-found]  # noqa: E402
     ConnectorInstance,
+    PipeshubAuthError,
     PipeshubClient,
+    PipeshubClientError,
 )
 from sample_data import ensure_sample_data_files_root  # type: ignore[import-not-found]  # noqa: E402
 
 logger = logging.getLogger("connector-fixtures")
+
+_CONNECTOR_API_TEARDOWN_ERRORS = (
+    AssertionError,
+    PipeshubAuthError,
+    PipeshubClientError,
+    requests.exceptions.RequestException,
+)
+
+_CONNECTOR_DELETE_TEARDOWN_ERRORS = _CONNECTOR_API_TEARDOWN_ERRORS + (TimeoutError, Neo4jError)
+
+
+def _storage_clear_error_types() -> tuple[type[BaseException], ...]:
+    """Exception types cloud SDKs typically raise from list/delete operations."""
+    types_list: list[type[BaseException]] = [
+        OSError,
+        requests.exceptions.RequestException,
+    ]
+    try:
+        from botocore.exceptions import ClientError
+
+        types_list.append(ClientError)
+    except ImportError:
+        pass
+    try:
+        from google.api_core.exceptions import GoogleAPIError
+
+        types_list.append(GoogleAPIError)
+    except ImportError:
+        pass
+    try:
+        from azure.core.exceptions import AzureError
+
+        types_list.append(AzureError)
+    except ImportError:
+        pass
+    return tuple(types_list)
+
+
+_STORAGE_CLEAR_ERRORS = _storage_clear_error_types()
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +121,13 @@ _RESOURCE_NAME = "pipeshub-integration-tests"
 
 def _ensure_resource_exists(storage, resource_name: str, create_fn: str) -> None:
     """Create storage resource if it doesn't exist, otherwise reuse. Retries for S3 eventual consistency."""
-    import time
-    for attempt in range(6):  # up to 30s of retries
+    conflict_markers = (
+        "BucketAlreadyOwnedByYou",
+        "BucketAlreadyExists",
+        "OperationAborted",
+        "already exists",
+    )
+    for attempt in range(6):  # ~30s+ of retries (base delay + jitter)
         try:
             objects = storage.list_objects(resource_name)
             if isinstance(objects, list):
@@ -89,9 +139,9 @@ def _ensure_resource_exists(storage, resource_name: str, create_fn: str) -> None
             return
         except Exception as e:
             error_str = str(e)
-            if any(k in error_str for k in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists", "OperationAborted", "already exists")):
+            if any(marker in error_str for marker in conflict_markers):
                 logger.info("Resource %s not ready yet (attempt %d), waiting...", resource_name, attempt + 1)
-                time.sleep(5)
+                time.sleep(5 + random.uniform(0, 2))
             else:
                 raise
     # Final attempt — let it fail with a clear error if still not accessible
@@ -192,7 +242,7 @@ def _destructor(
         pipeshub_client.toggle_sync(connector_id, enable=False)
         status = pipeshub_client.get_connector_status(connector_id)
         assert not status.get("isActive"), "Connector should be inactive after disable"
-    except Exception:
+    except _CONNECTOR_API_TEARDOWN_ERRORS:
         logger.exception("DESTRUCTOR [%s]: Failed to disable connector %s", connector_type, connector_id)
 
     # 2. Delete connector + graph cleanup
@@ -202,7 +252,7 @@ def _destructor(
         pipeshub_client.wait(15)
         assert_all_records_cleaned(neo4j_driver, connector_id, timeout=cleanup_timeout)
         logger.info("DESTRUCTOR [%s]: Graph cleaned for connector %s", connector_type, connector_id)
-    except Exception:
+    except _CONNECTOR_DELETE_TEARDOWN_ERRORS:
         logger.exception("DESTRUCTOR [%s]: Failed to delete/clean connector %s", connector_type, connector_id)
 
     # 3. Clear storage content (keep the resource, just remove files)
@@ -210,7 +260,7 @@ def _destructor(
     try:
         storage.clear_objects(resource_name)
         logger.info("DESTRUCTOR [%s]: Content cleared in %s", connector_type, resource_name)
-    except Exception:
+    except _STORAGE_CLEAR_ERRORS:
         logger.exception("DESTRUCTOR [%s]: Failed to clear content in %s", connector_type, resource_name)
 
 
