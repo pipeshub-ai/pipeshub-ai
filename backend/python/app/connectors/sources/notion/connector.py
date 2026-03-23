@@ -20,7 +20,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -41,6 +41,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -72,7 +73,6 @@ from app.models.blocks import (
 from app.models.entities import (
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -133,7 +133,7 @@ TOKEN_URL = "https://api.notion.com/v1/oauth/token"
             'https://docs.pipeshub.com/connectors/notion/notion',
             'pipeshub'
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
@@ -973,10 +973,10 @@ class NotionConnector(BaseConnector):
                         # Set indexing status based on filter
                         if object_type == "page":
                             if not pages_indexing_enabled:
-                                record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                         else:  # data_source (database)
                             if not databases_indexing_enabled:
-                                record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                         records_with_permissions.append((record, []))
                         total_synced += 1
@@ -993,7 +993,7 @@ class NotionConnector(BaseConnector):
                             for file_record in attachment_records:
                                 # Set indexing status based on filter
                                 if not files_indexing_enabled:
-                                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                    file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                                 records_with_permissions.append((file_record, []))
                                 total_files += 1
 
@@ -1005,7 +1005,7 @@ class NotionConnector(BaseConnector):
                                 for file_record in comment_attachment_records:
                                     # Set indexing status based on filter
                                     if not files_indexing_enabled:
-                                        file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                                        file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                                     records_with_permissions.append((file_record, []))
                                     total_files += 1
 
@@ -1970,7 +1970,7 @@ class NotionConnector(BaseConnector):
                         record_group_type=RecordGroupType.NOTION_WORKSPACE,
                         external_record_group_id=self.workspace_id or "",
                         mime_type=MimeTypes.BIN.value,
-                        indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                        indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                         version=1,
                         origin=OriginTypes.CONNECTOR,
                         inherit_permissions=True,
@@ -2001,7 +2001,7 @@ class NotionConnector(BaseConnector):
                         record_group_type=RecordGroupType.NOTION_WORKSPACE,
                         external_record_group_id=self.workspace_id or "",
                         mime_type=MimeTypes.BLOCKS.value,
-                        indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                        indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                         version=1,
                         origin=OriginTypes.CONNECTOR,
                         inherit_permissions=True,
@@ -3478,7 +3478,7 @@ class NotionConnector(BaseConnector):
                     record_group_type=RecordGroupType.NOTION_WORKSPACE,
                     external_record_group_id=self.workspace_id or "",
                     mime_type=MimeTypes.BLOCKS.value,
-                    indexing_status=IndexingStatus.AUTO_INDEX_OFF.value,
+                    indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                     version=1,
                     origin=OriginTypes.CONNECTOR,
                     inherit_permissions=True,

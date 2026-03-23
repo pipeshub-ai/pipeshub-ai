@@ -5,14 +5,17 @@ Connector for synchronizing data from Azure Blob Storage containers. This connec
 uses the native Azure Blob Storage API with connection string authentication.
 """
 
-import asyncio
 import base64
 import mimetypes
 import uuid
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
+
+if TYPE_CHECKING:
+    from azure.storage.blob import BlobProperties  # type: ignore[import-untyped]
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -23,6 +26,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -48,6 +52,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -67,7 +72,6 @@ from app.connectors.sources.azure_blob.common.apps import AzureBlobApp
 from app.models.entities import (
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -87,7 +91,7 @@ DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 AZURE_PORTAL_BASE_URL = "https://portal.azure.com"
 
 
-def get_file_extension(blob_name: str) -> Optional[str]:
+def get_file_extension(blob_name: str) -> str | None:
     """Extracts the extension from a blob name."""
     if "." in blob_name:
         parts = blob_name.split(".")
@@ -96,7 +100,7 @@ def get_file_extension(blob_name: str) -> Optional[str]:
     return None
 
 
-def get_parent_path_from_blob_name(blob_name: str) -> Optional[str]:
+def get_parent_path_from_blob_name(blob_name: str) -> str | None:
     """Extracts the parent path from a blob name (without leading slash).
 
     For a blob like 'a/b/c/file.txt', returns 'a/b/c'
@@ -112,7 +116,7 @@ def get_parent_path_from_blob_name(blob_name: str) -> Optional[str]:
     return parent_path if parent_path else None
 
 
-def get_folder_path_segments_from_blob_name(blob_name: str) -> List[str]:
+def get_folder_path_segments_from_blob_name(blob_name: str) -> list[str]:
     """Derives folder path segments from a blob name for hierarchy creation.
 
     Azure Blob Storage, like S3, represents folders implicitly via blob names.
@@ -130,13 +134,10 @@ def get_folder_path_segments_from_blob_name(blob_name: str) -> List[str]:
         return []
     parts = normalized.split("/")
     # Last part is the file (or folder blob); segments are the folder path prefix
-    segments = []
-    for i in range(1, len(parts)):
-        segments.append("/".join(parts[:i]))
-    return segments
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
 
 
-def get_mimetype_for_azure_blob(blob_name: str, is_folder: bool = False) -> str:
+def get_mimetype_for_azure_blob(blob_name: str, *, is_folder: bool = False) -> str:
     """Determines the correct MimeTypes string value for an Azure blob."""
     if is_folder:
         return MimeTypes.FOLDER.value
@@ -150,7 +151,7 @@ def get_mimetype_for_azure_blob(blob_name: str, is_folder: bool = False) -> str:
     return MimeTypes.BIN.value
 
 
-def parse_parent_external_id(parent_external_id: str) -> Tuple[str, Optional[str]]:
+def parse_parent_external_id(parent_external_id: str) -> tuple[str, str | None]:
     """Parse parent_external_id to extract container_name and normalized path.
 
     Args:
@@ -191,7 +192,7 @@ def get_parent_weburl_for_azure_blob(parent_external_id: str, account_name: str)
     return base_url
 
 
-def get_parent_path_for_azure_blob(parent_external_id: str) -> Optional[str]:
+def get_parent_path_for_azure_blob(parent_external_id: str) -> str | None:
     """Extract directory path from Azure Blob parent external_id.
 
     Args:
@@ -291,7 +292,7 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(True)
@@ -334,20 +335,20 @@ class AzureBlobConnector(BaseConnector):
 
         self.record_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
-        self.data_source: Optional[AzureBlobDataSource] = None
+        self.data_source: AzureBlobDataSource | None = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
-        self.container_name: Optional[str] = None
-        self.connector_scope: Optional[str] = None
-        self.created_by: Optional[str] = None
-        self.creator_email: Optional[str] = None  # Cached to avoid repeated DB queries
-        self.account_name: Optional[str] = None
+        self.container_name: str | None = None
+        self.connector_scope: str | None = None
+        self.created_by: str | None = None
+        self.creator_email: str | None = None  # Cached to avoid repeated DB queries
+        self.account_name: str | None = None
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
-    def get_app_users(self, users: List[User]) -> List[AppUser]:
+    def get_app_users(self, users: list[User]) -> list[AppUser]:
         """Convert User objects to AppUser objects for Azure Blob connector."""
         return [
             AppUser(
@@ -440,17 +441,17 @@ class AzureBlobConnector(BaseConnector):
         """Generate the web URL for an Azure Blob parent folder/directory."""
         return get_parent_weburl_for_azure_blob(parent_external_id, self.account_name or "")
 
-    def _extract_container_names(self, containers_data: Optional[Iterable[Any]]) -> List[str]:
+    def _extract_container_names(self, containers_data: Iterable[Any] | None) -> list[str]:
         """Extract container names from list_containers response data.
 
         Handles both dict-based and ContainerProperties-like objects.
         """
-        container_names: List[str] = []
+        container_names: list[str] = []
         if not containers_data:
             return container_names
 
         for container in containers_data:
-            container_name: Optional[str] = None
+            container_name: str | None = None
 
             # Handle both dict and object formats for robustness
             if isinstance(container, dict):
@@ -537,7 +538,7 @@ class AzureBlobConnector(BaseConnector):
             self.logger.error(f"Error in Azure Blob connector run: {ex}", exc_info=True)
             raise
 
-    async def _create_record_groups_for_containers(self, container_names: List[str]) -> None:
+    async def _create_record_groups_for_containers(self, container_names: list[str]) -> None:
         """Create record groups for containers with appropriate permissions.
 
         Uses cached creator_email from init() to avoid repeated database queries.
@@ -594,12 +595,12 @@ class AzureBlobConnector(BaseConnector):
             await self.data_entities_processor.on_new_record_groups(record_groups)
             self.logger.info(f"Created {len(record_groups)} record group(s) for containers")
 
-    def _get_date_filters(self) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+    def _get_date_filters(self) -> tuple[int | None, int | None, int | None, int | None]:
         """Extract date filter values from sync_filters."""
-        modified_after_ms: Optional[int] = None
-        modified_before_ms: Optional[int] = None
-        created_after_ms: Optional[int] = None
-        created_before_ms: Optional[int] = None
+        modified_after_ms: int | None = None
+        modified_before_ms: int | None = None
+        created_after_ms: int | None = None
+        created_before_ms: int | None = None
 
         modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
         if modified_date_filter and not modified_date_filter.is_empty():
@@ -629,11 +630,11 @@ class AzureBlobConnector(BaseConnector):
 
     def _pass_date_filters(
         self,
-        blob: Dict,
-        modified_after_ms: Optional[int] = None,
-        modified_before_ms: Optional[int] = None,
-        created_after_ms: Optional[int] = None,
-        created_before_ms: Optional[int] = None
+        blob: dict,
+        modified_after_ms: int | None = None,
+        modified_before_ms: int | None = None,
+        created_after_ms: int | None = None,
+        created_before_ms: int | None = None
     ) -> bool:
         """Returns True if Azure blob PASSES date filters (should be kept)."""
         blob_name = blob.get("name", "")
@@ -691,7 +692,7 @@ class AzureBlobConnector(BaseConnector):
 
         return True
 
-    def _pass_extension_filter(self, blob_name: str, is_folder: bool = False) -> bool:
+    def _pass_extension_filter(self, blob_name: str, *, is_folder: bool = False) -> bool:
         """
         Checks if the Azure blob passes the configured file extensions filter.
 
@@ -828,7 +829,7 @@ class AzureBlobConnector(BaseConnector):
                         is_folder = blob_name.endswith("/")
 
                         # Check extension filter
-                        if not self._pass_extension_filter(blob_name, is_folder):
+                        if not self._pass_extension_filter(blob_name, is_folder=is_folder):
                             self.logger.debug(
                                 f"Skipping {blob_name}: does not pass extension filter"
                             )
@@ -896,7 +897,7 @@ class AzureBlobConnector(BaseConnector):
                 }
             )
 
-    def _blob_properties_to_dict(self, blob) -> Dict:
+    def _blob_properties_to_dict(self, blob: "BlobProperties | dict[str, Any]") -> dict[str, Any]:
         """Convert Azure BlobProperties object to a dictionary.
 
         The Azure SDK returns BlobProperties objects from the async iterator.
@@ -937,35 +938,21 @@ class AzureBlobConnector(BaseConnector):
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
     async def _ensure_parent_folders_exist(
-        self, container_name: str, path_segments: List[str]
+        self, container_name: str, path_segments: list[str]
     ) -> None:
-        """Ensure folder records exist for each path segment (root to leaf). No duplicates.
+        """Ensure folder records exist for each path segment (root to leaf).
 
         Azure Blob Storage, like S3, represents folders implicitly via blob names.
-        For each segment (e.g. 'a', 'a/b', 'a/b/c'), create a folder record if one does not
-        already exist (by external_id = container_name/segment). Process in order so parent
-        exists before child. Aligns with S3 _ensure_parent_folders_exist pattern.
+        For each segment (e.g. 'a', 'a/b', 'a/b/c'), upsert a folder record and its edges.
+        Always processes all segments so that edges are re-created after full sync.
+        Process in order so parent exists before child. The processor handles existing
+        records by external_record_id and re-creates edges without duplicating nodes.
         """
         if not path_segments:
             return
         timestamp_ms = get_epoch_timestamp_in_ms()
-        external_ids = [f"{container_name}/{segment}" for segment in path_segments]
-        async with self.data_store_provider.transaction() as tx_store:
-            results = await asyncio.gather(
-                *[
-                    tx_store.get_record_by_external_id(
-                        connector_id=self.connector_id, external_id=eid
-                    )
-                    for eid in external_ids
-                ]
-            )
-        existing_external_ids = {
-            eid for eid, rec in zip(external_ids, results) if rec is not None
-        }
         for i, segment in enumerate(path_segments):
             external_id = f"{container_name}/{segment}"
-            if external_id in existing_external_ids:
-                continue
             # Root folder: first segment has no parent. Others: parent is previous segment.
             parent_external_id = (
                 f"{container_name}/{path_segments[i - 1]}" if i > 0 else None
@@ -1003,7 +990,7 @@ class AzureBlobConnector(BaseConnector):
             permissions = await self._create_azure_blob_permissions(container_name, segment + "/")
             await self.data_entities_processor.on_new_records([(folder_record, permissions)])
 
-    def _get_azure_blob_revision_id(self, blob: Dict) -> str:
+    def _get_azure_blob_revision_id(self, blob: dict) -> str:
         """
         Determines a stable revision ID for an Azure Blob object.
 
@@ -1036,8 +1023,8 @@ class AzureBlobConnector(BaseConnector):
         return ""
 
     async def _process_azure_blob(
-        self, blob: Dict, container_name: str
-    ) -> Tuple[Optional[FileRecord], List[Permission]]:
+        self, blob: dict, container_name: str
+    ) -> tuple[FileRecord | None, list[Permission]]:
         """Process a single Azure blob and convert it to a FileRecord."""
         try:
             blob_name = blob.get("name", "")
@@ -1100,11 +1087,6 @@ class AzureBlobConnector(BaseConnector):
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
-                if current_revision_id and stored_revision and current_revision_id == stored_revision:
-                    self.logger.debug(
-                        f"Skipping {normalized_name}: externalRecordId and externalRevisionId unchanged"
-                    )
-                    return None, []
 
                 # Content changed or missing revision - sync properly from Azure Blob
                 if current_revision_id and stored_revision and current_revision_id != stored_revision:
@@ -1140,7 +1122,7 @@ class AzureBlobConnector(BaseConnector):
             # Prepare record data
             record_type = RecordType.FOLDER if is_folder else RecordType.FILE
             extension = get_file_extension(normalized_name) if is_file else None
-            mime_type = blob.get("content_type") or get_mimetype_for_azure_blob(normalized_name, is_folder)
+            mime_type = blob.get("content_type") or get_mimetype_for_azure_blob(normalized_name, is_folder=is_folder)
 
             parent_path = get_parent_path_from_blob_name(normalized_name)
             parent_external_id = f"{container_name}/{parent_path}" if parent_path else None
@@ -1156,10 +1138,7 @@ class AzureBlobConnector(BaseConnector):
                 async with self.data_store_provider.transaction() as tx_store:
                     await self._remove_old_parent_relationship(record_id, tx_store)
 
-            if not existing_record:
-                version = 0
-            else:
-                version = existing_record.version + 1
+            version = 0 if not existing_record else existing_record.version + 1
 
             # Get content MD5 hash for md5_hash field
             content_md5 = blob.get("content_md5")
@@ -1204,9 +1183,12 @@ class AzureBlobConnector(BaseConnector):
                 etag=raw_etag,
             )
 
-            if hasattr(self, 'indexing_filters') and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            if (
+                hasattr(self, 'indexing_filters')
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+            ):
+                file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 
@@ -1218,7 +1200,7 @@ class AzureBlobConnector(BaseConnector):
 
     async def _create_azure_blob_permissions(
         self, container_name: str, blob_name: str
-    ) -> List[Permission]:
+    ) -> list[Permission]:
         """Create permissions for an Azure blob based on connector scope.
 
         Uses cached creator_email from init() to avoid repeated database queries.
@@ -1282,7 +1264,7 @@ class AzureBlobConnector(BaseConnector):
             self.logger.error(f"Azure Blob connection test failed: {e}", exc_info=True)
             return False
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> str | None:
         """Generate a SAS URL for an Azure blob."""
         if not self.data_source:
             return None
@@ -1367,8 +1349,8 @@ class AzureBlobConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> FilterOptionsResponse:
         """Get dynamic filter options for filters."""
         if filter_key == "containers":
@@ -1380,7 +1362,7 @@ class AzureBlobConnector(BaseConnector):
         self,
         page: int,
         limit: int,
-        search: Optional[str]
+        search: str | None
     ) -> FilterOptionsResponse:
         """Get list of available containers."""
         try:
@@ -1456,11 +1438,11 @@ class AzureBlobConnector(BaseConnector):
                 message=f"Error: {str(e)}"
             )
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications from the source."""
         raise NotImplementedError("This method is not supported")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, record_results: list[Record]) -> None:
         """Reindex records by checking for updates at source and publishing reindex events."""
         try:
             if not record_results:
@@ -1505,7 +1487,7 @@ class AzureBlobConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Check if record has been updated at source and fetch updated data."""
         try:
             container_name = record.external_record_group_id
@@ -1567,7 +1549,7 @@ class AzureBlobConnector(BaseConnector):
             is_file = not is_folder
 
             extension = get_file_extension(blob_name) if is_file else None
-            mime_type = blob_metadata.get("content_type") or get_mimetype_for_azure_blob(blob_name, is_folder)
+            mime_type = blob_metadata.get("content_type") or get_mimetype_for_azure_blob(blob_name, is_folder=is_folder)
 
             parent_path = get_parent_path_from_blob_name(blob_name)
             parent_external_id = f"{container_name}/{parent_path}" if parent_path else None
@@ -1620,9 +1602,12 @@ class AzureBlobConnector(BaseConnector):
                 etag=current_etag,
             )
 
-            if hasattr(self, 'indexing_filters') and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    updated_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+            if (
+                hasattr(self, 'indexing_filters')
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+            ):
+                updated_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_blob_permissions(container_name, blob_name)
 
@@ -1693,7 +1678,7 @@ class AzureBlobConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
-        **kwargs,
+        **kwargs: object,
     ) -> "AzureBlobConnector":
         """Factory method to create and initialize connector."""
         # Extract account name from connection string if available
@@ -1719,7 +1704,7 @@ class AzureBlobConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        connector = cls(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,
@@ -1727,4 +1712,3 @@ class AzureBlobConnector(BaseConnector):
             connector_id,
         )
 
-        return connector

@@ -271,6 +271,9 @@ class IndexingFilterKey(str, Enum):
     ISSUES = "issues"
     TICKETS = "tickets"
     GROUP_CONVERSATIONS = "group_conversations"
+    WEBPAGES = "webpages"
+    IMAGES = "images"
+    VIDEOS = "videos"
 
     # Child content types (generic)
     COMMENTS = "comments"
@@ -811,7 +814,7 @@ class FilterCollection(BaseModel):
 
         Use for indexing filters:
             if not indexing_filters.is_enabled(IndexingFilterKey.PAGES):
-                record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
         Note: For non-boolean filters, this uses Python's truthiness rules:
             - Lists: True if non-empty

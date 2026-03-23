@@ -1,5 +1,5 @@
 // Enhanced AgentsManagement component with template edit/delete management
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box,
@@ -37,8 +37,8 @@ import { Icon } from '@iconify/react';
 import searchIcon from '@iconify-icons/mdi/magnify';
 import plusIcon from '@iconify-icons/mdi/plus';
 import moreVertIcon from '@iconify-icons/mdi/dots-vertical';
-import editIcon from '@iconify-icons/mdi/pencil';
 import deleteIcon from '@iconify-icons/mdi/delete';
+import eyeIcon from '@iconify-icons/mdi/eye-outline';
 import chatIcon from '@iconify-icons/mdi/chat';
 import templateIcon from '@iconify-icons/mdi/file-document';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
@@ -116,36 +116,39 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
   const textPrimary = isDark ? '#ffffff' : '#1f2937';
   const textSecondary = isDark ? '#9ca3af' : '#6b7280';
 
-  const loadAgents = useCallback(async () => {
-    try {
-      setLoading(true);
-      const response = await AgentApiService.getAgents();
-      setAgents(response || []);
-      setError(null);
-    } catch (err) {
-      setError('Failed to load agents');
-      console.error('Error loading agents:', err);
-      setAgents([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  // Refs to prevent duplicate API calls (React StrictMode, re-renders)
+  const isLoadingRef = useRef(false);
+  const hasLoadedRef = useRef(false);
 
-  const loadTemplates = useCallback(async () => {
-    try {
-      const response = await AgentApiService.getTemplates();
-      setTemplates(response || []);
-    } catch (err) {
-      console.error('Error loading templates:', err);
-      setTemplates([]);
-    }
-  }, []);
-
-  // Load data
+  // Load data - protected against StrictMode double calls
   useEffect(() => {
-    loadAgents();
-    loadTemplates();
-  }, [loadAgents, loadTemplates]);
+    if (isLoadingRef.current || hasLoadedRef.current) {
+      return;
+    }
+
+    const loadData = async () => {
+      isLoadingRef.current = true;
+      
+      try {
+        setLoading(true);
+        // Load agents and templates in parallel
+        const agentsResponse = await AgentApiService.getAgents();  
+        setAgents(agentsResponse || []);
+        setError(null);
+        hasLoadedRef.current = true;
+      } catch (err) {
+        setError('Failed to load agents');
+        console.error('Error loading agents:', err);
+        setAgents([]);
+      } finally {
+        setLoading(false);
+        isLoadingRef.current = false;
+      }
+    };
+
+    loadData();
+  }, []);
+
 
   // Filter and sort agents with safe array handling
   const filteredAndSortedAgents = useMemo(() => {
@@ -183,11 +186,18 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
     setSelectedTemplate(null);
   }, []);
 
-  const handleEditAgent = useCallback(
+  const canViewAgent = useCallback((agent: Agent) => agent.can_view !== false, []);
+  const canDeleteAgent = useCallback((agent: Agent) => agent.can_delete !== false, []);
+
+  const handleViewAgent = useCallback(
     (agent: Agent) => {
+      if (!canViewAgent(agent)) {
+        setError('You do not have permission to view this agent');
+        return;
+      }
       navigate(paths.dashboard.agent.edit(agent._key));
     },
-    [navigate]
+    [navigate, canViewAgent]
   );
 
   const handleDeleteAgent = useCallback(async (agent: Agent) => {
@@ -449,7 +459,11 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                   }}
                 >
                   <Tooltip
-                    title={`Updated ${formatTimestamp(agent.updatedAtTimestamp || new Date().toISOString())}`}
+                    title={`Updated ${formatTimestamp(
+                      typeof agent.updatedAtTimestamp === 'number'
+                        ? new Date(agent.updatedAtTimestamp).toISOString()
+                        : agent.updatedAtTimestamp || new Date().toISOString()
+                    )}`}
                   >
                     <Box
                       sx={{
@@ -470,7 +484,11 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                           fontSize: '0.65rem',
                         }}
                       >
-                        {formatTimestamp(agent.updatedAtTimestamp || new Date().toISOString())}
+                        {formatTimestamp(
+                          typeof agent.updatedAtTimestamp === 'number'
+                            ? new Date(agent.updatedAtTimestamp).toISOString()
+                            : agent.updatedAtTimestamp || new Date().toISOString()
+                        )}
                       </Typography>
                     </Box>
                   </Tooltip>
@@ -509,8 +527,9 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                   <Button
                     size="small"
                     variant="outlined"
-                    onClick={() => handleEditAgent(agent)}
-                    startIcon={<Icon icon={editIcon} width={12} height={12} />}
+                    onClick={() => handleViewAgent(agent)}
+                    disabled={!canViewAgent(agent)}
+                    startIcon={<Icon icon={eyeIcon} width={12} height={12} />}
                     sx={{
                       flex: 1,
                       height: 28,
@@ -527,7 +546,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
                       },
                     }}
                   >
-                    Edit
+                    View
                   </Button>
                   <IconButton
                     size="small"
@@ -557,7 +576,8 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
     [
       handleMenuOpen,
       handleChatWithAgent,
-      handleEditAgent,
+      handleViewAgent,
+      canViewAgent,
       theme,
       isDark,
       textPrimary,
@@ -765,7 +785,8 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
 
           {/* Action Buttons with better labels */}
           <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
-            <Button
+            {/* Template button disabled for v1 */}
+            {/* <Button
               variant="outlined"
               startIcon={<Icon icon={databaseIcon} fontSize={14} />}
               onClick={() => setShowTemplateBuilder(true)}
@@ -786,7 +807,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
               }}
             >
               <Box sx={{ display: { xs: 'none', sm: 'inline' } }}>New Template</Box>
-            </Button>
+            </Button> */}
 
             <Button
               variant="outlined"
@@ -1018,9 +1039,10 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
       >
         <MenuItem
           onClick={() => {
-            if (activeAgent) handleEditAgent(activeAgent);
+            if (activeAgent) handleViewAgent(activeAgent);
             handleMenuClose();
           }}
+          disabled={!activeAgent || !canViewAgent(activeAgent)}
           sx={{
             py: 1.5,
             px: 2,
@@ -1034,10 +1056,10 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
           }}
         >
           <ListItemIcon sx={{ minWidth: 36 }}>
-            <Icon icon={editIcon} width={18} height={18} />
+            <Icon icon={eyeIcon} width={18} height={18} />
           </ListItemIcon>
           <ListItemText 
-            primary="Edit Agent"
+            primary="View Agent"
             primaryTypographyProps={{
               sx: { fontSize: '0.875rem', fontWeight: 500 }
             }}
@@ -1071,7 +1093,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
           />
         </MenuItem>
         <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} />
-        <MenuItem
+        {/* <MenuItem
           onClick={() => {
             if (activeAgent) handleOpenPermissions(activeAgent);
             handleMenuClose();
@@ -1098,35 +1120,37 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
             }}
           />
         </MenuItem>
-        <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} />
-        <MenuItem
-          onClick={() => {
-            if (activeAgent) setDeleteDialog({ open: true, agent: activeAgent });
-            handleMenuClose();
-          }}
-          sx={{ 
-            color: 'error.main',
-            py: 1.5,
-            px: 2,
-            mx: 0.5,
-            borderRadius: 1,
-            '&:hover': {
-              bgcolor: alpha(theme.palette.error.main, 0.08),
-              transform: 'translateX(2px)',
-            },
-            transition: 'all 0.15s ease',
-          }}
-        >
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <Icon icon={deleteIcon} width={18} height={18} color={theme.palette.error.main} />
-          </ListItemIcon>
-          <ListItemText 
-            primary="Delete Agent"
-            primaryTypographyProps={{
-              sx: { fontSize: '0.875rem', fontWeight: 500 }
+        <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} /> */}
+        {activeAgent && canDeleteAgent(activeAgent) && (
+          <MenuItem
+            onClick={() => {
+              setDeleteDialog({ open: true, agent: activeAgent });
+              handleMenuClose();
             }}
-          />
-        </MenuItem>
+            sx={{ 
+              color: 'error.main',
+              py: 1.5,
+              px: 2,
+              mx: 0.5,
+              borderRadius: 1,
+              '&:hover': {
+                bgcolor: alpha(theme.palette.error.main, 0.08),
+                transform: 'translateX(2px)',
+              },
+              transition: 'all 0.15s ease',
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: 36 }}>
+              <Icon icon={deleteIcon} width={18} height={18} color={theme.palette.error.main} />
+            </ListItemIcon>
+            <ListItemText 
+              primary="Delete Agent"
+              primaryTypographyProps={{
+                sx: { fontSize: '0.875rem', fontWeight: 500 }
+              }}
+            />
+          </MenuItem>
+        )}
       </Menu>
 
       {/* Delete Agent Confirmation Dialog */}
@@ -1210,8 +1234,8 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
         </DialogActions>
       </Dialog>
 
-      {/* Template Builder Dialog */}
-      <TemplateBuilder
+      {/* Template Builder Dialog - Disabled for v1 */}
+      {/* <TemplateBuilder
         open={showTemplateBuilder}
         onClose={() => {
           setShowTemplateBuilder(false);
@@ -1219,17 +1243,17 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
         }}
         onSuccess={handleCreateTemplate}
         editingTemplate={editingTemplate}
-      />
+      /> */}
 
-      {/* Template Selector Dialog */}
-      <TemplateSelector
+      {/* Template Selector Dialog - Disabled for v1 */}
+      {/* <TemplateSelector
         open={showTemplateSelector}
         onClose={() => setShowTemplateSelector(false)}
         onSelect={handleTemplateSelect}
         onEdit={handleEditTemplate}
         onDelete={handleDeleteTemplate}
         templates={Array.isArray(templates) ? templates : []}
-      />
+      /> */}
 
       <AgentPermissionsDialog
         open={permissionsDialog.open}

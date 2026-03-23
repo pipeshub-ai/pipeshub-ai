@@ -97,6 +97,24 @@ spec:
                 secretKeyRef:
                   name: {{ include "pipeshub-ai.fullname" . }}-secrets
                   key: arango-password
+            {{- if .Values.neo4j.enabled }}
+            # Neo4j config (app uses Neo4j as graph DB when DATA_STORE=neo4j)
+            - name: GRAPH_DB_TYPE
+              value: "neo4j"
+            - name: DATA_STORE
+              value: "neo4j"
+            - name: NEO4J_URI
+              value: "bolt://{{ include "pipeshub-ai.fullname" . }}-neo4j:7687"
+            - name: NEO4J_USERNAME
+              value: {{ .Values.neo4j.auth.username | quote }}
+            - name: NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  key: neo4j-password
+            - name: NEO4J_DATABASE
+              value: {{ .Values.neo4j.auth.database | quote }}
+            {{- end }}
             
             # Kafka config
             - name: KAFKA_BROKERS
@@ -180,6 +198,22 @@ spec:
             {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: frontend
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: frontend
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
           {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

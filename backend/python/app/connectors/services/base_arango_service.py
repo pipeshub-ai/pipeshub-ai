@@ -37,7 +37,6 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
-    IndexingStatus,
     LinkRecord,
     MailRecord,
     ProjectRecord,
@@ -56,19 +55,25 @@ from app.schema.arango.documents import (
     comment_record_schema,
     department_schema,
     file_record_schema,
+    knowledge_schema,
     link_record_schema,
     mail_record_schema,
     orgs_schema,
     people_schema,
     project_record_schema,
+    pull_request_record_schema,
     record_group_schema,
     record_schema,
     team_schema,
     ticket_record_schema,
+    tool_schema,
+    toolset_schema,
     user_schema,
     webpage_record_schema,
 )
 from app.schema.arango.edges import (
+    agent_has_knowledge_schema,
+    agent_has_toolset_schema,
     basic_edge_schema,
     belongs_to_schema,
     entity_relations_schema,
@@ -76,6 +81,7 @@ from app.schema.arango.edges import (
     is_of_type_schema,
     permissions_schema,
     record_relations_schema,
+    toolset_has_tool_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
@@ -114,8 +120,12 @@ NODE_COLLECTIONS = [
     (CollectionNames.RECORD_GROUPS.value, record_group_schema),
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
+    (CollectionNames.AGENT_KNOWLEDGE.value, knowledge_schema),
+    (CollectionNames.AGENT_TOOLSETS.value, toolset_schema),
+    (CollectionNames.AGENT_TOOLS.value, tool_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
+    (CollectionNames.PULLREQUESTS.value,pull_request_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
     (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
@@ -139,6 +149,9 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSION.value, permissions_schema),
+    (CollectionNames.AGENT_HAS_KNOWLEDGE.value, agent_has_knowledge_schema),
+    (CollectionNames.AGENT_HAS_TOOLSET.value, agent_has_toolset_schema),
+    (CollectionNames.TOOLSET_HAS_TOOL.value, toolset_has_tool_schema),
 ]
 
 class BaseArangoService:
@@ -2922,14 +2935,13 @@ class BaseArangoService:
         connector_id: str,
         org_id: str,
         depth: int,
-        include_parent: bool = True,
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[TransactionDatabase] = None
     ) -> List[Record]:
         """
         Get all child records of a parent record (folder) up to a specified depth.
-        Uses graph traversal on recordRelations edge collection.
+        Uses graph traversal on recordRelations edge collection. Parent record is always included.
 
         Args:
             parent_record_id: Record ID of the parent (folder)
@@ -2937,7 +2949,6 @@ class BaseArangoService:
             org_id: Organization ID (for security filtering)
             depth: Depth for traversing children (-1 = unlimited, 0 = only parent,
                    1 = direct children, 2 = children + grandchildren, etc.)
-            include_parent: Whether to include the parent record itself
             limit: Maximum number of records to return (for pagination)
             offset: Number of records to skip (for pagination)
             transaction: Optional database transaction
@@ -2949,7 +2960,7 @@ class BaseArangoService:
             self.logger.info(
                 f"Retrieving child records for parent {parent_record_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"include_parent: {include_parent}, limit: {limit}, offset: {offset}"
+                f"limit: {limit}, offset: {offset}"
             )
 
             # Validate depth - must be >= -1
@@ -2957,10 +2968,6 @@ class BaseArangoService:
                 raise ValueError(
                     f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
                 )
-
-            # Early return if depth=0 and include_parent=false (nothing to return)
-            if depth == 0 and not include_parent:
-                return []
 
             # Handle limit/offset for pagination
             limit_clause = ""
@@ -2972,7 +2979,6 @@ class BaseArangoService:
                 )
 
             # Determine max traversal depth (use 100 as practical unlimited)
-            # For depth=0, we set max_depth=0 so the child traversal returns nothing
             max_depth = 100 if depth == -1 else depth
 
             bind_vars = {
@@ -2980,69 +2986,40 @@ class BaseArangoService:
                 "max_depth": max_depth,
                 "connector_id": connector_id,
                 "org_id": org_id,
-                "include_parent": include_parent,
             }
 
             if limit is not None:
                 bind_vars["limit"] = limit
                 bind_vars["offset"] = offset
 
-            # Single unified query that handles all depth cases
-            # When max_depth=0, the child traversal (1..@max_depth) returns empty
-            # When include_parent=false, parentResult is empty
+            # Single unified query using 0..max_depth traversal
+            # Depth 0 = parent, Depth 1+ = children at various levels
             query = f"""
             LET startRecord = DOCUMENT(@record_id)
             FILTER startRecord != null
 
-            // Get parent record with its typed record if include_parent is true
-            LET parentResult = @include_parent ? (
-                LET parentTypedRecord = FIRST(
-                    FOR rec IN 1..1 OUTBOUND startRecord {CollectionNames.IS_OF_TYPE.value}
+            // Single traversal for parent (depth 0) and all children (depth 1+)
+            FOR v, e, p IN 0..@max_depth OUTBOUND startRecord {CollectionNames.RECORD_RELATIONS.value}
+                OPTIONS {{bfs: true, uniqueVertices: "global"}}
+
+                FILTER v.connectorId == @connector_id
+                FILTER v.orgId == @org_id OR v.orgId == null
+                FILTER v.isDeleted != true
+
+                LET typedRecord = FIRST(
+                    FOR rec IN 1..1 OUTBOUND v {CollectionNames.IS_OF_TYPE.value}
                         LIMIT 1
                         RETURN rec
                 )
-                // Only return parent if it matches filters and has typed record
-                FILTER parentTypedRecord != null
-                FILTER startRecord.connectorId == @connector_id
-                FILTER startRecord.orgId == @org_id OR startRecord.orgId == null
-                FILTER startRecord.isDeleted != true
-                RETURN {{
-                    record: startRecord,
-                    typedRecord: parentTypedRecord,
-                    depth: 0
+
+                FILTER typedRecord != null
+
+                LET result = {{
+                    record: v,
+                    typedRecord: typedRecord,
+                    depth: LENGTH(p.edges)
                 }}
-            ) : []
 
-            // Get all children using graph traversal
-            // When max_depth=0, this returns empty (1..0 is invalid range)
-            LET childResults = @max_depth > 0 ? (
-                FOR v, e, p IN 1..@max_depth OUTBOUND startRecord {CollectionNames.RECORD_RELATIONS.value}
-                    OPTIONS {{bfs: true, uniqueVertices: "global"}}
-
-                    FILTER v.connectorId == @connector_id
-                    FILTER v.orgId == @org_id OR v.orgId == null
-                    FILTER v.isDeleted != true
-
-                    LET typedRecord = FIRST(
-                        FOR rec IN 1..1 OUTBOUND v {CollectionNames.IS_OF_TYPE.value}
-                            LIMIT 1
-                            RETURN rec
-                    )
-
-                    FILTER typedRecord != null
-
-                    RETURN {{
-                        record: v,
-                        typedRecord: typedRecord,
-                        depth: LENGTH(p.vertices) - 1
-                    }}
-            ) : []
-
-            // Combine parent and children
-            LET allResults = APPEND(parentResult, childResults)
-
-            // Sort by depth then by key, and apply pagination
-            FOR result IN allResults
                 SORT result.depth, result.record._key
                 {limit_clause}
                 RETURN result
@@ -9108,14 +9085,14 @@ class BaseArangoService:
             current_status = record.get("indexingStatus")
 
             # Only reset if not already QUEUED or EMPTY
-            if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+            if current_status in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
                 self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
                 return
 
             # Update indexing status to QUEUED
             doc = {
                 "_key": record_id,
-                "indexingStatus": IndexingStatus.QUEUED.value,
+                "indexingStatus": ProgressStatus.QUEUED.value,
             }
 
             await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
@@ -10253,6 +10230,7 @@ class BaseArangoService:
                 RETURN {{
                     id: kb._key,
                     name: kb.groupName,
+                    connectorId: kb.connectorId,
                     createdAtTimestamp: kb.createdAtTimestamp,
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,
@@ -16340,11 +16318,19 @@ class BaseArangoService:
             return False
 
 
-    async def get_agent(self, agent_id: str, user_id: str) -> Optional[Dict]:
-        """Get an agent by ID with user permissions - flattened response"""
+    async def get_agent(self, agent_id: str, user_id: str, org_id: str) -> Optional[Dict]:
+        """
+        Get an agent by ID with user permissions and linked graph data.
+
+        Includes:
+        - Agent document with permissions
+        - Linked toolsets with their tools (via agentHasToolset -> toolsetHasTool)
+        - Linked knowledge with filters (via agentHasKnowledge)
+        """
         try:
             query = f"""
             LET user_key = @user_id
+            LET org_key = @org_id
             LET agent_path = CONCAT('{CollectionNames.AGENT_INSTANCES.value}/', @agent_id)
 
             // Get user's teams first
@@ -16394,17 +16380,150 @@ class BaseArangoService:
                     }})
             ) : []
 
-            // Return individual access first, then team access
-            LET final_result = LENGTH(individual_access) > 0 ?
-                FIRST(individual_access) :
-                (LENGTH(team_access) > 0 ? FIRST(team_access) : null)
+            // Check org permissions on the agent (only if no individual or team access)
+            LET org_access = LENGTH(individual_access) == 0 && LENGTH(team_access) == 0 && org_key != null ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "ORG"
+                    LET agent = DOCUMENT(agent_path)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "ORG",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            ) : []
 
-            RETURN final_result
+            // Get base agent with permissions
+            LET base_agent = LENGTH(individual_access) > 0 ?
+                FIRST(individual_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) :
+                (LENGTH(org_access) > 0 ? FIRST(org_access) : null))
+
+            // Get linked toolsets with their tools
+            LET linked_toolsets = base_agent != null ? (
+                FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                    FILTER edge._from == agent_path
+                    LET toolset = DOCUMENT(edge._to)
+                    FILTER toolset != null
+
+                    // Get tools linked to this toolset
+                    LET toolset_tools = (
+                        FOR tool_edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
+                            FILTER tool_edge._from == edge._to
+                            LET tool = DOCUMENT(tool_edge._to)
+                            FILTER tool != null
+                            RETURN {{
+                                _key: tool._key,
+                                name: tool.toolName,
+                                fullName: tool.fullName,
+                                toolsetName: tool.toolsetName,
+                                description: tool.description
+                            }}
+                    )
+
+                    RETURN {{
+                        _key: toolset._key,
+                        name: toolset.name,
+                        displayName: toolset.displayName,
+                        type: toolset.type,
+                        userId: toolset.userId,
+                        selectedTools: toolset.selectedTools,
+                        tools: toolset_tools
+                    }}
+            ) : []
+
+            // Get linked knowledge with filters and enrich with names
+            LET linked_knowledge = base_agent != null ? (
+                FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                    FILTER edge._from == agent_path
+                    LET knowledge = DOCUMENT(edge._to)
+                    FILTER knowledge != null
+
+                    // Parse filters to check if this is a KB or app
+                    LET filters_parsed = TYPENAME(knowledge.filters) == "string" ?
+                        JSON_PARSE(knowledge.filters) : knowledge.filters
+                    LET record_groups = filters_parsed.recordGroups || []
+                    LET is_kb = LENGTH(record_groups) > 0
+
+                    // For KBs: Get KB name from record group document
+                    // KBs have recordGroups in filters, and we look up the KB document
+                    LET kb_info = is_kb && LENGTH(record_groups) > 0 ? (
+                        LET first_kb_id = record_groups[0]
+                        LET kb_doc = DOCUMENT(CONCAT('{CollectionNames.RECORD_GROUPS.value}/', first_kb_id))
+                        FILTER kb_doc != null
+                        FILTER kb_doc.groupType == @kb_type
+                        RETURN {{
+                            name: kb_doc.groupName,
+                            type: "KB",
+                            displayName: kb_doc.groupName,
+                            // Use KB connector instance ID from KB document, fallback to knowledge.connectorId
+                            connectorId: kb_doc.connectorId || knowledge.connectorId
+                        }}
+                    ) : []
+
+                    // For apps: Get connector instance name from APPS collection
+                    // Apps have empty recordGroups or no recordGroups
+                    LET app_info = !is_kb ? (
+                        LET connector_instance = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                        FILTER connector_instance != null
+                        RETURN {{
+                            name: connector_instance.name,
+                            type: connector_instance.type || "APP",
+                            displayName: connector_instance.name
+                        }}
+                    ) : []
+
+                    // Determine the display info
+                    LET display_info = LENGTH(kb_info) > 0 ? FIRST(kb_info) :
+                                      (LENGTH(app_info) > 0 ? FIRST(app_info) : {{
+                                          name: knowledge.connectorId,
+                                          type: "UNKNOWN",
+                                          displayName: knowledge.connectorId
+                                      }})
+
+                    RETURN {{
+                        _key: knowledge._key,
+                        // For KBs, use connectorId from KB document (KB connector instance ID)
+                        // For apps, use the connectorId from knowledge (connector instance ID)
+                        connectorId: LENGTH(kb_info) > 0 ? FIRST(kb_info).connectorId : knowledge.connectorId,
+                        filters: knowledge.filters,
+                        name: display_info.name,
+                        type: display_info.type,
+                        displayName: display_info.displayName || display_info.name
+                    }}
+            ) : []
+
+            // Check if the agent is shared with the org (edge-based, not stored in doc)
+            LET share_with_org = base_agent != null && org_key != null ? (
+                LENGTH(
+                    FOR perm IN {CollectionNames.PERMISSION.value}
+                        FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                        FILTER perm._to == agent_path
+                        FILTER perm.type == "ORG"
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+            ) : false
+
+            // Return agent with linked data
+            RETURN base_agent != null ? MERGE(base_agent, {{
+                toolsets: linked_toolsets,
+                knowledge: linked_knowledge,
+                shareWithOrg: share_with_org
+            }}) : null
             """
 
             bind_vars = {
                 "agent_id": agent_id,
                 "user_id": user_id,
+                "org_id": org_id,
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
             }
 
             cursor = self.db.aql.execute(query, bind_vars=bind_vars)
@@ -16414,18 +16533,32 @@ class BaseArangoService:
                 self.logger.warning(f"No permissions found for user {user_id} on agent {agent_id}")
                 return None
 
-            return result[0]
+            agent = result[0]
+
+            # Parse knowledge filters from JSON strings
+            if agent.get("knowledge"):
+                for knowledge in agent["knowledge"]:
+                    filters_str = knowledge.get("filters", "{}")
+                    if isinstance(filters_str, str):
+                        try:
+                            knowledge["filtersParsed"] = json.loads(filters_str)
+                        except json.JSONDecodeError:
+                            knowledge["filtersParsed"] = {}
+                    else:
+                        knowledge["filtersParsed"] = filters_str
+
+            return agent
 
         except Exception as e:
             self.logger.error(f"Failed to get agent: {str(e)}")
             return None
 
-
-    async def get_all_agents(self, user_id: str) -> List[Dict]:
-        """Get all agents accessible to a user via individual or team access - flattened response"""
+    async def get_all_agents(self, user_id: str, org_id: str) -> List[Dict]:
+        """Get all agents accessible to a user via individual, team, or org access - flattened response with deduplication"""
         try:
             query = f"""
             LET user_key = @user_id
+            LET org_key = @org_id
 
             // Get user's teams
             LET user_teams = (
@@ -16436,8 +16569,10 @@ class BaseArangoService:
                     RETURN perm._to
             )
 
-            // Get agents with individual access
-            LET individual_agents = (
+            // Get all agents with all permission types in a single optimized query
+            // Collect all permissions first, then deduplicate by agent ID with priority
+            LET all_permissions = (
+                // Individual user permissions
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.USERS.value}/', user_key)
                     FILTER perm.type == "USER"
@@ -16445,45 +16580,86 @@ class BaseArangoService:
                     LET agent = DOCUMENT(perm._to)
                     FILTER agent != null
                     FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
+                    RETURN {{
+                        agent_id: agent._id,
+                        agent: agent,
+                        role: perm.role,
                         access_type: "INDIVIDUAL",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
+                        priority: 1
+                    }}
             )
 
-            // Get agents with team access (excluding those already found via individual access)
-            LET individual_agent_ids = (FOR ind_agent IN individual_agents RETURN ind_agent._id)
-
-            LET team_agents = (
+            LET team_permissions = (
+                // Team permissions
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from IN user_teams
                     FILTER perm.type == "TEAM"
                     FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
-                    FILTER perm._to NOT IN individual_agent_ids
                     LET agent = DOCUMENT(perm._to)
                     FILTER agent != null
                     FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
+                    RETURN {{
+                        agent_id: agent._id,
+                        agent: agent,
+                        role: perm.role,
                         access_type: "TEAM",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
+                        priority: 2
+                    }}
             )
 
-            // Flatten and return all agents
-            FOR agent_result IN APPEND(individual_agents, team_agents)
-                RETURN agent_result
+            LET org_permissions = org_key != null ? (
+                // Org permissions
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                    FILTER perm.type == "ORG"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    LET agent = DOCUMENT(perm._to)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN {{
+                        agent_id: agent._id,
+                        agent: agent,
+                        role: perm.role,
+                        access_type: "ORG",
+                        priority: 3
+                    }}
+            ) : []
+
+            // Pre-compute set of agent paths shared with the org (edge-based, not stored in doc)
+            LET org_shared_agent_paths = org_key != null ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                    FILTER perm.type == "ORG"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    RETURN perm._to
+            ) : []
+
+            // Combine all permissions and deduplicate by agent_id, keeping highest priority
+            LET combined = APPEND(APPEND(all_permissions, team_permissions), org_permissions)
+
+            // Deduplicate: group by agent_id and keep entry with lowest priority number
+            FOR perm_entry IN combined
+                COLLECT agent_id = perm_entry.agent_id INTO groups
+                LET best_entry = (
+                    FOR entry IN groups[*].perm_entry
+                        SORT entry.priority ASC
+                        LIMIT 1
+                        RETURN entry
+                )[0]
+                RETURN MERGE(best_entry.agent, {{
+                    access_type: best_entry.access_type,
+                    user_role: best_entry.role,
+                    can_edit: best_entry.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                    can_delete: best_entry.role == "OWNER",
+                    can_share: best_entry.role IN ["OWNER", "ORGANIZER"],
+                    can_view: true,
+                    shareWithOrg: best_entry.agent._id IN org_shared_agent_paths
+                }})
             """
 
             bind_vars = {
                 "user_id": user_id,
+                "org_id": org_id,
             }
 
             cursor = self.db.aql.execute(query, bind_vars=bind_vars)
@@ -16493,11 +16669,16 @@ class BaseArangoService:
             self.logger.error(f"Failed to get all agents: {str(e)}")
             return []
 
-    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
-        """Update an agent"""
+    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str, org_id: str) -> Optional[bool]:
+        """
+        Update an agent.
+
+        New schema only allows: name, description, startMessage, systemPrompt, models (as keys), tags
+        Tools, connectors, kb, vectorDBs are handled via edges, not in agent document.
+        """
         try:
             # Check if user has permission to update the agent using the new method
-            agent_with_permission = await self.get_agent(agent_id, user_id)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -16510,14 +16691,60 @@ class BaseArangoService:
             # Prepare update data
             update_data = {
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedByUserId": user_id
+                "updatedBy": user_id
             }
 
-            # Add only the fields that are provided in agent_updates
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tools", "models", "apps", "kb", "vectorDBs", "tags"]
+            # Add only schema-allowed fields
+            # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
+
+            # Handle models specially - convert model objects to model keys and deduplicate
+            if "models" in agent_updates:
+                raw_models = agent_updates["models"]
+                if isinstance(raw_models, list):
+                    model_entries = []
+                    seen_entries = set()  # Track seen full entries to prevent duplicates
+
+                    for model in raw_models:
+                        model_key = None
+                        model_name = None
+
+                        # Extract model key and name from different input formats
+                        if isinstance(model, dict):
+                            model_key = model.get("modelKey")
+                            model_name = model.get("modelName", "")
+                        elif isinstance(model, str):
+                            # Handle both "modelKey" and "modelKey_modelName" formats
+                            if "_" in model:
+                                parts = model.split("_", 1)
+                                model_key = parts[0]
+                                model_name = parts[1] if len(parts) > 1 else ""
+                            else:
+                                model_key = model
+                                model_name = ""
+
+                        # Build the entry string
+                        if model_key:
+                            # Store in same format as create: "modelKey_modelName" or just "modelKey"
+                            if model_name:
+                                entry = f"{model_key}_{model_name}"
+                            else:
+                                entry = model_key
+
+                            # Only add if we haven't seen this exact entry before
+                            # This allows same modelKey with different modelNames
+                            if entry not in seen_entries:
+                                model_entries.append(entry)
+                                seen_entries.add(entry)
+
+                    # Always set models array (even if empty) to completely replace existing one
+                    update_data["models"] = model_entries
+                elif raw_models is None:
+                    # Explicitly set to empty array if None is provided
+                    update_data["models"] = []
 
             # Update the agent using AQL UPDATE statement - Fixed to use proper collection name
             update_query = f"""
@@ -16546,7 +16773,7 @@ class BaseArangoService:
             self.logger.error(f"Failed to update agent: {str(e)}")
             return False
 
-    async def delete_agent(self, agent_id: str, user_id: str) -> Optional[bool]:
+    async def delete_agent(self, agent_id: str, user_id: str, org_id: str) -> Optional[bool]:
         """Delete an agent"""
         try:
             # Check if agent exists
@@ -16556,7 +16783,7 @@ class BaseArangoService:
                 return False
 
             # Check if user has permission to delete the agent using the new method
-            agent_with_permission = await self.get_agent(agent_id, user_id)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -16600,11 +16827,11 @@ class BaseArangoService:
             self.logger.error(f"Failed to delete agent: {str(e)}")
             return False
 
-    async def share_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[bool]:
+    async def share_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[bool]:
         """Share an agent to users and teams"""
         try:
             # Check if agent exists and user has permission to share it
-            agent_with_permission = await self.get_agent(agent_id, user_id)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -16663,11 +16890,11 @@ class BaseArangoService:
             self.logger.error("❌ Failed to share agent: %s", str(e), exc_info=True)
             return False
 
-    async def unshare_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[Dict]:
+    async def unshare_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]]) -> Optional[Dict]:
         """Unshare an agent from users and teams - direct deletion without validation"""
         try:
             # Check if user has permission to unshare the agent
-            agent_with_permission = await self.get_agent(agent_id, user_id)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id)
             if agent_with_permission is None or not agent_with_permission.get("can_share", False):
                 return {"success": False, "reason": "Insufficient permissions to unshare agent"}
 
@@ -16710,11 +16937,11 @@ class BaseArangoService:
             self.logger.error("Failed to unshare agent: %s", str(e), exc_info=True)
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
-    async def update_agent_permission(self, agent_id: str, owner_user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str) -> Optional[Dict]:
+    async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str) -> Optional[Dict]:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
             # Check if the requesting user is the OWNER of the agent
-            agent_with_permission = await self.get_agent(agent_id, owner_user_id)
+            agent_with_permission = await self.get_agent(agent_id, owner_user_id, org_id)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
                 return {"success": False, "reason": "Agent not found or no permission"}
@@ -16786,11 +17013,11 @@ class BaseArangoService:
             self.logger.error(f"Failed to update agent permission: {str(e)}")
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
-    async def get_agent_permissions(self, agent_id: str, user_id: str) -> Optional[List[Dict]]:
+    async def get_agent_permissions(self, agent_id: str, user_id: str, org_id: str) -> Optional[List[Dict]]:
         """Get all permissions for an agent (only OWNER can view all permissions)"""
         try:
             # Check if user has access to the agent
-            agent_with_permission = await self.get_agent(agent_id, user_id)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return None

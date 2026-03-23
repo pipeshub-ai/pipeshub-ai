@@ -72,6 +72,7 @@ class AtlassianScope(Enum):
     CONFLUENCE_COMMENT_WRITE = "write:comment:confluence"
     CONFLUENCE_SEARCH = "search:confluence"
     CONFLUENCE_EMAIL_READ = "read:email-address:confluence"
+    CONFLUENCE_COMMENT_DELETE = "delete:comment:confluence"
 
     # Common Scopes
     ACCOUNT_READ = "read:account"
@@ -264,12 +265,6 @@ class AtlassianOAuthProvider(OAuthProvider):
 
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
         token = await super().handle_callback(code, state)
-        # identity = await self.get_identity(token)
-        # email = identity.get('email')
-        # if not email:
-        #     raise Exception("User email not found in Atlassian identity response")
-        # user = await self.base_arango_service.get_user_by_email(email)
-
 
         return token
 

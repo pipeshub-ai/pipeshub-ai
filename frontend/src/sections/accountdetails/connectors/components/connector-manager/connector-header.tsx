@@ -19,13 +19,13 @@ import { Connector } from '../../types/types';
 
 interface ConnectorHeaderProps {
   connector: Connector;
-  loading: boolean;
+  refreshing: boolean;
   onRefresh: () => void;
 }
 
 const ConnectorHeader: React.FC<ConnectorHeaderProps> = ({
   connector,
-  loading,
+  refreshing,
   onRefresh,
 }) => {
   const theme = useTheme();
@@ -136,9 +136,26 @@ const ConnectorHeader: React.FC<ConnectorHeaderProps> = ({
 
           <Button
             variant="outlined"
-            startIcon={<Iconify icon={refreshIcon} width={16} height={16} />}
+            startIcon={
+              <Iconify
+                icon={refreshIcon}
+                width={16}
+                height={16}
+                sx={
+                  refreshing
+                    ? {
+                        animation: 'connectorSpin 1s linear infinite',
+                        '@keyframes connectorSpin': {
+                          from: { transform: 'rotate(0deg)' },
+                          to: { transform: 'rotate(360deg)' },
+                        },
+                      }
+                    : {}
+                }
+              />
+            }
             onClick={onRefresh}
-            disabled={loading}
+            disabled={refreshing}
             sx={{ textTransform: 'none' }}
           >
             Refresh

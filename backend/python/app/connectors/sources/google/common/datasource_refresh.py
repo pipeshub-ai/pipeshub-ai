@@ -87,12 +87,6 @@ async def refresh_google_datasource_credentials(
             logger.debug("🔄 Access token changed, updating credentials")
             credentials_changed = True
 
-        logger.info(f"\n\n\nCredentials changed: {credentials_changed}")
-        logger.info(f"Current token: {current_token}")
-        logger.info(f"Fresh access token: {fresh_access_token}")
-        logger.info(f"Current refresh token: {current_refresh_token}")
-        logger.info(f"Fresh refresh token: {fresh_refresh_token}")
-
         # Create new Credentials object if changed
         if credentials_changed:
             logger.debug("🔨 Creating new Google Credentials object with fresh tokens")

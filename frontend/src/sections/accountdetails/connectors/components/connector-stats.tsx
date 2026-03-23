@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect, useCallback, type MutableRefObject } from 'react';
 import { alpha, useTheme } from '@mui/material/styles';
 import {
   Box,
@@ -41,7 +41,9 @@ interface ConnectorStatisticsProps {
   title?: string;
   connector: Connector;
   showUploadTab?: boolean;
-  refreshInterval?: number; // Interval in milliseconds for auto-refresh
+  refreshInterval?: number; // Interval in milliseconds for auto-refresh (ignored when refreshCallbackRef is provided)
+  /** When provided, parent calls .current?.() when it refreshes so connector and stats APIs fire in the same tick */
+  refreshCallbackRef?: MutableRefObject<(() => void) | null>;
   showActions?: boolean;
 }
 
@@ -53,7 +55,8 @@ const ConnectorStatistics = ({
   title = 'Stats per app',
   connector,
   showUploadTab = true,
-  refreshInterval = 0, // Default to no auto-refresh
+  refreshInterval = 0,
+  refreshCallbackRef,
   showActions = true,
 }: ConnectorStatisticsProps): JSX.Element => {
   const theme = useTheme();
@@ -62,11 +65,9 @@ const ConnectorStatistics = ({
   const [connectorStats, setConnectorStats] = useState<ConnectorStatsData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState<boolean>(false);
-
-  // Create a ref to track if component is mounted
   const isMounted = useRef<boolean>(true);
-  // Create a ref for the interval ID
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const parentDrivesRefresh = refreshCallbackRef !== undefined;
 
   // Function to fetch connector statistics for a single connector id
   const fetchConnectorStats = useCallback(
@@ -113,24 +114,34 @@ const ConnectorStatistics = ({
     fetchConnectorStats(true);
   };
 
-  // Set up initial fetch and auto-refresh
+  // Register with parent so it can trigger stats fetch in same tick as connector fetch
   useEffect(() => {
-    // Initial fetch
+    if (refreshCallbackRef) {
+      refreshCallbackRef.current = () => fetchConnectorStats();
+      return () => {
+        refreshCallbackRef.current = null;
+      };
+    }
+    return undefined;
+  }, [refreshCallbackRef, fetchConnectorStats]);
+
+  // Initial fetch and (optional) internal interval — when refreshCallbackRef is provided, parent drives refresh
+  useEffect(() => {
+    isMounted.current = true;
+
     fetchConnectorStats();
 
-    // Set up auto-refresh if interval is specified
-    if (refreshInterval > 0) {
+    if (!parentDrivesRefresh && refreshInterval > 0) {
       intervalRef.current = setInterval(() => fetchConnectorStats(), refreshInterval);
     }
 
-    // Cleanup function
     return () => {
       isMounted.current = false;
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
       }
     };
-  }, [fetchConnectorStats, refreshInterval]);
+  }, [fetchConnectorStats, refreshInterval, parentDrivesRefresh]);
 
   // Dark mode aware styles
   const isDark = theme.palette.mode === 'dark';
@@ -150,7 +161,7 @@ const ConnectorStatistics = ({
   };
 
   // If initial loading and no data yet, show centered spinner
-  if (initialLoading && connectorStats === undefined) {
+  if (initialLoading && connectorStats === null) {
     return (
       <Card sx={cardStyles}>
         <Box
@@ -186,7 +197,7 @@ const ConnectorStatistics = ({
       );
     }
 
-    if (connectorStats === undefined && !initialLoading) {
+    if (connectorStats === null && !initialLoading) {
       return (
         <Alert
           severity="info"

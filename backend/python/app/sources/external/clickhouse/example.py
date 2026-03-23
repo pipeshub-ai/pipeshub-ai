@@ -14,7 +14,9 @@ ClickHouse API example demonstrating:
 12. Grant Roles to Users
 13. Cleanup (DROP users, roles, tables, databases)
 14. Connection close
+15. Cloud Organization API (list orgs, get org details)
 """
+import asyncio
 import os
 from datetime import datetime
 from typing import Any, List, Optional
@@ -22,6 +24,7 @@ from typing import Any, List, Optional
 from app.sources.client.clickhouse.clickhouse import (
     ClickHouseClient,
     ClickHouseClientViaCredentials,
+    ClickHouseHTTPClientViaCredentials,
     ClickHouseResponse,
 )
 from app.sources.external.clickhouse.clickhouse import ClickHouseDataSource
@@ -688,17 +691,70 @@ def close_connection(ds: ClickHouseDataSource) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 15. Cloud Organization API
+# ---------------------------------------------------------------------------
+
+async def list_organizations(ds: ClickHouseDataSource) -> ClickHouseResponse:
+    """List all organizations associated with the API key."""
+    print("\n" + "=" * 60)
+    print("15. CLOUD ORG API - List Organizations")
+    print("=" * 60)
+
+    response = await ds.list_organizations()
+
+    if response.success:
+        orgs = response.data if isinstance(response.data, list) else [response.data] if response.data else []
+        print(f"  Found {len(orgs)} organization(s):")
+        for org in orgs:
+            if isinstance(org, dict):
+                print(f"    - {org.get('name', 'N/A')} (ID: {org.get('id', 'N/A')})")
+            else:
+                print(f"    - {org}")
+    else:
+        print(f"  Failed to list organizations: {response.error}")
+
+    return response
+
+
+async def get_organization_details(ds: ClickHouseDataSource, org_id: str) -> ClickHouseResponse:
+    """Get details for a specific organization."""
+    print("\n" + "=" * 60)
+    print(f"15. CLOUD ORG API - Get Organization Details (ID: {org_id})")
+    print("=" * 60)
+
+    response = await ds.get_organization(organization_id=org_id)
+
+    if response.success and response.data:
+        data = response.data
+        if isinstance(data, dict):
+            print(f"  Organization: {data.get('name', 'N/A')}")
+            print(f"  ID: {data.get('id', 'N/A')}")
+            print(f"  Created: {data.get('createdAt', 'N/A')}")
+        else:
+            print(f"  Details: {data}")
+    else:
+        print(f"  Failed to get organization details: {response.error}")
+
+    return response
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+async def main() -> None:
     """Main function demonstrating all ClickHouse operations."""
+    # Database connection settings
     HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
     PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
     USERNAME = os.getenv("CLICKHOUSE_USERNAME", "default")
     PASSWORD = os.getenv("CLICKHOUSE_PASSWORD", "")
     DATABASE = os.getenv("CLICKHOUSE_DATABASE", "default")
     SECURE = os.getenv("CLICKHOUSE_SECURE", "false").lower() == "true"
+
+    # Cloud API key settings (for Organization API calls)
+    CLOUD_API_KEY_ID = os.getenv("CLICKHOUSE_CLOUD_KEY_ID", "")
+    CLOUD_API_KEY_SECRET = os.getenv("CLICKHOUSE_CLOUD_KEY_SECRET", "")
 
     print("\n" + "=" * 60)
     print("ClickHouse API EXAMPLE - Comprehensive CRUD & Admin Operations")
@@ -707,8 +763,10 @@ def main() -> None:
     print(f"  Username: {USERNAME}")
     print(f"  Database: {DATABASE}")
     print(f"  Secure: {SECURE}")
+    print(f"  Cloud API Key: {'configured' if CLOUD_API_KEY_ID else 'not set'}")
 
-    # Build client
+    # Build client with both SDK and HTTP client
+    # SDK client uses DB credentials; HTTP client uses Cloud API key for org APIs
     try:
         creds_client = ClickHouseClientViaCredentials(
             host=HOST,
@@ -719,7 +777,27 @@ def main() -> None:
             secure=SECURE,
         )
         creds_client.create_client()
-        client = ClickHouseClient(client=creds_client)
+
+        # HTTP client for Cloud org APIs uses API key credentials
+        if CLOUD_API_KEY_ID and CLOUD_API_KEY_SECRET:
+            http_client = ClickHouseHTTPClientViaCredentials(
+                host='api.clickhouse.cloud',
+                port=443,
+                username=CLOUD_API_KEY_ID,
+                password=CLOUD_API_KEY_SECRET,
+                secure=True,
+            )
+        else:
+            http_client = ClickHouseHTTPClientViaCredentials(
+                host=HOST,
+                port=PORT,
+                username=USERNAME,
+                password=PASSWORD,
+                database=DATABASE,
+                secure=SECURE,
+            )
+
+        client = ClickHouseClient(client=creds_client, http_client=http_client)
         ds = ClickHouseDataSource(client)
     except Exception as e:
         print(f"\n  Failed to create ClickHouse client: {e}")
@@ -775,6 +853,13 @@ def main() -> None:
         grant_roles_to_users(ds)
         list_role_grants(ds)
 
+        # 15. Cloud Organization API
+        orgs_response = await list_organizations(ds)
+        if orgs_response.success and orgs_response.data:
+            orgs = orgs_response.data if isinstance(orgs_response.data, list) else [orgs_response.data]
+            if orgs and isinstance(orgs[0], dict) and 'id' in orgs[0]:
+                await get_organization_details(ds, orgs[0]['id'])
+
     finally:
         # 13. Cleanup (always runs)
         cleanup_users(ds)
@@ -791,4 +876,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

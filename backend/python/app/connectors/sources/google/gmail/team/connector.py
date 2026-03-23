@@ -23,6 +23,7 @@ from app.config.constants.arangodb import (
     CollectionNames,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
     RecordRelations,
     RecordTypes,
 )
@@ -47,6 +48,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     DatetimeOperator,
@@ -65,7 +67,6 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
-    IndexingStatus,
     MailRecord,
     Record,
     RecordGroup,
@@ -154,7 +155,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
             default_value=True
         ))
         .with_webhook_config(False, [])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .add_sync_custom_field(CommonFields.batch_size_field())
         .with_sync_support(True)
@@ -683,7 +684,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 if message_update:
                     if message_update.record and not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
-                        message_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        message_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     yield message_update
 
@@ -810,7 +811,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
             # Check indexing filter for attachments
             if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
-                file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             # Inherit parent mail permissions
             attachment_permissions = parent_mail_permissions
@@ -866,7 +867,7 @@ class GoogleGmailTeamConnector(BaseConnector):
 
                 if attach_update:
                     if attach_update.record and not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
-                        attach_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        attach_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                     yield attach_update
 
@@ -1434,7 +1435,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                         permissions = mail_update.new_permissions or []
 
                         if not self.indexing_filters.is_enabled(IndexingFilterKey.MAILS, default=True):
-                            mail_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                            mail_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                         # Create SIBLING relation if there was a previous message
                         if previous_message_record_id:

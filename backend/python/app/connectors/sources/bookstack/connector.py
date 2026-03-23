@@ -24,6 +24,7 @@ from app.config.constants.arangodb import (
     Connectors,
     MimeTypes,
     OriginTypes,
+    ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -46,6 +47,7 @@ from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
+    SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
     FilterCategory,
@@ -64,7 +66,6 @@ from app.models.entities import (
     AppRole,
     AppUser,
     FileRecord,
-    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -152,7 +153,7 @@ class RecordUpdate:
             default_value=[],
             option_source_type=OptionSourceType.DYNAMIC
         ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL])
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)
@@ -1666,7 +1667,7 @@ class BookStackConnector(BaseConnector):
 
                 if record_update.record:
                     if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                        record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                        record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 # Handle deleted records
                 if record_update.is_deleted:
@@ -2018,7 +2019,7 @@ class BookStackConnector(BaseConnector):
 
         if record_update.record:
             if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                record_update.record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                record_update.record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
         if record_update.is_new:
             self.logger.info(f"New record detected from event: {record_update.record.record_name}")

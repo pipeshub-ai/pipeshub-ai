@@ -2,18 +2,13 @@
 Registry for managing client factories.
 """
 
-from typing import Dict, Optional
+from typing import Optional
 
 from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.factories.base import ClientFactory
+from app.agents.tools.factories.clickup import ClickUpClientFactory
 from app.agents.tools.factories.confluence import ConfluenceClientFactory
 from app.agents.tools.factories.dropbox import DropboxClientFactory
-from app.agents.tools.factories.google import GoogleClientFactory
-from app.agents.tools.factories.jira import JiraClientFactory
-from app.agents.tools.factories.linear import LinearClientFactory
-from app.agents.tools.factories.microsoft import MSGraphClientFactory
-from app.agents.tools.factories.notion import NotionClientFactory
-from app.agents.tools.factories.slack import SlackClientFactory
 
 # from app.agents.tools.factories.linkedin import LinkedInClientFactory
 # from app.agents.tools.factories.freshdesk import FreshDeskClientFactory
@@ -25,7 +20,15 @@ from app.agents.tools.factories.slack import SlackClientFactory
 # from app.agents.tools.factories.airtable import AirtableClientFactory
 # from app.agents.tools.factories.evernote import EvernoteClientFactory
 # from app.agents.tools.factories.s3 import S3ClientFactory
-# from app.agents.tools.factories.github import GitHubClientFactory
+from app.agents.tools.factories.github import GitHubClientFactory
+from app.agents.tools.factories.google import GoogleClientFactory
+from app.agents.tools.factories.jira import JiraClientFactory
+from app.agents.tools.factories.linear import LinearClientFactory
+from app.agents.tools.factories.mariadb import MariaDBClientFactory
+from app.agents.tools.factories.microsoft import MSGraphClientFactory
+from app.agents.tools.factories.notion import NotionClientFactory
+from app.agents.tools.factories.slack import SlackClientFactory
+
 # from app.agents.tools.factories.gitlab import GitLabClientFactory
 
 
@@ -36,7 +39,7 @@ class ClientFactoryRegistry:
     Provides centralized access to client factories and automatic initialization.
     """
 
-    _factories: Dict[str, ClientFactory] = {}
+    _factories: dict[str, ClientFactory] = {}
     _initialized: bool = False
 
     @classmethod
@@ -104,15 +107,19 @@ class ClientFactoryRegistry:
                 continue
 
             if app_name == "google":
-                # Register factories for Google sub-services
+                # Register factories for Google sub-services with TOOLSET names
+                # This ensures tools with app_name="googledrive" find the correct factory
                 for subdir, service_config in config.service_configs.items():
-                    cls.register(
-                        subdir,
-                        GoogleClientFactory(
-                            service_config["service_name"],
-                            service_config["version"]
-                        )
+                    # Create factory for the service
+                    factory = GoogleClientFactory(
+                        service_config["service_name"],
+                        service_config["version"]
                     )
+                    # Register with toolset name (e.g., "googledrive", "googlecalendar")
+                    toolset_name = f"google{subdir}"
+                    cls.register(toolset_name, factory)
+                    # Also register with original name for backward compatibility
+                    cls.register(subdir, factory)
 
             elif app_name == "jira":
                 cls.register(app_name, JiraClientFactory())
@@ -126,13 +133,28 @@ class ClientFactoryRegistry:
             elif app_name == "notion":
                 cls.register(app_name, NotionClientFactory())
 
+            elif app_name == "clickup":
+                cls.register(app_name, ClickUpClientFactory())
+
             elif app_name == "microsoft":
                 # Register factories for Microsoft sub-services
                 for subdir in config.subdirectories:
                     cls.register(subdir, MSGraphClientFactory(subdir))
 
+            elif app_name == "outlook":
+                cls.register(app_name, MSGraphClientFactory(app_name))
+
+            elif app_name == "teams":
+                cls.register(app_name, MSGraphClientFactory(app_name))
+
+            elif app_name == "onedrive":
+                cls.register(app_name, MSGraphClientFactory(app_name))
+
             elif app_name == "linear":
                 cls.register(app_name, LinearClientFactory())
+
+            elif app_name == "mariadb":
+                cls.register(app_name, MariaDBClientFactory())
 
             # elif app_name == "linkedin":
             #     cls.register(app_name, LinkedInClientFactory())
@@ -167,8 +189,8 @@ class ClientFactoryRegistry:
             # elif app_name == "s3":
             #     cls.register(app_name, S3ClientFactory())
 
-            # elif app_name == "github":
-            #     cls.register(app_name, GitHubClientFactory())
+            elif app_name == "github":
+                cls.register(app_name, GitHubClientFactory())
 
             # elif app_name == "gitlab":
             #     cls.register(app_name, GitLabClientFactory())

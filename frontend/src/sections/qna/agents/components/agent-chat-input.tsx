@@ -7,9 +7,12 @@ import closeIcon from '@iconify-icons/mdi/close';
 import searchIcon from '@iconify-icons/mdi/magnify';
 import toolIcon from '@iconify-icons/mdi/tools';
 import databaseIcon from '@iconify-icons/mdi/database';
-import sparklesIcon from '@iconify-icons/mdi/star-four-points';
 import cogIcon from '@iconify-icons/mdi/cog';
 import checkIcon from '@iconify-icons/mdi/check';
+import flashIcon from '@iconify-icons/mdi/flash';
+import shieldCheckIcon from '@iconify-icons/mdi/shield-check';
+import brainIcon from '@iconify-icons/mdi/brain';
+import autoFixIcon from '@iconify-icons/mdi/auto-fix';
 import {
   Box,
   Paper,
@@ -40,14 +43,12 @@ import { KnowledgeBase } from '../services/api';
 
 export interface Model {
   provider: string;
+  modelKey: string;
   modelName: string;
+  modelFriendlyName?: string;
 }
 
-export interface ChatMode {
-  id: string;
-  name: string;
-  description: string;
-}
+export type ChatMode = 'quick' | 'verification' | 'deep' | 'auto';
 
 export type ChatInputProps = {
   onSubmit: (
@@ -63,27 +64,22 @@ export type ChatInputProps = {
   disabled?: boolean;
   placeholder?: string;
   selectedModel: Model | null;
-  selectedChatMode: ChatMode | null;
   onModelChange: (model: Model) => void;
-  onChatModeChange: (mode: ChatMode) => void;
   availableModels: Model[];
   availableKBs: KnowledgeBase[];
   agent?: any;
   activeConnectors: Connector[];
+  chatMode: ChatMode;
+  onChatModeChange: (mode: ChatMode) => void;
+  conversationId: string | null;
+  clearInputTrigger: number;
 };
 
-// Define chat modes with compact styling
-const CHAT_MODES: ChatMode[] = [
-  {
-    id: 'standard',
-    name: 'Standard',
-    description: 'Standard responses',
-  },
-  {
-    id: 'quick',
-    name: 'Quick',
-    description: 'Fast responses with minimal context',
-  },
+const CHAT_MODES: { key: ChatMode; label: string; icon: any; tooltip: string }[] = [
+  { key: 'quick', label: 'Quick', icon: flashIcon, tooltip: 'Fast response — best for simple questions' },
+  { key: 'verification', label: 'Verify', icon: shieldCheckIcon, tooltip: 'ReAct agent — verifies with tool calls and reflection' },
+  { key: 'deep', label: 'Deep', icon: brainIcon, tooltip: 'Orchestrator + sub-agents — best for complex multi-step tasks' },
+  { key: 'auto', label: 'Auto', icon: autoFixIcon, tooltip: 'Automatically selects the best mode based on your query' },
 ];
 
 interface ToolOption {
@@ -140,24 +136,33 @@ const normalizeDisplayName = (name: string): string =>
     })
     .join(' ');
 
+// Helper function to get model display name
+const getModelDisplayName = (model: { modelName: string; modelFriendlyName?: string } | null): string => {
+  if (!model) return '';
+  return model.modelFriendlyName || model.modelName;
+};
+
 const AgentChatInput: React.FC<ChatInputProps> = ({
   onSubmit,
   isLoading,
   disabled = false,
   placeholder = 'Type your message...',
   selectedModel,
-  selectedChatMode,
   onModelChange,
-  onChatModeChange,
   availableModels,
   availableKBs,
   agent,
   activeConnectors,
+  chatMode,
+  onChatModeChange,
+  conversationId,
+  clearInputTrigger,
 }) => {
   const [localValue, setLocalValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasText, setHasText] = useState(false);
   const [modelMenuAnchor, setModelMenuAnchor] = useState<null | HTMLElement>(null);
+  const [chatModeMenuAnchor, setChatModeMenuAnchor] = useState<null | HTMLElement>(null);
 
   // Persistent selected items - these will remain selected throughout the conversation
   const [selectedTools, setSelectedTools] = useState<string[]>([]); // app_name.tool_name format
@@ -174,79 +179,243 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const resizeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevConversationIdRef = useRef<string | null | undefined>(undefined);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+
+  const clearInput = useCallback(() => {
+    setLocalValue('');
+    setHasText(false);
+    if (inputRef.current) {
+      inputRef.current.style.height = '40px';
+    }
+  }, []);
+
+  // Clear input text when user actively switches conversations (sidebar click)
+  // Skip: initial mount (prevRef starts as undefined)
+  // Skip: null→id transition (backend assigning ID to the current new conversation — user may be typing next message)
+  useEffect(() => {
+    const prev = prevConversationIdRef.current;
+    if (prev !== undefined && prev !== conversationId) {
+      const isNewConversationCreated = prev === null && conversationId !== null;
+      if (!isNewConversationCreated) {
+        clearInput();
+      }
+    }
+    prevConversationIdRef.current = conversationId;
+  }, [conversationId, clearInput]);
+
+  // Clear input text on explicit trigger (e.g. "New Chat" when already on a new chat)
+  // Skip the first render (trigger starts at 0)
+  const prevClearTriggerRef = useRef(clearInputTrigger);
+  useEffect(() => {
+    if (prevClearTriggerRef.current !== clearInputTrigger) {
+      clearInput();
+      prevClearTriggerRef.current = clearInputTrigger;
+    }
+  }, [clearInputTrigger, clearInput]);
 
   // Note: Model and chat mode defaults are handled by the parent component (agent-chat.tsx)
   // The parent will set the model from conversation if available, or set defaults if not
   // This component just respects what's passed to it via props
 
   // Initialize selections from agent defaults (only once)
+  // Uses only the new graph-based format (toolsets and knowledge)
   useEffect(() => {
     if (agent && !initialized) {
-      // Initialize with agent's default tools
-      if (agent.tools && Array.isArray(agent.tools)) {
-        setSelectedTools([...agent.tools]);
+      // Initialize with agent's tools from toolsets
+      const toolsList: string[] = [];
+      if (agent.toolsets && Array.isArray(agent.toolsets)) {
+        agent.toolsets.forEach((toolset: any) => {
+          const tools = toolset.tools || [];
+          const selectedToolsFromToolset = toolset.selectedTools || [];
+          
+          // Extract from expanded tools array
+          if (tools.length > 0) {
+            tools.forEach((tool: any) => {
+              const fullName = tool.fullName || `${toolset.name}.${tool.name}`;
+              toolsList.push(fullName);
+            });
+          } else if (selectedToolsFromToolset.length > 0) {
+            // Fallback to selectedTools if no expanded tools
+            selectedToolsFromToolset.forEach((toolName: string) => {
+              const fullName = toolName.includes('.') ? toolName : `${toolset.name}.${toolName}`;
+              toolsList.push(fullName);
+            });
+          }
+        });
+      }
+      // Note: All tools selected by default means user can filter down
+      if (toolsList.length > 0) {
+        setSelectedTools(toolsList);
       }
 
-      // Initialize with agent's default KBs
-      if (agent.kb && Array.isArray(agent.kb)) {
-        setSelectedKBs([...agent.kb]);
-      }
-
-      // Initialize with agent's default apps
-      // Extract connector instance IDs from connectors with category='knowledge'
-      const knowledgeConnectorIds = agent.connectors?.filter((ci: any) => ci.category === 'knowledge').map((ci: any) => ci.id) || [];
-      if (knowledgeConnectorIds.length > 0) {
-        setSelectedApps([...knowledgeConnectorIds]);
+      // Initialize with agent's knowledge sources (includes both apps and KBs)
+      if (agent.knowledge && Array.isArray(agent.knowledge)) {
+        const knowledgeIds: string[] = [];
+        const kbIds: string[] = [];
+        
+        agent.knowledge.forEach((k: any) => {
+          const connectorId = k.connectorId;
+          if (connectorId) {
+            // Parse filters to extract KB record groups
+            const filters = k.filtersParsed || k.filters || {};
+            let filtersParsed = filters;
+            if (typeof filters === 'string') {
+              try {
+                filtersParsed = JSON.parse(filters);
+              } catch {
+                filtersParsed = {};
+              }
+            }
+            
+            const recordGroups = filtersParsed.recordGroups || [];
+            
+            // Check if this is a KB (has recordGroups)
+            if (recordGroups.length > 0) {
+              // Extract KB IDs from recordGroups
+              kbIds.push(...recordGroups);
+            } else {
+              // This is an app connector
+              knowledgeIds.push(connectorId);
+            }
+          }
+        });
+        
+        if (knowledgeIds.length > 0) {
+          setSelectedApps(knowledgeIds);
+        }
+        
+        if (kbIds.length > 0) {
+          setSelectedKBs([...new Set(kbIds)]); // Remove duplicates
+        }
       }
 
       setInitialized(true);
     }
   }, [agent, initialized]);
 
-  // Convert agent tools to tool options
+  // Convert agent toolsets to tool options for the selection dialog
+  // Uses only the new graph-based format (toolsets with nested tools)
   const agentToolOptions: ToolOption[] = useMemo(() => {
-    if (!agent?.tools) return [];
+    const toolOptions: ToolOption[] = [];
+    
+    if (agent?.toolsets && Array.isArray(agent.toolsets)) {
+      agent.toolsets.forEach((toolset: any) => {
+        const toolsetName = toolset.name || '';
+        const tools = toolset.tools || [];
+        const selectedToolsFromToolset = toolset.selectedTools || [];
+        
+        // Extract from expanded tools array
+        if (tools.length > 0) {
+          tools.forEach((tool: any) => {
+            const fullName = tool.fullName || `${toolsetName}.${tool.name}`;
+            const parts = fullName.split('.');
+            const app_name = parts[0] || toolsetName;
+            const tool_name = parts.slice(1).join('.') || tool.name || 'tool';
+            
+            toolOptions.push({
+              id: fullName,
+              label: fullName,
+              displayName: `${normalizeDisplayName(app_name)} • ${normalizeDisplayName(tool_name)}`,
+              app_name,
+              tool_name,
+              description: tool.description || `${normalizeDisplayName(app_name)} ${normalizeDisplayName(tool_name)} tool`,
+            });
+          });
+        } else if (selectedToolsFromToolset.length > 0) {
+          // Fallback to selectedTools if no expanded tools
+          selectedToolsFromToolset.forEach((toolName: string) => {
+            const fullName = toolName.includes('.') ? toolName : `${toolsetName}.${toolName}`;
+            const parts = fullName.split('.');
+            const app_name = parts[0] || toolsetName;
+            const tool_name = parts.slice(1).join('.') || toolName;
+            
+            toolOptions.push({
+              id: fullName,
+              label: fullName,
+              displayName: `${normalizeDisplayName(app_name)} • ${normalizeDisplayName(tool_name)}`,
+              app_name,
+              tool_name,
+              description: `${normalizeDisplayName(app_name)} ${normalizeDisplayName(tool_name)} tool`,
+            });
+          });
+        }
+      });
+    }
+    
+    return toolOptions;
+  }, [agent?.toolsets]);
 
-    return agent.tools.map((toolId: string) => {
-      const [app_name, tool_name] = toolId.split('.');
-      return {
-        id: toolId, // Keep full app_name.tool_name format for API
-        label: toolId,
-        displayName: `${normalizeDisplayName(app_name || '')} • ${normalizeDisplayName(tool_name || '')}`,
-        app_name: app_name || '',
-        tool_name: tool_name || '',
-        description: `${normalizeDisplayName(app_name || '')} ${normalizeDisplayName(tool_name || '')} tool`,
-      };
-    });
-  }, [agent?.tools]);
-
-  // Convert available KBs to KB options (filter by agent's KB list)
+  // Convert available KBs to KB options (extract from agent's knowledge array)
   const agentKBOptions: KBOption[] = useMemo(() => {
-    if (!agent?.kb || !availableKBs) return [];
+    if (!agent?.knowledge || !availableKBs) return [];
+    
+    // Extract KB IDs from knowledge array
+    const kbIds: string[] = [];
+    agent.knowledge.forEach((k: any) => {
+      const filters = k.filtersParsed || k.filters || {};
+      let filtersParsed = filters;
+      if (typeof filters === 'string') {
+        try {
+          filtersParsed = JSON.parse(filters);
+        } catch {
+          filtersParsed = {};
+        }
+      }
+      const recordGroups = filtersParsed.recordGroups || [];
+      kbIds.push(...recordGroups);
+    });
 
     return availableKBs
-      .filter((kb) => agent.kb.includes(kb.id))
+      .filter((kb) => kbIds.includes(kb.id))
       .map((kb) => ({
         id: kb.id, // Use KB ID for API
         name: kb.name,
-        description: `Knowledge Base: ${kb.name}`,
+        description: `Collection  : ${kb.name}`,
       }));
-  }, [availableKBs, agent?.kb]);
+  }, [availableKBs, agent?.knowledge]);
 
-  // Convert agent connectors (knowledge category) to app options
+  // Convert agent knowledge to app options for the selection dialog
+  // Uses only the new graph-based format (knowledge with connectorId)
+  // Filters out KBs (only shows app connectors)
   const agentAppOptions: AppOption[] = useMemo(() => {
-    if (!agent?.connectors) return [];
-
-    return agent.connectors
-      .filter((ci: any) => ci.category === 'knowledge')
-      .map((connector: any) => ({
-        id: connector.id, // Use connector instance ID for API
-        name: connector.name || connector.type,
-        displayName: normalizeDisplayName(connector.name || connector.type),
-      }));
-  }, [agent?.connectors]);
+    const appOptions: AppOption[] = [];
+    
+    if (agent?.knowledge && Array.isArray(agent.knowledge)) {
+      agent.knowledge.forEach((k: any) => {
+        // Parse filters to check if this is a KB
+        const filters = k.filtersParsed || k.filters || {};
+        let filtersParsed = filters;
+        if (typeof filters === 'string') {
+          try {
+            filtersParsed = JSON.parse(filters);
+          } catch {
+            filtersParsed = {};
+          }
+        }
+        
+        const recordGroups = filtersParsed.recordGroups || [];
+        
+        // Only include app connectors (not KBs)
+        // KBs have recordGroups, apps don't (or have empty recordGroups)
+        if (recordGroups.length === 0) {
+          const connectorId = k.connectorId || '';
+          // Use displayName from backend if available, otherwise extract from connectorId
+          const displayName = k.displayName || k.name || 
+                            (connectorId.split('/').pop() || connectorId || 'Knowledge Source');
+          
+          appOptions.push({
+            id: connectorId,
+            name: displayName,
+            displayName: normalizeDisplayName(displayName),
+          });
+        }
+      });
+    }
+    
+    return appOptions;
+  }, [agent?.knowledge]);
 
   // All available apps for autocomplete
   const allAppOptions: AppOption[] = activeConnectors.map((app) => ({
@@ -330,12 +499,12 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       // Pass the persistent selected items with correct IDs/names for API
       await onSubmit(
         trimmedValue,
-        selectedModel?.modelName,        
-        selectedModel?.modelName,        
-        selectedChatMode?.id,            
-        selectedTools,                  
-        selectedKBs,                     
-        selectedApps                     
+        selectedModel?.modelKey,
+        selectedModel?.modelName,
+        chatMode,
+        selectedTools,
+        selectedKBs,
+        selectedApps
       );
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -354,7 +523,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
     disabled,
     onSubmit,
     selectedModel,
-    selectedChatMode,
+    chatMode,
     selectedTools, // These remain persistent
     selectedKBs, // These remain persistent
     selectedApps, // These remain persistent
@@ -383,8 +552,17 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
     handleModelMenuClose();
   };
 
+  const handleChatModeMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
+    setChatModeMenuAnchor(event.currentTarget);
+  };
+
+  const handleChatModeMenuClose = () => {
+    setChatModeMenuAnchor(null);
+  };
+
   const handleChatModeSelect = (mode: ChatMode) => {
     onChatModeChange(mode);
+    handleChatModeMenuClose();
   };
 
   // Toggle functions - using the correct IDs for API - these are persistent
@@ -422,13 +600,79 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   };
 
   // Reset all selections to agent defaults
+  // Reset all selections to agent defaults
+  // Uses only the new graph-based format (toolsets and knowledge)
   const handleResetToDefaults = useCallback(() => {
     if (agent) {
-      setSelectedTools(agent.tools ? [...agent.tools] : []);
-      setSelectedKBs(agent.kb ? [...agent.kb] : []);
-      // Extract connector instance IDs from connectors with category='knowledge'
-      const knowledgeConnectorIds = agent.connectors?.filter((ci: any) => ci.category === 'knowledge').map((ci: any) => ci.id) || [];
-      setSelectedApps(knowledgeConnectorIds);
+      // Reset tools from toolsets
+      const toolsList: string[] = [];
+      if (agent.toolsets && Array.isArray(agent.toolsets)) {
+        agent.toolsets.forEach((toolset: any) => {
+          const tools = toolset.tools || [];
+          const selectedToolsFromToolset = toolset.selectedTools || [];
+          
+          if (tools.length > 0) {
+            tools.forEach((tool: any) => {
+              const fullName = tool.fullName || `${toolset.name}.${tool.name}`;
+              toolsList.push(fullName);
+            });
+          } else if (selectedToolsFromToolset.length > 0) {
+            selectedToolsFromToolset.forEach((toolName: string) => {
+              const fullName = toolName.includes('.') ? toolName : `${toolset.name}.${toolName}`;
+              toolsList.push(fullName);
+            });
+          }
+        });
+      }
+      setSelectedTools(toolsList);
+      
+      // Extract KB IDs from knowledge array
+      const kbIds: string[] = [];
+      if (agent.knowledge && Array.isArray(agent.knowledge)) {
+        agent.knowledge.forEach((k: any) => {
+          const filters = k.filtersParsed || k.filters || {};
+          let filtersParsed = filters;
+          if (typeof filters === 'string') {
+            try {
+              filtersParsed = JSON.parse(filters);
+            } catch {
+              filtersParsed = {};
+            }
+          }
+          const recordGroups = filtersParsed.recordGroups || [];
+          kbIds.push(...recordGroups);
+        });
+      }
+      setSelectedKBs([...new Set(kbIds)]); // Remove duplicates
+      
+      // Reset apps from knowledge (extract app connectors, not KBs)
+      if (agent.knowledge && Array.isArray(agent.knowledge)) {
+        const knowledgeIds: string[] = [];
+        agent.knowledge.forEach((k: any) => {
+          const connectorId = k.connectorId;
+          if (connectorId) {
+            // Parse filters to check if this is a KB
+            const filters = k.filtersParsed || k.filters || {};
+            let filtersParsed = filters;
+            if (typeof filters === 'string') {
+              try {
+                filtersParsed = JSON.parse(filters);
+              } catch {
+                filtersParsed = {};
+              }
+            }
+            
+            // Only add if it's not a KB (no recordGroups or empty recordGroups)
+            const recordGroups = filtersParsed.recordGroups || [];
+            if (recordGroups.length === 0) {
+              knowledgeIds.push(connectorId);
+            }
+          }
+        });
+        setSelectedApps(knowledgeIds);
+      } else {
+        setSelectedApps([]);
+      }
     }
   }, [agent]);
 
@@ -573,41 +817,39 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
               borderTop: `1px solid ${alpha(theme.palette.divider, 0.5)}`,
             }}
           >
-            {/* Chat Mode Buttons */}
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              {CHAT_MODES.map((mode) => (
-                <Chip
-                  key={mode.id}
-                  label={mode.name}
-                  onClick={() => handleChatModeSelect(mode)}
-                  size="small"
-                  variant={selectedChatMode?.id === mode.id ? 'filled' : 'outlined'}
-                  icon={<Icon icon={sparklesIcon} width={12} height={12} />}
-                  sx={{
-                    height: 24,
-                    fontSize: '0.7rem',
-                    fontWeight: 500,
-                    borderRadius: '12px',
-                    cursor: 'pointer',
-                    '& .MuiChip-icon': { width: 12, height: 12 },
-                    color: selectedChatMode?.id === mode.id ? '#fff' : theme.palette.text.secondary,
-                    bgcolor:
-                      selectedChatMode?.id === mode.id ? theme.palette.primary.main : 'transparent',
-                    borderColor:
-                      selectedChatMode?.id === mode.id
-                        ? theme.palette.primary.main
-                        : alpha(theme.palette.divider, 0.5),
-                    '&:hover': {
-                      borderColor: theme.palette.primary.main,
-                      bgcolor:
-                        selectedChatMode?.id === mode.id
-                          ? theme.palette.primary.dark
-                          : alpha(theme.palette.primary.main, 0.1),
-                    },
-                  }}
-                />
-              ))}
-            </Box>
+            {/* Chat Mode Selector */}
+            <Tooltip title={CHAT_MODES.find((m) => m.key === chatMode)?.tooltip || ''}>
+              <Button
+                onClick={handleChatModeMenuOpen}
+                size="small"
+                startIcon={
+                  <Icon
+                    icon={CHAT_MODES.find((m) => m.key === chatMode)?.icon || autoFixIcon}
+                    width={14}
+                    height={14}
+                  />
+                }
+                endIcon={<Icon icon={chevronDownIcon} width={12} height={12} />}
+                sx={{
+                  minWidth: 'auto',
+                  height: 28,
+                  px: 1.5,
+                  fontSize: '0.7rem',
+                  fontWeight: 500,
+                  color: theme.palette.text.secondary,
+                  border: '1px solid',
+                  borderColor: alpha(theme.palette.divider, 0.5),
+                  borderRadius: '8px',
+                  textTransform: 'none',
+                  '&:hover': {
+                    borderColor: theme.palette.primary.main,
+                    bgcolor: alpha(theme.palette.primary.main, 0.05),
+                  },
+                }}
+              >
+                {CHAT_MODES.find((m) => m.key === chatMode)?.label || 'Auto'}
+              </Button>
+            </Tooltip>
 
             {/* Right Controls */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -645,7 +887,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
               </Tooltip>
 
               {/* Model Selector */}
-              <Tooltip title={`Model: ${selectedModel?.modelName || 'Select'}`}>
+              <Tooltip title={`Model: ${getModelDisplayName(selectedModel) || 'Select'} | ${selectedModel?.modelName.substring(0, 16) || ''}`}>
                 <Button
                   onClick={handleModelMenuOpen}
                   size="small"
@@ -667,7 +909,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
                     },
                   }}
                 >
-                  {selectedModel?.modelName?.slice(0, 16) || 'Model'}
+                  {getModelDisplayName(selectedModel)?.slice(0, 16) || 'Model'}
                 </Button>
               </Tooltip>
             </Box>
@@ -700,18 +942,81 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
           <Divider sx={{ mb: 0.5 }} />
           {availableModels.map((model) => (
             <MenuItem
-              key={`${model.provider}-${model.modelName}`}
+              key={`${model.provider || 'unknown'}-${model.modelName || 'model'}`}
               onClick={() => handleModelSelect(model)}
               selected={selectedModel?.modelName === model.modelName}
               sx={{ borderRadius: '6px', mb: 0.5, py: 0.5 }}
             >
               <Box>
                 <Typography variant="body2" fontWeight="medium" sx={{ fontSize: '0.8rem' }}>
-                  {model.modelName}
+                  {getModelDisplayName(model)}
                 </Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                  {normalizeDisplayName(model.provider)}
+                  {`${normalizeDisplayName(model.provider || 'AI')} | ${model.modelName.substring(0, 16)}`}
                 </Typography>
+              </Box>
+            </MenuItem>
+          ))}
+        </Box>
+      </Menu>
+
+      {/* Chat Mode Selection Menu */}
+      <Menu
+        anchorEl={chatModeMenuAnchor}
+        open={Boolean(chatModeMenuAnchor)}
+        onClose={handleChatModeMenuClose}
+        PaperProps={{
+          sx: {
+            maxHeight: 300,
+            minWidth: 240,
+            borderRadius: '8px',
+            border: `1px solid ${isDark ? alpha('#fff', 0.1) : alpha('#000', 0.1)}`,
+            boxShadow: isDark ? '0 4px 16px rgba(0, 0, 0, 0.3)' : '0 4px 16px rgba(0, 0, 0, 0.1)',
+          },
+        }}
+      >
+        <Box sx={{ p: 1 }}>
+          <Typography
+            variant="caption"
+            sx={{ px: 1, pb: 0.5, color: 'text.secondary', display: 'block' }}
+          >
+            Chat Mode
+          </Typography>
+          <Divider sx={{ mb: 0.5 }} />
+          {CHAT_MODES.map((mode) => (
+            <MenuItem
+              key={mode.key}
+              onClick={() => handleChatModeSelect(mode.key)}
+              selected={chatMode === mode.key}
+              sx={{ borderRadius: '6px', mb: 0.5, py: 0.75 }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5, width: '100%' }}>
+                <Icon
+                  icon={mode.icon}
+                  width={16}
+                  height={16}
+                  style={{ marginTop: 2, flexShrink: 0 }}
+                />
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="body2" fontWeight="medium" sx={{ fontSize: '0.8rem' }}>
+                    {mode.label}
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    color="text.secondary"
+                    sx={{ fontSize: '0.65rem', display: 'block', lineHeight: 1.3 }}
+                  >
+                    {mode.tooltip}
+                  </Typography>
+                </Box>
+                {chatMode === mode.key && (
+                  <Icon
+                    icon={checkIcon}
+                    width={16}
+                    height={16}
+                    style={{ marginTop: 2, flexShrink: 0, color: theme.palette.primary.main }}
+                  />
+                )}
               </Box>
             </MenuItem>
           ))}
@@ -869,7 +1174,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
                 <>
                   <TextField
                     fullWidth
-                    placeholder="Search knowledge bases..."
+                    placeholder="Search collections..."
                     value={kbSearchTerm}
                     onChange={(e) => setKbSearchTerm(e.target.value)}
                     size="small"
@@ -942,7 +1247,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
               ) : (
                 <Box sx={{ textAlign: 'center', py: 3 }}>
                   <Typography variant="body2" color="text.secondary">
-                    No knowledge bases configured for this agent
+                    No collections configured for this agent
                   </Typography>
                 </Box>
               )}

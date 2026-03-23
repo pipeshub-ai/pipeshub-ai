@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from app.config.configuration_service import ConfigurationService
@@ -9,9 +10,6 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminDelegationError,
     AdminServiceError,
     GoogleAuthError,
-)
-from app.connectors.sources.google.common.google_token_handler import (
-    CredentialKeys,
 )
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_PARSER_SCOPES,
@@ -29,6 +27,11 @@ except ImportError:
     print("Google API client libraries not found. Please install them using 'pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib'")
     raise
 
+class CredentialKeys(Enum):
+    CLIENT_ID = "clientId"
+    CLIENT_SECRET = "clientSecret"
+    ACCESS_TOKEN = "access_token"
+    REFRESH_TOKEN = "refresh_token"
 
 @dataclass
 class GoogleAuthConfig:
@@ -333,3 +336,160 @@ class GoogleClient(IClient):
         """Handle enterprise token for a specific connector."""
         config = await GoogleClient._get_connector_config(service_name, logger, config_service, connector_instance_id)
         return config.get("auth", {})
+
+    # =========================================================================
+    # TOOLSET-BASED CLIENT CREATION (New Architecture)
+    # =========================================================================
+
+    @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: Dict[str, Any],
+        service_name: str,
+        logger: logging.Logger,
+        config_service: Optional[ConfigurationService] = None,
+        version: str = "v3",
+        scopes: Optional[List[str]] = None,
+    ) -> 'GoogleClient':
+        """
+        Build GoogleClient from toolset configuration stored in etcd.
+
+        ARCHITECTURE NOTE: OAuth credentials (clientId/clientSecret) are fetched from
+        the OAuth config using the oauthConfigId stored in toolset_config. This keeps
+        credentials centralized and secure while allowing per-user authentication.
+
+        Args:
+            toolset_config: Toolset configuration from etcd containing:
+                - credentials: { access_token, refresh_token, expires_in }
+                - isAuthenticated: bool
+                - oauthConfigId: ID of the OAuth config (for fetching clientId/clientSecret)
+            service_name: Name of Google service (drive, calendar, gmail)
+            logger: Logger instance
+            config_service: ConfigurationService for fetching OAuth config (required for OAuth)
+            version: API version (v1, v3, etc.)
+            scopes: Optional scopes to use
+
+        Returns:
+            GoogleClient instance
+
+        Raises:
+            ValueError: If configuration is invalid or missing required fields
+        """
+        if not toolset_config:
+            raise ValueError("Toolset configuration is required")
+
+        # Extract auth and credentials
+        auth_config = toolset_config.get("auth", {})
+        credentials_config = toolset_config.get("credentials", {})
+        is_authenticated = toolset_config.get("isAuthenticated", False)
+
+        if not is_authenticated:
+            raise ValueError("Toolset is not authenticated. Please complete OAuth flow first.")
+
+        if not credentials_config:
+            raise ValueError(
+                "Toolset has no credentials. Please re-authenticate. "
+                f"Toolset config keys: {list(toolset_config.keys())}"
+            )
+
+        # Log credential structure for debugging
+        logger.debug(
+            f"Toolset config structure - auth keys: {list(auth_config.keys())}, "
+            f"credentials keys: {list(credentials_config.keys())}"
+        )
+
+        # Get OAuth credentials from credentials dict (stored by OAuthProvider.handle_callback)
+        # OAuthToken.to_dict() stores: access_token, refresh_token, expires_in, token_type, etc.
+        access_token = credentials_config.get("access_token")
+        refresh_token = credentials_config.get("refresh_token")  # May be None if not provided by provider
+        expires_in = credentials_config.get("expires_in")
+
+        if not access_token:
+            raise ValueError(
+                f"Access token not found in toolset credentials. "
+                f"Available credential keys: {list(credentials_config.keys())}"
+            )
+
+        # Fetch complete OAuth configuration from centralized OAuth config
+        # This includes clientId, clientSecret, and any provider-specific fields
+        try:
+            from app.api.routes.toolsets import get_oauth_credentials_for_toolset
+
+            if not config_service:
+                raise ValueError(
+                    "ConfigurationService is required to fetch OAuth configuration. "
+                    "Please pass config_service parameter to build_from_toolset."
+                )
+
+            # Get complete OAuth config (all fields)
+            oauth_config = await get_oauth_credentials_for_toolset(
+                toolset_config=toolset_config,
+                config_service=config_service,
+                logger=logger
+            )
+
+            # Extract required fields (support both camelCase and snake_case)
+            client_id = oauth_config.get("clientId") or oauth_config.get("client_id")
+            client_secret = oauth_config.get("clientSecret") or oauth_config.get("client_secret")
+
+            if not client_id or not client_secret:
+                raise ValueError(
+                    f"OAuth configuration is missing clientId or clientSecret. "
+                    f"Available fields: {list(oauth_config.keys())}"
+                )
+
+        except Exception as e:
+            logger.error(f"Failed to fetch OAuth configuration for Google {service_name}: {e}")
+            raise ValueError(
+                f"Failed to retrieve OAuth configuration: {str(e)}. "
+                f"Please ensure the toolset instance has a valid OAuth configuration."
+            ) from e
+
+        # Warn if refresh_token is missing (will cause refresh failures when token expires)
+        # Google's OAuth library requires refresh_token to automatically refresh expired tokens
+        if not refresh_token:
+            logger.warning(
+                f"⚠️ Refresh token is missing for Google {service_name} toolset. "
+                f"Token refresh will fail when access token expires (expires_in={expires_in}s). "
+                f"Please re-authenticate with 'prompt=consent' to get a refresh_token. "
+                f"Current credentials: access_token={'***' if access_token else 'MISSING'}, "
+                f"refresh_token=None"
+            )
+            # Don't fail immediately - allow tool to work until token expires
+            # The token will work for initial requests, but refresh will fail
+
+        # Get optimized scopes
+        optimized_scopes = cls._get_optimized_scopes(service_name, scopes)
+
+        try:
+            # Create Google credentials
+            # Note: refresh_token may be None, which will cause refresh failures when token expires
+            # But we allow this to let tools work until the token expires
+            google_credentials = Credentials(
+                token=access_token,
+                refresh_token=refresh_token,  # May be None - will cause refresh failures
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=client_id,
+                client_secret=client_secret,
+                scopes=optimized_scopes,
+            )
+
+            if refresh_token:
+                logger.debug(
+                    f"✅ Created Google {service_name} credentials with all required fields including refresh_token"
+                )
+            else:
+                logger.warning(
+                    f"⚠️ Created Google {service_name} credentials WITHOUT refresh_token. "
+                    f"Token will work until expiration ({expires_in}s), then refresh will fail."
+                )
+
+            # Create Google service client
+            client = build(service_name, version, credentials=google_credentials)
+
+            logger.info(f"Created Google {service_name} client from toolset config")
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Google client from toolset: {e}")
+            raise ValueError(f"Failed to create Google {service_name} client: {str(e)}") from e

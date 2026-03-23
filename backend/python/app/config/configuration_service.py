@@ -4,7 +4,7 @@ import hashlib
 import os
 import threading
 import time
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 import dotenv
 from cachetools import LRUCache
@@ -294,8 +294,7 @@ class ConfigurationService:
 
             # Store in KV store
             try:
-                await self.store.create_key(key, value, overwrite=True)
-                success = True
+                success = await self.store.create_key(key, value, overwrite=True)
             except Exception as store_error:
                 self.logger.error("❌ Failed to create key in store: %s", str(store_error))
                 success = False
@@ -416,3 +415,7 @@ class ConfigurationService:
                     self.cache.pop(key, None)
         except Exception as e:
             self.logger.error("❌ Error in etcd watch callback: %s", str(e))
+
+    async def list_keys_in_directory(self, directory: str) -> List[str]:
+        """List all keys in a directory"""
+        return await self.store.list_keys_in_directory(directory)

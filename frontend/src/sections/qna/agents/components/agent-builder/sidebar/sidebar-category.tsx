@@ -21,7 +21,9 @@ interface SidebarCategoryProps {
   dragType?: string;
   borderColor?: string;
   showConfigureIcon?: boolean;
+  showAuthenticatedIndicator?: boolean; // Show green checkmark for authenticated toolsets
   onConfigureClick?: () => void;
+  onDragAttempt?: () => void;
   dragData?: Record<string, any>;
   children?: React.ReactNode;
 }
@@ -35,7 +37,9 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
   dragType,
   borderColor,
   showConfigureIcon = false,
+  showAuthenticatedIndicator = false,
   onConfigureClick,
+  onDragAttempt,
   dragData,
   children,
 }) => {
@@ -43,11 +47,22 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
   const effectiveBorderColor = borderColor || theme.palette.primary.main;
 
   const handleDragStart = (event: React.DragEvent) => {
-    if (!dragType) return;
+    if (!dragType) {
+      // If not draggable and has onDragAttempt, show toast
+      if (onDragAttempt) {
+        event.preventDefault();
+        onDragAttempt();
+      }
+      return;
+    }
     event.dataTransfer.setData('application/reactflow', dragType);
     if (dragData) {
       Object.entries(dragData).forEach(([key, value]) => {
-        event.dataTransfer.setData(key, String(value));
+        // Stringify arrays and objects, convert primitives to strings
+        const stringValue = Array.isArray(value) || (typeof value === 'object' && value !== null)
+          ? JSON.stringify(value)
+          : String(value);
+        event.dataTransfer.setData(key, stringValue);
       });
     }
   };
@@ -56,13 +71,13 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
     <>
       <ListItem
         button
-        draggable={!!dragType}
-        onDragStart={dragType ? handleDragStart : undefined}
+        draggable={!!dragType || !!onDragAttempt}
+        onDragStart={handleDragStart}
         onClick={onToggle}
         sx={{
           py: 1,
           px: 2,
-          pl: 2,
+          pl: 4,
           cursor: dragType ? 'grab' : 'pointer',
           borderRadius: 1.5,
           mx: 1,
@@ -99,7 +114,7 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
               height={18}
               style={{ objectFit: 'contain' }}
               onError={(e) => {
-                e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                e.currentTarget.src = '/assets/icons/connectors/collections-gray.svg';
               }}
             />
           ) : (
@@ -142,9 +157,30 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
             {itemCount}
           </Typography>
           
+          {/* Authenticated Indicator (Green Checkmark) */}
+          {showAuthenticatedIndicator && (
+            <Tooltip title="Authenticated" placement="right">
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  ml: 0.5,
+                }}
+              >
+                <Icon 
+                  icon={UI_ICONS.authenticated}
+                  width={16}
+                  height={16}
+                  style={{ color: theme.palette.success.main }}
+                />
+              </Box>
+            </Tooltip>
+          )}
+          
           {/* Configure Icon */}
           {showConfigureIcon && onConfigureClick && (
-            <Tooltip title="Configure connector" placement="right">
+            <Tooltip title="Configure toolset" placement="right">
               <IconButton
                 size="small"
                 onClick={(e) => {

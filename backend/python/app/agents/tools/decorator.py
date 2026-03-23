@@ -4,30 +4,35 @@ Enhanced tool decorator with automatic parameter extraction and metadata support
 
 import functools
 import inspect
-from typing import Callable, Dict, List, Optional, get_origin
+from collections.abc import Callable
+from typing import get_origin, get_type_hints
 
-try:
-    from typing import get_type_hints
-except ImportError:
-    from typing_extensions import get_type_hints
+from pydantic import BaseModel
 
 from app.agents.tools.config import ToolCategory, ToolMetadata
 from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import Tool, ToolParameter
+from app.agents.tools.models import Tool, ToolIntent, ToolParameter
 from app.agents.tools.registry import _global_tools_registry
 
 
 def tool(
     app_name: str,
     tool_name: str,
-    description: Optional[str] = None,
-    parameters: Optional[List[ToolParameter]] = None,
-    returns: Optional[str] = None,
-    examples: Optional[List[Dict]] = None,
-    tags: Optional[List[str]] = None,
+    description: str | None = None,  # User-friendly description (for frontend)
+    parameters: list[ToolParameter] | None = None,  # DEPRECATED: Use args_schema instead
+    args_schema: type[BaseModel] | None = None,  # NEW: Pydantic schema for validation
+    returns: str | None = None,
+    examples: list[dict] | None = None,
+    tags: list[str] | None = None,
     category: ToolCategory = ToolCategory.UTILITY,
     is_essential: bool = False,
     requires_auth: bool = True,
+    llm_description: str | None = None,  # NEW: Detailed description for LLM planner
+    # Enhanced metadata for intelligent tool selection
+    when_to_use: list[str] | None = None,  # Explicit scenarios when to use
+    when_not_to_use: list[str] | None = None,  # Anti-patterns
+    primary_intent: ToolIntent = ToolIntent.ACTION,  # Main use case
+    typical_queries: list[str] | None = None,  # Example queries for few-shot
 ) -> Callable:
     """
     Enhanced decorator to register a function as a tool.
@@ -35,26 +40,38 @@ def tool(
     Args:
         app_name: Tool app name (required)
         tool_name: Tool name (required)
-        description: Tool description (defaults to docstring)
-        parameters: List of ToolParameter objects (auto-generated if not provided)
+        description: User-friendly tool description for frontend (defaults to docstring)
+        parameters: List of ToolParameter objects (DEPRECATED: use args_schema instead)
+        args_schema: Pydantic BaseModel schema for tool arguments (NEW: preferred)
         returns: Description of return value
         examples: List of example invocations
         tags: Tags for categorization
         category: Tool category
         is_essential: Whether tool is essential (always loaded)
         requires_auth: Whether tool requires authentication
+        llm_description: Detailed description for LLM planner (optional, falls back to description)
+        when_to_use: List of explicit scenarios when to use this tool
+        when_not_to_use: List of anti-patterns (when NOT to use this tool)
+        primary_intent: Main use case (QUESTION, ACTION, SEARCH, ANALYSIS)
+        typical_queries: Example queries for few-shot learning
 
     Returns:
         Decorated function
 
     Example:
         ```python
+        from pydantic import BaseModel, Field
+
+        class ProcessDataInput(BaseModel):
+            input_text: str = Field(description="Text to process")
+            count: int = Field(default=1, description="Number of times")
+
         @tool(
             app_name="myapp",
             tool_name="process_data",
             description="Process data and return result",
+            args_schema=ProcessDataInput,  # NEW: Pydantic schema
             category=ToolCategory.UTILITY,
-            is_essential=False,
             tags=["data", "processing"]
         )
         def process_data(input_text: str, count: int = 1) -> str:
@@ -71,8 +88,25 @@ def tool(
         # Extract metadata
         tool_description = description or (func.__doc__ or "").strip()
 
-        # Auto-generate parameters if not provided
-        tool_parameters = parameters or _extract_parameters(func)
+        # Validate args_schema if provided
+        if args_schema is not None and not issubclass(args_schema, BaseModel):
+            raise ValueError(f"args_schema must be a Pydantic BaseModel subclass, got {type(args_schema)}")
+
+        # Auto-generate parameters if not provided and no schema
+        tool_parameters = parameters or (None if args_schema else _extract_parameters(func))
+
+        # Build structured llm_description with when_to_use/when_not_to_use guidance
+        final_llm_description = llm_description or tool_description
+        if when_to_use or when_not_to_use:
+            parts = [final_llm_description]
+            if when_to_use:
+                parts.append("\n**WHEN TO USE**:")
+                parts.extend(f"- {item}" for item in when_to_use)
+            if when_not_to_use:
+                parts.append("\n**WHEN NOT TO USE**:")
+                parts.extend(f"- {item}" for item in when_not_to_use)
+            # Join with newlines and ensure trailing newline for proper spacing with Parameters section
+            final_llm_description = "\n".join(parts) + "\n"
 
         # Create tool object
         tool_obj = Tool(
@@ -80,10 +114,16 @@ def tool(
             tool_name=tool_name,
             description=tool_description,
             function=func,
-            parameters=tool_parameters,
+            parameters=tool_parameters or [],
+            args_schema=args_schema,  # NEW: Store Pydantic schema
             returns=returns,
             examples=examples or [],
-            tags=tags or []
+            tags=tags or [],
+            llm_description=final_llm_description or tool_description,  # Use structured description if built
+            when_to_use=when_to_use or [],
+            when_not_to_use=when_not_to_use or [],
+            primary_intent=primary_intent,
+            typical_queries=typical_queries or []
         )
 
         # Create metadata
@@ -113,7 +153,7 @@ def tool(
     return decorator
 
 
-def _extract_parameters(func: Callable) -> List[ToolParameter]:
+def _extract_parameters(func: Callable) -> list[ToolParameter]:
     """
     Extract parameters from function signature with type hints.
 
@@ -152,7 +192,7 @@ def _extract_parameters(func: Callable) -> List[ToolParameter]:
     return parameters
 
 
-def _infer_parameter_type(type_hint) -> ParameterType:
+def _infer_parameter_type(type_hint: type) -> ParameterType:
     """
     Infer ParameterType from Python type hint.
     Args:

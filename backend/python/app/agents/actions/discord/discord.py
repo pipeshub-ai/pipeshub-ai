@@ -2,17 +2,143 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.discord.discord import DiscordClient, DiscordResponse
 from app.sources.external.discord.discord import DiscordDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="send_message",
+        description="Send a message to a Discord channel",
+        parameters=[
+            {"name": "channel_id", "type": "string", "description": "Channel ID", "required": True},
+            {"name": "content", "type": "string", "description": "Message content", "required": True}
+        ],
+        tags=["messaging", "send"]
+    ),
+    ToolDefinition(
+        name="get_channel",
+        description="Get channel details",
+        parameters=[
+            {"name": "channel_id", "type": "string", "description": "Channel ID", "required": True}
+        ],
+        tags=["channels", "read"]
+    ),
+    ToolDefinition(
+        name="create_channel",
+        description="Create a new channel",
+        parameters=[
+            {"name": "guild_id", "type": "string", "description": "Guild ID", "required": True},
+            {"name": "name", "type": "string", "description": "Channel name", "required": True}
+        ],
+        tags=["channels", "create"]
+    ),
+    ToolDefinition(
+        name="delete_channel",
+        description="Delete a channel",
+        parameters=[
+            {"name": "channel_id", "type": "string", "description": "Channel ID", "required": True}
+        ],
+        tags=["channels", "delete"]
+    ),
+    ToolDefinition(
+        name="get_messages",
+        description="Get messages from a channel",
+        parameters=[
+            {"name": "channel_id", "type": "string", "description": "Channel ID", "required": True},
+            {"name": "limit", "type": "integer", "description": "Max messages", "required": False}
+        ],
+        tags=["messages", "list"]
+    ),
+    ToolDefinition(
+        name="get_guilds",
+        description="Get all guilds (servers)",
+        parameters=[],
+        tags=["guilds", "list"]
+    ),
+    ToolDefinition(
+        name="get_guild_channels",
+        description="Get channels in a guild",
+        parameters=[
+            {"name": "guild_id", "type": "string", "description": "Guild ID", "required": True}
+        ],
+        tags=["channels", "list"]
+    ),
+    ToolDefinition(
+        name="send_direct_message",
+        description="Send a direct message",
+        parameters=[
+            {"name": "user_id", "type": "string", "description": "User ID", "required": True},
+            {"name": "content", "type": "string", "description": "Message content", "required": True}
+        ],
+        tags=["messaging", "dm"]
+    ),
+    ToolDefinition(
+        name="get_guild_members",
+        description="Get members in a guild",
+        parameters=[
+            {"name": "guild_id", "type": "string", "description": "Guild ID", "required": True}
+        ],
+        tags=["members", "list"]
+    ),
+]
 
+
+# Register Discord toolset
+@ToolsetBuilder("Discord")\
+    .in_group("Communication")\
+    .with_description("Discord integration for messaging and server management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Discord",
+            authorize_url="https://discord.com/api/oauth2/authorize",
+            token_url="https://discord.com/api/oauth2/token",
+            redirect_uri="toolsets/oauth/callback/discord",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "bot",
+                    "messages.read",
+                    "messages.write",
+                    "channels.read",
+                    "guilds.read"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Discord Developer Portal"),
+                CommonFields.client_secret("Discord Developer Portal")
+            ],
+            icon_path="/assets/icons/connectors/discord.svg",
+            app_group="Communication",
+            app_description="Discord OAuth application for agent integration"
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("Discord Bot Token", "your-bot-token")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/discord.svg"))\
+    .build_decorator()
 class Discord:
     """Discord tools exposed to the agents using DiscordDataSource"""
 

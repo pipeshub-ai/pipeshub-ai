@@ -40,8 +40,9 @@ export interface KnowledgeBaseResponse {
 }
 
 export interface KnowledgeBase {
-  id: string;
+  id: string; // KB ID (record group ID)
   name: string;
+  connectorId: string; // KB connector instance ID (e.g., "knowledgeBase_orgId")
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
   createdBy: string;
@@ -337,12 +338,21 @@ class AgentApiService {
 
   /**
    * Transform form data to match backend expectations
-   * - Tools: Convert to app_name.tool_name format if not already
+   * - Toolsets: Pass through as-is (new graph-based format)
+   * - Knowledge: Pass through as-is (new graph-based format)
+   * - Tools: Convert to app_name.tool_name format if not already (legacy)
    * - KB: Ensure we're sending IDs not names
-   * - Connector Instances: Ensure proper format with required fields
+   * - Connector Instances: Ensure proper format with required fields (legacy)
    */
   private static transformAgentFormData(data: Partial<AgentFormData>): Partial<AgentFormData> {
     const transformed = { ...data };
+    
+    // Log what we're about to send
+    console.log('📦 Agent form data before transform:', {
+      toolsets: data.toolsets,
+      knowledge: data.knowledge,
+      models: data.models,
+    });
 
     // Transform tools to ensure they're in the correct format
     if (transformed.tools && Array.isArray(transformed.tools)) {
@@ -358,14 +368,7 @@ class AgentApiService {
         });
     }
 
-    // Ensure KB field contains IDs (this should already be the case with the new UI)
-    if (transformed.kb && Array.isArray(transformed.kb)) {
-      // The new UI already sends KB IDs, so no transformation needed
-      // But we can add validation here if needed
-      transformed.kb = transformed.kb.filter(
-        (id) => typeof id === 'string' && id.trim().length > 0
-      );
-    }
+    // KBs are now part of knowledge array - no separate kb field needed
 
     // Transform connector instances to ensure proper format
     if (transformed.connectors && Array.isArray(transformed.connectors)) {
@@ -413,14 +416,12 @@ class AgentApiService {
       Array.isArray(transformed.models) &&
       transformed.models.length === 0
     ) {
-      transformed.models = [] as { provider: string; modelName: string; isReasoning: boolean; modelKey: string }[];
+      transformed.models = [];
     }
 
 
 
-    if (transformed.kb && Array.isArray(transformed.kb) && transformed.kb.length === 0) {
-      transformed.kb = [] as string[];
-    }
+    // KBs are now part of knowledge array - no separate kb field
 
     if (
       transformed.connectors &&
@@ -441,6 +442,13 @@ class AgentApiService {
     if (transformed.tags && Array.isArray(transformed.tags) && transformed.tags.length === 0) {
       transformed.tags = [] as string[];
     }
+
+    // Log the final transformed data
+    console.log('📦 Agent form data after transform:', {
+      toolsets: transformed.toolsets,
+      knowledge: transformed.knowledge,
+      models: transformed.models,
+    });
 
     return transformed;
   }

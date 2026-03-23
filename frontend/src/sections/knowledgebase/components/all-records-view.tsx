@@ -89,6 +89,7 @@ import {
 import { KnowledgeBaseAPI } from '../services/api';
 import DeleteRecordDialog from '../delete-record-dialog';
 import DynamicFilterSidebar, { AppliedFilters, AvailableFilters } from './dynamic-filter-sidebar';
+import { getReindexButtonText } from './buttons';
 import { ORIGIN } from '../constants/knowledge-search';
 import { getExtensionFromMimeType, getFileIcon, getFileIconColor } from '../utils/utils';
 
@@ -114,7 +115,7 @@ interface HubNode {
   name: string;
   nodeType: 'app' | 'kb' | 'folder' | 'record' | 'recordGroup';
   parentId: string | null;
-  origin: 'KB' | 'CONNECTOR';
+  origin: 'COLLECTION' | 'CONNECTOR';
   connector: string;
   recordType?: string;
   recordGroupType?: string;
@@ -729,7 +730,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   // Action handlers
   const handleRetryIndexing = async (recordId: string) => {
     try {
-      const response = await KnowledgeBaseAPI.reindexRecord(recordId);
+      // All-records tree: depth 100 (include children)
+      const response = await KnowledgeBaseAPI.reindexRecord(recordId, false, 100);
       setSnackbar({
         open: true,
         message: response.success
@@ -795,7 +797,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       const { id, type } = forceReindexDialog;
       let response;
       if (type === 'record') {
-        response = await KnowledgeBaseAPI.reindexRecord(id, true);
+        // All-records tree: depth 100 for force reindex
+        response = await KnowledgeBaseAPI.reindexRecord(id, true, 100);
       } else {
         response = await KnowledgeBaseAPI.reindexRecordGroup(id, true);
       }
@@ -829,6 +832,11 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       });
     } catch (err: any) {
       console.error('Failed to download document', err);
+      setSnackbar({
+        open: true,
+        message: err?.message || 'Failed to download document. Please try again.',
+        severity: err?.statusCode === 503 ? 'warning' : 'error',
+      });
     }
   };
 
@@ -1151,8 +1159,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       renderCell: (params) => {
         const node = params.row;
         
-        if (params.value === 'CONNECTOR') {
-          // Show connector icon + connector name with premium styling
+        if (params.value === 'CONNECTOR' && node.connector !== 'KB') {
+          // Show connector icon + connector name with premium styling (skip KB → use Collection block below)
           return (
             <Box sx={{ 
               display: 'flex', 
@@ -1179,7 +1187,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           );
         }
         
-        // Show KB icon + "Knowledge Base" text with premium styling
+        // Show Collection icon + "Collection" for COLLECTION origin or for app with connector 'KB' (Collection app)
         return (
           <Box sx={{ 
             display: 'flex', 
@@ -1413,35 +1421,39 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
 
           // Add reindex options
           if (node.nodeType === 'record') {
-            // Force reindex for completed records only
+            // Force reindexing for completed records only
             if (node.indexingStatus === 'COMPLETED') {
               menuActions.push({
-                label: 'Force Reindex',
+                label: getReindexButtonText('COMPLETED'),
                 icon: refreshIcon,
                 color: theme.palette.info.main,
                 onClick: () =>
                   setForceReindexDialog({ open: true, id: node.id, name: node.name, type: 'record' }),
               });
             }
-            // For records
-            if (node.indexingStatus === 'FAILED' || node.indexingStatus === 'NOT_STARTED' || node.indexingStatus === 'PAUSED' || node.indexingStatus === 'QUEUED' || node.indexingStatus === 'AUTO_INDEX_OFF') {
+            // Start indexing / Retry indexing for non-completed records
+            if (['FAILED', 'NOT_STARTED', 'PAUSED', 'QUEUED', 'AUTO_INDEX_OFF', 'EMPTY', 'ENABLE_MULTIMODAL_MODELS', 'CONNECTOR_DISABLED'].includes(node.indexingStatus || '')) {
               menuActions.push({
-                label: 'Retry Indexing',
+                label: getReindexButtonText(node.indexingStatus ?? ''),
                 icon: refreshIcon,
                 color: theme.palette.warning.main,
                 onClick: () => handleRetryIndexing(node.id),
               });
             }
-          } 
-          else if (node.nodeType === 'recordGroup') {
-            // For recordGroups (with depth: 100, uses reindexRecordGroup API)
-              menuActions.push({
-                label: 'Manual index',
-                icon: refreshIcon,
-                color: theme.palette.warning.main,
-                onClick: () => handleRetryIndexingRecordGroup(node),
-              });
-            
+          } else if (node.nodeType === 'folder') {
+            menuActions.push({
+              label: 'Start indexing',
+              icon: refreshIcon,
+              color: theme.palette.warning.main,
+              onClick: () => handleRetryIndexingFolder(node.id),
+            });
+          } else if (node.nodeType === 'recordGroup') {
+            menuActions.push({
+              label: 'Start indexing',
+              icon: refreshIcon,
+              color: theme.palette.warning.main,
+              onClick: () => handleRetryIndexingRecordGroup(node),
+            });
           }
 
           // Add delete option for records with permissions

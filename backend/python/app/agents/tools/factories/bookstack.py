@@ -2,8 +2,7 @@
 Client factories for BookStack.
 """
 
-
-from typing import Optional
+from typing import Any, Dict
 
 from app.agents.tools.factories.base import ClientFactory
 from app.sources.client.bookstack.bookstack import BookStackClient
@@ -13,13 +12,32 @@ from app.sources.client.bookstack.bookstack import BookStackClient
 # ============================================================================
 
 class BookStackClientFactory(ClientFactory):
-    """Factory for creating BookStack clients"""
+    """
+    Factory for creating BookStack clients.
 
-    async def create_client(self, config_service, logger, state=None, connector_instance_id: Optional[str] = None) -> BookStackClient:
-        """Create BookStack client instance"""
+    Supports both toolset-based and connector-based authentication.
+    """
 
-        return await BookStackClient.build_from_services(
+    async def create_client(
+        self,
+        config_service,
+        logger,
+        toolset_config: Dict[str, Any],
+        state=None
+    ) -> BookStackClient:
+        """
+        Create BookStack client instance from toolset configuration.
+
+        Args:
+            config_service: Configuration service instance
+            logger: Logger instance
+            toolset_config: Toolset configuration from etcd (REQUIRED)
+            state: Chat state (optional)
+
+        Returns:
+            BookStackClient instance
+        """
+        return await BookStackClient.build_from_toolset(
+            toolset_config=toolset_config,
             logger=logger,
-            config_service=config_service,
-            connector_instance_id=connector_instance_id
         )

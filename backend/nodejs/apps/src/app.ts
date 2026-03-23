@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
 import http from 'http';
+import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { TokenManagerContainer } from './modules/tokens_manager/container/token-manager.container';
 import { Logger } from './libs/services/logger.service';
@@ -12,6 +13,8 @@ import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { createUserRouter } from './modules/user_management/routes/users.routes';
 import { createUserGroupRouter } from './modules/user_management/routes/userGroups.routes';
 import { createOrgRouter } from './modules/user_management/routes/org.routes';
+import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
+import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
 import {
   createConversationalRouter,
   createSemanticSearchRouter,
@@ -54,12 +57,13 @@ import { checkAndMigrateIfNeeded } from './libs/keyValueStore/migration/kvStoreM
 import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
-import {
-  createOAuthProviderRouter,
-  createOAuthClientsRouter,
-  createOIDCDiscoveryRouter,
-} from './modules/oauth_provider/routes';
+import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
+import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
+import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
+import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
+import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
+import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 
 const loggerConfig = {
   service: 'Application',
@@ -81,6 +85,7 @@ export class Application {
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
+  private toolsetsContainer!: Container;
   private port: number;
 
   constructor() {
@@ -160,6 +165,14 @@ export class Application {
         appConfig,
       );
 
+
+      this.toolsetsContainer = await ToolsetsContainer.initialize(
+        configurationManagerConfig,
+      );
+
+      await this.addOAuthServicesToAuthMiddleware();
+
+
       // binding prometheus to all services routes
       this.logger.debug('Binding Prometheus Service with other services');
       this.tokenManagerContainer
@@ -211,8 +224,17 @@ export class Application {
         .toSelf()
         .inSingletonScope();
 
+      this.toolsetsContainer
+        .bind<PrometheusService>(PrometheusService)
+        .toSelf()
+        .inSingletonScope();
+
       // Initialize API Documentation
       this.apiDocsContainer = await ApiDocsContainer.initialize();
+
+      // Slack events proxy must be mounted before body-parsing middleware
+      // so the raw request body is forwarded intact for signature verification
+      this.setupSlackEventsProxy();
 
       // Configure Express
       this.configureMiddleware(appConfig);
@@ -300,7 +322,7 @@ export class Application {
         origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'], // Be more specific than '*'
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
-        methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+        methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
         allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token']
       }),
     );
@@ -320,7 +342,7 @@ export class Application {
     );
 
     // Global rate limiter - applies to all routes
-    this.app.use(createGlobalRateLimiter(this.logger));
+    this.app.use(createGlobalRateLimiter(this.logger, appConfig.maxRequestsPerMinute));
   }
 
   private configureRoutes(): void {
@@ -406,6 +428,12 @@ export class Application {
       createConfigurationManagerRouter(this.configurationManagerContainer),
     );
 
+    // toolsets routes
+    this.app.use(
+      '/api/v1/toolsets',
+      createToolsetsRouter(this.toolsetsContainer)
+    );
+
     this.app.use(
       '/api/v1/mail',
       createMailServiceRouter(this.mailServiceContainer),
@@ -429,8 +457,16 @@ export class Application {
       createOAuthClientsRouter(this.oauthProviderContainer),
     );
 
-    // OIDC Discovery routes - mounted at root level per RFC 8414
+    // MCP (Model Context Protocol) routes
+    this.app.use(
+      '/mcp',
+      createMCPRouter(this.oauthProviderContainer),
+    );
+
+    // OIDC Discovery routes - mounted at root level per RFC 8414 & RFC 9728
     // Exposes: GET /.well-known/openid-configuration
+    //          GET /.well-known/oauth-authorization-server
+    //          GET /.well-known/oauth-protected-resource
     //          GET /.well-known/jwks.json
     this.app.use(
       '/.well-known',
@@ -466,7 +502,7 @@ export class Application {
           .get<NotificationService>(NotificationService)
           .shutdown();
       } catch (err) {
-        this.logger.warn('NotificationService not available during shutdown', 
+        this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
       }
       await NotificationContainer.dispose();
@@ -529,8 +565,8 @@ export class Application {
     const logger = Logger.getInstance(loggerConfig);
     const configurationManagerConfig = loadConfigurationManagerConfig();
 
-    if (configurationManagerConfig.storeType !== StoreType.Redis) {
-      logger.debug('KV store is not Redis, skipping pre-init migration check');
+    if (configurationManagerConfig.storeType !== StoreType.Redis || !process.env.ETCD_URL) {
+      logger.debug('KV store is not Redis or etcd not available, skipping pre-init migration check');
       return;
     }
 
@@ -568,4 +604,48 @@ export class Application {
       logger.info('KV store migration not needed (already completed or etcd not available)');
     }
   }
+
+  private setupSlackEventsProxy(): void {
+    const slackBotPort = parseInt(process.env.SLACK_BOT_PORT || '3020', 10);
+
+    this.app.use('/slack/events', (req, res) => {
+      const proxyReq = http.request(
+        {
+          hostname: 'localhost',
+          port: slackBotPort,
+          path: '/slack/events',
+          method: req.method,
+          headers: req.headers,
+        },
+        (proxyRes) => {
+          res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+          proxyRes.pipe(res);
+        },
+      );
+
+      proxyReq.on('error', (err) => {
+        this.logger.error('Slack events proxy error', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        if (!res.headersSent) {
+          res.status(502).json({ error: 'Slack bot service unavailable' });
+        }
+      });
+
+      req.pipe(proxyReq);
+    });
+  }
+
+  async addOAuthServicesToAuthMiddleware(): Promise<void> {
+    try {
+      const oauthTokenService = this.oauthProviderContainer.get<OAuthTokenService>('OAuthTokenService');
+      registerOAuthTokenService(oauthTokenService);
+      this.logger.info('OAuth token service registered for AuthMiddleware factory');
+    } catch (error) {
+      this.logger.warn('Failed to register OAuth token service', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
 }
+

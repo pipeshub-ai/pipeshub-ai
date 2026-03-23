@@ -5,6 +5,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware'
 import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
 import { Logger } from '../../../libs/services/logger.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
+import { AppConfig } from '../../tokens_manager/config/config'
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
 import {
   appIdParamsSchema,
@@ -18,12 +19,17 @@ export function createOAuthClientsRouter(container: Container): Router {
   const controller = container.get<OAuthAppController>('OAuthAppController')
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware')
   const logger = container.get<Logger>('Logger')
+  const appConfig = container.get<AppConfig>('AppConfig')
 
-  // Rate limiter for OAuth client management (10 requests per minute)
-  const oauthClientRateLimiter = createOAuthClientRateLimiter(logger)
+  // Rate limiter for OAuth client management
+  const oauthClientRateLimiter = createOAuthClientRateLimiter(logger, appConfig.maxOAuthClientRequestsPerMinute)
 
   // All routes require authentication
   router.use(authMiddleware.authenticate.bind(authMiddleware))
+  // All routes require admin auth
+  router.use(userAdminCheck)
+  // All routes are rate limited
+  router.use(oauthClientRateLimiter)
 
   /**
    * GET /oauth-clients
@@ -42,8 +48,6 @@ export function createOAuthClientsRouter(container: Container): Router {
    */
   router.post(
     '/',
-    oauthClientRateLimiter,
-    userAdminCheck,
     ValidationMiddleware.validate(createAppSchema),
     (req, res, next) => controller.createApp(req, res, next),
   )
@@ -74,8 +78,6 @@ export function createOAuthClientsRouter(container: Container): Router {
    */
   router.put(
     '/:appId',
-    oauthClientRateLimiter,
-    userAdminCheck,
     ValidationMiddleware.validate(updateAppSchema),
     (req, res, next) => controller.updateApp(req, res, next),
   )
@@ -87,8 +89,6 @@ export function createOAuthClientsRouter(container: Container): Router {
    */
   router.delete(
     '/:appId',
-    oauthClientRateLimiter,
-    userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.deleteApp(req, res, next),
   )
@@ -96,12 +96,9 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * POST /oauth-clients/:appId/regenerate-secret
    * Regenerate client secret
-   * Admin only, rate limited
    */
   router.post(
     '/:appId/regenerate-secret',
-    oauthClientRateLimiter,
-    userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.regenerateSecret(req, res, next),
   )
@@ -109,12 +106,9 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * POST /oauth-clients/:appId/suspend
    * Suspend an OAuth app
-   * Admin only, rate limited
    */
   router.post(
     '/:appId/suspend',
-    oauthClientRateLimiter,
-    userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.suspendApp(req, res, next),
   )
@@ -122,12 +116,9 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * POST /oauth-clients/:appId/activate
    * Reactivate a suspended OAuth app
-   * Admin only, rate limited
    */
   router.post(
     '/:appId/activate',
-    oauthClientRateLimiter,
-    userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.activateApp(req, res, next),
   )
@@ -135,11 +126,9 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * GET /oauth-clients/:appId/tokens
    * List active tokens for an app
-   * Admin only
    */
   router.get(
     '/:appId/tokens',
-    userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.listAppTokens(req, res, next),
   )
@@ -147,12 +136,9 @@ export function createOAuthClientsRouter(container: Container): Router {
   /**
    * POST /oauth-clients/:appId/revoke-all-tokens
    * Revoke all tokens for an app
-   * Admin only, rate limited
    */
   router.post(
     '/:appId/revoke-all-tokens',
-    oauthClientRateLimiter,
-    userAdminCheck,
     ValidationMiddleware.validate(appIdParamsSchema),
     (req, res, next) => controller.revokeAllTokens(req, res, next),
   )

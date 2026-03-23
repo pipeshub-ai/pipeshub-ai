@@ -30,6 +30,7 @@ export interface BaseSyncEvent {
   connector: string;
   connectorId: string;
   origin: string;
+  fullSync?: boolean;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;
   sourceCreatedAtTimestamp: string;

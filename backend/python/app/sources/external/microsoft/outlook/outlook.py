@@ -26,14 +26,40 @@ from msgraph.generated.users.item.mail_folders.item.messages.delta.delta_request
 from msgraph.generated.users.item.mail_folders.mail_folders_request_builder import (  # type: ignore
     MailFoldersRequestBuilder,
 )
+from msgraph.generated.users.item.events.item.instances.instances_request_builder import (
+    InstancesRequestBuilder,
+)
+
+from datetime import date
 
 # Import MS Graph specific query parameter classes for Outlook
 from msgraph.generated.users.item.messages.messages_request_builder import (  # type: ignore
     MessagesRequestBuilder,
 )
+from kiota_abstractions.headers_collection import HeadersCollection
 
 from app.sources.client.microsoft.microsoft import MSGraphClient
-
+from msgraph.generated.models.message import Message  # type: ignore
+from msgraph.generated.models.item_body import ItemBody  # type: ignore
+from msgraph.generated.models.body_type import BodyType  # type: ignore
+from msgraph.generated.models.recipient import Recipient  # type: ignore
+from msgraph.generated.models.email_address import EmailAddress  # type: ignore
+from msgraph.generated.models.event import Event  # type: ignore
+from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone  # type: ignore
+from msgraph.generated.models.location import Location  # type: ignore
+from msgraph.generated.models.attendee import Attendee  # type: ignore
+from msgraph.generated.models.attendee_type import AttendeeType  # type: ignore
+from msgraph.generated.users.item.messages.item.reply.reply_post_request_body import ReplyPostRequestBody  # type: ignore
+from msgraph.generated.users.item.messages.item.reply_all.reply_all_post_request_body import ReplyAllPostRequestBody  # type: ignore
+from msgraph.generated.users.item.messages.item.forward.forward_post_request_body import ForwardPostRequestBody  # type: ignore
+from msgraph.generated.users.item.calendar.calendar_view.calendar_view_request_builder import (  # type: ignore
+    CalendarViewRequestBuilder,
+)
+from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
+from msgraph.generated.models.recurrence_pattern import RecurrencePattern
+from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
+from msgraph.generated.models.recurrence_range import RecurrenceRange
+from msgraph.generated.models.recurrence_range_type import RecurrenceRangeType
 
 # Outlook-specific response wrapper
 class OutlookCalendarContactsResponse:
@@ -77,6 +103,197 @@ class OutlookMailFoldersResponse:
 
 # Set up logger
 logger = logging.getLogger(__name__)
+
+
+
+def _dict_to_message(data: dict) -> Message:
+    """Convert a message dict to a typed Message SDK object."""
+    msg = Message()
+
+    if "subject" in data:
+        msg.subject = data["subject"]
+
+    if "body" in data:
+        body_data = data["body"]
+        body = ItemBody()
+        content_type = body_data.get("contentType", "Text")
+        body.content_type = BodyType.Html if content_type.lower() == "html" else BodyType.Text
+        body.content = body_data.get("content", "")
+        msg.body = body
+
+    if "toRecipients" in data:
+        msg.to_recipients = [_dict_to_recipient(r) for r in data["toRecipients"]]
+
+    if "ccRecipients" in data:
+        msg.cc_recipients = [_dict_to_recipient(r) for r in data["ccRecipients"]]
+
+    if "bccRecipients" in data:
+        msg.bcc_recipients = [_dict_to_recipient(r) for r in data["bccRecipients"]]
+
+    return msg
+
+
+def _dict_to_recipient(data: dict) -> Recipient:
+    """Convert a recipient dict to a typed Recipient SDK object."""
+    recipient = Recipient()
+    email_data = data.get("emailAddress", {})
+    email = EmailAddress()
+    email.address = email_data.get("address")
+    email.name = email_data.get("name")
+    recipient.email_address = email
+    return recipient
+
+
+def _dict_to_event(data: dict) -> Event:
+    """Convert an event dict to a typed Event SDK object."""
+    event = Event()
+
+    if "subject" in data:
+        event.subject = data["subject"]
+
+    if "body" in data:
+        body_data = data["body"]
+        body = ItemBody()
+        content_type = body_data.get("contentType", "Text")
+        body.content_type = BodyType.Html if content_type.lower() == "html" else BodyType.Text
+        body.content = body_data.get("content", "")
+        event.body = body
+
+    if "start" in data:
+        start = DateTimeTimeZone()
+        start.date_time = data["start"].get("dateTime")
+        start.time_zone = data["start"].get("timeZone", "UTC")
+        event.start = start
+
+    if "end" in data:
+        end = DateTimeTimeZone()
+        end.date_time = data["end"].get("dateTime")
+        end.time_zone = data["end"].get("timeZone", "UTC")
+        event.end = end
+
+    if "location" in data:
+        loc = Location()
+        loc.display_name = data["location"].get("displayName")
+        event.location = loc
+
+    if "attendees" in data:
+        attendees = []
+        for att_data in data["attendees"]:
+            att = Attendee()
+            email = EmailAddress()
+            email_data = att_data.get("emailAddress", {})
+            email.address = email_data.get("address")
+            email.name = email_data.get("name")
+            att.email_address = email
+            att_type = att_data.get("type", "required")
+            att.type = AttendeeType.Required if att_type == "required" else AttendeeType.Optional
+            attendees.append(att)
+        event.attendees = attendees
+
+    if "isOnlineMeeting" in data:
+        event.is_online_meeting = data["isOnlineMeeting"]
+
+    if "recurrence" in data:
+        rec = data["recurrence"]
+        if isinstance(rec, PatternedRecurrence):
+            event.recurrence = rec
+        elif isinstance(rec, dict):
+            from datetime import date
+            from msgraph.generated.models.day_of_week import DayOfWeek
+            from msgraph.generated.models.week_index import WeekIndex
+
+            def _to_date(val):
+                if isinstance(val, date):
+                    return val
+                return date.fromisoformat(val)
+
+            DAY_MAP = {
+                "sunday":    DayOfWeek.Sunday,
+                "monday":    DayOfWeek.Monday,
+                "tuesday":   DayOfWeek.Tuesday,
+                "wednesday": DayOfWeek.Wednesday,
+                "thursday":  DayOfWeek.Thursday,
+                "friday":    DayOfWeek.Friday,
+                "saturday":  DayOfWeek.Saturday,
+            }
+
+            INDEX_MAP = {
+                "first":  WeekIndex.First,
+                "second": WeekIndex.Second,
+                "third":  WeekIndex.Third,
+                "fourth": WeekIndex.Fourth,
+                "last":   WeekIndex.Last,
+            }
+
+            pattern_data = rec.get("pattern", {})
+            range_data = rec.get("range", {})
+
+            pattern = RecurrencePattern()
+            pattern_type = pattern_data.get("type", "daily").lower()
+            pattern.type = {
+                "daily":           RecurrencePatternType.Daily,
+                "weekly":          RecurrencePatternType.Weekly,
+                "absolutemonthly": RecurrencePatternType.AbsoluteMonthly,
+                "relativemonthly": RecurrencePatternType.RelativeMonthly,
+                "absoluteyearly":  RecurrencePatternType.AbsoluteYearly,
+                "relativeyearly":  RecurrencePatternType.RelativeYearly,
+            }.get(pattern_type, RecurrencePatternType.Daily)
+
+            # Common to all patterns
+            pattern.interval = pattern_data.get("interval", 1)
+
+            # Weekly / RelativeMonthly / RelativeYearly — requires daysOfWeek
+            if "daysOfWeek" in pattern_data:
+                pattern.days_of_week = [
+                    DAY_MAP[d.lower()]
+                    for d in pattern_data["daysOfWeek"]
+                    if d.lower() in DAY_MAP
+                ]
+
+            # Weekly — optional first day of week (defaults to Sunday if omitted)
+            if "firstDayOfWeek" in pattern_data:
+                pattern.first_day_of_week = DAY_MAP.get(
+                    pattern_data["firstDayOfWeek"].lower(), DayOfWeek.Sunday
+                )
+
+            # RelativeMonthly / RelativeYearly — which week in the month
+            if "index" in pattern_data:
+                pattern.index = INDEX_MAP.get(pattern_data["index"].lower())
+
+            # AbsoluteMonthly / AbsoluteYearly — specific day of month (1–31)
+            if "dayOfMonth" in pattern_data:
+                pattern.day_of_month = pattern_data["dayOfMonth"]
+
+            # AbsoluteYearly / RelativeYearly — specific month (1–12)
+            if "month" in pattern_data:
+                pattern.month = pattern_data["month"]
+
+            # Build range
+            range_ = RecurrenceRange()
+            range_type = range_data.get("type", "endDate").lower()
+            range_.type = {
+                "enddate":  RecurrenceRangeType.EndDate,
+                "noend":    RecurrenceRangeType.NoEnd,
+                "numbered": RecurrenceRangeType.Numbered,
+            }.get(range_type, RecurrenceRangeType.EndDate)
+
+            range_.start_date = _to_date(range_data["startDate"])
+
+            # EndDate range — requires endDate
+            if "endDate" in range_data:
+                range_.end_date = _to_date(range_data["endDate"])
+
+            # Numbered range — requires numberOfOccurrences
+            if "numberOfOccurrences" in range_data:
+                range_.number_of_occurrences = range_data["numberOfOccurrences"]
+
+            # Optional: recurrenceTimeZone for range
+            if "recurrenceTimeZone" in range_data:
+                range_.recurrence_time_zone = range_data["recurrenceTimeZone"]
+
+            event.recurrence = PatternedRecurrence(pattern=pattern, range=range_)
+    return event
+
 
 class OutlookCalendarContactsDataSource:
     """
@@ -6876,10 +7093,51 @@ class OutlookCalendarContactsDataSource:
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
-        """Create message.
+        """Create message (draft).
         Outlook operation: POST /me/messages
+        """
+        try:
+            config = RequestConfiguration()
+            if headers:
+                config.headers = headers
+
+            # Convert dict body to typed Message object (SDK requires .serialize())
+            body = request_body
+            if isinstance(request_body, dict):
+                body = _dict_to_message(request_body)
+
+            response = await self.client.me.messages.post(body=body, request_configuration=config)
+            return self._handle_outlook_response(response)
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def me_list_messages(
+        self,
+        includeHiddenMessages: Optional[str] = None,
+        dollar_orderby: Optional[List[str]] = None,
+        dollar_select: Optional[List[str]] = None,
+        dollar_expand: Optional[List[str]] = None,
+        select: Optional[List[str]] = None,
+        expand: Optional[List[str]] = None,
+        filter: Optional[str] = None,
+        orderby: Optional[str] = None,
+        search: Optional[str] = None,
+        top: Optional[int] = None,
+        skip: Optional[int] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OutlookCalendarContactsResponse:
+        """Get messages from the current user.
+        Outlook operation: GET /me/messages
         Operation type: mail
         Args:
+            includeHiddenMessages (str, optional): Include Hidden Messages
+            dollar_orderby (List[str], optional): Order items by property values
+            dollar_select (List[str], optional): Select properties to be returned
+            dollar_expand (List[str], optional): Expand related entities
             select (optional): Select specific properties to return
             expand (optional): Expand related entities (e.g., attachments, calendar)
             filter (optional): Filter the results using OData syntax
@@ -6887,7 +7145,6 @@ class OutlookCalendarContactsDataSource:
             search (optional): Search for messages, events, or contacts by content
             top (optional): Limit number of results returned
             skip (optional): Skip number of results for pagination
-            request_body (optional): Request body data for Outlook operations
             headers (optional): Additional headers for the request
             **kwargs: Additional query parameters
         Returns:
@@ -6895,44 +7152,115 @@ class OutlookCalendarContactsDataSource:
         """
         # Build query parameters including OData for Outlook
         try:
+            # Normalize empty strings to None for optional parameters
+            filter = filter if filter and filter.strip() else None
+            search = search if search and search.strip() else None
+            orderby = orderby if orderby and orderby.strip() else None
+
             # Use typed query parameters
-            query_params = RequestConfiguration()
+            query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
                 query_params.select = select if isinstance(select, list) else [select]
             if expand:
                 query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
             if search:
+                # $search is mutually exclusive with $filter and $orderby in Graph API
                 query_params.search = search
+            else:
+                if filter:
+                    query_params.filter = filter
+                if orderby:
+                    query_params.orderby = orderby
             if top is not None:
                 query_params.top = top
             if skip is not None:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = RequestConfiguration()
+            config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration()
+            config.query_parameters = query_params
+
+            if headers:
+                for k, v in headers.items():
+                    config.headers.try_add(k, v)
+
+            if search:
+                config.headers.try_add('ConsistencyLevel', 'eventual')
+
+            # Verify client has me property before making the call
+            if not hasattr(self.client, 'me'):
+                raise AttributeError("Graph client does not have 'me' property. Client may not be properly initialized for delegated authentication.")
+            
+            if not hasattr(self.client.me, 'messages'):
+                raise AttributeError("Graph client 'me' does not have 'messages' property. This may indicate a permissions or configuration issue.")
+
+            response = await self.client.me.messages.get(request_configuration=config)
+            return self._handle_outlook_response(response)
+        except AttributeError as ae:
+            logger.error(f"Attribute error in me_list_messages: {str(ae)}")
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook client configuration error: {str(ae)}. Please verify the client is properly initialized for delegated authentication.",
+            )
+        except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.error(f"Error in me_list_messages ({error_type}): {error_msg}")
+            # Include more context in error message for debugging
+            if "404" in error_msg or "not found" in error_msg.lower():
+                return OutlookCalendarContactsResponse(
+                    success=False,
+                    error=f"Outlook API endpoint not found (404). This may indicate: 1) The user doesn't have a mailbox, 2) Mail.Read or Mail.ReadWrite permissions are missing, 3) The Graph API endpoint is not accessible. Original error: {error_msg}",
+                )
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {error_msg}",
+            )
+
+
+    async def me_get_message(
+        self,
+        message_id: str,
+        select: Optional[List[str]] = None,
+        expand: Optional[List[str]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> OutlookCalendarContactsResponse:
+        """Get a specific message by ID.
+        Outlook operation: GET /me/messages/{message-id}
+        """
+        try:
+            query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters()
+
+            if select:
+                query_params.select = select if isinstance(select, list) else [select]
+            if expand:
+                query_params.expand = expand if isinstance(expand, list) else [expand]
+
+            config = MessagesRequestBuilder.MessagesRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
                 config.headers = headers
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
-
-            response = await self.client.me.messages.post(body=request_body, request_configuration=config)
+            response = await self.client.me.messages.by_message_id(message_id).get(
+                request_configuration=config
+            )
             return self._handle_outlook_response(response)
         except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.error(f"Error in me_get_messages ({error_type}): {error_msg}")
+            if "404" in error_msg or "not found" in error_msg.lower():
+                return OutlookCalendarContactsResponse(
+                    success=False,
+                    error=f"Message not found (404). The message ID '{message_id}' may be invalid or deleted. Original error: {error_msg}",
+                )
             return OutlookCalendarContactsResponse(
                 success=False,
-                error=f"Outlook API call failed: {str(e)}",
+                error=f"Outlook API call failed: {error_msg}",
             )
 
     async def me_messages_delta(
@@ -7999,59 +8327,32 @@ class OutlookCalendarContactsDataSource:
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
-        """Invoke action forward.
+        """Forward a message.
         Outlook operation: POST /me/messages/{message-id}/forward
-        Operation type: mail
-        Args:
-            message_id (str, required): Outlook message id identifier
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., attachments, calendar)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for messages, events, or contacts by content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            request_body (optional): Request body data for Outlook operations
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
-        # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
-
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
-
-            # Create proper typed request configuration
             config = RequestConfiguration()
-            config.query_parameters = query_params
-
             if headers:
                 config.headers = headers
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+            # Convert dict to typed ForwardPostRequestBody
+            body = request_body
+            if isinstance(request_body, dict):
+                body = ForwardPostRequestBody()
+                if "comment" in request_body:
+                    body.comment = request_body["comment"]
+                if "toRecipients" in request_body:
+                    body.to_recipients = [_dict_to_recipient(r) for r in request_body["toRecipients"]]
 
-            response = await self.client.me.messages.by_message_id(message_id).forward.post(body=request_body, request_configuration=config)
+            response = await self.client.me.messages.by_message_id(message_id).forward.post(
+                body=body, request_configuration=config
+            )
+            # Forward operations return None/empty response on success (202 Accepted)
+            if response is None:
+                return OutlookCalendarContactsResponse(
+                    success=True,
+                    data={"message": "Message forwarded successfully", "message_id": message_id},
+                )
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
@@ -8219,59 +8520,32 @@ class OutlookCalendarContactsDataSource:
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
-        """Invoke action reply.
+        """Reply to a message.
         Outlook operation: POST /me/messages/{message-id}/reply
-        Operation type: mail
-        Args:
-            message_id (str, required): Outlook message id identifier
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., attachments, calendar)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for messages, events, or contacts by content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            request_body (optional): Request body data for Outlook operations
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
-        # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
-
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
-
-            # Create proper typed request configuration
             config = RequestConfiguration()
-            config.query_parameters = query_params
-
             if headers:
                 config.headers = headers
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+            # Convert dict to typed ReplyPostRequestBody
+            body = request_body
+            if isinstance(request_body, dict):
+                body = ReplyPostRequestBody()
+                if "comment" in request_body:
+                    body.comment = request_body["comment"]
+                if "message" in request_body:
+                    body.message = _dict_to_message(request_body["message"])
 
-            response = await self.client.me.messages.by_message_id(message_id).reply.post(body=request_body, request_configuration=config)
+            response = await self.client.me.messages.by_message_id(message_id).reply.post(
+                body=body, request_configuration=config
+            )
+            # Reply operations return None/empty response on success (202 Accepted)
+            if response is None:
+                return OutlookCalendarContactsResponse(
+                    success=True,
+                    data={"message": "Reply sent successfully", "message_id": message_id},
+                )
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
@@ -8293,59 +8567,32 @@ class OutlookCalendarContactsDataSource:
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
-        """Invoke action replyAll.
+        """Reply-all to a message.
         Outlook operation: POST /me/messages/{message-id}/replyAll
-        Operation type: mail
-        Args:
-            message_id (str, required): Outlook message id identifier
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., attachments, calendar)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for messages, events, or contacts by content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            request_body (optional): Request body data for Outlook operations
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
-        # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
-
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
-
-            # Create proper typed request configuration
             config = RequestConfiguration()
-            config.query_parameters = query_params
-
             if headers:
                 config.headers = headers
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+            # Convert dict to typed ReplyAllPostRequestBody
+            body = request_body
+            if isinstance(request_body, dict):
+                body = ReplyAllPostRequestBody()
+                if "comment" in request_body:
+                    body.comment = request_body["comment"]
+                if "message" in request_body:
+                    body.message = _dict_to_message(request_body["message"])
 
-            response = await self.client.me.messages.by_message_id(message_id).reply_all.post(body=request_body, request_configuration=config)
+            response = await self.client.me.messages.by_message_id(message_id).reply_all.post(
+                body=body, request_configuration=config
+            )
+            # Reply-all operations return None/empty response on success (202 Accepted)
+            if response is None:
+                return OutlookCalendarContactsResponse(
+                    success=True,
+                    data={"message": "Reply-all sent successfully", "message_id": message_id},
+                )
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
@@ -8366,58 +8613,27 @@ class OutlookCalendarContactsDataSource:
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
-        """Invoke action send.
+        """Send a draft message.
         Outlook operation: POST /me/messages/{message-id}/send
-        Operation type: mail
-        Args:
-            message_id (str, required): Outlook message id identifier
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., attachments, calendar)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for messages, events, or contacts by content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
+        
+        Note: The Graph API returns 202 Accepted with no response body for send operations.
+        A None response indicates success, not failure.
         """
-        # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
-
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
-
-            # Create proper typed request configuration
             config = RequestConfiguration()
-            config.query_parameters = query_params
-
             if headers:
                 config.headers = headers
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
-
-            response = await self.client.me.messages.by_message_id(message_id).send.post(request_configuration=config)
+            response = await self.client.me.messages.by_message_id(message_id).send.post(
+                request_configuration=config
+            )
+            # Send operations return None/empty response on success (202 Accepted)
+            # This is expected behavior, not an error
+            if response is None:
+                return OutlookCalendarContactsResponse(
+                    success=True,
+                    data={"message": "Email sent successfully", "message_id": message_id},
+                )
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
@@ -22048,86 +22264,6 @@ class OutlookCalendarContactsDataSource:
                 error=f"Outlook API call failed: {str(e)}",
             )
 
-    async def me_calendar_list_calendar_view(
-        self,
-        startDateTime: str,
-        endDateTime: str,
-        dollar_orderby: Optional[List[str]] = None,
-        dollar_select: Optional[List[str]] = None,
-        dollar_expand: Optional[List[str]] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        headers: Optional[Dict[str, str]] = None,
-        **kwargs
-    ) -> OutlookCalendarContactsResponse:
-        """List calendarView.
-        Outlook operation: GET /me/calendar/calendarView
-        Operation type: calendar
-        Args:
-            startDateTime (str, required): The start date and time of the time range, represented in ISO 8601 format. For example, 2019-11-08T19:00:00-08:00
-            endDateTime (str, required): The end date and time of the time range, represented in ISO 8601 format. For example, 2019-11-08T20:00:00-08:00
-            dollar_orderby (List[str], optional): Order items by property values
-            dollar_select (List[str], optional): Select properties to be returned
-            dollar_expand (List[str], optional): Expand related entities
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., attachments, calendar)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for messages, events, or contacts by content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
-        """
-        # Build query parameters including OData for Outlook
-        try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
-
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
-
-            # Create proper typed request configuration
-            config = RequestConfiguration()
-            config.query_parameters = query_params
-
-            if headers:
-                config.headers = headers
-
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
-
-            response = await self.client.me.calendar.calendar_view.get(request_configuration=config)
-            return self._handle_outlook_response(response)
-        except Exception as e:
-            return OutlookCalendarContactsResponse(
-                success=False,
-                error=f"Outlook API call failed: {str(e)}",
-            )
-
     async def me_calendar_calendar_view_delta(
         self,
         startDateTime: str,
@@ -22208,6 +22344,7 @@ class OutlookCalendarContactsDataSource:
                 error=f"Outlook API call failed: {str(e)}",
             )
 
+
     async def me_calendar_create_events(
         self,
         select: Optional[List[str]] = None,
@@ -22221,58 +22358,20 @@ class OutlookCalendarContactsDataSource:
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
-        """Create new navigation property to events for me.
+        """Create a calendar event.
         Outlook operation: POST /me/calendar/events
-        Operation type: calendar
-        Args:
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., attachments, calendar)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for messages, events, or contacts by content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            request_body (optional): Request body data for Outlook operations
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
-        # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
-
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
-
-            # Create proper typed request configuration
             config = RequestConfiguration()
-            config.query_parameters = query_params
-
             if headers:
                 config.headers = headers
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+            # Convert dict to typed Event object (SDK requires .serialize())
+            body = request_body
+            if isinstance(request_body, dict):
+                body = _dict_to_event(request_body)
 
-            response = await self.client.me.calendar.events.post(body=request_body, request_configuration=config)
+            response = await self.client.me.calendar.events.post(body=body, request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
@@ -22439,75 +22538,45 @@ class OutlookCalendarContactsDataSource:
     async def me_calendar_delete_events(
         self,
         event_id: str,
-        If_Match: Optional[str] = None,
-        select: Optional[List[str]] = None,
-        expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
-        """Delete navigation property events for me.
+        """Delete a calendar event.
         Outlook operation: DELETE /me/calendar/events/{event-id}
         Operation type: calendar
         Args:
             event_id (str, required): Outlook event id identifier
-            If_Match (str, optional): ETag
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., attachments, calendar)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for messages, events, or contacts by content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
             headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
         Returns:
-            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
+            OutlookCalendarContactsResponse: Outlook response wrapper
         """
-        # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
-
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
-
-            # Create proper typed request configuration
             config = RequestConfiguration()
-            config.query_parameters = query_params
-
             if headers:
                 config.headers = headers
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
-
-            response = await self.client.me.calendar.events.by_event_id(event_id).delete(request_configuration=config)
+            response = await self.client.me.calendar.events.by_event_id(event_id).delete(
+                request_configuration=config
+            )
+            # DELETE returns 204 No Content — None means success
+            if response is None:
+                return OutlookCalendarContactsResponse(
+                    success=True,
+                    data={"event_id": event_id, "status": "deleted"},
+                )
             return self._handle_outlook_response(response)
         except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.error(f"Error in me_calendar_delete_events ({error_type}): {error_msg}")
+            if "404" in error_msg or "not found" in error_msg.lower():
+                return OutlookCalendarContactsResponse(
+                    success=False,
+                    error=f"Calendar event not found (404). The event ID '{event_id}' may be invalid or the event may have been deleted.",
+                )
             return OutlookCalendarContactsResponse(
                 success=False,
-                error=f"Outlook API call failed: {str(e)}",
+                error=f"Outlook API call failed: {error_msg}",
             )
 
     async def me_calendar_get_events(
@@ -22589,75 +22658,172 @@ class OutlookCalendarContactsDataSource:
     async def me_calendar_update_events(
         self,
         event_id: str,
+        request_body: Optional[Mapping[str, Any]] = None,
         select: Optional[List[str]] = None,
         expand: Optional[List[str]] = None,
-        filter: Optional[str] = None,
-        orderby: Optional[str] = None,
-        search: Optional[str] = None,
-        top: Optional[int] = None,
-        skip: Optional[int] = None,
-        request_body: Optional[Mapping[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
+        update_scope: str = "allEvents",
         **kwargs
     ) -> OutlookCalendarContactsResponse:
-        """Update the navigation property events in me.
-        Outlook operation: PATCH /me/calendar/events/{event-id}
-        Operation type: calendar
-        Args:
-            event_id (str, required): Outlook event id identifier
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., attachments, calendar)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for messages, events, or contacts by content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            request_body (optional): Request body data for Outlook operations
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
-        """
-        # Build query parameters including OData for Outlook
+        import copy
+
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
+            # Create a mutable deep copy to safely manipulate payload dates
+            body_dict = copy.deepcopy(dict(request_body)) if isinstance(request_body, dict) else request_body
 
-            # Set query parameters using typed object properties
-            if select:
-                query_params.select = select if isinstance(select, list) else [select]
-            if expand:
-                query_params.expand = expand if isinstance(expand, list) else [expand]
-            if filter:
-                query_params.filter = filter
-            if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
-            if top is not None:
-                query_params.top = top
-            if skip is not None:
-                query_params.skip = skip
+            original_start_date = None
+            original_end_date = None
+            is_series_master = False
+            existing_recurrence = None  # <-- NEW
 
-            # Create proper typed request configuration
+            try:
+                event = await self.client.me.calendar.events.by_event_id(event_id).get()
+                if event is not None:
+                    event_type = getattr(event, 'type', None)
+                    event_type_str = event_type.value if hasattr(event_type, 'value') else str(event_type)
+
+                    # 1. Redirect occurrences to series master
+                    if "occurrence" in event_type_str.lower() or "exception" in event_type_str.lower():
+                        series_master_id = getattr(event, 'series_master_id', None)
+                        if series_master_id:
+                            logger.info(f"Redirecting update from occurrence {event_id} to series master {series_master_id}")
+                            event_id = series_master_id
+                            # Re-fetch the series master to get its true data
+                            event = await self.client.me.calendar.events.by_event_id(event_id).get()
+                            event_type = getattr(event, 'type', None)
+                            event_type_str = event_type.value if hasattr(event_type, 'value') else str(event_type)
+                        else:
+                            return OutlookCalendarContactsResponse(
+                                success=False,
+                                error="Cannot update recurrence on an occurrence instance. Series master ID not found.",
+                            )
+
+                    # 2. Extract Master Dates
+                    if "seriesmaster" in event_type_str.lower():
+                        is_series_master = True
+                        existing_recurrence = getattr(event, 'recurrence', None)  # <-- NEW
+
+                    start_obj = getattr(event, 'start', None)
+                    if start_obj and getattr(start_obj, 'date_time', None):
+                        original_start_date = start_obj.date_time[:10]  # e.g. "2026-01-01"
+
+                    end_obj = getattr(event, 'end', None)
+                    if end_obj and getattr(end_obj, 'date_time', None):
+                        original_end_date = end_obj.date_time[:10]
+
+            except Exception as lookup_err:
+                logger.warning(f"Could not verify event type before update: {lookup_err}")
+
+            # 3. Fix Payload Dates (CRITICAL for recurring events)
+            if isinstance(body_dict, dict) and is_series_master:
+                # Fix recurrence range startDate
+                if "recurrence" in body_dict and isinstance(body_dict["recurrence"], dict):
+                    rec = body_dict["recurrence"]
+                    if "range" in rec and original_start_date:
+                        rec["range"]["startDate"] = original_start_date
+                        logger.debug(f"Forced recurrence.range.startDate={original_start_date}")
+
+                # Fix start time: Keep user's time, but force date back to Master's start date
+                if "start" in body_dict and "dateTime" in body_dict["start"] and original_start_date:
+                    req_start = body_dict["start"]["dateTime"]
+                    if "T" in req_start:
+                        req_time = req_start.split("T")[1]
+                        body_dict["start"]["dateTime"] = f"{original_start_date}T{req_time}"
+                        logger.debug(f"Forced start.dateTime={body_dict['start']['dateTime']}")
+
+                # Fix end time: Keep user's time, but force date back to Master's end date
+                if "end" in body_dict and "dateTime" in body_dict["end"] and original_end_date:
+                    req_end = body_dict["end"]["dateTime"]
+                    if "T" in req_end:
+                        req_time = req_end.split("T")[1]
+                        body_dict["end"]["dateTime"] = f"{original_end_date}T{req_time}"
+                        logger.debug(f"Forced end.dateTime={body_dict['end']['dateTime']}")
+
+                # 4. NEW: Preserve existing recurrence if caller didn't supply one
+                # Without this, Graph API strips recurrence from the series master
+                # and may create a new standalone event instead of updating the series.
+                if "recurrence" not in body_dict and existing_recurrence is not None:
+                    try:
+                        rec_pattern = getattr(existing_recurrence, 'pattern', None)
+                        rec_range = getattr(existing_recurrence, 'range', None)
+
+                        if rec_pattern and rec_range:
+                            # Safely extract enum values
+                            def _enum_val(obj, attr):
+                                v = getattr(obj, attr, None)
+                                if v is None:
+                                    return None
+                                return v.value if hasattr(v, 'value') else str(v)
+
+                            days_of_week = getattr(rec_pattern, 'days_of_week', None) or []
+                            days_of_week_vals = [
+                                d.value if hasattr(d, 'value') else str(d)
+                                for d in days_of_week
+                            ]
+
+                            body_dict["recurrence"] = {
+                                "pattern": {
+                                    "type": _enum_val(rec_pattern, 'type'),
+                                    "interval": getattr(rec_pattern, 'interval', 1),
+                                    "firstDayOfWeek": _enum_val(rec_pattern, 'first_day_of_week'),
+                                    "dayOfMonth": getattr(rec_pattern, 'day_of_month', 0),
+                                    "month": getattr(rec_pattern, 'month', 0),
+                                    "index": _enum_val(rec_pattern, 'index'),
+                                    "daysOfWeek": days_of_week_vals,
+                                },
+                                "range": {
+                                    "type": _enum_val(rec_range, 'type'),
+                                    "startDate": original_start_date or getattr(rec_range, 'start_date', None),
+                                    "endDate": getattr(rec_range, 'end_date', None),
+                                    "numberOfOccurrences": getattr(rec_range, 'number_of_occurrences', 0),
+                                    "recurrenceTimeZone": getattr(rec_range, 'recurrence_time_zone', None),
+                                }
+                            }
+
+                            # Strip None values from pattern and range to keep payload clean
+                            body_dict["recurrence"]["pattern"] = {
+                                k: v for k, v in body_dict["recurrence"]["pattern"].items()
+                                if v is not None
+                            }
+                            body_dict["recurrence"]["range"] = {
+                                k: v for k, v in body_dict["recurrence"]["range"].items()
+                                if v is not None
+                            }
+
+                            logger.info(
+                                f"Preserved existing recurrence on series master PATCH: "
+                                f"{body_dict['recurrence']}"
+                            )
+
+                    except Exception as rec_err:
+                        logger.warning(f"Could not preserve recurrence data: {rec_err}")
+
             config = RequestConfiguration()
-            config.query_parameters = query_params
-
+            config.headers.try_add("Prefer", "outlook.allow-unsafe-updates")
             if headers:
-                config.headers = headers
+                for key, value in headers.items():
+                    config.headers.try_add(key, value)
 
-            # Add consistency level for search operations in Outlook
-            if search:
-                if not config.headers:
-                    config.headers = {}
-                config.headers['ConsistencyLevel'] = 'eventual'
+            # Map the corrected dictionary back to the expected API object
+            final_body = _dict_to_event(body_dict) if isinstance(body_dict, dict) else body_dict
 
-            response = await self.client.me.calendar.events.by_event_id(event_id).patch(body=request_body, request_configuration=config)
+            response = await self.client.me.calendar.events.by_event_id(event_id).patch(
+                body=final_body, request_configuration=config
+            )
             return self._handle_outlook_response(response)
+
         except Exception as e:
+            error_msg = str(e)
+            error_type = type(e).__name__
+            logger.error(f"Error in me_calendar_update_events ({error_type}): {error_msg}")
+            if "404" in error_msg or "not found" in error_msg.lower():
+                return OutlookCalendarContactsResponse(
+                    success=False,
+                    error=f"Calendar event not found (404). The event ID '{event_id}' may be invalid.",
+                )
             return OutlookCalendarContactsResponse(
                 success=False,
-                error=f"Outlook API call failed: {str(e)}",
+                error=f"Outlook API call failed: {error_msg}",
             )
 
     async def me_calendar_events_event_accept(
@@ -27298,7 +27464,7 @@ class OutlookCalendarContactsDataSource:
                 error=f"Outlook API call failed: {str(e)}",
             )
 
-    async def me_list_calendar_view(
+    async def me_calendar_list_calendar_view(
         self,
         startDateTime: str,
         endDateTime: str,
@@ -27316,32 +27482,17 @@ class OutlookCalendarContactsDataSource:
         **kwargs
     ) -> OutlookCalendarContactsResponse:
         """List calendarView.
-        Outlook operation: GET /me/calendarView
-        Operation type: calendar
-        Args:
-            startDateTime (str, required): The start date and time of the time range, represented in ISO 8601 format. For example, 2019-11-08T19:00:00-08:00
-            endDateTime (str, required): The end date and time of the time range, represented in ISO 8601 format. For example, 2019-11-08T20:00:00-08:00
-            dollar_orderby (List[str], optional): Order items by property values
-            dollar_select (List[str], optional): Select properties to be returned
-            dollar_expand (List[str], optional): Expand related entities
-            select (optional): Select specific properties to return
-            expand (optional): Expand related entities (e.g., attachments, calendar)
-            filter (optional): Filter the results using OData syntax
-            orderby (optional): Order the results by specified properties
-            search (optional): Search for messages, events, or contacts by content
-            top (optional): Limit number of results returned
-            skip (optional): Skip number of results for pagination
-            headers (optional): Additional headers for the request
-            **kwargs: Additional query parameters
-        Returns:
-            OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
+        Outlook operation: GET /me/calendar/calendarView
         """
-        # Build query parameters including OData for Outlook
         try:
-            # Use typed query parameters
-            query_params = RequestConfiguration()
+            # CRITICAL: Use CalendarViewRequestBuilder's typed query params.
+            # Generic RequestConfiguration() has NO date fields — setattr is
+            # silently ignored by the SDK serializer.
+            query_params = CalendarViewRequestBuilder.CalendarViewRequestBuilderGetQueryParameters(
+                start_date_time=startDateTime,
+                end_date_time=endDateTime,
+            )
 
-            # Set query parameters using typed object properties
             if select:
                 query_params.select = select if isinstance(select, list) else [select]
             if expand:
@@ -27349,34 +27500,32 @@ class OutlookCalendarContactsDataSource:
             if filter:
                 query_params.filter = filter
             if orderby:
-                query_params.orderby = orderby
-            if search:
-                query_params.search = search
+                query_params.orderby = [orderby] if isinstance(orderby, str) else orderby
             if top is not None:
                 query_params.top = top
             if skip is not None:
                 query_params.skip = skip
 
-            # Create proper typed request configuration
-            config = RequestConfiguration()
-            config.query_parameters = query_params
+            config = CalendarViewRequestBuilder.CalendarViewRequestBuilderGetRequestConfiguration(
+                query_parameters=query_params,
+            )
 
             if headers:
                 config.headers = headers
 
-            # Add consistency level for search operations in Outlook
             if search:
                 if not config.headers:
                     config.headers = {}
                 config.headers['ConsistencyLevel'] = 'eventual'
 
-            response = await self.client.me.calendar_view.get(request_configuration=config)
+            response = await self.client.me.calendar.calendar_view.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
             )
+
 
     async def me_calendar_view_delta(
         self,
@@ -30374,6 +30523,50 @@ class OutlookCalendarContactsDataSource:
             return OutlookCalendarContactsResponse(
                 success=False,
                 error=f"Outlook API call failed: {str(e)}",
+            )
+    async def me_search_events(
+        self,
+        search: str,
+        select: Optional[List[str]] = None,
+        top: Optional[int] = None,
+        timezone: str = "India Standard Time",
+    ) -> OutlookCalendarContactsResponse:
+        """
+        Stable keyword search using subject only.
+        """
+
+        try:
+            if not search or not search.strip():
+                raise ValueError("Search cannot be empty.")
+
+            keyword = search.strip().replace("'", "''")
+
+            # SAFE filter — subject only
+            query_params = EventsRequestBuilder.EventsRequestBuilderGetQueryParameters(
+                filter=f"contains(subject,'{keyword}')"
+            )
+
+            if select:
+                query_params.select = select
+
+            if top is not None:
+                query_params.top = top
+
+            config = EventsRequestBuilder.EventsRequestBuilderGetRequestConfiguration(
+                query_parameters=query_params
+            )
+            config.headers.try_add("Prefer", f'outlook.timezone="{timezone}"')  # <-- ADD THIS
+
+            response = await self.client.me.events.get(
+                request_configuration=config
+            )
+
+            return self._handle_outlook_response(response)
+
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Event search failed: {str(e)}",
             )
 
     async def me_events_delta(
@@ -53254,3 +53447,401 @@ class OutlookCalendarContactsDataSource:
                 error=f"Outlook API call failed: {str(e)}",
             )
 
+    # ------------------------------------------------------------------
+    # Online Meetings & Transcripts
+    # ------------------------------------------------------------------
+
+    async def me_list_online_meetings(
+        self,
+        filter: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs,
+    ) -> OutlookCalendarContactsResponse:
+        """List online meetings for the signed-in user.
+        Outlook operation: GET /me/onlineMeetings
+
+        NOTE: This endpoint only supports $filter (by JoinWebUrl).  $select,
+        $expand, $top, $skip, $orderby, and $search are NOT allowed by the API.
+        """
+        try:
+            from msgraph.generated.users.item.online_meetings.online_meetings_request_builder import (
+                OnlineMeetingsRequestBuilder,
+            )
+
+            query_params = OnlineMeetingsRequestBuilder.OnlineMeetingsRequestBuilderGetQueryParameters()
+            if filter:
+                query_params.filter = filter
+
+            config = RequestConfiguration(query_parameters=query_params)
+            if headers:
+                config.headers = headers
+
+            response = await self.client.me.online_meetings.get(request_configuration=config)
+            return self._handle_outlook_response(response)
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def me_get_online_meeting(
+        self,
+        onlineMeeting_id: str,
+        select: Optional[List[str]] = None,
+        expand: Optional[List[str]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs,
+    ) -> OutlookCalendarContactsResponse:
+        """Get a specific online meeting by ID.
+        Outlook operation: GET /me/onlineMeetings/{onlineMeeting-id}
+        """
+        try:
+            config = RequestConfiguration()
+            if select or expand:
+                from msgraph.generated.users.item.online_meetings.item.online_meeting_item_request_builder import (
+                    OnlineMeetingItemRequestBuilder,
+                )
+                query_params = OnlineMeetingItemRequestBuilder.OnlineMeetingItemRequestBuilderGetQueryParameters()
+                if select:
+                    query_params.select = select if isinstance(select, list) else [select]
+                if expand:
+                    query_params.expand = expand if isinstance(expand, list) else [expand]
+                config = RequestConfiguration(query_parameters=query_params)
+            if headers:
+                config.headers = headers
+
+            response = await self.client.me.online_meetings.by_online_meeting_id(
+                onlineMeeting_id
+            ).get(request_configuration=config)
+            return self._handle_outlook_response(response)
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def me_list_online_meeting_transcripts(
+        self,
+        onlineMeeting_id: str,
+        select: Optional[List[str]] = None,
+        expand: Optional[List[str]] = None,
+        filter: Optional[str] = None,
+        top: Optional[int] = None,
+        skip: Optional[int] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs,
+    ) -> OutlookCalendarContactsResponse:
+        """List transcripts for an online meeting.
+        Outlook operation: GET /me/onlineMeetings/{onlineMeeting-id}/transcripts
+        """
+        try:
+            from msgraph.generated.users.item.online_meetings.item.transcripts.transcripts_request_builder import (
+                TranscriptsRequestBuilder,
+            )
+
+            query_params = TranscriptsRequestBuilder.TranscriptsRequestBuilderGetQueryParameters()
+            if select:
+                query_params.select = select if isinstance(select, list) else [select]
+            if expand:
+                query_params.expand = expand if isinstance(expand, list) else [expand]
+            if filter:
+                query_params.filter = filter
+            if top is not None:
+                query_params.top = top
+            if skip is not None:
+                query_params.skip = skip
+
+            config = RequestConfiguration(query_parameters=query_params)
+            if headers:
+                config.headers = headers
+
+            response = await self.client.me.online_meetings.by_online_meeting_id(
+                onlineMeeting_id
+            ).transcripts.get(request_configuration=config)
+            return self._handle_outlook_response(response)
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def me_get_online_meeting_transcript_content(
+        self,
+        onlineMeeting_id: str,
+        callTranscript_id: str,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs,
+    ) -> OutlookCalendarContactsResponse:
+        """Get the VTT content of a specific transcript.
+        Outlook operation: GET /me/onlineMeetings/{id}/transcripts/{id}/content
+        The Graph SDK returns bytes (VTT by default).
+        """
+        try:
+            config = RequestConfiguration()
+            if headers:
+                config.headers = headers
+
+            content_bytes = await self.client.me.online_meetings.by_online_meeting_id(
+                onlineMeeting_id
+            ).transcripts.by_call_transcript_id(
+                callTranscript_id
+            ).content.get(request_configuration=config)
+
+            if content_bytes is None:
+                return OutlookCalendarContactsResponse(
+                    success=False,
+                    error="Transcript content is empty",
+                )
+
+            text = content_bytes.decode("utf-8") if isinstance(content_bytes, bytes) else str(content_bytes)
+            return OutlookCalendarContactsResponse(
+                success=True,
+                data={"content": text, "format": "vtt"},
+            )
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def me_get_online_meeting_transcript_metadata(
+        self,
+        onlineMeeting_id: str,
+        callTranscript_id: str,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs,
+    ) -> OutlookCalendarContactsResponse:
+        """Get the metadata content (speaker diarization JSON) of a transcript.
+        Outlook operation: GET /me/onlineMeetings/{id}/transcripts/{id}/metadataContent
+        """
+        try:
+            config = RequestConfiguration()
+            if headers:
+                config.headers = headers
+
+            content_bytes = await self.client.me.online_meetings.by_online_meeting_id(
+                onlineMeeting_id
+            ).transcripts.by_call_transcript_id(
+                callTranscript_id
+            ).metadata_content.get(request_configuration=config)
+
+            if content_bytes is None:
+                return OutlookCalendarContactsResponse(
+                    success=False,
+                    error="Transcript metadata content is empty",
+                )
+
+            text = content_bytes.decode("utf-8") if isinstance(content_bytes, bytes) else str(content_bytes)
+            return OutlookCalendarContactsResponse(
+                success=True,
+                data={"content": text, "format": "metadata_json"},
+            )
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def me_list_series_master_events(
+        self,
+        top: Optional[int] = None,
+        skip: Optional[int] = None,
+        timezone: str = "UTC",
+        headers: Optional[Dict[str, str]] = None,
+    ) -> OutlookCalendarContactsResponse:
+        """List all seriesMaster (recurring) events.
+        Outlook operation: GET /me/events?$filter=type eq 'seriesMaster'
+        """
+        try:
+            from msgraph.generated.users.item.events.events_request_builder import EventsRequestBuilder
+
+            query_params = EventsRequestBuilder.EventsRequestBuilderGetQueryParameters(
+                filter="type eq 'seriesMaster'",
+            )
+            if top is not None:
+                query_params.top = top
+            if skip is not None:
+                query_params.skip = skip
+
+            config = EventsRequestBuilder.EventsRequestBuilderGetRequestConfiguration(
+                query_parameters=query_params,
+            )
+            config.headers.try_add("Prefer", f'outlook.timezone="{timezone}"')
+
+            if headers:
+                for key, value in headers.items():
+                    config.headers.try_add(key, value)
+
+            response = await self.client.me.events.get(request_configuration=config)
+            return self._handle_outlook_response(response)
+
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def me_search_events_in_range(
+        self,
+        keyword: str,
+        start_datetime: str,
+        end_datetime: str,
+        timezone: str = "UTC",
+        top: Optional[int] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> OutlookCalendarContactsResponse:
+        """Search events by partial subject match within a time range.
+        Outlook operation: GET /me/events?$filter=contains(subject,'{keyword}')
+                        and start/dateTime ge '{start}' and end/dateTime le '{end}'
+        """
+        try:
+            from msgraph.generated.users.item.events.events_request_builder import EventsRequestBuilder
+
+            safe_keyword = keyword.strip().replace("'", "''")
+
+            odata_filter = (
+                f"contains(subject, '{safe_keyword}')"
+                f" and start/dateTime ge '{start_datetime}'"
+                f" and end/dateTime le '{end_datetime}'"
+            )
+
+            query_params = EventsRequestBuilder.EventsRequestBuilderGetQueryParameters(
+                filter=odata_filter,
+                orderby=["start/dateTime"],
+            )
+            if top is not None:
+                query_params.top = top
+
+            config = EventsRequestBuilder.EventsRequestBuilderGetRequestConfiguration(
+                query_parameters=query_params,
+            )
+            config.headers.try_add("Prefer", f'outlook.timezone="{timezone}"')
+
+            if headers:
+                for key, value in headers.items():
+                    config.headers.try_add(key, value)
+
+            response = await self.client.me.events.get(request_configuration=config)
+            return self._handle_outlook_response(response)
+
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def me_get_schedule(
+        self,
+        start_datetime: str,
+        end_datetime: str,
+        timezone: str = "UTC",
+        availability_view_interval: int = 30,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> OutlookCalendarContactsResponse:
+        """Get schedule (busy/free) for the signed-in user.
+        Outlook operation: POST /me/calendar/getSchedule
+        """
+        try:
+            from msgraph.generated.users.item.calendar.get_schedule.get_schedule_post_request_body import (
+                GetSchedulePostRequestBody,
+            )
+            from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
+
+            # Fetch the signed-in user's email to pass as the schedule request target
+            me_resp = await self.client.me.get()
+            user_email = getattr(me_resp, 'mail', None) or getattr(me_resp, 'user_principal_name', None)
+            if not user_email:
+                return OutlookCalendarContactsResponse(
+                    success=False,
+                    error="Could not resolve signed-in user email for getSchedule.",
+                )
+
+            start_obj = DateTimeTimeZone()
+            start_obj.date_time = start_datetime
+            start_obj.time_zone = timezone
+
+            end_obj = DateTimeTimeZone()
+            end_obj.date_time = end_datetime
+            end_obj.time_zone = timezone
+
+            body = GetSchedulePostRequestBody()
+            body.schedules = [user_email]
+            body.start_time = start_obj
+            body.end_time = end_obj
+            body.availability_view_interval = 15  # granularity in minutes
+
+            config = RequestConfiguration()
+            if headers:
+                for key, value in headers.items():
+                    config.headers.try_add(key, value)
+
+            response = await self.client.me.calendar.get_schedule.post(
+                body=body,
+                request_configuration=config,
+            )
+            return self._handle_outlook_response(response)
+
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )
+
+    async def me_list_event_occurrences(
+        self,
+        event_id: str,
+        end_date: str,
+        start_date: Optional[str] = None,
+        timezone: str = "UTC",
+        headers: Optional[Dict[str, str]] = None,
+    ) -> OutlookCalendarContactsResponse:
+        """List occurrences of a recurring event within a date window.
+        Outlook operation: GET /me/events/{id}/instances?startDateTime=...&endDateTime=...
+        """
+        try:
+            query_params = InstancesRequestBuilder.InstancesRequestBuilderGetQueryParameters(
+                start_date_time=f"{start_date or date.today().isoformat()}T00:00:00",
+                end_date_time=f"{end_date}T23:59:59",
+            )
+            query_params.top = 100
+
+            config = InstancesRequestBuilder.InstancesRequestBuilderGetRequestConfiguration(
+                query_parameters=query_params,
+            )
+            config.headers.try_add("Prefer", f'outlook.timezone="{timezone}"')
+            if headers:
+                for key, value in headers.items():
+                    config.headers.try_add(key, value)
+
+            response = await self.client.me.events.by_event_id(event_id).instances.get(
+                request_configuration=config
+            )
+
+            occurrences = []
+            for item in (getattr(response, "value", None) or []):
+                item_dict = {
+                    attr: val
+                    for attr in ("id", "subject", "type", "series_master_id")
+                    if (val := getattr(item, attr, None)) is not None
+                }
+
+                if not item_dict.get("id"):
+                    continue
+
+                for key, obj_attr in (("start", "start"), ("end", "end")):
+                    obj = getattr(item, obj_attr, None)
+                    if obj:
+                        item_dict[key] = {
+                            "dateTime": getattr(obj, "date_time", None),
+                            "timeZone": getattr(obj, "time_zone", None),
+                        }
+
+                occurrences.append(item_dict)
+
+            return OutlookCalendarContactsResponse(success=True, data={"value": occurrences})
+
+        except Exception as e:
+            return OutlookCalendarContactsResponse(
+                success=False,
+                error=f"Outlook API call failed: {str(e)}",
+            )

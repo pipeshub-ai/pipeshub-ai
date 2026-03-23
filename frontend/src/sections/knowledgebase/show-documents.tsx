@@ -439,8 +439,8 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     (errorMessage: string) => {
       setSnackbar({
         open: true,
-        message: 'Failed to load preview. Redirecting to the original document shortly...',
-        severity: 'info',
+        message: errorMessage,
+        severity: 'error',
       });
 
       let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
@@ -454,27 +454,15 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
         handleCloseViewer();
       }, 500);
 
-      setTimeout(() => {
-        if (webUrl) {
+      if (webUrl) {
+        setTimeout(() => {
           try {
             window.open(webUrl, '_blank', 'noopener,noreferrer');
           } catch (openError) {
             console.error('Error opening new tab:', openError);
-            setSnackbar({
-              open: true,
-              message:
-                'Failed to automatically open the document. Please check your browser pop-up settings.',
-              severity: 'error',
-            });
           }
-        } else {
-          setSnackbar({
-            open: true,
-            message: 'Failed to load preview and cannot redirect (document URL not found).',
-            severity: 'error',
-          });
-        }
-      }, 2500);
+        }, 2500);
+      }
     },
     [record, handleCloseViewer]
   );
@@ -543,13 +531,13 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     try {
       setIsDownloading(true);
       // Always use record._key - the backend handles both KB and connector records via unified stream API
-      await KnowledgeBaseAPI.handleDownloadDocument(record._key, recordName);
-    } catch (error) {
+      await KnowledgeBaseAPI.handleDownloadDocument(record.id, recordName);
+    } catch (error: any) {
       console.error('Failed to download document:', error);
       setSnackbar({
         open: true,
-        message: 'Failed to download document. Please try again.',
-        severity: 'error',
+        message: error?.message || 'Failed to download document. Please try again.',
+        severity: error?.statusCode === 503 ? 'warning' : 'error',
       });
     } finally {
       setIsDownloading(false);
@@ -572,7 +560,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     }));
 
     try {
-      const recordId = record._key;
+      const recordId = record.id;
 
       if (!record) {
         console.error('Record not found for ID:', recordId);
@@ -633,9 +621,9 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
 
         loadedFileBuffer = await arrayBufferPromise;
         fileDataLoaded = true;
-      } catch (err) {
+      } catch (err: any) {
         console.error('Error downloading document:', err);
-        showErrorAndRedirect('Failed to load document');
+        showErrorAndRedirect(err?.message || 'Failed to load document');
         return;
       }
 
@@ -1058,7 +1046,8 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
         open={snackbar.open}
         autoHideDuration={6000}
         onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{ mt: 6 }}
       >
         <Alert
           onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}

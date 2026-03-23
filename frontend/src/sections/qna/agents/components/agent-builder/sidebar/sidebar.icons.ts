@@ -95,6 +95,7 @@ import calculatorIcon from '@iconify-icons/mdi/calculator';
 import googleDocsIcon from '@iconify-icons/logos/google';
 import googleMeetIcon from '@iconify-icons/logos/google-meet';
 import notionIcon from '@iconify-icons/logos/notion';
+import authenticatedIcon from '@iconify-icons/mdi/shield-check-outline';
 
 /**
  * Export all UI icons
@@ -108,6 +109,7 @@ export const UI_ICONS = {
   settings: settingsIcon,
   alertCircle: alertCircleIcon,
   connector: connectorIcon,
+  authenticated: authenticatedIcon,
 } as const;
 
 /**

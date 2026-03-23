@@ -4,6 +4,7 @@ import type { IconifyIcon } from '@iconify/react';
 
 import syncIcon from '@iconify-icons/mdi/sync';
 import refreshIcon from '@iconify-icons/mdi/refresh';
+import databaseSyncIcon from '@iconify-icons/mdi/database-sync';
 import clockOutlineIcon from '@iconify-icons/mdi/clock-outline';
 import progressClockIcon from '@iconify-icons/mdi/progress-clock';
 import fileCancelOutlineIcon from '@iconify-icons/mdi/file-cancel-outline';
@@ -43,6 +44,7 @@ export const ConnectorStatsCard = ({
   const theme = useTheme();
   const [isReindexing, setIsReindexing] = useState<boolean>(false);
   const [isResyncing, setIsResyncing] = useState<boolean>(false);
+  const [isFullSyncing, setIsFullSyncing] = useState<boolean>(false);
   const [isIndexingManualSync, setIsIndexingManualSync] = useState<boolean>(false);
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
@@ -128,6 +130,26 @@ export const ConnectorStatsCard = ({
       setSnackbar({ open: true, message: `Failed to resync ${displayName}`, severity: 'error' });
     } finally {
       setTimeout(() => setIsResyncing(false), 1000);
+    }
+  };
+
+  const handleFullSync = async (): Promise<void> => {
+    try {
+      setIsFullSyncing(true);
+      await axios.post('/api/v1/knowledgeBase/resync/connector', {
+        connectorName: connector.type,
+        connectorId,
+        fullSync: true,
+      });
+      setSnackbar({
+        open: true,
+        message: `Full sync started for ${displayName}`,
+        severity: 'success',
+      });
+    } catch (error) {
+      setSnackbar({ open: true, message: `Failed to start full sync for ${displayName}`, severity: 'error' });
+    } finally {
+      setTimeout(() => setIsFullSyncing(false), 1000);
     }
   };
 
@@ -534,6 +556,7 @@ export const ConnectorStatsCard = ({
                 mt: 'auto',
                 display: 'flex',
                 justifyContent: 'center',
+                flexWrap: 'wrap',
                 width: '100%',
                 gap: 0.5,
                 pt: 1.5,
@@ -542,45 +565,90 @@ export const ConnectorStatsCard = ({
               }}
             >
               {canShowSync && (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={<Iconify icon={syncIcon} width={14} height={14} />}
-                  onClick={handleResync}
-                  disabled={isResyncing}
-                  sx={{
-                    borderRadius: '6px',
-                    textTransform: 'none',
-                    height: '30px',
-                    fontSize: '0.75rem',
-                    fontWeight: 500,
-                    color: primaryColor,
-                    borderColor: alpha(primaryColor, 0.5),
-                    backgroundColor: 'transparent',
-                    letterSpacing: '-0.01em',
-                    boxShadow: 'none',
-                    minWidth: '70px',
-                    px: 0,
-                    '&:hover': {
-                      backgroundColor: alpha(primaryColor, 0.04),
-                      borderColor: primaryColor,
-                    },
-                    '&:focus': { boxShadow: `0 0 0 2px ${alpha(primaryColor, 0.2)}` },
-                    '&:disabled': {
-                      color: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
-                      borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
-                    },
-                  }}
-                >
-                  {isResyncing ? (
-                    <>
-                      <CircularProgress size={12} sx={{ mr: 1, color: 'inherit' }} />
-                      Syncing
-                    </>
-                  ) : (
-                    'Sync'
-                  )}
-                </Button>
+                <>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<Iconify icon={syncIcon} width={14} height={14} />}
+                    onClick={handleResync}
+                    disabled={isResyncing || isFullSyncing}
+                    sx={{
+                      borderRadius: '6px',
+                      textTransform: 'none',
+                      height: '30px',
+                      fontSize: '0.75rem',
+                      fontWeight: 500,
+                      color: primaryColor,
+                      borderColor: alpha(primaryColor, 0.5),
+                      backgroundColor: 'transparent',
+                      letterSpacing: '-0.01em',
+                      boxShadow: 'none',
+                      minWidth: '80px',
+                      flex: '1 1 auto',
+                      maxWidth: '120px',
+                      px: 1.5,
+                      '&:hover': {
+                        backgroundColor: alpha(primaryColor, 0.04),
+                        borderColor: primaryColor,
+                      },
+                      '&:focus': { boxShadow: `0 0 0 2px ${alpha(primaryColor, 0.2)}` },
+                      '&:disabled': {
+                        color: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
+                        borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
+                      },
+                    }}
+                  >
+                    {isResyncing ? (
+                      <>
+                        <CircularProgress size={12} sx={{ mr: 1, color: 'inherit' }} />
+                        Syncing
+                      </>
+                    ) : (
+                      'Sync'
+                    )}
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<Iconify icon={databaseSyncIcon} width={14} height={14} />}
+                    onClick={handleFullSync}
+                    disabled={isResyncing || isFullSyncing}
+                    sx={{
+                      borderRadius: '6px',
+                      textTransform: 'none',
+                      height: '30px',
+                      fontSize: '0.75rem',
+                      fontWeight: 500,
+                      color: primaryColor,
+                      borderColor: alpha(primaryColor, 0.5),
+                      backgroundColor: 'transparent',
+                      letterSpacing: '-0.01em',
+                      boxShadow: 'none',
+                      minWidth: '80px',
+                      flex: '1 1 auto',
+                      maxWidth: '120px',
+                      px: 1.5,
+                      '&:hover': {
+                        backgroundColor: alpha(primaryColor, 0.04),
+                        borderColor: primaryColor,
+                      },
+                      '&:focus': { boxShadow: `0 0 0 2px ${alpha(primaryColor, 0.2)}` },
+                      '&:disabled': {
+                        color: isDark ? 'rgba(255, 255, 255, 0.3)' : 'rgba(0, 0, 0, 0.3)',
+                        borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(0, 0, 0, 0.06)',
+                      },
+                    }}
+                  >
+                    {isFullSyncing ? (
+                      <>
+                        <CircularProgress size={12} sx={{ mr: 1, color: 'inherit' }} />
+                        Full Syncing
+                      </>
+                    ) : (
+                      'Full Sync'
+                    )}
+                  </Button>
+                </>
               )}
               {canShowReindex && (
                 <Button
@@ -597,9 +665,13 @@ export const ConnectorStatsCard = ({
                     fontWeight: 500,
                     color: primaryColor,
                     borderColor: alpha(primaryColor, 0.5),
+                    backgroundColor: 'transparent',
                     letterSpacing: '-0.01em',
-                    minWidth: '120px',
-                    px: 0,
+                    boxShadow: 'none',
+                    minWidth: '80px',
+                    flex: '1 1 auto',
+                    maxWidth: '140px',
+                    px: 1.5,
                     '&:hover': {
                       backgroundColor: alpha(primaryColor, 0.04),
                       borderColor: primaryColor,
@@ -636,9 +708,14 @@ export const ConnectorStatsCard = ({
                     fontWeight: 500,
                     color: primaryColor,
                     borderColor: alpha(primaryColor, 0.5),
+                    backgroundColor: 'transparent',
                     letterSpacing: '-0.01em',
-                    minWidth: '140px',
-                    px: 0,
+                    boxShadow: 'none',
+                    whiteSpace: 'nowrap',
+                    minWidth: '80px',
+                    flex: '1 1 auto',
+                    maxWidth: '180px',
+                    px: 1.5,
                     '&:hover': {
                       backgroundColor: alpha(primaryColor, 0.04),
                       borderColor: primaryColor,
@@ -656,7 +733,7 @@ export const ConnectorStatsCard = ({
                       Indexing
                     </>
                   ) : (
-                    'Index Manual Sync'
+                    'Index Manual Records'
                   )}
                 </Button>
               )}

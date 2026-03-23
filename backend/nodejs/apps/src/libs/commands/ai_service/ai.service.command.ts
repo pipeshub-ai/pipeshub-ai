@@ -12,6 +12,15 @@ export interface AICommandOptions {
   body?: any;
 }
 
+interface FetchCommandError extends Error {
+  response?: {
+    status: number;
+    data: unknown;
+  };
+  status?: number;
+  statusText?: string;
+}
+
 const logger = Logger.getInstance({
   service: 'AIServiceCommand',
 });
@@ -67,6 +76,73 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
     }
   }
 
+  private parseErrorPayload(rawPayload: string): unknown {
+    const normalizedPayload = rawPayload.trim();
+    if (!normalizedPayload) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(normalizedPayload);
+    } catch {
+      // Fall through to SSE/plain-text parsing.
+    }
+
+    const sseDataLines = normalizedPayload
+      .split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.replace(/^data:\s?/, '').trim())
+      .filter(Boolean);
+
+    if (sseDataLines.length > 0) {
+      const sseDataPayload = sseDataLines.join('\n');
+      try {
+        return JSON.parse(sseDataPayload);
+      } catch {
+        return sseDataPayload;
+      }
+    }
+
+    return normalizedPayload;
+  }
+
+  private async buildStreamHttpError(response: Response): Promise<FetchCommandError> {
+    let responsePayload: unknown = null;
+    try {
+      responsePayload = this.parseErrorPayload(await response.text());
+    } catch {
+      responsePayload = null;
+    }
+
+    const payloadObject =
+      responsePayload && typeof responsePayload === 'object'
+        ? responsePayload
+        : null;
+    const payloadRecord = payloadObject as Record<string, unknown> | null;
+
+    const errorDetail =
+      (payloadRecord?.detail as string | undefined) ||
+      (payloadRecord?.message as string | undefined) ||
+      (payloadRecord?.error as string | undefined) ||
+      (typeof responsePayload === 'string' ? responsePayload : undefined) ||
+      response.statusText ||
+      `HTTP error! status: ${response.status}`;
+
+    const error = new Error(errorDetail) as FetchCommandError;
+    error.response = {
+      status: response.status,
+      data:
+        payloadObject ||
+        {
+          detail: errorDetail,
+          message: errorDetail,
+        },
+    };
+    error.status = response.status;
+    error.statusText = response.statusText;
+    return error;
+  }
+
   // Execute streaming request
   public async executeStream(): Promise<Readable> {
     const url = this.buildUrl();
@@ -85,7 +161,14 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       );
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        let error: FetchCommandError;
+        try{
+          error = await this.buildStreamHttpError(response);
+        }
+        catch (error) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        throw error;
       }
 
       if (!response.body) {

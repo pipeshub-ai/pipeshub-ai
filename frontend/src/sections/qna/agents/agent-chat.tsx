@@ -48,12 +48,12 @@ import { StreamingContext } from 'src/sections/qna/chatbot/components/chat-messa
 import { processStreamingContentLegacy } from 'src/sections/qna/chatbot/utils/styles/content-processing';
 import { useConnectors } from 'src/sections/accountdetails/connectors/hooks/use-connectors';
 import { ConversationStreamingState } from 'src/sections/qna/chatbot/chat-bot';
-import { CHAT_MODES } from 'src/sections/qna/chatbot/utils/utils';
 import AgentApiService, { KnowledgeBase } from './services/api';
-import AgentChatInput from './components/agent-chat-input';
+import AgentChatInput, { ChatMode } from './components/agent-chat-input';
 import AgentChatSidebar from './components/agent-chat-sidebar';
 
 const DRAWER_WIDTH = 300;
+const AUTO_CHAT_MODE = 'auto';
 
 // Store messages per conversation
 interface ConversationMessages {
@@ -73,13 +73,9 @@ interface StreamingContextType {
 
 export interface Model {
   provider: string;
+  modelKey: string;
   modelName: string;
-}
-
-export interface ChatMode {
-  id: string;
-  name: string;
-  description: string;
+  modelFriendlyName?: string;
 }
 
 export interface Tool {
@@ -233,8 +229,9 @@ class StreamingManager {
     return this.messageToConversationMap[messageId] || null;
   }
 
-  transferNewConversationData(newConversationId: string) {
-    const newKey = 'new';
+  transferNewConversationData(newConversationId: string, agentKey?: string) {
+    // Use agent-specific key for 'new' conversations
+    const newKey = agentKey ? `new-${agentKey}` : 'new';
     const actualKey = newConversationId;
     const newMessages = this.getConversationMessages(newKey);
     this.setConversationMessages(actualKey, [...newMessages]);
@@ -508,6 +505,34 @@ class StreamingManager {
     this.completedNavigations.clear();
   }
 
+  resetNewConversation(agentKey?: string) {
+    // Use agent-specific key for 'new' conversations
+    const draftKey = agentKey ? `new-${agentKey}` : 'new';
+    const state = this.conversationStates[draftKey];
+    if (state?.controller && !state.controller.signal.aborted) {
+      state.controller.abort();
+    }
+    this.conversationStates[draftKey] = StreamingManager.initializeStreamingState();
+    // Clear messages - this ensures start message can be shown again
+    this.conversationMessages[draftKey] = [];
+    this.notifyUpdates();
+  }
+
+  clearAllConversations() {
+    // Abort all active streams
+    Object.values(this.conversationStates).forEach((state) => {
+      if (state?.controller && !state.controller.signal.aborted) {
+        state.controller.abort();
+      }
+    });
+    // Clear all states and messages
+    this.conversationStates = {};
+    this.conversationMessages = {};
+    this.messageToConversationMap = {};
+    this.completedNavigations.clear();
+    this.notifyUpdates();
+  }
+
   isConversationLoading(conversationKey: string): boolean {
     const state = this.getConversationState(conversationKey);
     return !!(state && (state.isActive || state.isProcessingCompletion || state.showStatus));
@@ -568,6 +593,8 @@ const getEngagingStatusMessage = (event: string, data: any): string | null => {
     }
     case 'connected':
       return '🔌 Connected and processing...';
+    case 'metadata':
+      return '💾 Saving metadata...';
     case 'query_transformed':
     case 'results_ready':
       return null;
@@ -590,11 +617,17 @@ const AgentChat = () => {
   const [availableKBs, setAvailableKBs] = useState<KnowledgeBase[]>([]);
   // Model selection state
   const [selectedModel, setSelectedModel] = useState<Model | null>(availableModels[0]);
-  const [selectedChatMode, setSelectedChatMode] = useState<ChatMode | null>(null);
+  // Chat mode state
+  const [chatMode, setChatMode] = useState<ChatMode>('auto');
+  // Counter to signal AgentChatInput to clear its text (incremented on new chat, conversation switch, etc.)
+  const [clearInputTrigger, setClearInputTrigger] = useState<number>(0);
+
+  // Ref to store persistent chatMode that survives new chat clicks
+  const persistentChatModeRef = useRef<ChatMode>('auto');
 
   // Refs to store latest values to avoid stale closures in callbacks
   const latestModelRef = useRef(selectedModel);
-  const latestChatModeRef = useRef(selectedChatMode);
+  const latestChatModeRef = useRef<ChatMode>(chatMode);
   const availableModelsRef = useRef<Model[]>([]);
 
   // Update refs whenever values change
@@ -603,15 +636,17 @@ const AgentChat = () => {
   }, [selectedModel]);
 
   useEffect(() => {
-    latestChatModeRef.current = selectedChatMode;
-  }, [selectedChatMode]);
+    latestChatModeRef.current = chatMode;
+    // Update persistent ref whenever chatMode changes (user selection or conversation load)
+    persistentChatModeRef.current = chatMode;
+  }, [chatMode]);
 
   // Keep availableModels ref in sync
   useEffect(() => {
     availableModelsRef.current = availableModels;
   }, [availableModels]);
 
-  // Helper function to set model and chat mode from conversation modelInfo
+  // Helper function to set model from conversation modelInfo
   const setModelFromConversation = useCallback((conversationModelInfo: any) => {
     if (!conversationModelInfo) return;
 
@@ -631,17 +666,9 @@ const AgentChat = () => {
         setSelectedModel(matchingModel);
       }
     }
-
-    // Set chat mode from conversation if available
-    if (conversationModelInfo.chatMode) {
-      const matchingMode = CHAT_MODES.find((m) => m.id === conversationModelInfo.chatMode);
-      if (matchingMode) {
-        setSelectedChatMode(matchingMode);
-      }
-    }
   }, []);
 
-  // Set default model and chat mode when models are first loaded
+  // Set default model when models are first loaded
   // Only set defaults if no conversation is selected (new chat scenario)
   useEffect(() => {
     // Don't set defaults if we have a selected chat - let the conversation model useEffect handle it
@@ -651,11 +678,7 @@ const AgentChat = () => {
       // Set first model as default if no model is selected and no conversation is selected
       setSelectedModel(availableModels[0]);
     }
-    // Set default chat mode if not already selected
-    if (!selectedChatMode && CHAT_MODES.length > 0) {
-      setSelectedChatMode(CHAT_MODES[0]);
-    }
-  }, [availableModels, selectedModel, selectedChatMode, selectedChat]);
+  }, [availableModels, selectedModel, selectedChat]);
 
   // When models are loaded and we have a selected chat, try to set model from conversation
   useEffect(() => {
@@ -667,16 +690,82 @@ const AgentChat = () => {
     }
   }, [availableModels.length, selectedChat, setModelFromConversation]);
 
+  // Restore chatMode from conversation when selecting an existing chat
+  // For new chats, preserve the persistent chatMode (don't reset to 'auto')
+  useEffect(() => {
+    if (selectedChat) {
+      const conversationModelInfo = (selectedChat as any).modelInfo;
+      if (conversationModelInfo?.chatMode) {
+        const conversationChatMode = conversationModelInfo.chatMode as ChatMode;
+        setChatMode(conversationChatMode);
+        persistentChatModeRef.current = conversationChatMode;
+      }
+    } else {
+      // When selectedChat is null (new chat), restore the persistent chatMode
+      setChatMode(persistentChatModeRef.current);
+    }
+  }, [selectedChat]);
+
   const { activeConnectors } = useConnectors();
   const navigate = useNavigate();
   const { agentKey, conversationId } = useParams<{ agentKey: string; conversationId: string }>();
   const [agent, setAgent] = useState<Agent | null>(null);
+  const previousAgentKeyRef = useRef<string | undefined>(undefined);
+
   useEffect(() => {
     if (agentKey) {
       AgentApiService.getAgent(agentKey).then((agentItem) => {
         setAgent(agentItem);
-        setAvailableModels(agentItem.models);
-        setAvailableTools(agentItem.tools.map((tool: string) => ({ name: tool })));
+        
+        // Models are now enriched objects with modelName, provider, etc.
+        // Backend enriches model keys into full model objects
+        if (agentItem.models && agentItem.models.length > 0) {
+          const models = agentItem.models.map((m: any) => {
+            // Check if it's an enriched object or just a string key
+            if (typeof m === 'object' && m !== null) {
+              return {
+                provider: m.provider || 'unknown',
+                modelKey: m.modelKey || '',
+                modelName: m.modelName || m.modelKey || 'Unknown Model',
+                modelFriendlyName: m.modelFriendlyName || m.modelName || m.modelKey || 'Unknown Model',
+              };
+            }
+            console.log('m', m);
+            // Fallback for string model keys
+            return {
+              provider: 'AI',
+              modelKey: m,
+              modelName: m,
+            };
+          });
+          setAvailableModels(models);
+        }
+        
+        // Build tools array from toolsets (new format) or use legacy tools array
+        const toolsList: { name: string }[] = [];
+        if (agentItem.toolsets && agentItem.toolsets.length > 0) {
+          // New format: extract tools from toolsets
+          agentItem.toolsets.forEach((toolset: any) => {
+            if (toolset.tools && toolset.tools.length > 0) {
+              toolset.tools.forEach((tool: any) => {
+                const fullName = tool.fullName || `${toolset.name}.${tool.name}`;
+                toolsList.push({ name: fullName });
+              });
+            } else if (toolset.selectedTools && toolset.selectedTools.length > 0) {
+              // Use selectedTools if tools are not expanded
+              toolset.selectedTools.forEach((toolName: string) => {
+                const fullName = toolName.includes('.') ? toolName : `${toolset.name}.${toolName}`;
+                toolsList.push({ name: fullName });
+              });
+            }
+          });
+        } else if (agentItem.tools && Array.isArray(agentItem.tools)) {
+          // Legacy format: tools is array of strings
+          agentItem.tools.forEach((tool: string) => {
+            toolsList.push({ name: tool });
+          });
+        }
+        setAvailableTools(toolsList);
       });
     }
   }, [agentKey]);
@@ -712,14 +801,16 @@ const AgentChat = () => {
   const streamingManager = StreamingManager.getInstance();
   const theme = useTheme();
 
-  const getConversationKey = useCallback((convId: string | null) => {
-    const key = convId || 'new';
-    return key;
-  }, []);
+  const getConversationKey = useCallback((convId: string | null, agentKeyParam?: string) => {
+    if (convId) return convId;
+    // Make 'new' conversation key agent-specific to prevent cross-agent state leakage
+    const resolvedAgentKey = agentKeyParam || agentKey || 'default';
+    return `new-${resolvedAgentKey}`;
+  }, [agentKey]);
 
   const currentConversationKey = useMemo(
-    () => getConversationKey(currentConversationId),
-    [currentConversationId, getConversationKey]
+    () => getConversationKey(currentConversationId, agentKey),
+    [currentConversationId, getConversationKey, agentKey]
   );
 
   const currentMessages = useMemo(
@@ -768,6 +859,38 @@ const AgentChat = () => {
       streamingManager.removeUpdateCallback(forceUpdate);
     };
   }, [streamingManager, forceUpdate]);
+
+  // Clear all conversation states when agent changes
+  useEffect(() => {
+    if (agentKey && previousAgentKeyRef.current && previousAgentKeyRef.current !== agentKey) {
+      // Agent has changed - clear all conversation states
+      streamingManager.clearAllConversations();
+      setCurrentConversationId(null);
+      setSelectedChat(null);
+      setInputValue('');
+      setExpandedCitations({});
+      setIsNavigationBlocked(false);
+      setIsLoadingConversation(false);
+
+      // Reset model selection so it picks up new agent's models
+      setSelectedModel(null);
+
+      // Reset chat mode to auto for new agent
+      setChatMode('auto');
+      persistentChatModeRef.current = 'auto';
+
+      // Navigate to the new agent's base URL (without conversation ID) to ensure clean state
+      navigate(`/agents/${agentKey}`, { replace: true });
+
+      // Reset the 'new' conversation state for the new agent (this ensures clean state)
+      streamingManager.resetNewConversation(agentKey);
+
+      // Force update to ensure UI reflects the cleared state
+      forceUpdate();
+    }
+    previousAgentKeyRef.current = agentKey;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentKey, streamingManager, navigate, forceUpdate]);
 
   const handleCloseSnackbar = (): void => {
     setSnackbar({ open: false, message: '', severity: 'success' });
@@ -898,7 +1021,9 @@ const AgentChat = () => {
   const handleStreamingResponse = useCallback(
     async (url: string, body: any, isNewConversation: boolean): Promise<string | null> => {
       const streamingBotMessageId = `streaming-${Date.now()}`;
-      const conversationKey = isNewConversation ? 'new' : getConversationKey(currentConversationId);
+      const conversationKey = isNewConversation 
+        ? getConversationKey(null, agentKey) 
+        : getConversationKey(currentConversationId);
       const currentConvId = currentConversationId; // Capture current conversation ID
 
       // Initialize streaming state
@@ -958,14 +1083,21 @@ const AgentChat = () => {
             }
             break;
 
+          case 'metadata':
+            // Status message is already handled by getEngagingStatusMessage above
+            // This event indicates metadata is being saved, so we keep the status visible
+            break;
+
           case 'complete': {
             streamingManager.clearStatus(context.conversationKey);
             const completedConversation = data.conversation;
 
             if (completedConversation?._id) {
               let finalKey = context.conversationKey;
-              if (context.isNewConversation && context.conversationKey === 'new') {
-                streamingManager.transferNewConversationData(completedConversation._id);
+              // Check if this is a 'new' conversation (agent-specific key pattern)
+              const isNewKey = context.conversationKey.startsWith('new-');
+              if (context.isNewConversation && isNewKey) {
+                streamingManager.transferNewConversationData(completedConversation._id, agentKey);
                 finalKey = completedConversation._id;
                 context.conversationIdRef.current = completedConversation._id;
               }
@@ -973,7 +1105,8 @@ const AgentChat = () => {
 
               // Update selectedChat with fresh conversation data to reflect updated modelInfo
               // This ensures the model selection is updated when switching back to this conversation
-              const finalConvId = finalKey === 'new' ? context.conversationIdRef.current : finalKey;
+              // Check if finalKey is still a 'new' conversation key (shouldn't happen after transfer, but safety check)
+              const finalConvId = finalKey.startsWith('new-') ? context.conversationIdRef.current : finalKey;
               if (finalConvId === currentConvId || finalConvId === context.conversationIdRef.current) {
                 // Use setTimeout to ensure this runs after state updates
                 setTimeout(() => {
@@ -984,6 +1117,14 @@ const AgentChat = () => {
                   }
                 }, 0);
               }
+            } else {
+              // complete event received but conversation data is missing/incomplete —
+              // still finalize so the loading state is cleared
+              streamingManager.finalizeStreaming(
+                context.conversationKey,
+                context.streamingBotMessageId,
+                data
+              );
             }
             break;
           }
@@ -1073,6 +1214,17 @@ const AgentChat = () => {
           controller
         );
 
+        // Guard: if the stream closed without emitting a complete event (e.g. server
+        // timeout, network drop, or CancelledError on the backend), isActive is still
+        // true and the loading indicator would spin forever.  Clear it here.
+        const resolvedKey = conversationIdRef.current
+          ? getConversationKey(conversationIdRef.current, agentKey)
+          : conversationKey;
+        const endState = streamingManager.getConversationState(resolvedKey);
+        if (endState?.isActive) {
+          streamingManager.clearStreaming(resolvedKey);
+        }
+
         // Return the conversation ID if it was captured during streaming
         return conversationIdRef.current;
       } catch (error) {
@@ -1094,6 +1246,7 @@ const AgentChat = () => {
       parseSSELine,
       processStreamChunk,
       setModelFromConversation,
+      agentKey,
     ]
   );
 
@@ -1103,7 +1256,7 @@ const AgentChat = () => {
       messageOverride?: string,
       modelKey?: string,
       modelName?: string,
-      chatMode?: string,
+      inputChatMode?: string,
       selectedTools?: string[], // app_name.tool_name format - PERSISTENT
       selectedKBs?: string[], // KB IDs - PERSISTENT
       selectedApps?: string[] // App names - PERSISTENT
@@ -1111,14 +1264,15 @@ const AgentChat = () => {
       const trimmedInput =
         typeof messageOverride === 'string' ? messageOverride.trim() : inputValue.trim();
       if (!trimmedInput) return;
-      if (isNavigationBlocked || isCurrentConversationLoading) return;
+      // Only block if actively loading, not if there's just an error state
+      if (isCurrentConversationLoading) return;
 
       // Use refs to get the latest values (prevents stale closures)
       const currentModel = latestModelRef.current;
-      const currentMode = latestChatModeRef.current;
+      const resolvedChatMode = inputChatMode || latestChatModeRef.current || AUTO_CHAT_MODE;
 
       const wasCreatingNewConversation = !currentConversationId;
-      const conversationKey = getConversationKey(currentConversationId);
+      const conversationKey = getConversationKey(currentConversationId, agentKey);
 
       const tempUserMessage: FormattedMessage = {
         type: 'user',
@@ -1144,39 +1298,62 @@ const AgentChat = () => {
         ? `${CONFIG.backendUrl}/api/v1/agents/${agentKey}/conversations/stream`
         : `${CONFIG.backendUrl}/api/v1/agents/${agentKey}/conversations/${currentConversationId}/messages/stream`;
 
-      // Build the request body with persistent selections
+      // Build the request body with the new graph-based format
+      // No backward compatibility - only use toolsets and knowledge
+      
+      // Get tools to enable from user selection or use all tools from agent
+      const getEnabledTools = (): string[] => {
+        // If user selected specific tools, use those
+        if (selectedTools && selectedTools.length > 0) {
+          return selectedTools;
+        }
+        // Otherwise, return empty to let backend use all agent tools
+        return [];
+      };
+      
+      // Get apps/knowledge sources to enable from user selection
+      const getEnabledApps = (): string[] => {
+        // If user selected specific apps, use those
+        if (selectedApps && selectedApps.length > 0) {
+          return selectedApps;
+        }
+        // Otherwise, return empty to let backend use all agent knowledge sources
+        return [];
+      };
+      
       const requestBody = {
         query: trimmedInput,
+        modelKey: modelKey || currentModel?.modelKey,
         modelName: modelName || currentModel?.modelName,
-        chatMode: chatMode || currentMode?.id,
+        modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
+          ? currentModel.modelFriendlyName.trim() 
+          : undefined,
+        chatMode: resolvedChatMode,
 
-        // Tools: Use persistent selected tools (app_name.tool_name format)
-        // If no tools selected, use agent defaults, if no agent defaults, use empty array
-        tools: selectedTools && selectedTools.length > 0 ? selectedTools : agent?.tools || [],
+        // Timezone and current time for LLM context
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        currentTime: new Date().toISOString(),
 
-        // Enhanced filters structure with persistent selections
+        // Tools: List of tool full names to enable (filters agent's toolsets)
+        // Empty means use all tools from agent's toolsets
+        tools: getEnabledTools(),
+
+        // Filters structure
         filters: {
-          departments: [],
-          moduleIds: [],
-          appSpecificRecordTypes: [],
+          // Apps: List of connector IDs to enable (filters agent's knowledge)
+          // Empty means use all knowledge sources from agent
+          apps: getEnabledApps(),
 
-          // Apps: Extract connector instance IDs from connectors with category='knowledge'
-          // If no apps selected, use agent defaults from connectors array
-          apps: selectedApps && selectedApps.length > 0
-            ? selectedApps
-            : (agent?.connectors?.filter(ci => ci.category === 'knowledge').map(ci => ci.id) || []),
-
-          // Knowledge bases: Use persistent selected KB IDs
-          // If no KBs selected, use agent defaults, if no agent defaults, use empty array
-          kb: selectedKBs && selectedKBs.length > 0 ? selectedKBs : agent?.kb || [],
+          // Knowledge bases: KB IDs to use (extract from knowledge array if not selected)
+          kb: selectedKBs || [],
         },
 
-        // Chat mode specific parameters (persistent throughout conversation)
-        ...(chatMode === 'quick' && {
+        // Chat mode specific parameters
+        ...(resolvedChatMode === 'quick' && {
           limit: 5,
           quickMode: true,
         }),
-        ...(chatMode === 'standard' && {
+        ...(resolvedChatMode === 'standard' && {
           temperature: 0.7,
           limit: 10,
           quickMode: false,
@@ -1217,48 +1394,89 @@ const AgentChat = () => {
       streamingManager,
       getConversationKey,
       handleStreamingResponse,
-      isNavigationBlocked,
       isCurrentConversationLoading,
-      agent,
       agentKey,
       setSelectedChat,
     ]
   );
 
   const handleNewChat = useCallback(() => {
-    // Clear both current conversation and 'new' conversation states
+    // Abort any active streaming in current conversation
     if (currentConversationId) {
-      streamingManager.clearStreaming(getConversationKey(currentConversationId));
+      const currentKey = getConversationKey(currentConversationId, agentKey);
+      const state = streamingManager.getConversationState(currentKey);
+      if (state?.controller && !state.controller.signal.aborted) {
+        state.controller.abort();
+      }
+      streamingManager.clearStreaming(currentKey);
     }
-    // Also clear the 'new' conversation state
-    streamingManager.clearStreaming('new');
+    
+    // Reset the 'new' conversation state (aborts any active stream there too)
+    // This clears messages so start message can be shown again
+    streamingManager.resetNewConversation(agentKey);
     streamingManager.resetNavigationTracking();
 
+    // Reset all UI state (chatMode will be preserved via persistentChatModeRef in useEffect)
     setCurrentConversationId(null);
     navigate(`/agents/${agentKey}`, { replace: true });
     setInputValue('');
+    setClearInputTrigger((prev) => prev + 1);
     setShouldRefreshSidebar(true);
     setSelectedChat(null);
     setIsNavigationBlocked(false);
-
-  }, [navigate, streamingManager, currentConversationId, getConversationKey, agentKey]);
+    setExpandedCitations({});
+    
+    // Explicitly trigger start message after reset
+    // Use setTimeout to ensure resetNewConversation has completed
+    setTimeout(() => {
+      if (agent?.startMessage) {
+        const conversationKey = getConversationKey(null, agentKey);
+        const existingMessages = streamingManager.getConversationMessages(conversationKey);
+        // Only add if still empty (in case something else added messages)
+        if (existingMessages.length === 0) {
+          const customStartMessage: FormattedMessage = {
+            type: 'bot',
+            content: agent.startMessage,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            id: 'start-message',
+            contentFormat: 'MARKDOWN',
+            followUpQuestions: [],
+            citations: [],
+            confidence: '',
+            messageType: 'bot_response',
+            timestamp: new Date(),
+          };
+          streamingManager.setConversationMessages(conversationKey, [customStartMessage]);
+        }
+      }
+    }, 0);
+  }, [navigate, streamingManager, currentConversationId, getConversationKey, agentKey, agent?.startMessage]);
 
   const handleChatSelect = useCallback(
     async (chat: Conversation) => {
-      if (!chat?._id || isNavigationBlocked) return;
+      if (!chat?._id) return;
+      // Only block navigation if actively streaming, not on error states
+      const currentKey = getConversationKey(currentConversationId);
+      const currentState = streamingManager.getConversationState(currentKey);
+      const isCurrentlyStreaming =
+        currentState?.isActive ||
+        currentState?.isProcessingCompletion ||
+        currentState?.showStatus;
+      if (isCurrentlyStreaming && currentConversationId) return;
 
       try {
-        const chatKey = getConversationKey(chat._id);
+        const chatKey = getConversationKey(chat._id, agentKey);
 
         // Check if this conversation is currently streaming
         const streamingState = streamingManager.getConversationState(chatKey);
-        const isCurrentlyStreaming =
+        const isChatStreaming =
           streamingState?.isActive ||
           streamingState?.isProcessingCompletion ||
           streamingState?.showStatus;
 
         // If the conversation is streaming, don't set loading state as it might interfere
-        if (!isCurrentlyStreaming) {
+        if (!isChatStreaming) {
           setIsLoadingConversation(true);
         }
 
@@ -1272,7 +1490,7 @@ const AgentChat = () => {
 
         // Always fetch fresh conversation data to get the latest modelInfo
         // This ensures model changes made during the conversation are reflected
-        if (!isCurrentlyStreaming) {
+        if (!isChatStreaming) {
           try {
             const response = await axios.get(`/api/v1/agents/${agentKey}/conversations/${chat._id}`);
             const { conversation } = response.data;
@@ -1326,17 +1544,17 @@ const AgentChat = () => {
         }
       } catch (error) {
         console.error('❌ Error loading conversation:', error);
-        streamingManager.setConversationMessages(getConversationKey(chat._id), []);
+        streamingManager.setConversationMessages(getConversationKey(chat._id, agentKey), []);
       } finally {
         // Only clear loading if we set it
-        const chatKey = getConversationKey(chat._id);
+        const chatKey = getConversationKey(chat._id, agentKey);
         const streamingState = streamingManager.getConversationState(chatKey);
-        const isCurrentlyStreaming =
+        const isStillStreaming =
           streamingState?.isActive ||
           streamingState?.isProcessingCompletion ||
           streamingState?.showStatus;
 
-        if (!isCurrentlyStreaming) {
+        if (!isStillStreaming) {
           setIsLoadingConversation(false);
         }
       }
@@ -1346,33 +1564,45 @@ const AgentChat = () => {
       navigate,
       streamingManager,
       getConversationKey,
-      isNavigationBlocked,
       agentKey,
       setModelFromConversation,
+      currentConversationId,
     ]
   );
 
   // Update the useEffect to better handle streaming conversations
   useEffect(() => {
     const urlConversationId = conversationId;
-    if (isNavigationBlocked) return;
+    
+    // Don't process if agentKey is not available yet (agent is still loading)
+    if (!agentKey) return;
+    
+    // Check if current conversation is actively streaming before blocking
+    const currentKey = getConversationKey(currentConversationId);
+    const currentState = streamingManager.getConversationState(currentKey);
+    const isCurrentlyStreaming =
+      currentState?.isActive ||
+      currentState?.isProcessingCompletion ||
+      currentState?.showStatus;
+    // Only block if actively streaming, not on error states
+    if (isCurrentlyStreaming && currentConversationId && urlConversationId !== currentConversationId) return;
 
     if (urlConversationId && urlConversationId !== currentConversationId) {
-      const chatKey = getConversationKey(urlConversationId);
+      const chatKey = getConversationKey(urlConversationId, agentKey);
       const existingMessages = streamingManager.getConversationMessages(chatKey);
       const streamingState = streamingManager.getConversationState(chatKey);
-      const isCurrentlyStreaming =
+      const isUrlStreaming =
         streamingState?.isActive ||
         streamingState?.isProcessingCompletion ||
         streamingState?.showStatus;
 
-      if (existingMessages.length > 0 || isCurrentlyStreaming) {
+      if (existingMessages.length > 0 || isUrlStreaming) {
         // We have existing messages or it's streaming, but still fetch fresh data for modelInfo
         setCurrentConversationId(urlConversationId);
 
         // Always fetch fresh conversation data to get latest modelInfo
         // This ensures model changes made during the conversation are reflected
-        if (!isCurrentlyStreaming) {
+        if (!isUrlStreaming) {
           axios
             .get(`/api/v1/agents/${agentKey}/conversations/${urlConversationId}`)
             .then((response) => {
@@ -1417,15 +1647,15 @@ const AgentChat = () => {
     } else if (!urlConversationId && currentConversationId !== null) {
       // Only reset to new chat if we're not in the middle of creating a conversation
       const crtMessages = streamingManager.getConversationMessages(
-        getConversationKey(currentConversationId)
+        getConversationKey(currentConversationId, agentKey)
       );
       const crtStreamingState = streamingManager.getConversationState(
-        getConversationKey(currentConversationId)
+        getConversationKey(currentConversationId, agentKey)
       );
-      const isCurrentlyStreaming =
+      const isCrtStreaming =
         crtStreamingState?.isActive || crtStreamingState?.isProcessingCompletion;
 
-      if (!isCurrentlyStreaming && crtMessages.length === 0) {
+      if (!isCrtStreaming && crtMessages.length === 0) {
         handleNewChat();
       }
     }
@@ -1444,11 +1674,12 @@ const AgentChat = () => {
 
   // Add effect to show start message when creating new conversation
   useEffect(() => {
-    if (!currentConversationId && agent?.startMessage) {
-      const conversationKey = getConversationKey(null);
+    if (!currentConversationId && agent?.startMessage && agentKey) {
+      const conversationKey = getConversationKey(null, agentKey);
       const existingMessages = streamingManager.getConversationMessages(conversationKey);
 
       // Only add start message if there are no messages at all
+      // This ensures start message shows after new chat, failed conversations, or agent changes
       if (existingMessages.length === 0) {
         const customStartMessage: FormattedMessage = {
           type: 'bot',
@@ -1473,6 +1704,8 @@ const AgentChat = () => {
     getConversationKey,
     streamingManager,
     agent?.name,
+    agentKey,
+    updateTrigger, // Include updateTrigger to ensure it re-runs after resetNewConversation
   ]);
 
   useEffect(() => {
@@ -1589,8 +1822,14 @@ const AgentChat = () => {
 
       const buffer = await arrayBufferPromise;
       setFileBuffer(buffer);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch document:', err);
+      const message = err?.message || 'Failed to load document. Please try again.';
+      setSnackbar({
+        open: true,
+        message,
+        severity: err?.statusCode === 503 ? 'warning' : 'error',
+      });
       setTimeout(() => {
         onClosePdf();
       }, 500);
@@ -1625,7 +1864,7 @@ const AgentChat = () => {
     async (messageId: string): Promise<void> => {
       if (!currentConversationId || !messageId || isCurrentConversationLoading) return;
 
-      const conversationKey = getConversationKey(currentConversationId);
+      const conversationKey = getConversationKey(currentConversationId, agentKey);
       const streamingBotMessageId = `streaming-${Date.now()}-${agentKey}`;
 
       // Find the message to regenerate and get its index
@@ -1749,7 +1988,6 @@ const AgentChat = () => {
         const token = localStorage.getItem('jwt_access_token');
         // Use refs to get the latest values (prevents stale closures)
         const currentModel = latestModelRef.current;
-        const currentMode = latestChatModeRef.current;
 
         const response = await fetch(
           `${CONFIG.backendUrl}/api/v1/agents/${agentKey}/conversations/${currentConversationId}/message/${messageId}/regenerate`,
@@ -1763,7 +2001,7 @@ const AgentChat = () => {
             body: JSON.stringify({
               modelName: currentModel?.modelName,
               modelProvider: currentModel?.provider,
-              chatMode: currentMode?.id || 'quick',
+              chatMode: latestChatModeRef.current || AUTO_CHAT_MODE,
             }),
             signal: controller.signal,
           }
@@ -1910,7 +2148,7 @@ const AgentChat = () => {
               position: 'relative',
             }}
           >
-            {/* Always show the chat messages area instead of welcome message */}
+            {/* Always show the chat messages area - start message will be shown via useEffect */}
             <MemoizedChatMessagesArea
               messages={currentMessages}
               isLoading={isCurrentConversationLoading}
@@ -1923,19 +2161,21 @@ const AgentChat = () => {
               isStatusVisible={currentConversationStatus.showStatus}
             />
             <AgentChatInput
-              key={`chat-input-${currentConversationId || 'new'}`}
+              key={`chat-input-${agentKey}`}
               onSubmit={handleSendMessage}
               isLoading={isCurrentConversationLoading}
-              disabled={isCurrentConversationLoading || isNavigationBlocked}
+              disabled={isCurrentConversationLoading}
               placeholder="Type your message..."
               selectedModel={selectedModel}
-              selectedChatMode={selectedChatMode}
               onModelChange={(model) => setSelectedModel(model)}
-              onChatModeChange={(mode) => setSelectedChatMode(mode)}
               availableModels={availableModels}
               availableKBs={availableKBs}
               agent={agent}
               activeConnectors={activeConnectors}
+              chatMode={chatMode}
+              onChatModeChange={setChatMode}
+              conversationId={currentConversationId}
+              clearInputTrigger={clearInputTrigger}
             />
           </Box>
 
