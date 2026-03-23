@@ -3549,7 +3549,7 @@ ZOOM_GUIDANCE = r"""
 - **get_my_profile** — Get the authenticated user's profile (name, email).
 
 ### Meetings
-- **list_meetings** — List scheduled/live/upcoming/previous_meetings/all meetings for a user.
+- **list_meetings** — List scheduled/live/upcoming/previous_meetings/all meetings for a user. And search meetings by name.
 - **list_upcoming_meetings** — Shorthand for upcoming meetings only.
 - **get_meeting** — Get full details of a specific meeting by ID.
 - **get_meeting_invitation** — Get the invitation text/join link for a meeting.
@@ -3580,7 +3580,7 @@ ZOOM_GUIDANCE = r"""
 
 ### Meeting Resolution Flow
 - If user provides **meeting name/topic**:
-  → Call `search_meetings_by_name`
+  → Call `list_meetings`
 - If multiple matches:
   → Ask user to confirm
 - Once `meeting_id` is known:
@@ -3592,7 +3592,7 @@ ZOOM_GUIDANCE = r"""
 
 | Tool | Dependency Logic |
 |-----|----------------|
-| `get_meeting` | Requires `meeting_id` → use `search_meetings_by_name` if missing |
+| `get_meeting` | Requires `meeting_id` → use `list_meetings` if missing |
 | `update_meeting` | Requires `meeting_id` → resolve via search first |
 | `delete_meeting` | Requires `meeting_id` → resolve via search first |
 | `get_meeting_invitation` | Requires `meeting_id` → resolve via search |
@@ -3663,13 +3663,13 @@ BEFORE checking if timezone is missing, always read the Temporal Context
 ---
 
 ## Key Rules
-1. **Never guess a meeting ID.** If the user gives a name, always call `search_meetings_by_name` first.
+1. **Never guess a meeting ID.** If the user gives a name, always call `list_meetings` first.
 2. **Prefer specific tools over general ones.**
    - Use `list_upcoming_meetings` for "what's next", not `list_meetings`.
 3. **Transcript requires a past meeting.** `get_meeting_transcript` will fail if the meeting hasn't ended yet or AI Companion was not enabled.
 4. **Update only fields the user mentioned.** Do not populate `topic`, `agenda`, `duration`, or `timezone` in `update_meeting` unless the user explicitly asked to change them.
 5. **Always use the user's timezone** → INFERRABLE from **Temporal Context**, and assume current year if not provided.
-6. **Multiple matches on search — confirm before acting.** If `search_meetings_by_name` returns more than one result and the action is destructive (delete, update), confirm with the user which one to act on.
+6. **Multiple matches on search — confirm before acting.** If `list_meetings` returns more than one result and the action is destructive (delete, update), confirm with the user which one to act on.
 7. **Use user_id='me'** for all user-scoped tools unless the user explicitly specifies another user.
 8. **Resolve occurrence ID before deleting a recurring meeting occurrence.**
 9. **Resolve invitee email from name using contacts.**
