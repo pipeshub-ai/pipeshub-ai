@@ -33,6 +33,9 @@ env:
 
 jobs:
   integration-tests:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      !contains(github.event.pull_request.labels.*.name, 'skip-tests')
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64
     timeout-minutes: 60
 
