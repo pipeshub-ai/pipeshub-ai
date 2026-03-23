@@ -10,7 +10,7 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any
 
 from neo4j import AsyncGraphDatabase
-from neo4j.exceptions import ServiceUnavailable
+from neo4j.exceptions import ClientError, ServiceUnavailable
 
 if TYPE_CHECKING:
     from neo4j import AsyncSession
@@ -81,7 +81,7 @@ class Neo4jClient:
         except ServiceUnavailable as e:
             self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
             return False
-        except Exception as e:
+        except ClientError as e:
             self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
             return False
 
@@ -108,7 +108,7 @@ class Neo4jClient:
                 else:
                     self.logger.info(f"✅ Database '{self.database}' already exists")
 
-        except Exception as e:
+        except ClientError as e:
             self.logger.warning(f"⚠️ Could not verify/create database '{self.database}': {str(e)}")
             self.logger.warning("This may be expected if using Neo4j Community Edition (single database only)")
 
@@ -119,7 +119,7 @@ class Neo4jClient:
             for txn_id, session in self._active_sessions.items():
                 try:
                     await session.close()
-                except Exception as e:
+                except (ClientError, ServiceUnavailable) as e:
                     self.logger.warning(f"Error closing session {txn_id}: {str(e)}")
             self._active_sessions.clear()
             self._session_locks.clear()
@@ -128,7 +128,7 @@ class Neo4jClient:
                 await self.driver.close()
                 self.driver = None
                 self.logger.info("✅ Disconnected from Neo4j")
-        except Exception as e:
+        except (ClientError, ServiceUnavailable) as e:
             self.logger.error(f"❌ Error disconnecting from Neo4j: {str(e)}")
 
     async def begin_transaction(self, read: list[str], write: list[str]) -> str:
