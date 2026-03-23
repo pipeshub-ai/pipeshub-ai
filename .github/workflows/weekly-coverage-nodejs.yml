@@ -1,0 +1,62 @@
+name: weekly-coverage-nodejs
+
+on:
+  schedule:
+    # Runs every Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  coverage-check:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [20]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd backend/nodejs/apps
+          npm ci
+
+      - name: Run unit tests with 90% coverage threshold
+        run: |
+          cd backend/nodejs/apps
+          npm run test:coverage-check
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-coverage-report
+          path: backend/nodejs/apps/coverage/
+          retention-days: 30
+
+      - name: Add coverage summary to job
+        if: always()
+        run: |
+          echo "## Weekly Node.js Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cd backend/nodejs/apps
+          npx c8 report --reporter=text 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "Failed to generate report" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Download Report" >> $GITHUB_STEP_SUMMARY
+          echo "Download the **weekly-coverage-report** artifact from the [Artifacts section](#artifacts) above to view the full HTML report locally." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "After downloading and unzipping, open \`index.html\` in your browser." >> $GITHUB_STEP_SUMMARY

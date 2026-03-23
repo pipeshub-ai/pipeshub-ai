@@ -3783,6 +3783,10 @@ export const unshareSearch =
     const startTime = Date.now();
     const { userIds } = req.body;
     try {
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+        throw new BadRequestError('userIds is required and must be a non-empty array');
+      }
+
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
       const filter = buildFilter(req, orgId, userId, searchId);
