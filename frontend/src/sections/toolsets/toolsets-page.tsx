@@ -641,45 +641,47 @@ const ToolsetsPage: React.FC = () => {
                 value="my-toolsets"
                 sx={{ mr: 1 }}
               />
-              <Tab
-                icon={<Iconify icon={appsIcon} width={18} height={18} />}
-                iconPosition="start"
-                label={
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                    <span>Available</span>
-                    {registryTotal > 0 && (
-                      <Chip
-                        label={registryTotal}
-                        size="small"
-                        sx={{
-                          height: 20,
-                          fontSize: '0.6875rem',
-                          fontWeight: 700,
-                          minWidth: 20,
-                          '& .MuiChip-label': { px: 0.75 },
-                          backgroundColor:
-                            activeTab === 'available'
-                              ? isDark
-                                ? alpha(theme.palette.primary.contrastText, 0.9)
-                                : alpha(theme.palette.primary.main, 0.8)
-                              : isDark
-                              ? alpha(theme.palette.text.primary, 0.4)
-                              : alpha(theme.palette.text.primary, 0.12),
-                          color:
-                            activeTab === 'available'
-                              ? theme.palette.primary.contrastText
-                              : theme.palette.text.primary,
-                          border:
-                            activeTab === 'available'
-                              ? `1px solid ${alpha(theme.palette.primary.contrastText, 0.3)}`
-                              : `1px solid ${alpha(theme.palette.text.primary, 0.2)}`,
-                        }}
-                      />
-                    )}
-                  </Box>
-                }
-                value="available"
-              />
+              {isAdmin && (
+                <Tab
+                  icon={<Iconify icon={appsIcon} width={18} height={18} />}
+                  iconPosition="start"
+                  label={
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      <span>Available</span>
+                      {registryTotal > 0 && (
+                        <Chip
+                          label={registryTotal}
+                          size="small"
+                          sx={{
+                            height: 20,
+                            fontSize: '0.6875rem',
+                            fontWeight: 700,
+                            minWidth: 20,
+                            '& .MuiChip-label': { px: 0.75 },
+                            backgroundColor:
+                              activeTab === 'available'
+                                ? isDark
+                                  ? alpha(theme.palette.primary.contrastText, 0.9)
+                                  : alpha(theme.palette.primary.main, 0.8)
+                                : isDark
+                                ? alpha(theme.palette.text.primary, 0.4)
+                                : alpha(theme.palette.text.primary, 0.12),
+                            color:
+                              activeTab === 'available'
+                                ? theme.palette.primary.contrastText
+                                : theme.palette.text.primary,
+                            border:
+                              activeTab === 'available'
+                                ? `1px solid ${alpha(theme.palette.primary.contrastText, 0.3)}`
+                                : `1px solid ${alpha(theme.palette.text.primary, 0.2)}`,
+                          }}
+                        />
+                      )}
+                    </Box>
+                  }
+                  value="available"
+                />
+              )}
             </Tabs>
           </Box>
         </Box>
@@ -787,14 +789,14 @@ const ToolsetsPage: React.FC = () => {
             }}
           >
             <Typography variant="body2">
-              {activeTab === 'my-toolsets'
+              {activeTab === 'my-toolsets' || !isAdmin
                 ? "Authenticate against your organization's toolset instances. Authenticated toolsets can be added to your agents."
                 : 'Browse available toolset types. Administrators can create toolset instances from here.'}
             </Typography>
           </Alert>
 
           {/* Tab Content */}
-          {isFirstLoad || isSwitchingTab ? (
+          {(!isAdmin && activeTab !== 'my-toolsets') ? null : isFirstLoad || isSwitchingTab ? (
             /* Loading Skeletons */
             <Grid container spacing={2.5}>
               {loadingSkeletons.map((i) => (
@@ -807,7 +809,7 @@ const ToolsetsPage: React.FC = () => {
                 </Grid>
               ))}
             </Grid>
-          ) : activeTab === 'my-toolsets' ? (
+          ) : activeTab === 'my-toolsets' || !isAdmin ? (
             /* My Toolsets Tab */
             filteredConfiguredToolsets.length === 0 ? (
               <Fade in timeout={300}>

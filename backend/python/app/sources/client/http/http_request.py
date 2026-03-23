@@ -21,7 +21,9 @@ class HTTPRequest(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     body: dict[str, Any] | bytes | None = None
     path_params: dict[str, str] = Field(default_factory=dict, alias="path")
-    query_params: dict[str, str] = Field(default_factory=dict, alias="query")
+    query_params: dict[str, str] | list[tuple[str, str]] = Field(
+        default_factory=dict, alias="query"
+    )
 
     def to_json(self) -> str:
         """Convert request to a JSON string.

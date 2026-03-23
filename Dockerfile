@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libzstd-dev \
     libssl-dev \
     libspatialindex-dev \
+    libmariadb-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust with minimal profile (only needed for building certain pip packages)
@@ -112,6 +113,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libzstd1 \
     # Other runtime deps
     libpq5 \
+    libmariadb3 \
     # OpenGL library (required by Docling for PDF processing)
     libgl1 \
     libglib2.0-0 \

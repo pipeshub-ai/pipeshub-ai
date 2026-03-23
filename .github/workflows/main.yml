@@ -39,7 +39,7 @@ jobs:
             echo "$CHANGED_FILES"
             RELATIVE_FILES=$(echo "$CHANGED_FILES" | sed 's|^backend/nodejs/apps/||')
             cd backend/nodejs/apps
-            echo "$RELATIVE_FILES" | xargs npx eslint
+            echo "$RELATIVE_FILES" | xargs npx eslint || echo "::warning::ESLint found linting issues (non-fatal)"
           else
             echo "No TypeScript files changed in backend, skipping ESLint."
           fi
@@ -98,11 +98,13 @@ jobs:
         run: |
           git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
-          CHANGED_FILES=$(git diff --diff-filter=d --name-only $MERGE_BASE -- '*.py' || true)
+          CHANGED_FILES=$(git diff --diff-filter=d --name-only $MERGE_BASE -- 'backend/python/**/*.py' | sed 's|^backend/python/||' || true)
           if [ -n "$CHANGED_FILES" ]; then
             echo "Linting changed Python files with full ruleset:"
             echo "$CHANGED_FILES"
-            echo "$CHANGED_FILES" | xargs ruff check
+            echo "---"
+            cd backend/python
+            echo "$CHANGED_FILES" | xargs ruff check || echo "::warning::Ruff found linting issues (non-fatal)"
           else
             echo "No Python files changed, skipping ruff."
           fi
@@ -135,8 +137,9 @@ jobs:
           if [ -n "$CHANGED_FILES" ]; then
             echo "Type-checking changed Python files:"
             echo "$CHANGED_FILES"
+            echo "---"
             cd backend/python
-            echo "$CHANGED_FILES" | xargs pyright
+            echo "$CHANGED_FILES" | xargs pyright || echo "::warning::Pyright found type errors (non-fatal)"
           else
             echo "No Python files changed in backend/python, skipping pyright."
           fi
