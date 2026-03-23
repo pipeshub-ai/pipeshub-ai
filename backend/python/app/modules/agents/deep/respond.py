@@ -1161,4 +1161,3 @@ def _format_user_context(user_info: dict, org_info: dict) -> str:
 
     return ", ".join(parts)
 
-

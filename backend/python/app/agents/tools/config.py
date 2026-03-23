@@ -153,6 +153,10 @@ class ToolDiscoveryConfig:
             app_name="mariadb",
             client_builder="MariaDBClient",
         ),
+        "redshift": AppConfiguration(
+            app_name="redshift",
+            client_builder="RedshiftClient",
+        ),
         # "linkedin": AppConfiguration(
         #     app_name="linkedin",
         #     client_builder="LinkedInClient",

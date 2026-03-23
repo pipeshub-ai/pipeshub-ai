@@ -390,4 +390,3 @@ class AuthBuilder:
     def get_oauth_config(self) -> Optional[OAuthConfig]:
         """Get the OAuth config if set"""
         return self._oauth_config
-

@@ -2404,6 +2404,7 @@ CLICKUP_GUIDANCE = r"""
 - Never fabricate IDs — always obtain team_id, space_id, folder_id, list_id, task_id, doc_id, page_id, checklist_id, checklist_item_id from a prior tool call or explicit user input.
 - get_authorized_user is the source for the current user's id — use it when the user says "me", "my tasks", or "assign to me".
 """
+
 MARIADB_GUIDANCE = r"""
 ## MariaDB-Specific Guidance
 
@@ -2459,7 +2460,6 @@ For MariaDB work, follow this loop every time:
     1. Verify filters/date range
     2. Re-check columns/types via `mariadb.get_tables_schema`
     3. Retry with adjusted query
-- If permissions fail, report clearly and stop retry loops.
 
 ### Planning Examples (one tool after another)
 
@@ -2473,7 +2473,53 @@ Example 2: "What columns are in invoice?"
 2. Optional follow-up: `mariadb.execute_query` only if user asks for row data
 
 Example 3: "Give me the DDL for invoice"
-1. `mariadb.get_table_ddl(table="invoice")`
+1. `mariadb.get_table_ddl(table="invoice")`    
+"""
+
+
+REDSHIFT_GUIDANCE = r"""
+## Redshift-Specific Guidance
+
+### Core Rules
+- Use Redshift tools when the user asks for any data, warehouse data, SQL results.
+- Call fetch_db_schema to know the context around the user query and then form the SQL query and run it using execute_query tool.
+- Call fetch_db_schema/get_tables_schema/get_schema_ddl tools to know the column names.
+- Prefer read-safe operations (`SELECT`, metadata introspection tools).
+- Do not run destructive SQL (`DROP`, `TRUNCATE`, `DELETE`, `ALTER`) unless the user explicitly asks.
+- If table name or schema name is provided by the user, use tools to fetch their details and then form the SQL query and run it using execute_query tool.
+- In multi-step tasks, execute in a strict tool loop: one tool call, inspect result, then choose next tool.
+
+### Tool Action Loop (MANDATORY)
+For Redshift work, follow this loop every time:
+1. Choose next best tool to fetch the context around the user query.
+2. If first tool call does not return the context around the user query, call the fetch_db_schema tool to fetch the complete context around the user query.
+3. Now form the SQL query to bring data and run it using execute_query tool.
+- Never guess columns/table names when schema tools can confirm them.
+- If a step fails, recover with introspection tools (schemas/tables/table schema) before retrying SQL.
+
+
+### SQL Construction Guidance
+- Always qualify table names when possible: `schema.table`.
+- Use discovered column names/types from schema tools before writing joins/filters.
+- Normalize location names and match case-insensitively with common variants (e.g., treat “New York”, “new york”, and “New York City” as equivalent).
+
+### Error Recovery (Redshift)
+- If SQL fails due to missing relation/column:
+  1. Run `redshift.fetch_db_schema`
+  2. Retry `redshift.execute_query` with adjusted query
+- If permissions fail, report clearly and stop retry loops.
+
+
+Example 1: “Show total orders by status for last 30 days”
+1. `redshift.fetch_db_schema`
+2. `redshift.execute_query(query="SELECT status, COUNT(*) AS total_orders FROM public.orders WHERE created_at >= DATEADD(day, -30, GETDATE()) GROUP BY status ORDER BY total_orders DESC")`
+
+Example 2: “What columns are in finance.invoice?”
+1. `redshift.get_tables_schema(schema_name="finance", tables=["invoice"])`
+2. Optional follow-up: `redshift.execute_query` only if user asks for row data
+
+Example 3: “Give me the DDL for all tables in analytics”
+1. `redshift.get_schema_ddl(schema_name="analytics")`
 """
 
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
@@ -2843,6 +2889,7 @@ Generate:
 {github_guidance}
 {clickup_guidance}
 {mariadb_guidance}
+{redshift_guidance}
 
 ## Planning Best Practices
 
@@ -3653,6 +3700,7 @@ async def planner_node(
     github_guidance = GITHUB_GUIDANCE if _has_github_tools(state) else ""
     clickup_guidance = CLICKUP_GUIDANCE if _has_clickup_tools(state) else ""
     mariadb_guidance = MARIADB_GUIDANCE if _has_mariadb_tools(state) else ""
+    redshift_guidance = REDSHIFT_GUIDANCE if _has_redshift_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
@@ -3664,7 +3712,8 @@ async def planner_node(
         teams_guidance=teams_guidance,
         github_guidance=github_guidance,
         clickup_guidance=clickup_guidance,
-        mariadb_guidance=mariadb_guidance
+        mariadb_guidance=mariadb_guidance,
+        redshift_guidance=redshift_guidance,
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -4718,6 +4767,10 @@ def _has_clickup_tools(state: ChatState) -> bool:
     """Check if ClickUp tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "clickup" in ts.get("name", "").lower() for ts in agent_toolsets)
+def _has_redshift_tools(state: ChatState) -> bool:
+    """Check if Redshift tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "redshift" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
 def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
@@ -7896,6 +7949,8 @@ Use this decision tree to choose the right approach:
         base_prompt += "\n" + CLICKUP_GUIDANCE
     if _has_mariadb_tools(state):
         base_prompt += "\n" + MARIADB_GUIDANCE
+    if _has_redshift_tools(state):
+        base_prompt += "\n" + REDSHIFT_GUIDANCE
 
     # ── Multi-step workflow patterns ─────────────────────────────────────────
     workflow_patterns = _build_workflow_patterns(state)

@@ -47,4 +47,3 @@ class DocumentationLink:
     url: str
     doc_type: str
 
-

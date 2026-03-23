@@ -66,4 +66,3 @@ def auto_add_oauth_fields(
             field_config = auth_field_to_dict(auth_field)
             target_schema["fields"].append(field_config)
 
-
