@@ -13,7 +13,7 @@
     "test": "TS_NODE_PROJECT=tsconfig.test.json c8 mocha --parallel --jobs 4",
     "test:coverage": "TS_NODE_PROJECT=tsconfig.test.json c8 --reporter=text --reporter=lcov --reporter=html mocha",
     "test:ci": "TS_NODE_PROJECT=tsconfig.test.json c8 --check-coverage --lines 90 --functions 90 --branches 80 --statements 90 --reporter=text --reporter=lcov mocha --parallel --jobs 4",
-    "test:coverage-check": "TS_NODE_PROJECT=tsconfig.test.json c8 --check-coverage --lines 90 --functions 90 --branches 80 --statements 90 --reporter=text --reporter=html mocha --parallel --jobs 4",
+    "test:coverage-check": "TS_NODE_PROJECT=tsconfig.test.json c8 --check-coverage --lines 90 --functions 90 --branches 80 --statements 90 --reporter=text --reporter=html --reporter=json-summary mocha --parallel --jobs 4",
     "slack": "nodemon src/integrations/slack-bot/src/index.ts"
   },
   "keywords": [],
@@ -116,3 +116,4 @@
     "fast-xml-parser": "5.3.4"
   }
 }
+
