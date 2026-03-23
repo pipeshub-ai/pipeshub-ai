@@ -101,7 +101,7 @@ describe('RedisDistributedKeyValueStore', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(KeyAlreadyExistsError);
-        expect((error as Error).message).to.include('key1');
+        expect((error as Error).message).to.include('already exists');
       }
     });
 

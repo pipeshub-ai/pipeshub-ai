@@ -152,21 +152,6 @@ describe('OAuthScopeNames', () => {
     });
   });
 
-  // Storage/Documents
-  describe('Storage/Documents scopes', () => {
-    it('should have DOCUMENT_READ as "document:read"', () => {
-      expect(OAuthScopeNames.DOCUMENT_READ).to.equal('document:read');
-    });
-
-    it('should have DOCUMENT_WRITE as "document:write"', () => {
-      expect(OAuthScopeNames.DOCUMENT_WRITE).to.equal('document:write');
-    });
-
-    it('should have DOCUMENT_DELETE as "document:delete"', () => {
-      expect(OAuthScopeNames.DOCUMENT_DELETE).to.equal('document:delete');
-    });
-  });
-
   // Crawling
   describe('Crawling scopes', () => {
     it('should have CRAWL_READ as "crawl:read"', () => {
@@ -203,8 +188,8 @@ describe('OAuthScopeNames', () => {
 
   // Structural tests
   describe('structural checks', () => {
-    it('should have exactly 40 scope entries', () => {
-      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(40);
+    it('should have exactly 37 scope entries', () => {
+      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(37);
     });
 
     it('should contain only the expected keys', () => {
@@ -249,10 +234,6 @@ describe('OAuthScopeNames', () => {
         // Configuration
         'CONFIG_READ',
         'CONFIG_WRITE',
-        // Storage/Documents
-        'DOCUMENT_READ',
-        'DOCUMENT_WRITE',
-        'DOCUMENT_DELETE',
         // Crawling
         'CRAWL_READ',
         'CRAWL_WRITE',
