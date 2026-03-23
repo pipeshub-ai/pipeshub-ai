@@ -20,6 +20,8 @@ import re
 import time
 from typing import Any, Literal, Union
 from uuid import UUID
+import pytz
+from datetime import datetime, timezone
 
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -2890,6 +2892,7 @@ Generate:
 {clickup_guidance}
 {mariadb_guidance}
 {redshift_guidance}
+{zoom_guidance}
 
 ## Planning Best Practices
 
@@ -3538,6 +3541,140 @@ This applies equally to start dates, end dates, and recurrence end dates.A wrong
 - When deleting occurrences, batch ALL dates into a SINGLE call (the tool handles them all).
 - `occurrence_dates` must be YYYY-MM-DD format strings.
 """
+ZOOM_GUIDANCE = r"""
+# Zoom Toolset Guidance
+
+## Available Tools
+### User
+- **get_my_profile** — Get the authenticated user's profile (name, email).
+
+### Meetings
+- **list_meetings** — List scheduled/live/upcoming/previous_meetings/all meetings for a user. And search meetings by name.
+- **list_upcoming_meetings** — Shorthand for upcoming meetings only.
+- **get_meeting** — Get full details of a specific meeting by ID.
+- **get_meeting_invitation** — Get the invitation text/join link for a meeting.
+- **create_meeting** — Create a new scheduled meeting.
+- **update_meeting** — Update fields of an existing meeting (time, topic, duration, agenda).
+- **delete_meeting** — Delete or cancel a meeting.
+
+### Contacts
+- **list_contacts** — List all contacts for a user.
+- **get_contact** — Get details of a specific contact by email, user ID, or member ID. used to resolve the email from name
+
+### Transcripts
+- **get_meeting_transcript** — Fetch the AI Companion transcript for a past meeting as plain text.
+
+### Docs
+- **list_folder_children** — List all documents in a folder.
+
+---
+## 🔗 Tool Dependencies & Resolution Strategy
+
+### General Principle
+- Always prefer **direct identifiers** (meeting_id, email).
+- If missing → resolve via **search tools**.
+- If still missing → fallback to **list tools**.
+- Never guess identifiers.
+
+---
+
+### Meeting Resolution Flow
+- If user provides **meeting name/topic**:
+  → Call `list_meetings`
+- If multiple matches:
+  → Ask user to confirm
+- Once `meeting_id` is known:
+  → Use `get_meeting`, `update_meeting`, `delete_meeting`, or `get_meeting_invitation`
+
+---
+
+### Tool-Level Dependencies
+
+| Tool | Dependency Logic |
+|-----|----------------|
+| `get_meeting` | Requires `meeting_id` → use `list_meetings` if missing |
+| `update_meeting` | Requires `meeting_id` → resolve via search first |
+| `delete_meeting` | Requires `meeting_id` → resolve via search first |
+| `get_meeting_invitation` | Requires `meeting_id` → resolve via search |
+| `get_meeting_transcript` | Requires `meeting_id` (past meeting) → resolve via search |
+| `create_meeting` | If invitees lack email → use `get_contact` or `list_contacts` |
+| `get_contact` | If identifier unclear → use `list_contacts` |
+
+---
+
+### Contacts Resolution Flow
+- If user provides **name only**:
+  → Call `list_contacts` or `get_contact`
+  → Match name → extract email
+- If multiple matches:
+  → Ask user to confirm
+
+---
+
+### Recurring Meeting Occurrence Resolution
+- If user refers to **specific occurrence** (e.g. "this Thursday"):
+  1. Call `get_meeting`
+  2. Extract occurrences
+  3. Match by date/time
+  4. Use `occurrence_id` in update/delete
+
+---
+
+## CreateMeetingInput
+| Field | Details |
+|---|---|
+| `type` | 1=instant, 2=scheduled, 3=recurring (no fixed time), 8=recurring (fixed time) |
+| `recurrence` | Required when `type=8`. Omit or leave null for non-recurring meetings. |
+
+## RecurrenceInput
+| Field | Details |
+|---|---|
+| `type` | **Required.** 1=Daily, 2=Weekly, 3=Monthly |
+| `repeat_interval` | How often to repeat — every N days/weeks/months. Defaults to 1 if omitted. |
+| `end_date_time` | End date/time in UTC ISO format, must end with `Z` (e.g. `2026-03-31T19:00:00Z`). Mutually exclusive with `end_times`. |
+| `end_times` | Number of occurrences (max 60). Mutually exclusive with `end_date_time`. |
+| `weekly_days` | **Weekly only.** Comma-separated day numbers: 1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri, 7=Sat. (e.g. `"2,4"` for Mon+Wed) |
+| `monthly_day` | **Monthly only (option A).** Day of month, 1–31. |
+| `monthly_week` | **Monthly only (option B).** Week of month: 1=first … 4=fourth, -1=last. Use with `monthly_week_day`. |
+| `monthly_week_day` | **Monthly only (option B).** Day of week in that week: 1=Sun, 2=Mon … 7=Sat. |
+
+### Recurrence Patterns — Quick Reference
+
+| User says | `type` | Key fields |
+|---|---|---|
+| "every day" | 1 | `repeat_interval=1` |
+| "every 3 days" | 1 | `repeat_interval=3` |
+| "every week on Monday" | 2 | `repeat_interval=1`, `weekly_days="2"` |
+| "every Mon, Wed, Fri" | 2 | `repeat_interval=1`, `weekly_days="2,4,6"` |
+| "every 2 weeks on Tuesday" | 2 | `repeat_interval=2`, `weekly_days="3"` |
+| "every month on the 15th" | 3 | `repeat_interval=1`, `monthly_day=15` |
+| "every month on the last Friday" | 3 | `repeat_interval=1`, `monthly_week=-1`, `monthly_week_day=6` |
+| "every month on the first Monday" | 3 | `repeat_interval=1`, `monthly_week=1`, `monthly_week_day=2` |
+
+### Recurrence End — Rules
+- Use `end_date_time` when the user gives an end date (e.g. "until June 30").
+- Use `end_times` when the user gives a count (e.g. "10 times", "for the next 5 weeks").
+- **Never set both.** If neither is given, ask the user which they prefer.
+
+### Timezone Inference
+BEFORE checking if timezone is missing, always read the Temporal Context 
+   section. If User timezone is present there, use it directly. Never ask user for timezone.
+
+---
+
+## Key Rules
+1. **Never guess a meeting ID.** If the user gives a name, always call `list_meetings` first.
+2. **Prefer specific tools over general ones.**
+   - Use `list_upcoming_meetings` for "what's next", not `list_meetings`.
+3. **Transcript requires a past meeting.** `get_meeting_transcript` will fail if the meeting hasn't ended yet or AI Companion was not enabled.
+4. **Update only fields the user mentioned.** Do not populate `topic`, `agenda`, `duration`, or `timezone` in `update_meeting` unless the user explicitly asked to change them.
+5. **Always use the user's timezone** → INFERRABLE from **Temporal Context**, and assume current year if not provided.
+6. **Multiple matches on search — confirm before acting.** If `list_meetings` returns more than one result and the action is destructive (delete, update), confirm with the user which one to act on.
+7. **Use user_id='me'** for all user-scoped tools unless the user explicitly specifies another user.
+8. **Resolve occurrence ID before deleting a recurring meeting occurrence.**
+9. **Resolve invitee email from name using contacts.**
+10. **Recurring meetings require type=8 and a recurrence block.**
+"""
 PLANNER_USER_TEMPLATE = """Query: {query}
 
 Plan the tools. Return only valid JSON."""
@@ -3701,7 +3838,7 @@ async def planner_node(
     clickup_guidance = CLICKUP_GUIDANCE if _has_clickup_tools(state) else ""
     mariadb_guidance = MARIADB_GUIDANCE if _has_mariadb_tools(state) else ""
     redshift_guidance = REDSHIFT_GUIDANCE if _has_redshift_tools(state) else ""
-
+    zoom_guidance = ZOOM_GUIDANCE if _has_zoom_tools(state) else ""
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
         jira_guidance=jira_guidance,
@@ -3714,6 +3851,7 @@ async def planner_node(
         clickup_guidance=clickup_guidance,
         mariadb_guidance=mariadb_guidance,
         redshift_guidance=redshift_guidance,
+        zoom_guidance=zoom_guidance
     )
 
     # Add capability summary so LLM can answer "what can you do?" questions
@@ -4761,6 +4899,10 @@ def _has_mariadb_tools(state: ChatState) -> bool:
     """Check if MariaDB tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "mariadb" in ts.get("name", "").lower() for ts in agent_toolsets)
+def _has_zoom_tools(state: ChatState) -> bool:
+    """Check if Zoom tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "zoom" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
 def _has_clickup_tools(state: ChatState) -> bool:
@@ -7945,6 +8087,9 @@ Use this decision tree to choose the right approach:
     if _has_outlook_tools(state):
         base_prompt += "\n" + OUTLOOK_GUIDANCE
 
+    if _has_zoom_tools(state):
+        base_prompt += "\n" + ZOOM_GUIDANCE
+
     if _has_clickup_tools(state):
         base_prompt += "\n" + CLICKUP_GUIDANCE
     if _has_mariadb_tools(state):
@@ -7972,9 +8117,14 @@ Use this decision tree to choose the right approach:
     if timezone or current_time:
         time_parts = []
         if current_time:
-            time_parts.append(f"Current time: {current_time}")
+            time_parts.append(f"**Current time**: {current_time}")
         if timezone:
-            time_parts.append(f"User timezone: {timezone}")
+            tz = pytz.timezone(timezone)
+            now = datetime.now(tz)
+            abbr = now.strftime("%Z")        # IST, EST, PST etc.
+            offset = now.strftime("%z")      # +0530
+            offset_fmt = f"{offset[:-2]}:{offset[-2:]}"  # +05:30
+            time_parts.append(f"**User timezone**: {timezone} ({abbr} (UTC{offset_fmt}))")
         base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
 
     # ── Capability summary ────────────────────────────────────────────────────

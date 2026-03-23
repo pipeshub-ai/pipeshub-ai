@@ -17,6 +17,8 @@ For OAuth2:
 1. Create a Zoom OAuth app at https://marketplace.zoom.us/
 2. Set ZOOM_CLIENT_ID and ZOOM_CLIENT_SECRET environment variables
 3. The OAuth flow will automatically open a browser for authorization
+4. Add the scopes in ZOOM_OAUTH_SCOPES to your app in the Zoom marketplace, then
+   re-run and re-authorize so the token includes them (old tokens keep old scopes).
 
 For Bearer Token:
 1. Set ZOOM_ACCESS_TOKEN environment variable with your access token
@@ -54,6 +56,16 @@ ACCOUNT_ID = os.getenv("ZOOM_ACCOUNT_ID")
 # OAuth redirect URI
 REDIRECT_URI = os.getenv("ZOOM_REDIRECT_URI", "http://localhost:8080/callback")
 
+# Scopes required for the example (list users, get user, list meetings, list groups).
+# Add these to your Zoom OAuth app at https://marketplace.zoom.us/ under Scopes.
+ZOOM_OAUTH_SCOPES = [
+    "user:read:user",
+    "meeting:read:list_meetings",
+    "meeting:write:meeting",
+    "cloud_recording:read:recording",
+    "cloud_recording:read:meeting_transcript",
+]
+
 
 def print_section(title: str):
     print(f"\n{'-'*80}")
@@ -82,6 +94,8 @@ def print_result(name: str, response: ZoomResponse, show_data: bool = True):
         print(f"   Error: {response.error}")
         if response.message:
             print(f"   Message: {response.message}")
+        if response.data:
+            print(f"   Response body: {json.dumps(response.data, indent=2)[:600]}")
 
 
 async def main() -> None:
@@ -103,7 +117,7 @@ async def main() -> None:
                 auth_endpoint="https://zoom.us/oauth/authorize",
                 token_endpoint="https://zoom.us/oauth/token",
                 redirect_uri=REDIRECT_URI,
-                scopes=[],  # Zoom doesn't require specific scopes in the auth URL
+                scopes=ZOOM_OAUTH_SCOPES,
                 scope_delimiter=" ",
                 auth_method="header",  # Basic Auth with client_id:client_secret
             )
@@ -151,9 +165,9 @@ async def main() -> None:
     print("Client initialized successfully.")
 
     try:
-        # 2. List Users
+        # 2. List Users (status=active is required by Zoom for this endpoint)
         print_section("Users")
-        users_resp = await data_source.list_users()
+        users_resp = await data_source.users(status="active")
         print_result("List Users", users_resp)
 
         # 3. Get User Info (use first user from list, or 'me')
@@ -165,17 +179,17 @@ async def main() -> None:
                 user_id = str(users[0].get("id", "me"))
                 print(f"   Using User: {users[0].get('email', 'N/A')} (ID: {user_id})")
 
-        user_info_resp = await data_source.get_user(user_id=user_id)
+        user_info_resp = await data_source.user(userId=user_id)
         print_result("Get User Info", user_info_resp)
 
         # 4. List Meetings
         print_section("Meetings")
-        meetings_resp = await data_source.list_meetings(user_id=user_id)
+        meetings_resp = await data_source.meetings(userId=user_id)
         print_result("List Meetings", meetings_resp)
 
         # 5. List Groups
         print_section("Groups")
-        groups_resp = await data_source.list_groups()
+        groups_resp = await data_source.groups()
         print_result("List Groups", groups_resp)
 
     finally:

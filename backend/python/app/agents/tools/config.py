@@ -205,6 +205,10 @@ class ToolDiscoveryConfig:
         #     app_name="zendesk",
         #     client_builder="ZendeskClient",
         # )
+        "zoom": AppConfiguration(
+            app_name="zoom",
+            client_builder="ZoomClient",
+        ),
 
     }
 
