@@ -5,8 +5,8 @@ All queries run against the remote Neo4j Aura instance. The graph model uses:
   - Record nodes          (files)
   - RecordGroup nodes     (buckets / folders)
   - BELONGS_TO edges      Record → RecordGroup, RecordGroup → RecordGroup
-  - PARENT_CHILD edges    Record → Record  (folder hierarchy)
-  - Permission edges      various
+  - RECORD_RELATION edges with relationshipType "PARENT_CHILD" (folder hierarchy)
+  - PERMISSION / INHERIT_PERMISSIONS edges for access (not a literal HAS_PERMISSION type)
 """
 
 from __future__ import annotations
@@ -77,21 +77,30 @@ def count_group_hierarchy_edges(driver: Driver, connector_id: str) -> int:
 
 
 def count_parent_child_edges(driver: Driver, connector_id: str) -> int:
-    """Count PARENT_CHILD edges between Records for a connector."""
+    """Count parent/child folder edges (RECORD_RELATION with relationshipType PARENT_CHILD)."""
     return _run_single_int(
         driver,
-        "MATCH (p {connectorId: $cid})-[:PARENT_CHILD]->(c {connectorId: $cid}) RETURN count(*) AS c",
+        """
+        MATCH (p {connectorId: $cid})-[r:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(c {connectorId: $cid})
+        RETURN count(*) AS c
+        """,
         cid=connector_id,
     )
 
 
 def count_permission_edges(driver: Driver, connector_id: str) -> int:
-    """Count permission edges from Records for a connector."""
-    return _run_single_int(
+    """Count permission-related edges touching Records for a connector (inherit + direct PERMISSION)."""
+    inherit = _run_single_int(
         driver,
-        "MATCH (r:Record {connectorId: $cid})-[:HAS_PERMISSION]->() RETURN count(*) AS c",
+        "MATCH (r:Record {connectorId: $cid})-[:INHERIT_PERMISSIONS]->() RETURN count(*) AS c",
         cid=connector_id,
     )
+    direct = _run_single_int(
+        driver,
+        "MATCH ()-[:PERMISSION]->(r:Record {connectorId: $cid}) RETURN count(*) AS c",
+        cid=connector_id,
+    )
+    return inherit + direct
 
 
 def count_app_record_group_edges(driver: Driver, connector_id: str) -> int:

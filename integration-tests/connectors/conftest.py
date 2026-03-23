@@ -188,6 +188,10 @@ def _constructor(
 
     state["rename_source_key"] = picked_files[0]
     state["rename_source_name"] = Path(picked_files[0]).name
+    # Move test uses the same object as rename; TC-RENAME-001 overwrites these after rename.
+    # Defaults allow TC-MOVE-001 to run if rename was skipped or failed before updating state.
+    state["move_source_key"] = state["rename_source_key"]
+    state["move_source_name"] = state["rename_source_name"]
     update_key = picked_files[1] if len(picked_files) >= 2 else picked_files[0]
     state["update_target_key"] = update_key
     state["update_target_name"] = Path(update_key).name
@@ -230,7 +234,7 @@ def _destructor(
     state: Dict[str, Any],
     *,
     connector_type: str,
-    cleanup_timeout: int = 180,
+    cleanup_timeout: int = 300,
 ) -> None:
     """Shared teardown: disable, delete connector + graph cleanup, clear storage content."""
     connector_id = state["connector_id"]
@@ -249,8 +253,12 @@ def _destructor(
     logger.info("DESTRUCTOR [%s]: Deleting connector %s", connector_type, connector_id)
     try:
         pipeshub_client.delete_connector(connector_id)
-        pipeshub_client.wait(15)
-        assert_all_records_cleaned(neo4j_driver, connector_id, timeout=cleanup_timeout)
+        # Allow graph DB / indexing to settle before polling (Aura replication can lag).
+        pipeshub_client.wait(25)
+        cleanup_s = int(
+            os.getenv("INTEGRATION_GRAPH_CLEANUP_TIMEOUT", str(cleanup_timeout))
+        )
+        assert_all_records_cleaned(neo4j_driver, connector_id, timeout=cleanup_s)
         logger.info("DESTRUCTOR [%s]: Graph cleaned for connector %s", connector_type, connector_id)
     except _CONNECTOR_DELETE_TEARDOWN_ERRORS:
         logger.exception("DESTRUCTOR [%s]: Failed to delete/clean connector %s", connector_type, connector_id)
