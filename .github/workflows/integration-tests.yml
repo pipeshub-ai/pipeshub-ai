@@ -4,6 +4,8 @@ on:
   pull_request_target:
     branches:
       - 'main'
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    
   workflow_dispatch:
     inputs:
       connectors:
