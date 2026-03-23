@@ -4,14 +4,16 @@ Handles agent instances, templates, chat, and permissions using graph-based arch
 """
 
 import json
+import os
 import uuid
 from collections.abc import AsyncGenerator
 from logging import Logger
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel
 
 from app.api.middlewares.auth import require_scopes
@@ -35,9 +37,19 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
 
+# Opik tracer initialization
+_opik_tracer = None
+_opik_api_key = os.getenv("OPIK_API_KEY")
+_opik_workspace = os.getenv("OPIK_WORKSPACE")
+if _opik_api_key and _opik_workspace:
+    try:
+        from opik.integrations.langchain import OpikTracer
+        _opik_tracer = OpikTracer()
+    except Exception:
+        pass
 # Constants
 SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
-
+NO_KB_SELECTED_FILTER = "NO_KB_SELECTED"
 
 # ============================================================================
 # Request Models
@@ -58,7 +70,19 @@ class ChatQuery(BaseModel):
     modelName: str | None = None
     timezone: str | None = None
     currentTime: str | None = None
+    conversationId: str | None = None
 
+
+class RouteDecision(BaseModel):
+    """
+    Routing decision with mandatory reasoning.
+
+    reasoning: one-sentence explanation written before committing to a route
+               (chain-of-thought before commitment reduces misroutes)
+    route: the tier — type-safe, cannot produce an invalid value
+    """
+    reasoning: str
+    route: Literal["quick", "react", "deep"]
 
 # ============================================================================
 # Custom Exceptions
@@ -165,73 +189,12 @@ def _get_user_context(request: Request) -> dict[str, Any]:
     }
 
 
-def _extract_tool_names_for_routing(query_info: dict[str, Any]) -> list[str]:
-    """Extract flattened tool names from query payload (tools or toolsets)."""
-    names: list[str] = []
-
-    def _normalize_tool_name(tool_obj: str | dict[str, Any]) -> str | None:
-        """Return canonical tool name in `app.tool` format when possible."""
-        if isinstance(tool_obj, str):
-            return tool_obj
-        if not isinstance(tool_obj, dict):
-            return None
-
-        # Prefer fully-qualified keys first
-        for k in ("fullName", "full_name", "toolFullName"):
-            v = tool_obj.get(k)
-            if isinstance(v, str) and v:
-                return v
-
-        # Fallback to plain name
-        name = tool_obj.get("name")
-        if not isinstance(name, str) or not name:
-            return None
-        if "." in name:
-            return name
-
-        # Rebuild app.tool from additional fields if available
-        app_name = tool_obj.get("app") or tool_obj.get("appName") or tool_obj.get("toolsetName")
-        if isinstance(app_name, str) and app_name:
-            return f"{app_name}.{name}"
-        return name
-
-    # Direct tools list (legacy / explicit payloads)
-    for t in query_info.get("tools", []) or []:
-        normalized = _normalize_tool_name(t)
-        if normalized:
-            names.append(normalized)
-
-    # Toolsets list (graph-based payloads)
-    for toolset in query_info.get("toolsets", []) or []:
-        if not isinstance(toolset, dict):
-            continue
-        toolset_name = toolset.get("name")
-        for t in toolset.get("tools", []) or []:
-            normalized = _normalize_tool_name(t)
-            if not normalized and isinstance(t, dict):
-                # Last-resort fallback using toolset name as app prefix
-                tn = t.get("name")
-                if isinstance(toolset_name, str) and isinstance(tn, str) and tn:
-                    normalized = f"{toolset_name}.{tn}"
-            if normalized:
-                names.append(normalized)
-
-    # De-duplicate while preserving order
-    seen = set()
-    deduped: list[str] = []
-    for n in names:
-        if n and n not in seen:
-            deduped.append(n)
-            seen.add(n)
-    return deduped
-
 
 async def _select_agent_graph_for_query(
     query_info: dict[str, Any],
     logger: Logger,
     llm: BaseChatModel,
-    agent: dict[str, Any] = None,
-):
+) -> CompiledStateGraph:
     """
     Graph selection based on chatMode from the chat input:
     - quick: legacy agent graph (fast, no tool loops)
@@ -262,89 +225,143 @@ async def _auto_select_graph(
     query_info: dict[str, Any],
     logger: Logger,
     llm: BaseChatModel,
-):
+) -> CompiledStateGraph:
     """
     Auto-select graph using an LLM call to classify the query into one of
     three agent types: quick, verification, or deep.
     Falls back to 'verification' if parsing fails.
     """
-    from langchain_core.messages import HumanMessage
 
-    tool_names = _extract_tool_names_for_routing(query_info)
-    apps = sorted({
-        name.split(".", 1)[0]
-        for name in tool_names
-        if isinstance(name, str) and "." in name
-    })
-    user_query = query_info.get("query", "")
-    domains_str = ", ".join(apps) if apps else "none"
+    from langchain_core.messages import HumanMessage, SystemMessage
 
-    prompt = (
-        "You are a query router. Classify the user query into exactly one agent type "
-        "based on the structural complexity of the work required.\n\n"
+    user_query = query_info.get("query", "").strip()
+    if not user_query:
+        return modern_agent_graph
 
-        "## Agent Types\n\n"
+    context_block = _build_routing_context(query_info)
+    structured_llm = llm.with_structured_output(RouteDecision)
 
-        "**quick**: The task requires ZERO or exactly ONE tool call with no dependency resolution. "
-        "This covers anything answerable from general knowledge, simple greetings, "
-        "or a single straightforward read/write operation where the parameters are obvious "
-        "from the query itself.\n\n"
+    system_prompt = (
+        "You are a routing agent. Classify the user request into exactly one "
+        "execution tier: quick, react, or deep.\n\n"
 
-        "**verification**: The task requires MULTIPLE tool calls that form a SEQUENTIAL chain — "
-        "the output of one step feeds as input to the next. This includes multi-step workflows "
-        "even if they span different services, as long as the steps depend on each other in a "
-        "linear sequence (A → B → C). Also use this when a single tool call requires a "
-        "preceding lookup to resolve a parameter (e.g. finding an ID before using it).\n\n"
+        + context_block +
 
-        "**deep**: The task requires PARALLEL independent work streams, BULK processing of many items, "
-        "or SYNTHESIS across multiple unrelated data sources. The defining characteristic is that "
-        "the work CANNOT be serialized into one sequential chain — it needs fan-out to gather data "
-        "from independent sources, batch processing of large volumes, or aggregation/comparison "
-        "across separate result sets to produce a combined output.\n\n"
+        "## quick\n"
+        "Every action and every parameter can be fully determined right now from "
+        "the query and context, before anything runs. The request itself is the "
+        "final action — retrieving, displaying, or acting on something where the "
+        "goal is the retrieval or action itself, not further processing of what "
+        "comes back.\n\n"
+        "CRITICAL: For a request to be 'quick', ALL required parameters for the "
+        "final action must be directly available from the query text, conversation "
+        "context, or system constants. If ANY required parameter must be obtained "
+        "by calling a tool first (e.g., resolving an ID, key, or identifier), "
+        "then it is NOT quick — it requires a prior step and should be 'react'.\n\n"
 
-        "## Decision Rule\n"
-        "1. Count the minimum tool calls needed and check their dependency structure.\n"
-        "2. Zero or one independent call → quick\n"
-        "3. Multiple calls where each depends on the previous result → verification\n"
-        "4. Multiple INDEPENDENT calls that must be gathered and combined → deep\n\n"
+        "## react\n"
+        "A fixed, predictable sequence of dependent steps where the chain length "
+        "is deterministic before execution starts, but at least one step's "
+        "parameters only become known from a prior step's result. The intent "
+        "implies: get something first, then do something with it — where 'it' "
+        "is one specific thing.\n\n"
+        "Key indicator: If the final action requires a parameter (ID, key, "
+        "identifier, or any structured value) that must be fetched/resolved "
+        "through a tool call, this is react. The dependency chain is: "
+        "resolve parameter → execute final action.\n\n"
 
-        f"Available tool domains: {domains_str}\n"
-        f"User query: {user_query}\n\n"
-        "Respond with exactly one word: quick, verification, or deep."
+
+        "## deep\n"
+        "Reserved for tasks react cannot handle. Only two cases qualify:\n"
+        "(a) The intent requires getting a collection and then doing something "
+        "to EVERY item in it — the number of items is unknown before the "
+        "collection is retrieved. Wanting to SEE a collection is not this.\n"
+        "(b) The intent requires gathering information from multiple fully "
+        "independent sources and combining it into one unified answer.\n\n"
+
+        "## Decision\n"
+        "Q1: Are ALL required parameters for the final action directly available "
+        "from the query, context, or constants — with NO tool calls needed to "
+        "obtain them? If ANY parameter requires a tool call to resolve (IDs, "
+        "keys, identifiers, or any structured values), answer NO. → quick only if YES\n\n"
+        "Q2: Does the request require a fixed sequence where at least one "
+        "parameter for the final action must come from a prior tool's result? "
+        "→ react\n\n"
+        "Q3: Does the request imply acting on every item in a collection whose "
+        "size is only known at runtime, or combining independent sources? → deep\n\n"
+        "Default → react\n\n"
+
+        "For follow-ups ('yes', 'ok', 'do it', 'give all', 'show more', 'proceed') "
+        "— infer the full intent from the prior conversation above, then apply "
+        "the decision above to that inferred intent.\n\n"
+
+        f"Query: {user_query}"
     )
 
+    route_map = {
+        "quick": agent_graph,
+        "react": modern_agent_graph,
+        "deep": deep_agent_graph,
+    }
+
     try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        raw = response.content.strip().lower().strip(".,!\"' ")
+        invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
 
-        route_map = {
-            "quick": agent_graph,
-            "verification": modern_agent_graph,
-            "deep": deep_agent_graph,
-        }
-
-        for keyword, graph in route_map.items():
-            if keyword in raw:
-                logger.info(
-                    "Agent graph route: %s | LLM auto-select (domains=%s, query=%s)",
-                    keyword,
-                    domains_str,
-                    user_query[:80],
-                )
-                return graph
-
-        logger.warning(
-            "Agent graph route: verification (default) | LLM returned unparseable: %s",
-            raw[:100],
+        decision: RouteDecision = await structured_llm.ainvoke(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content="Classify."),
+            ],
+            config=invoke_config,
         )
-        return modern_agent_graph
+
+        route = decision.route
+        logger.info(
+            "Agent graph route: %s | (query=%s, reasoning=%s)",
+            route,
+            user_query[:80],
+            decision.reasoning[:120],
+        )
+        return route_map[route]
 
     except Exception as e:
         logger.warning(
-            "Agent graph route: verification (fallback) | LLM router failed: %s", e
+            "Agent graph route: react (fallback) | router failed: %s", e
         )
         return modern_agent_graph
 
+
+
+def _build_routing_context(query_info: dict[str, Any]) -> str:
+    """
+    Compact prior conversation context for resolving follow-ups.
+    Last 3 turns only. First line of bot responses only.
+    """
+    previous = query_info.get("previous_conversations", [])
+    if not previous:
+        return ""
+
+    recent = previous[-6:]
+    turns = []
+
+    for conv in recent:
+        role = conv.get("role", "")
+        content = str(conv.get("content", "")).strip()
+
+        if role == "user_query":
+            turns.append(f"User: {content[:200]}")
+        elif role == "bot_response":
+            first_line = content.split("\n")[0][:150]
+            turns.append(f"Assistant: {first_line}")
+
+    if not turns:
+        return ""
+
+    return (
+        "Prior conversation:\n"
+        + "\n".join(turns)
+        + "\n\n"
+    )
 
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get user document with validation"""
@@ -434,7 +451,7 @@ def _parse_models(raw_models: list[Any], logger: Logger) -> tuple[list[str], boo
     return model_entries, has_reasoning_model
 
 
-def _parse_toolsets(raw_toolsets: list[Any], logger: Logger) -> dict[str, dict[str, Any]]:
+def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
     """Parse toolsets with their tools.
 
     The key of the returned dict is the toolset name (lowercase).
@@ -486,7 +503,7 @@ def _parse_toolsets(raw_toolsets: list[Any], logger: Logger) -> dict[str, dict[s
     return toolsets_with_tools
 
 
-def _parse_knowledge_sources(raw_knowledge: list[Any], logger: Logger) -> dict[str, dict[str, Any]]:
+def _parse_knowledge_sources(raw_knowledge: list[Any]) -> dict[str, dict[str, Any]]:
     """Parse knowledge sources"""
     knowledge_sources = {}
 
@@ -514,6 +531,56 @@ def _parse_knowledge_sources(raw_knowledge: list[Any], logger: Logger) -> dict[s
         }
 
     return knowledge_sources
+
+
+def _filter_knowledge_by_enabled_sources(
+    agent_knowledge: list[dict[str, Any]],
+    filters: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """
+    Filter agent_knowledge to only include entries matching enabled filters.
+
+    Keeps:
+    - App connectors whose connectorId is in filters["apps"]
+    - KB connectors whose recordGroups overlap with filters["kb"],
+      or KB connectors with no recordGroups (unrestricted KB)
+    """
+    enabled_apps = set(filters.get("apps", []))
+    enabled_kbs = set(filters.get("kb", []))
+
+    if not enabled_apps and not enabled_kbs:
+        return agent_knowledge
+
+    filtered: list[dict[str, Any]] = []
+    for k in agent_knowledge:
+        if not isinstance(k, dict):
+            continue
+
+        connector_id = k.get("connectorId", "")
+
+        # App connector — keep if in enabled apps
+        if connector_id in enabled_apps:
+            filtered.append(k)
+            continue
+
+        # KB connector — keep if its record groups overlap or it has none
+        if connector_id.startswith("knowledgeBase_") and enabled_kbs:
+            filters_data = k.get("filters", k.get("filtersParsed", {}))
+            if isinstance(filters_data, str):
+                try:
+                    filters_data = json.loads(filters_data)
+                except (json.JSONDecodeError, ValueError):
+                    filters_data = {}
+
+            record_groups = (
+                filters_data.get("recordGroups", [])
+                if isinstance(filters_data, dict) else []
+            )
+
+            if any(rg in enabled_kbs for rg in record_groups):
+                filtered.append(k)
+
+    return filtered
 
 
 async def _create_toolset_edges(
@@ -580,14 +647,15 @@ async def _create_toolset_edges(
         return created_toolsets, [{"name": "all", "error": str(e)}]
 
     # Prepare agent -> toolset edges
-    agent_toolset_edges = []
-    for _, toolset_info in toolset_mapping.items():
-        agent_toolset_edges.append({
+    agent_toolset_edges = [
+        {
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
             "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
             "createdAtTimestamp": time,
             "updatedAtTimestamp": time,
-        })
+        }
+        for toolset_info in toolset_mapping.values()
+    ]
 
     # Batch create agent -> toolset edges
     try:
@@ -600,7 +668,7 @@ async def _create_toolset_edges(
     toolset_tool_edges = []
     tool_mapping = {}  # Map full_name to tool_key
 
-    for toolset_name, toolset_info in toolset_mapping.items():
+    for toolset_info in toolset_mapping.values():
         for tool_data in toolset_info["tools"]:
             tool_name = tool_data["name"]
             full_name = tool_data["fullName"]
@@ -651,7 +719,7 @@ async def _create_toolset_edges(
             logger.error(f"Failed to create toolset-tool edges: {e}")
 
     # Build response with created toolsets and tools
-    for toolset_name, toolset_info in toolset_mapping.items():
+    for toolset_info in toolset_mapping.values():
         created_tools = []
         for tool_data in toolset_info["tools"]:
             full_name = tool_data["fullName"]
@@ -723,14 +791,15 @@ async def _create_knowledge_edges(
         return created_knowledge
 
     # Prepare agent -> knowledge edges
-    agent_knowledge_edges = []
-    for _, knowledge_info in knowledge_mapping.items():
-        agent_knowledge_edges.append({
+    agent_knowledge_edges = [
+        {
             "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
             "_to": f"{CollectionNames.AGENT_KNOWLEDGE.value}/{knowledge_info['key']}",
             "createdAtTimestamp": time,
             "updatedAtTimestamp": time,
-        })
+        }
+        for knowledge_info in knowledge_mapping.values()
+    ]
 
     # Batch create agent -> knowledge edges
     try:
@@ -739,12 +808,14 @@ async def _create_knowledge_edges(
         logger.error(f"Failed to create agent-knowledge edges: {e}")
 
     # Build response
-    for connector_id, knowledge_info in knowledge_mapping.items():
-        created_knowledge.append({
+    created_knowledge.extend(
+        {
             "connectorId": connector_id,
             "key": knowledge_info["key"],
-            "filters": knowledge_info["filters"]
-        })
+            "filters": knowledge_info["filters"],
+        }
+        for knowledge_info in knowledge_mapping.values()
+    )
 
     return created_knowledge
 
@@ -954,11 +1025,10 @@ async def stream_response(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: dict[str, Any] = None,
-    agent: dict[str, Any] = None,
 ) -> AsyncGenerator[str, None]:
     """Stream agent response"""
     try:
-        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm, agent=agent)
+        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
         if selected_graph == deep_agent_graph:
             graph_type = "deep"
@@ -1312,8 +1382,8 @@ async def create_agent(request: Request) -> JSONResponse:
             )
 
         # Parse toolsets and knowledge BEFORE starting transaction
-        toolsets_with_tools = _parse_toolsets(body.get("toolsets", []), logger)
-        knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []), logger)
+        toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+        knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         share_with_org = body.get("shareWithOrg", False)
@@ -1438,14 +1508,15 @@ async def create_agent(request: Request) -> JSONResponse:
                     await graph_provider.batch_upsert_nodes(toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction_id)
 
                 # Create agent -> toolset edges
-                agent_toolset_edges = []
-                for _, toolset_info in toolset_mapping.items():
-                    agent_toolset_edges.append({
+                agent_toolset_edges = [
+                    {
                         "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
                         "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
                         "createdAtTimestamp": time,
                         "updatedAtTimestamp": time,
-                    })
+                    }
+                    for toolset_info in toolset_mapping.values()
+                ]
                 if agent_toolset_edges:
                     await graph_provider.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction_id)
 
@@ -1454,7 +1525,7 @@ async def create_agent(request: Request) -> JSONResponse:
                 tool_nodes = []
                 toolset_tool_edges = []
 
-                for toolset_name, toolset_info in toolset_mapping.items():
+                for toolset_info in toolset_mapping.values():
                     for tool_data in toolset_info["tools"]:
                         tool_name = tool_data["name"]
                         full_name = tool_data["fullName"]
@@ -1496,7 +1567,7 @@ async def create_agent(request: Request) -> JSONResponse:
                     await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction_id)
 
                 # Build response for created toolsets
-                for toolset_name, toolset_info in toolset_mapping.items():
+                for toolset_info in toolset_mapping.values():
                     created_tools = []
                     for tool_data in toolset_info["tools"]:
                         full_name = tool_data["fullName"]
@@ -1549,24 +1620,27 @@ async def create_agent(request: Request) -> JSONResponse:
                     await graph_provider.batch_upsert_nodes(knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction_id)
 
                 # Create agent -> knowledge edges
-                agent_knowledge_edges = []
-                for _connector_id, knowledge_info in knowledge_mapping.items():
-                    agent_knowledge_edges.append({
+                agent_knowledge_edges = [
+                    {
                         "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
                         "_to": f"{CollectionNames.AGENT_KNOWLEDGE.value}/{knowledge_info['key']}",
                         "createdAtTimestamp": time,
                         "updatedAtTimestamp": time,
-                    })
+                    }
+                    for knowledge_info in knowledge_mapping.values()
+                ]
                 if agent_knowledge_edges:
                     await graph_provider.batch_create_edges(agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction_id)
 
                 # Build response for created knowledge
-                for connector_id, knowledge_info in knowledge_mapping.items():
-                    created_knowledge.append({
+                created_knowledge.extend(
+                    {
                         "connectorId": connector_id,
                         "key": knowledge_info["key"],
-                        "filters": knowledge_info["filters"]
-                    })
+                        "filters": knowledge_info["filters"],
+                    }
+                    for knowledge_info in knowledge_mapping.values()
+                )
 
                 logger.debug(f"Created {len(created_knowledge)} knowledge source(s) for agent: {agent_key}")
 
@@ -1757,7 +1831,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         # Update toolsets if provided in request (even if empty array - means delete all)
         if "toolsets" in body:
             # Parse toolsets first to validate before deletion
-            toolsets_with_tools = _parse_toolsets(body.get("toolsets", []), logger)
+            toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
 
             # Use transaction for atomic delete-then-create operation
             graph_provider = services["graph_provider"]
@@ -1920,7 +1994,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         # Update knowledge if provided in request (even if empty array - means delete all)
         if "knowledge" in body:
             # Parse knowledge sources first to validate before deletion
-            knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []), logger)
+            knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
 
             # Use transaction for atomic delete-then-create operation
             graph_provider = services["graph_provider"]
@@ -2350,8 +2424,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "instructions": agent.get("instructions"),
             "timezone": chat_query.timezone,
             "currentTime": chat_query.currentTime,
+            "conversationId": chat_query.conversationId,
         }
-        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm, agent=agent)
+        selected_graph = await _select_agent_graph_for_query(query_info, logger, llm)
 
         if selected_graph == deep_agent_graph:
             initial_state = build_deep_agent_state(
@@ -2646,14 +2721,10 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 filters["kb"] = kb_record_groups
             logger.info(f"Filters: {filters}")
 
-        # Narrow agent_knowledge to only the connectors present in filters["apps"]
-        # so the query_info knowledge list stays consistent with the resolved filters.
-        enabled_apps_set = set(filters.get("apps", []))
-        if enabled_apps_set:
-            agent_knowledge = [
-                k for k in agent_knowledge
-                if isinstance(k, dict) and k.get("connectorId") in enabled_apps_set
-            ]
+        agent_knowledge = _filter_knowledge_by_enabled_sources(agent_knowledge, filters)
+
+        if not filters.get("kb"):
+            filters["kb"] = [NO_KB_SELECTED_FILTER]
 
         logger.info(f"Filters: {filters}")
 
@@ -2674,6 +2745,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "toolsets": agent_toolsets,
             "knowledge": agent_knowledge,
             "toolsetConfigs": toolset_configs,
+            "conversationId": chat_query.conversationId,
         }
 
         return StreamingResponse(
@@ -2687,7 +2759,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 reranker_service,
                 config_service,
                 org_info,
-                agent=agent,
             ),
             media_type="text/event-stream",
             headers={

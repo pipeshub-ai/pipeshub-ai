@@ -1,9 +1,10 @@
 """Knowledge Hub Unified Browse Service"""
 
+import logging
 import re
 import traceback
 from collections import Counter
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from app.config.constants.arangodb import ProgressStatus
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
@@ -34,7 +35,7 @@ FOLDER_MIME_TYPES = [
     'text/directory'
 ]
 
-def _get_node_type_value(node_type) -> str:
+def _get_node_type_value(node_type: NodeType | str) -> str:
     """Safely extract the string value from a NodeType enum or string."""
     if hasattr(node_type, 'value'):
         return node_type.value
@@ -45,28 +46,28 @@ class KnowledgeHubService:
 
     def __init__(
         self,
-        logger,
+        logger: logging.Logger,
         graph_provider: IGraphDBProvider,
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
 
-    def _has_search_filters(self, q: Optional[str], node_types: Optional[List[str]],
-                             record_types: Optional[List[str]], origins: Optional[List[str]],
-                             connector_ids: Optional[List[str]],
-                             indexing_status: Optional[List[str]],
-                             created_at: Optional[Dict], updated_at: Optional[Dict],
-                             size: Optional[Dict]) -> bool:
+    def _has_search_filters(self, q: str | None, node_types: list[str] | None,
+                             record_types: list[str] | None, origins: list[str] | None,
+                             connector_ids: list[str] | None,
+                             indexing_status: list[str] | None,
+                             created_at: dict | None, updated_at: dict | None,
+                             size: dict | None) -> bool:
         """Check if any search/filter parameters are provided."""
         return any([q, node_types, record_types, origins, connector_ids,
                     indexing_status, created_at, updated_at, size])
 
-    def _has_flattening_filters(self, q: Optional[str], node_types: Optional[List[str]],
-                                 record_types: Optional[List[str]], origins: Optional[List[str]],
-                                 connector_ids: Optional[List[str]],
-                                 indexing_status: Optional[List[str]],
-                                 created_at: Optional[Dict], updated_at: Optional[Dict],
-                                 size: Optional[Dict]) -> bool:
+    def _has_flattening_filters(self, q: str | None, node_types: list[str] | None,
+                                 record_types: list[str] | None, origins: list[str] | None,
+                                 connector_ids: list[str] | None,
+                                 indexing_status: list[str] | None,
+                                 created_at: dict | None, updated_at: dict | None,
+                                 size: dict | None) -> bool:
         """Check if any filters that should trigger flattened/recursive search are provided.
 
         These filters should return flattened results (all nested children):
@@ -81,24 +82,25 @@ class KnowledgeHubService:
         self,
         user_id: str,
         org_id: str,
-        parent_id: Optional[str] = None,
-        parent_type: Optional[str] = None,
+        parent_id: str | None = None,
+        parent_type: str | None = None,
         only_containers: bool = False,
         page: int = 1,
         limit: int = 50,
         sort_by: str = "updatedAt",
         sort_order: str = "desc",
-        q: Optional[str] = None,
-        node_types: Optional[List[str]] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connector_ids: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        created_at: Optional[Dict[str, Optional[int]]] = None,
-        updated_at: Optional[Dict[str, Optional[int]]] = None,
-        size: Optional[Dict[str, Optional[int]]] = None,
+        q: str | None = None,
+        node_types: list[str] | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connector_ids: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        created_at: dict[str, int | None] | None = None,
+        updated_at: dict[str, int | None] | None = None,
+        size: dict[str, int | None] | None = None,
         flattened: bool = False,
-        include: Optional[List[str]] = None,
+        include: list[str] | None = None,
+        record_group_ids: list[str] | None = None,
     ) -> KnowledgeHubNodesResponse:
         """
         Get nodes for the Knowledge Hub unified browse API
@@ -167,6 +169,7 @@ class KnowledgeHubService:
                     parent_id=parent_id,  # None for global search, set for scoped search
                     parent_type=parent_type,
                     include_filters=(parent_id is None) or (include and 'availableFilters' in include),
+                    record_group_ids=record_group_ids,
                 )
             else:
                 # Browse mode - get direct children of parent only
@@ -189,6 +192,7 @@ class KnowledgeHubService:
                     updated_at=updated_at,
                     size=size,
                     only_containers=only_containers,
+                    record_group_ids=record_group_ids,
                 )
                 # In browse mode, fetch available filters only if requested
                 if include and 'availableFilters' in include:
@@ -329,29 +333,30 @@ class KnowledgeHubService:
         self,
         user_key: str,
         org_id: str,
-        parent_id: Optional[str],
-        parent_type: Optional[str],  # Now passed directly from router
+        parent_id: str | None,
+        parent_type: str | None,  # Now passed directly from router
         skip: int,
         limit: int,
         sort_by: str,
         sort_order: str,
-        q: Optional[str],  # Search query to filter within children
-        node_types: Optional[List[str]],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connector_ids: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        created_at: Optional[Dict[str, Optional[int]]],
-        updated_at: Optional[Dict[str, Optional[int]]],
-        size: Optional[Dict[str, Optional[int]]],
+        q: str | None,  # Search query to filter within children
+        node_types: list[str] | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connector_ids: list[str] | None,
+        indexing_status: list[str] | None,
+        created_at: dict[str, int | None] | None,
+        updated_at: dict[str, int | None] | None,
+        size: dict[str, int | None] | None,
         only_containers: bool,
-    ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
+        record_group_ids: list[str] | None = None,
+    ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
         """Get children nodes for a given parent using unified provider method."""
         if parent_id is None:
             # Root level: return Apps
             return await self._get_root_level_nodes(
                 user_key, org_id, skip, limit, sort_by, sort_order,
-                node_types, origins, connector_ids, only_containers
+                node_types, origins, connector_ids, only_containers=only_containers,
             )
 
         # Validate that the node exists and type matches
@@ -382,6 +387,7 @@ class KnowledgeHubService:
             sort_field=sort_field,
             sort_dir=sort_dir,
             only_containers=only_containers,
+            record_group_ids=record_group_ids,
         )
 
         nodes_data = result.get('nodes', [])
@@ -402,11 +408,11 @@ class KnowledgeHubService:
         limit: int,
         sort_by: str,
         sort_order: str,
-        node_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connector_ids: Optional[List[str]],
+        node_types: list[str] | None,
+        origins: list[str] | None,
+        connector_ids: list[str] | None,
         only_containers: bool,
-    ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
+    ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
         """Get root level nodes (Apps, including Collection App)"""
         try:
             # Get user's accessible apps
@@ -530,20 +536,21 @@ class KnowledgeHubService:
         limit: int,
         sort_by: str,
         sort_order: str,
-        q: Optional[str],
-        node_types: Optional[List[str]],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connector_ids: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        created_at: Optional[Dict[str, Optional[int]]],
-        updated_at: Optional[Dict[str, Optional[int]]],
-        size: Optional[Dict[str, Optional[int]]],
+        q: str | None,
+        node_types: list[str] | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connector_ids: list[str] | None,
+        indexing_status: list[str] | None,
+        created_at: dict[str, int | None] | None,
+        updated_at: dict[str, int | None] | None,
+        size: dict[str, int | None] | None,
         only_containers: bool,
-        parent_id: Optional[str] = None,
-        parent_type: Optional[str] = None,
+        parent_id: str | None = None,
+        parent_type: str | None = None,
         include_filters: bool = False,
-    ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
+        record_group_ids: list[str] | None = None,
+    ) -> tuple[list[NodeItem], int, AvailableFilters | None]:
         """
         Search for nodes (global or scoped within parent).
 
@@ -607,6 +614,7 @@ class KnowledgeHubService:
                 only_containers=only_containers,
                 parent_id=parent_id,  # Can be None for global search
                 parent_type=parent_type,
+                record_group_ids=record_group_ids,
             )
 
             nodes_data = result.get('nodes', [])
@@ -662,7 +670,7 @@ class KnowledgeHubService:
         # For now, the queries already filter by user permissions, but we could add explicit check here
         # TODO: Add explicit permission check if needed
 
-    async def _get_current_node_info(self, node_id: str) -> Optional[CurrentNode]:
+    async def _get_current_node_info(self, node_id: str) -> CurrentNode | None:
         """Get current node information (the node being browsed)"""
         node_info = await self.graph_provider.get_knowledge_hub_node_info(
             node_id=node_id,
@@ -677,7 +685,7 @@ class KnowledgeHubService:
             )
         return None
 
-    async def _get_breadcrumbs(self, node_id: str) -> List[BreadcrumbItem]:
+    async def _get_breadcrumbs(self, node_id: str) -> list[BreadcrumbItem]:
         """
         Get breadcrumb trail for a node using the optimized provider method.
         """
@@ -704,8 +712,8 @@ class KnowledgeHubService:
             return []
 
     async def _get_permissions(
-        self, user_key: str, org_id: str, parent_id: Optional[str]
-    ) -> Optional[PermissionsInfo]:
+        self, user_key: str, org_id: str, parent_id: str | None
+    ) -> PermissionsInfo | None:
         """Get user permissions for the current context. Returns None if user has no permission."""
         try:
             perm_data = await self.graph_provider.get_knowledge_hub_context_permissions(
@@ -734,7 +742,7 @@ class KnowledgeHubService:
             # Return None on error (no permission granted)
             return None
 
-    def _doc_to_node_item(self, doc: Dict[str, Any]) -> NodeItem:
+    def _doc_to_node_item(self, doc: dict[str, Any]) -> NodeItem:
         """Convert a database document to a NodeItem"""
         # Extract ID - prefer 'id' field, fallback to '_key' or parse from '_id'
         doc_id = doc.get('id')
@@ -815,7 +823,7 @@ class KnowledgeHubService:
             canDelete=can_delete,
         )
 
-    def _format_enum_label(self, value: str, special_cases: Optional[Dict[str, str]] = None) -> str:
+    def _format_enum_label(self, value: str, special_cases: dict[str, str] | None = None) -> str:
         """
         Convert enum value to human-readable label.
 

@@ -25,6 +25,41 @@ class BlobStorage(Transformer):
         self.config_service = config_service
         self.graph_provider = graph_provider
 
+    async def _get_auth_and_config(self, org_id: str) -> tuple[dict, str, str]:
+        """
+        Returns (headers, nodejs_endpoint, storage_type).
+        """
+        payload = {
+            "orgId": org_id,
+            "scopes": [TokenScopes.STORAGE_TOKEN.value],
+        }
+        secret_keys = await self.config_service.get_config(
+            config_node_constants.SECRET_KEYS.value
+        )
+        scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
+        if not scoped_jwt_secret:
+            raise ValueError("Missing scoped JWT secret")
+
+        jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+        headers = {"Authorization": f"Bearer {jwt_token}"}
+
+        endpoints = await self.config_service.get_config(
+            config_node_constants.ENDPOINTS.value
+        )
+        nodejs_endpoint = endpoints.get("cm", {}).get(
+            "endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value
+        )
+        if not nodejs_endpoint:
+            raise ValueError("Missing CM endpoint configuration")
+
+        storage = await self.config_service.get_config(
+            config_node_constants.STORAGE.value
+        )
+        storage_type = storage.get("storageType")
+        if not storage_type:
+            raise ValueError("Missing storage type configuration")
+
+        return headers, nodejs_endpoint, storage_type
     def _compress_record(self, record: dict) -> str:
         """
         Compress record data using msgspec (C-based) + zstd.
@@ -404,6 +439,37 @@ class BlobStorage(Transformer):
             raise
         except Exception as e:
             self.logger.error("❌ Unexpected error uploading to signed URL: %s", str(e))
+            raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+
+    async def _upload_raw_to_signed_url(
+        self,
+        session: aiohttp.ClientSession,
+        signed_url: str,
+        content: bytes,
+        content_type: str,
+    ) -> None:
+        """Upload raw bytes to a pre-signed URL (for CSV, images, etc.)."""
+        try:
+            async with session.put(
+                signed_url,
+                data=content,
+                headers={"Content-Type": content_type},
+            ) as response:
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    response_text = (await response.text())[:200]
+                    self.logger.error(
+                        "❌ Failed to upload raw content. Status: %d, Response: %s",
+                        response.status,
+                        response_text,
+                    )
+                    raise aiohttp.ClientError(
+                        f"Failed to upload with status {response.status}"
+                    )
+                self.logger.debug("✅ Successfully uploaded raw content to signed URL")
+        except aiohttp.ClientError:
+            raise
+        except Exception as e:
+            self.logger.error("❌ Unexpected error uploading raw content: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
     async def _create_placeholder(self, session, url, data, headers) -> dict | None:
@@ -924,5 +990,147 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Failed to store virtual record mapping: %s", str(e))
             self.logger.exception("Detailed error trace:")
             raise e
+
+                
+    async def save_conversation_file_to_storage(
+        self,
+        org_id: str,
+        conversation_id: str,
+        file_name: str,
+        file_bytes: bytes,
+        content_type: str = "text/csv",
+    ) -> dict:
+        """Save a file (CSV, etc.) under a conversation path and return download info.
+
+        Args:
+            org_id: Organisation ID (used for auth / routing).
+            conversation_id: Conversation this file belongs to.
+            file_name: Human-readable file name **with** extension
+                       (e.g. ``query_result_1709640000.csv``).
+            file_bytes: Raw file content.
+            content_type: MIME type for the upload.
+
+        Returns:
+            dict with ``documentId``, ``fileName``, and either ``signedUrl``
+            (S3) or ``downloadUrl`` (local).
+        """
+        import os
+
+        try:
+            headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+
+            document_path = f"conversations/{conversation_id}"
+            doc_name_no_ext = os.path.splitext(file_name)[0]
+            extension = os.path.splitext(file_name)[1].lstrip(".")
+
+            if storage_type == "local":
+                async with aiohttp.ClientSession() as session:
+                    form_data = aiohttp.FormData()
+                    form_data.add_field(
+                        "file", file_bytes,
+                        filename=file_name,
+                        content_type=content_type,
+                    )
+                    form_data.add_field("documentName", doc_name_no_ext)
+                    form_data.add_field("documentPath", document_path)
+                    form_data.add_field("isVersionedFile", "false")
+
+                    upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
+                    async with session.post(upload_url, data=form_data, headers=headers) as response:
+                        if response.status != HttpStatusCode.SUCCESS.value:
+                            try:
+                                error_body = await response.json()
+                                self.logger.error(
+                                    "❌ Conversation file upload failed. Status: %d, Error: %s",
+                                    response.status, error_body,
+                                )
+                            except Exception:
+                                error_text = await response.text()
+                                self.logger.error(
+                                    "❌ Conversation file upload failed. Status: %d, Response: %s",
+                                    response.status, error_text[:500],
+                                )
+                            raise Exception(f"Local upload failed with status {response.status}")
+                        response_data = await response.json()
+                        document_id = response_data.get("_id")
+                        if not document_id:
+                            raise Exception("No document ID in local upload response")
+
+                    download_url = (
+                        f"{nodejs_endpoint}"
+                        f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+                    )
+                    self.logger.info("✅ Conversation file saved (local): %s", document_id)
+                    return {
+                        "documentId": document_id,
+                        "downloadUrl": download_url,
+                        "fileName": file_name,
+                    }
+            else:
+                placeholder_data = {
+                    "documentName": doc_name_no_ext,
+                    "documentPath": document_path,
+                    "extension": extension,
+                    "isVersionedFile": False,
+                }
+
+                async with aiohttp.ClientSession() as session:
+                    placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
+                    document = await self._create_placeholder(
+                        session, placeholder_url, placeholder_data, headers,
+                    )
+                    document_id = document.get("_id")
+                    if not document_id:
+                        raise Exception("No document ID in placeholder response")
+
+                    upload_url = (
+                        f"{nodejs_endpoint}"
+                        f"{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
+                    )
+                    upload_result = await self._get_signed_url(session, upload_url, {}, headers)
+                    signed_url = upload_result.get("signedUrl")
+                    if not signed_url:
+                        raise Exception("No signed URL for conversation file upload")
+
+                    await self._upload_raw_to_signed_url(
+                        session,
+                        signed_url,
+                        file_bytes,
+                        content_type,
+                    )
+
+                    download_api = (
+                        f"{nodejs_endpoint}"
+                        f"{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+                    )
+                    async with session.get(download_api, headers=headers) as resp:
+                        if resp.status == HttpStatusCode.SUCCESS.value:
+                            data = await resp.json()
+                            download_signed_url = data.get("signedUrl")
+                            if download_signed_url:
+                                self.logger.info(
+                                    "✅ Conversation file saved (S3): %s", document_id,
+                                )
+                                return {
+                                    "documentId": document_id,
+                                    "signedUrl": download_signed_url,
+                                    "fileName": file_name,
+                                }
+
+                    self.logger.info(
+                        "✅ Conversation file saved (fallback URL): %s", document_id,
+                    )
+                    download_url_external = (
+                        f"{nodejs_endpoint}"
+                        f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+                    )
+                    return {
+                        "documentId": document_id,
+                        "downloadUrl": download_url_external,
+                        "fileName": file_name,
+                    }
+        except Exception as e:
+            self.logger.error("❌ Error saving conversation file: %s", str(e))
+            raise
 
 

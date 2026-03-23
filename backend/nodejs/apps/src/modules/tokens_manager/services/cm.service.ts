@@ -175,6 +175,15 @@ export class ConfigService {
 
   // Redis Configuration
   public async getRedisConfig(): Promise<RedisConfig> {
+    await this.saveConfigToEtcd(configPaths.keyValueStore.redis, {
+      host: process.env.REDIS_HOST!,
+      port: parseInt(process.env.REDIS_PORT!, 10),
+      username: process.env.REDIS_USERNAME,
+      password: process.env.REDIS_PASSWORD,
+      tls: process.env.REDIS_TLS === 'true',
+      db: parseInt(process.env.REDIS_DB || '0', 10),
+    });
+
     return this.getEncryptedConfig<RedisConfig>(
       configPaths.keyValueStore.redis,
       {
@@ -190,6 +199,12 @@ export class ConfigService {
 
   // MongoDB Configuration
   public async getMongoConfig(): Promise<MongoConfig> {
+    
+    await this.saveConfigToEtcd(configPaths.db.mongodb, {
+      uri: process.env.MONGO_URI!,
+      db: MONGO_DB_NAME,
+    });
+
     return this.getEncryptedConfig<MongoConfig>(configPaths.db.mongodb, {
       uri: process.env.MONGO_URI!,
       db: MONGO_DB_NAME,
@@ -198,6 +213,13 @@ export class ConfigService {
 
   // Qdrant Configuration
   public async getQdrantConfig(): Promise<QdrantConfig> {
+    await this.saveConfigToEtcd(configPaths.db.qdrant, {
+      apiKey: process.env.QDRANT_API_KEY!,
+      host: process.env.QDRANT_HOST || 'localhost',
+      port: parseInt(process.env.QDRANT_PORT || '6333', 10),
+      grpcPort: parseInt(process.env.QDRANT_GRPC_PORT || '6334', 10),
+    });
+
     return this.getEncryptedConfig<QdrantConfig>(configPaths.db.qdrant, {
       apiKey: process.env.QDRANT_API_KEY!,
       host: process.env.QDRANT_HOST || 'localhost',
@@ -208,6 +230,13 @@ export class ConfigService {
 
   // Arango Configuration
   public async getArangoConfig(): Promise<ArangoConfig> {
+    await this.saveConfigToEtcd(configPaths.db.arangodb, {
+      url: process.env.ARANGO_URL!,
+      db: ARANGO_DB_NAME,
+      username: process.env.ARANGO_USERNAME!,
+      password: process.env.ARANGO_PASSWORD!,
+    });
+
     return this.getEncryptedConfig<ArangoConfig>(configPaths.db.arangodb, {
       url: process.env.ARANGO_URL!,
       db: ARANGO_DB_NAME,

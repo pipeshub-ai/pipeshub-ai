@@ -902,6 +902,41 @@ export const authenticateToolsetInstance =
     }
   };
 
+
+/**
+ * Update user's information for a toolset instance.
+ */
+export const updateUserToolsetInstance =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { instanceId } = req.params;
+      if (!instanceId) throw new BadRequestError('instanceId is required');
+
+      logger.info(`Updating toolset instance ${instanceId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${instanceId}/credentials`,
+        HttpMethod.PUT,
+        headers,
+        req.body
+      );
+
+      handleConnectorResponse(connectorResponse, res, 'Updating toolset instance', 'Failed to update toolset instance');
+    } catch (error: any) {
+      logger.error('Error updating toolset instance', { error: error.message, instanceId: req.params.instanceId });
+      next(handleBackendError(error, 'update toolset instance'));
+    }
+  };
+
 /**
  * Remove user's credentials for a toolset instance.
  */

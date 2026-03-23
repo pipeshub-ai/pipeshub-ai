@@ -3,6 +3,7 @@ import base64
 import contextlib
 import io
 import json
+import logging
 import mimetypes
 import os
 import tempfile
@@ -25,16 +26,18 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import HttpRequest, MediaIoBaseDownload
 from jose import JWTError
 from pydantic import BaseModel, ValidationError
 
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AppStatus,
     CollectionNames,
     Connectors,
     MimeTypes,
+    OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
@@ -49,9 +52,10 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.core.sync.task_manager import sync_task_manager
+from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
+from app.core.signed_url import SignedUrlHandler
 from app.models.entities import Record
 from app.services.featureflag.config.config import CONFIG
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -93,6 +97,59 @@ def get_mime_type_from_record(record: Record) -> str:
     # Fallback to octet-stream
     return "application/octet-stream"
 
+
+async def _stream_google_api_request(request: HttpRequest, error_context: str = "download") -> AsyncGenerator[bytes, None]:
+    """
+    Helper function to stream data from a Google API request using MediaIoBaseDownload.
+
+    Args:
+        request: Google API request object (from files().get_media() or files().export_media())
+        error_context: Context string for error messages (e.g., "PDF export", "file export")
+    Yields:
+        bytes: Chunks of data from the download
+    """
+    buffer = io.BytesIO()
+    try:
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+
+        while not done:
+            try:
+                _, done = downloader.next_chunk()
+
+                buffer.seek(0)
+                chunk = buffer.read()
+
+                if chunk:  # Only yield if we have data
+                    yield chunk
+
+                # Clear buffer for next chunk
+                buffer.seek(0)
+                buffer.truncate(0)
+
+                # Yield control back to event loop
+                await asyncio.sleep(0)
+
+            except HttpError as http_error:
+                logger.error(f"HTTP error during {error_context}: {str(http_error)}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail=f"Error during {error_context}: {str(http_error)}",
+                ) from http_error
+            except Exception as chunk_error:
+                logger.error(f"Error during {error_context} chunk: {str(chunk_error)}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail=f"Error during {error_context}",
+                ) from chunk_error
+    except Exception as stream_error:
+        logger.error(f"Error in {error_context} stream: {str(stream_error)}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Error setting up {error_context} stream",
+        ) from stream_error
+    finally:
+        buffer.close()
 
 
 class ReindexFailedRequest(BaseModel):
@@ -191,6 +248,94 @@ async def get_kafka_service(request: Request) -> KafkaService:
     container: ConnectorAppContainer = request.app.container
     return container.kafka_service()
 
+
+_LOCK_STATUS_MESSAGES: dict[str, str] = {
+    AppStatus.FULL_SYNCING.value: "A full sync is in progress. Please wait and try again.",
+    AppStatus.SYNCING.value: "A sync is already in progress. Please wait and try again.",
+}
+
+
+def _check_connector_not_locked(instance: dict[str, Any]) -> None:
+    """Raise 409 if the connector instance is currently locked (isLocked=True).
+
+    Picks a descriptive message based on the current app status so the user
+    understands exactly what is blocking their operation.
+    """
+    if instance.get("isLocked"):
+        status = instance.get("status", "")
+        detail = _LOCK_STATUS_MESSAGES.get(
+            status,
+            "Another operation is in progress. Please wait and try again.",
+        )
+        raise HTTPException(
+            status_code=HttpStatusCode.CONFLICT.value,
+            detail=detail,
+        )
+
+
+async def require_connector_not_locked(
+    connector_id: str,
+    request: Request,
+) -> None:
+    """FastAPI dependency that raises 409 if the connector instance is currently locked.
+
+    Fetches the connector instance using the authenticated user context (populated
+    by the global authMiddleware) and delegates to _check_connector_not_locked.
+    If the instance is not found, this dependency does nothing — the route handler
+    is responsible for its own 404 check.
+    """
+    connector_registry = request.app.state.connector_registry
+    user_id = request.state.user.get("userId")
+    org_id = request.state.user.get("orgId")
+    is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
+
+    instance = await connector_registry.get_connector_instance(
+        connector_id=connector_id,
+        user_id=user_id,
+        org_id=org_id,
+        is_admin=is_admin,
+    )
+
+    if instance:
+        _check_connector_not_locked(instance)
+
+
+async def require_connector_not_locked_for_record(
+    record_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Raise 409 if the record's connector is locked. Used by reindex record route."""
+    record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+    if not record:
+        return
+    if record.get("origin") != OriginTypes.CONNECTOR.value:
+        return
+    connector_id = record.get("connectorId")
+    if not connector_id:
+        return
+    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if app_doc:
+        _check_connector_not_locked(app_doc)
+
+
+async def require_connector_not_locked_for_record_group(
+    record_group_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> None:
+    """Raise 409 if the record group's connector is locked. Used by reindex record group route."""
+    record_group = await graph_provider.get_document(
+        record_group_id, CollectionNames.RECORD_GROUPS.value
+    )
+    if not record_group:
+        return
+    connector_id = record_group.get("connectorId")
+    if not connector_id:
+        return
+    app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if app_doc:
+        _check_connector_not_locked(app_doc)
+
+
 def _parse_comma_separated_str(value: str | None) -> list[str] | None:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
     if not value:
@@ -202,8 +347,9 @@ def _sanitize_app_name(app_name: str) -> str:
 
 
 def _trim_config_values(
+    *,
     obj: str | int | float | bool | None | list[Any] | dict[str, Any],
-    path: str = ""
+    path: str = "",
 ) -> str | int | float | bool | None | list[Any] | dict[str, Any]:
     """
     Recursively trims leading and trailing whitespace from string values in a configuration object.
@@ -242,14 +388,14 @@ def _trim_config_values(
 
     # If it's a list, recursively trim each element
     if isinstance(obj, list):
-        return [_trim_config_values(item, f"{path}[{i}]") for i, item in enumerate(obj)]
+        return [_trim_config_values(obj=item, path=f"{path}[{i}]") for i, item in enumerate(obj)]
 
     # If it's a dict, recursively trim each property
     if isinstance(obj, dict):
         trimmed = {}
         for key, value in obj.items():
             new_path = f"{path}.{key}" if path else key
-            trimmed[key] = _trim_config_values(value, new_path)
+            trimmed[key] = _trim_config_values(obj=value, path=new_path)
         return trimmed
 
     # Preserve all other types as-is:
@@ -278,7 +424,7 @@ def _trim_connector_config(config: dict[str, Any]) -> dict[str, Any]:
 
     for section in ["auth", "sync", "filters"]:
         if section in trimmed_config and isinstance(trimmed_config[section], dict):
-            trimmed_config[section] = _trim_config_values(trimmed_config[section], section)
+            trimmed_config[section] = _trim_config_values(obj=trimmed_config[section], path=section)
 
     return trimmed_config
 
@@ -289,7 +435,7 @@ async def get_signed_url(
     user_id: str,
     connector: str,
     record_id: str,
-    signed_url_handler: Any = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
+    signed_url_handler: SignedUrlHandler = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
 ) -> dict:
     """Get signed URL for a record"""
     try:
@@ -308,7 +454,7 @@ async def get_signed_url(
         logger.error(f"Error getting signed URL: {repr(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
 
-@router.delete("/api/v1/delete/record/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/api/v1/delete/record/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
 @inject
 async def handle_record_deletion(
     record_id: str, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
@@ -458,7 +604,7 @@ async def download_file(
     record_id: str,
     connector: str,
     token: str,
-    signed_url_handler: Any = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
+    signed_url_handler: SignedUrlHandler = Depends(Provide[ConnectorAppContainer.signed_url_handler]),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> dict | StreamingResponse | None:
     try:
@@ -537,7 +683,7 @@ async def download_file(
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error downloading file") from e
 
 
-@router.get("/api/v1/stream/record/{record_id}", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/stream/record/{record_id}", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def stream_record(
     request: Request,
@@ -550,34 +696,13 @@ async def stream_record(
     Stream a record to the client.
     """
     try:
-        try:
-            logger.info(f"Stream Record Start: {time.time()}")
-            logger.info(f"Convert To: {convertTo}")
-            auth_header = request.headers.get("Authorization")
-            if not auth_header or not auth_header.startswith("Bearer "):
-                raise HTTPException(
-                    status_code=HttpStatusCode.UNAUTHORIZED.value,
-                    detail="Missing or invalid Authorization header",
-                )
-            # Extract the token
-            token = auth_header.split(" ")[1]
-            secret_keys = await config_service.get_config(
-                config_node_constants.SECRET_KEYS.value
-            )
-            jwt_secret = secret_keys.get("jwtSecret")
-            payload = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+        logger.info(f"Stream Record Start: {time.time()}")
+        logger.info(f"Convert To: {convertTo}")
 
-            org_id = payload.get("orgId")
-            user_id = payload.get("userId")
-        except JWTError as e:
-            logger.error("JWT validation error: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Invalid or expired token") from e
-        except ValidationError as e:
-            logger.error("Payload validation error: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload") from e
-        except Exception as e:
-            logger.error("Unexpected error during token validation: %s", str(e))
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token") from e
+        # Use the already-authenticated user from the auth middleware
+        user = request.state.user
+        org_id = user.get("orgId")
+        user_id = user.get("userId")
 
         org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
         record_task = graph_provider.get_record_by_id(
@@ -599,6 +724,7 @@ async def stream_record(
 
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
+
         access_check = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
         if not access_check:
             logger.warning(f"User {user_id} does not have access to record {record_id}")
@@ -946,7 +1072,7 @@ async def convert_buffer_to_pdf_stream(
             fallback_filename="converted_file.pdf"
         )
 
-@router.get("/api/v1/records", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/records", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_records(
     request:Request,
@@ -1054,7 +1180,7 @@ async def get_records(
             "error": str(e),
         }
 
-@router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_record_by_id(
     record_id: str,
@@ -1086,7 +1212,7 @@ async def get_record_by_id(
         logger.error(f"Error checking record access: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to check record access") from e
 
-@router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE, OAuthScopes.KB_DELETE))])
 @inject
 async def delete_record(
     record_id: str,
@@ -1148,7 +1274,7 @@ async def delete_record(
             detail=f"Internal server error while deleting record: {str(e)}"
         ) from e
 
-@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record)])
 @inject
 async def reindex_single_record(
     record_id: str,
@@ -1231,7 +1357,7 @@ async def reindex_single_record(
             detail=f"Internal server error while reindexing record: {str(e)}"
         ) from e
 
-@router.get("/api/v1/stats", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/stats", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 async def get_connector_stats_endpoint(
     request: Request,
     org_id: str,
@@ -1251,7 +1377,7 @@ async def get_connector_stats_endpoint(
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=f"Internal server error while getting connector stats: {str(e)}") from e
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record_group)])
 @inject
 async def reindex_record_group(
     record_group_id: str,
@@ -1349,8 +1475,9 @@ async def reindex_record_group(
 def _validate_connector_deletion_permissions(
     instance: dict[str, Any],
     user_id: str,
+    *,
     is_admin: bool,
-    logger
+    logger: logging.Logger,
 ) -> None:
     """
     Validate that the user has permission to delete the connector instance.
@@ -1665,7 +1792,7 @@ async def get_connector_instances(
         ) from e
 
 
-@router.get("/api/v1/connectors/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/connectors/active", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_WRITE))])
 async def get_active_connector_instances(request: Request) -> dict[str, Any]:
     """
     Get all active connector instances.
@@ -1821,12 +1948,13 @@ async def _handle_oauth_config_creation(
     instance_name: str,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
     config_service: ConfigurationService,
     oauth_config_id: str | None,
     auth_type: str,
     base_url: str,
-    logger
+    logger: logging.Logger,
 ) -> str | None:
     """
     Handle OAuth config creation or update for a new connector instance.
@@ -1950,10 +2078,11 @@ async def _prepare_connector_config(
     selected_auth_type: str,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
     config_service: ConfigurationService,
     base_url: str,
-    logger
+    logger: logging.Logger,
 ) -> dict[str, Any]:
     """
     Prepare connector configuration for storage in etcd.
@@ -2383,7 +2512,7 @@ async def create_connector_instance(
         ) from e
 
 
-@router.get("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@router.get("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_WRITE))])
 async def get_connector_instance(
     connector_id: str,
     request: Request
@@ -2568,7 +2697,7 @@ async def get_connector_instance_config(
         ) from e
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/connectors/{connector_id}/config/auth", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_auth_config(
     connector_id: str,
     request: Request,
@@ -2889,7 +3018,7 @@ async def update_connector_instance_auth_config(
         ) from e
 
 
-@router.put("/api/v1/connectors/{connector_id}/config/filters-sync", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/connectors/{connector_id}/config/filters-sync", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_filters_sync_config(
     connector_id: str,
     request: Request,
@@ -2960,6 +3089,9 @@ async def update_connector_instance_filters_sync_config(
         # Only update sections that are provided in the request
         new_config = existing_config.copy() if existing_config else {}
 
+        # Snapshot old sync filters before merge
+        old_sync_filters = existing_config.get("filters", {}).get("sync", {})
+
         # Update sync section if provided
         if "sync" in body and isinstance(body["sync"], dict):
             if "sync" in new_config and isinstance(new_config["sync"], dict):
@@ -2978,29 +3110,19 @@ async def update_connector_instance_filters_sync_config(
                 if key in body["filters"]:
                     new_config["filters"][key] = body["filters"][key]
 
+        # Only delete sync points and edges when sync filters change
+        new_sync_filters = new_config.get("filters", {}).get("sync", {})
+        first_time_sync_filters = not old_sync_filters and bool(new_sync_filters)
+        sync_filters_changed = old_sync_filters != new_sync_filters
+        needs_full_resync = sync_filters_changed or first_time_sync_filters
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated filters-sync config for instance {connector_id}")
 
-        # Cancel any running sync task for this connector (safety net — normally the
-        # connector must be disabled before filters can be changed, but a task may
-        # still be winding down from a previous run)
-        await sync_task_manager.cancel_sync(connector_id)
-        logger.info(f"Cancelled any running sync task for connector {connector_id}")
-
-        # Delete all sync points so the next sync is a clean full sweep based on
-        # the updated filter configuration
-        try:
-            deleted_count, success = await graph_provider.delete_sync_points_by_connector_id(
-                connector_id=connector_id
-            )
-            if success:
-                logger.info(f"Deleted {deleted_count} sync points for connector {connector_id} after filter change")
-            else:
-                logger.warning(f"Failed to delete sync points for connector {connector_id} after filter change, continuing anyway")
-        except Exception as sp_error:
-            logger.error(f"Error deleting sync points for connector {connector_id} after filter change: {sp_error}")
-            # Non-fatal — continue with the config update response
+        if needs_full_resync:
+            logger.info(f"Sync filters changed for connector {connector_id}; frontend will trigger full resync")
+        else:
+            logger.info(f"No sync filter change for connector {connector_id}")
 
         # For filters/sync updates, keep connector status as is
         # Only update the timestamp
@@ -3026,7 +3148,8 @@ async def update_connector_instance_filters_sync_config(
         return {
             "success": True,
             "config": new_config,
-            "message": "Filters and sync configuration saved successfully."
+            "message": "Filters and sync configuration saved successfully.",
+            "syncFiltersChanged": needs_full_resync,
         }
 
     except HTTPException:
@@ -3039,7 +3162,7 @@ async def update_connector_instance_filters_sync_config(
         ) from e
 
 
-@router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.put("/api/v1/connectors/{connector_id}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_config(
     connector_id: str,
     request: Request,
@@ -3075,6 +3198,7 @@ async def update_connector_instance_config(
         org_id = request.state.user.get("orgId")
         is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
         connector_type = instance.get("type", "")
+
         body = await request.json()
         base_url = body.get("baseUrl", "")
         oauth_config_id = body.get("oauthConfigId")  # Reference to stored OAuth config
@@ -3302,7 +3426,8 @@ async def update_connector_instance_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector configuration: {str(e)}"
         ) from e
-@router.put("/api/v1/connectors/{connector_id}/name", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+
+@router.put("/api/v1/connectors/{connector_id}/name", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def update_connector_instance_name(
     connector_id: str,
     request: Request,
@@ -3458,7 +3583,7 @@ def _get_user_context(request: Request) -> dict[str, Any]:
     }
 
 
-def _validate_admin_only(is_admin: bool, action: str = "perform this action") -> None:
+def _validate_admin_only(*, is_admin: bool, action: str = "perform this action") -> None:
     """
     Validate that user is an administrator.
 
@@ -3479,6 +3604,7 @@ def _validate_admin_only(is_admin: bool, action: str = "perform this action") ->
 def _validate_connector_permissions(
     instance: dict[str, Any],
     user_id: str,
+    *,
     is_admin: bool,
     action: str = "access"
 ) -> None:
@@ -3524,8 +3650,8 @@ def _validate_connector_permissions(
 async def _get_and_validate_connector_instance(
     connector_id: str,
     user_context: dict[str, Any],
-    connector_registry,
-    logger
+    connector_registry: ConnectorRegistry,
+    logger: logging.Logger,
 ) -> dict[str, Any]:
     """
     Retrieve connector instance and validate access.
@@ -3563,7 +3689,7 @@ async def _find_oauth_config_in_list(
     oauth_configs: list[dict[str, Any]],
     config_id: str,
     org_id: str,
-    logger
+    logger: logging.Logger,
 ) -> tuple[dict[str, Any] | None, int | None]:
     """
     Find OAuth config by ID in list with access control.
@@ -3691,7 +3817,7 @@ async def _build_oauth_flow_config(
     connector_type: str,
     org_id: str,
     config_service: ConfigurationService,
-    logger
+    logger: logging.Logger,
 ) -> dict[str, Any]:
     """
     Build OAuth flow configuration from either shared OAuth config or direct auth config.
@@ -4534,8 +4660,9 @@ async def get_connector_instance_filters(
 
         # Validate permissions
         _validate_connector_permissions(
-            instance, user_context["user_id"], user_context["is_admin"],
-            "get filter options for"
+            instance, user_context["user_id"],
+            is_admin=user_context["is_admin"],
+            action="get filter options for"
         )
 
         # Get connector metadata
@@ -4668,8 +4795,9 @@ async def get_filter_field_options(
 
         # Validate permissions
         _validate_connector_permissions(
-            instance, user_context["user_id"], user_context["is_admin"],
-            "access filter options for"
+            instance, user_context["user_id"],
+            is_admin=user_context["is_admin"],
+            action="access filter options for"
         )
 
         # Get connector metadata
@@ -4744,7 +4872,7 @@ async def get_filter_field_options(
         ) from e
 
 
-def _get_connector_from_container(container, connector_id: str) -> BaseConnector | None:
+def _get_connector_from_container(container: ConnectorAppContainer, connector_id: str) -> BaseConnector | None:
     """
     Get connector instance from app_container.
     """
@@ -4776,7 +4904,7 @@ def _find_filter_field_config(
     return None
 
 
-@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def save_connector_instance_filters(
     connector_id: str,
     request: Request,
@@ -4823,8 +4951,9 @@ async def save_connector_instance_filters(
 
         # Validate permissions
         _validate_connector_permissions(
-            instance, user_context["user_id"], user_context["is_admin"],
-            "save filter options for"
+            instance, user_context["user_id"],
+            is_admin=user_context["is_admin"],
+            action="save filter options for"
         )
         # Get current config
         config_service = container.config_service()
@@ -4866,12 +4995,13 @@ async def _ensure_connector_initialized(
     container: ConnectorAppContainer,
     connector_id: str,
     connector_type: str,
-    connector_registry,
+    connector_registry: ConnectorRegistry,
     graph_provider: IGraphDBProvider,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
-    logger
+    logger: logging.Logger,
 ) -> BaseConnector | None:
     """
     Ensure connector is initialized in container. If not, initialize it.
@@ -5003,7 +5133,7 @@ async def _ensure_connector_initialized(
 # Connector Toggle Endpoint
 # ============================================================================
 
-@router.post("/api/v1/connectors/{connector_id}/toggle", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC))])
+@router.post("/api/v1/connectors/{connector_id}/toggle", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC)), Depends(require_connector_not_locked)])
 async def toggle_connector_instance(
     connector_id: str,
     request: Request,
@@ -5037,6 +5167,7 @@ async def toggle_connector_instance(
     try:
         body = await request.json()
         toggle_type = body.get("type")
+        full_sync = body.get("fullSync", False)
         if not toggle_type or toggle_type not in ["sync", "agent"]:
             logger.error(f"Toggle type is required and must be 'sync' or 'agent'. Got {toggle_type}")
             raise HTTPException(
@@ -5221,7 +5352,8 @@ async def toggle_connector_instance(
                 "apps": [connector_type.replace(" ", "").lower()],
                 "connectorId": connector_id,
                 "syncAction": "immediate",
-                "scope": instance.get("scope")
+                "scope": instance.get("scope"),
+                "fullSync": full_sync,
             }
 
             message = {
@@ -5230,9 +5362,18 @@ async def toggle_connector_instance(
                 "timestamp": get_epoch_timestamp_in_ms()
             }
 
-            # Send message to sync-events topic
-            logger.info(f"Sending message to sync-events topic: {message}")
             await producer.send_message(topic="entity-events", message=message)
+
+            # When disabling sync, remove connector from map and cleanup so re-enable does full init
+            if not target_status and hasattr(container, "connectors_map") and connector_id in container.connectors_map:
+                logger.info(f"Removing connector {connector_id} from connectors_map after toggle off")
+                existing_connector = container.connectors_map.pop(connector_id)
+                try:
+                    if hasattr(existing_connector, "cleanup"):
+                        await existing_connector.cleanup()
+                    logger.info(f"Cleaned up connector instance {connector_id}")
+                except Exception as cleanup_err:
+                    logger.error(f"Error cleaning up connector {connector_id} after toggle off: {cleanup_err}")
 
         return {
             "success": True,
@@ -5249,7 +5390,7 @@ async def toggle_connector_instance(
         ) from e
 
 
-@router.delete("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE))])
+@router.delete("/api/v1/connectors/{connector_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_DELETE)), Depends(require_connector_not_locked)])
 async def delete_connector_instance(
     connector_id: str,
     request: Request,
@@ -5303,7 +5444,7 @@ async def delete_connector_instance(
         await check_beta_connector_access(connector_type, request)
 
         # 3. Permission check — only creator or admin can delete
-        _validate_connector_deletion_permissions(instance, user_id, is_admin, logger)
+        _validate_connector_deletion_permissions(instance, user_id, is_admin=is_admin, logger=logger)
 
         # 4. Guard against duplicate deletion requests
         if instance.get("status") == "DELETING":
@@ -5868,11 +6009,12 @@ async def _create_or_update_oauth_config(
     instance_name: str,
     user_id: str,
     org_id: str,
+    *,
     is_admin: bool,
     config_service: ConfigurationService,
     base_url: str,
     oauth_app_id: str | None = None,
-    logger = None
+    logger: logging.Logger | None = None,
 ) -> str | None:
     """
     Create or update an OAuth config based on auth_config fields.
@@ -6088,7 +6230,7 @@ async def create_oauth_config(
     try:
         # Get and validate user context (admin only)
         user_context = _get_user_context(request)
-        _validate_admin_only(user_context["is_admin"], "create OAuth configurations")
+        _validate_admin_only(is_admin=user_context["is_admin"], action="create OAuth configurations")
 
         body = await request.json()
         oauth_instance_name = (body.get("oauthInstanceName") or "").strip()
@@ -6381,7 +6523,7 @@ async def update_oauth_config(
     try:
         # Get and validate user context (admin only)
         user_context = _get_user_context(request)
-        _validate_admin_only(user_context["is_admin"], "update OAuth configurations")
+        _validate_admin_only(is_admin=user_context["is_admin"], action="update OAuth configurations")
 
         body = await request.json()
         new_name = body.get("oauthInstanceName")
@@ -6484,7 +6626,7 @@ async def delete_oauth_config(
     try:
         # Get and validate user context (admin only)
         user_context = _get_user_context(request)
-        _validate_admin_only(user_context["is_admin"], "delete OAuth configurations")
+        _validate_admin_only(is_admin=user_context["is_admin"], action="delete OAuth configurations")
 
         # Get OAuth configs for this connector type
         oauth_configs = await _get_oauth_configs_from_etcd(connector_type, config_service)
