@@ -680,10 +680,22 @@ class DataSourceEntitiesProcessor:
     async def on_updated_record_permissions(self, record: Record, permissions: List[Permission]) -> None:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
 
-
-
         try:
             async with self.data_store_provider.transaction() as tx_store:
+                # If BELONGS_TO was removed (e.g. full sync deletes sync edges), restore structural
+                # edges only; permissions are still applied in this method below.
+                record_node_id = f"{CollectionNames.RECORDS.value}/{record.id}"
+                belongs_to_edges = await tx_store.get_edges_from_node(
+                    record_node_id, CollectionNames.BELONGS_TO.value
+                )
+                if not belongs_to_edges:
+                    self.logger.info(
+                        "No BELONGS_TO edge for record %s; running _process_record without permissions "
+                        "to restore graph edges",
+                        record.record_name,
+                    )
+                    await self._process_record(record, [], tx_store)
+
                 # Step 1: Delete all existing permission edges that point TO this record.
                 deleted_count = await tx_store.delete_edges_to(
                     to_id=record.id,
