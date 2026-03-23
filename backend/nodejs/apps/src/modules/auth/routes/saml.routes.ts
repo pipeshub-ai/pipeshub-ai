@@ -26,7 +26,10 @@ import { UserAccountController } from '../controller/userAccount.controller';
 import { MailService } from '../services/mail.service';
 import { ConfigurationManagerService, SSO_AUTH_CONFIG_PATH } from '../services/cm.service';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
-import { OrgAuthConfig } from '../schema/orgAuthConfiguration.schema';
+import {
+  AuthMethodType,
+  OrgAuthConfig,
+} from '../schema/orgAuthConfiguration.schema';
 import { Org } from '../../user_management/schema/org.schema';
 
 export const isValidEmail = (email: string) => {
@@ -96,6 +99,14 @@ export function createSamlRouter(container: Container) {
         const relayState = samlController.parseRelayState(req);
         const orgId = relayState.orgId || samlProfile.orgId;
 
+        const orgAuthConfig = await OrgAuthConfig.findOne({ orgId, isDeleted: false });
+        const samlAllowed = orgAuthConfig?.authSteps?.some((step) =>
+          step.allowedMethods?.some((m) => m.type === AuthMethodType.SAML_SSO),
+        );
+        if (!samlAllowed) {
+          return res.redirect(`${config.frontendUrl}/auth/sign-in?error=Saml_sso_disabled`);
+        }
+
         const verifiedEmail = samlController.getSamlEmail(samlProfile, orgId);
         if (!verifiedEmail) throw new BadRequestError("Invalid email in SAML attributes");
 
@@ -111,7 +122,7 @@ export function createSamlRouter(container: Container) {
           const iamToken = iamJwtGenerator(verifiedEmail, config.scopedJwtSecret);
           const iamResponse = await iamService.getUserByEmail(verifiedEmail, iamToken);
 
-          if (iamResponse.data.message === "Account not found") {
+          if (iamResponse.statusCode === 404) {
             if (!cm.data?.enableJit) return res.redirect(`${config.frontendUrl}/auth/sign-in?error=jit_Disabled`);
 
             user = await jitProvisioningService.provisionUser(verifiedEmail, userDetails, orgId, "saml");
@@ -119,7 +130,6 @@ export function createSamlRouter(container: Container) {
             user = iamResponse.data;
           }
 
-          const orgAuthConfig = await OrgAuthConfig.findOne({ orgId, isDeleted: false });
           session = await sessionService.createSession({
             userId: user._id,
             email: user.email,
@@ -131,18 +141,18 @@ export function createSamlRouter(container: Container) {
 
           const iamToken = iamJwtGenerator(verifiedEmail, config.scopedJwtSecret);
           const iamResponse = await iamService.getUserByEmail(verifiedEmail, iamToken);
-          user = iamResponse.data;
+          user = iamResponse.statusCode === 200 ? iamResponse.data : null;
 
         }
 
-        if (session?.userId === "NOT_FOUND" && user?.message === "Account not found") {
+        if (session?.userId === "NOT_FOUND" && !user) {
           const jitConfig = session.jitConfig as
             | Record<string, boolean>
             | undefined;
 
 
           if (!jitConfig) {
-            if (session.userId === "NOT_FOUND") {
+            if (session?.userId === "NOT_FOUND") {
 
               return res.redirect(`${config.frontendUrl}/auth/sign-in?error=jit_Disabled`);
             }

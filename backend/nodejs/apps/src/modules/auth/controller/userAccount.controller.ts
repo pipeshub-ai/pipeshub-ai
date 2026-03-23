@@ -1357,13 +1357,13 @@ export class UserAccountController {
           sessionInfo.email = providerEmail;
           const authToken = iamJwtGenerator(providerEmail, this.config.scopedJwtSecret);
           userFindResult = await this.iamService.getUserByEmail(providerEmail, authToken);
-          user = userFindResult?.data;
+          user = userFindResult?.statusCode === 200 ? userFindResult?.data : null;
 
           const methodKey = method === AuthMethodType.AZURE_AD ? 'azureAd' :
             method === AuthMethodType.MICROSOFT ? 'microsoft' :
               method === AuthMethodType.GOOGLE ? 'google' : 'oauth';
 
-          if (!user || user?.message === "Account not found") {
+          if (!user) {
             if (jitConfig && jitConfig[methodKey] && userDetails) {
               user = await this.jitProvisioningService.provisionUser(
                 providerEmail, userDetails, orgId!, methodKey as any
@@ -1382,7 +1382,7 @@ export class UserAccountController {
       }
 
       // 3. FINAL CREDENTIAL VERIFICATION
-      if (!user || user?.message === "Account not found") {
+      if (!user) {
         const authToken = iamJwtGenerator(sessionInfo.email || "", this.config.scopedJwtSecret);
         userFindResult = await this.iamService.getUserByEmail(sessionInfo.email || "", authToken);
         user = userFindResult?.data;
@@ -1594,7 +1594,7 @@ export class UserAccountController {
       const userResult = await this.iamService.getUserByEmail(providerEmail, authToken);
       let user = userResult.statusCode === 200 ? userResult.data : null;
 
-      if (!user || user?.message === "Account not found") {
+      if (!user) {
         // If jit is false and user is Account not found then give badrequest
         if (!oauthConfig.enableJit) {
           throw new NotFoundError('Account not found. Please contact your administrator.');

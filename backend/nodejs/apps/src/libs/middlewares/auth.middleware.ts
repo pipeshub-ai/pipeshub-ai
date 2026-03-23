@@ -1,6 +1,6 @@
 // auth.middleware.ts
 import { Response, NextFunction, Request, RequestHandler } from 'express';
-import jwt from 'jsonwebtoken'
+import jwt from 'jsonwebtoken';
 import { UnauthorizedError } from '../errors/http.errors';
 import { Logger } from '../services/logger.service';
 import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';

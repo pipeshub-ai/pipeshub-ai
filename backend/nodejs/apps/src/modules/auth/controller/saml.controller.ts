@@ -202,7 +202,8 @@ export class SamlController {
     if (!raw) return {};
     try {
       return JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
-    } catch {
+    } catch (error) {
+      this.logger.warn('Failed to parse RelayState', { error: error instanceof Error ? error.message : String(error) });
       return {};
     }
   };

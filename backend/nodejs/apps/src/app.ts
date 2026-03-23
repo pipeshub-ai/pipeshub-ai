@@ -653,9 +653,9 @@ export class Application {
     try {
       const samlController = this.authServiceContainer.get<SamlController>('SamlController');
       samlController.updateSamlStrategiesWithCallback()
-      this.logger.info('OAuth token service registered for AuthMiddleware factory');
+      this.logger.info('SAML passport strategies updated successfully');
     } catch (error) {
-      this.logger.warn('Failed to register OAuth token service', {
+      this.logger.warn('Failed to update passport strategies', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
