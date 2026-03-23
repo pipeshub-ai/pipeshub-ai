@@ -86,7 +86,7 @@ class RetrievalService:
         self.embedding_size = None
         self.embedding_model_instance = None
 
-    async def get_llm_instance(self, use_cache: bool = FALSE) -> BaseChatModel | None:
+    async def get_llm_instance(self, use_cache: bool = False) -> BaseChatModel | None:
         try:
             self.logger.info("Getting LLM")
             ai_models = await self.config_service.get_config(
