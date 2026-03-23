@@ -1247,7 +1247,7 @@ class SharePointConnector(BaseConnector):
             if is_root:
                 file_record.inherit_permissions = True
 
-            if existing_record and permissions:
+            if existing_record:
                 is_updated = True
                 permissions_changed = True
 
@@ -1888,7 +1888,7 @@ class SharePointConnector(BaseConnector):
                             permissions, should_inherit = await self._get_page_permissions(site_id, page.id, session=http_session)
                             page_record.inherit_permissions = should_inherit
 
-                            if existing_record and permissions:
+                            if existing_record:
                                 permissions_changed = True
                                 is_updated = True
 
