@@ -701,7 +701,39 @@ async def adf_to_text_with_images(
             app_group="Atlassian",
             app_description="OAuth application for accessing Jira Cloud API and issue tracking services",
             app_categories=["Storage"]
-        )
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="baseUrl",
+                display_name="Base URL",
+                placeholder="https://yourcompany.atlassian.net",
+                description="The base URL of your Atlassian instance",
+                field_type="URL",
+                required=True,
+                max_length=2000,
+                is_secret=False,
+            ),
+            AuthField(
+                name="email",
+                display_name="Email",
+                placeholder="your-email@company.com",
+                description="Your Atlassian account email",
+                field_type="TEXT",
+                required=True,
+                max_length=500,
+                is_secret=False,
+            ),
+            AuthField(
+                name="apiToken",
+                display_name="API Token",
+                placeholder="your-api-token",
+                description="API token from Atlassian account settings",
+                field_type="PASSWORD",
+                required=True,
+                max_length=2000,
+                is_secret=True,
+            ),
+        ])
     ])\
     .with_info("⚠️ Important: In order for users to get access to Jira data, each user needs to make their email visible in their Jira account settings. Users can do this by going to their Jira profile settings and switching email visibility to Public.")\
     .configure(lambda builder: builder
@@ -818,16 +850,32 @@ class JiraConnector(BaseConnector):
             # Create DataSource from client
             self.data_source = JiraDataSource(client)
 
-            # Get cloud ID and site URL from accessible resources
-            access_token = await self._get_access_token()
-            resources = await JiraClient.get_accessible_resources(access_token)
-            if not resources:
-                raise Exception("No accessible Jira resources found")
+            # Get connector config to determine auth type
+            config_path = OAUTH_JIRA_CONFIG_PATH.format(connector_id=self.connector_id)
+            config = await self.config_service.get_config(config_path)
+            auth_config = config.get("auth", {}) if config else {}
+            auth_type = auth_config.get("authType", "OAUTH")
 
-            self.cloud_id = resources[0].id
-            self.site_url = resources[0].url
+            if auth_type == "API_TOKEN":
+                # For API Token auth, use the base URL directly from config
+                base_url = auth_config.get("baseUrl", "").strip().rstrip('/')
+                if not base_url:
+                    raise ValueError("Base URL is required for API_TOKEN auth")
+                self.site_url = base_url
+                # Cloud ID is not needed for API Token auth (direct URL access)
+                self.cloud_id = None
+                self.logger.info("✅ Jira client initialized with API Token authentication")
+            else:
+                # For OAuth, get cloud ID and site URL from accessible resources
+                access_token = await self._get_access_token()
+                resources = await JiraClient.get_accessible_resources(access_token)
+                if not resources:
+                    raise Exception("No accessible Jira resources found")
 
-            self.logger.info("✅ Jira client initialized successfully using Client + DataSource architecture")
+                self.cloud_id = resources[0].id
+                self.site_url = resources[0].url
+                self.logger.info("✅ Jira client initialized with OAuth authentication")
+
             return True
 
         except Exception as e:
@@ -859,6 +907,8 @@ class JiraConnector(BaseConnector):
         3. Updates client ONLY if token changed (mutation)
         4. Returns datasource with current token
 
+        For API_TOKEN auth, returns existing datasource (no token refresh needed).
+
         Returns:
             JiraDataSource with current valid token
         """
@@ -872,7 +922,15 @@ class JiraConnector(BaseConnector):
         if not config:
             raise Exception("Jira configuration not found")
 
-        # Extract fresh OAuth access token
+        # Check auth type
+        auth_config = config.get("auth", {}) or {}
+        auth_type = auth_config.get("authType", "OAUTH")
+
+        # For API_TOKEN auth, no token refresh needed - return existing datasource
+        if auth_type == "API_TOKEN":
+            return JiraDataSource(self.external_client)
+
+        # For OAuth, extract fresh access token and update if changed
         credentials_config = config.get("credentials", {}) or {}
         fresh_token = credentials_config.get("access_token", "")
 
@@ -999,7 +1057,7 @@ class JiraConnector(BaseConnector):
         Run sync of Jira projects and issues - only new/updated tickets
         """
         try:
-            if not self.cloud_id:
+            if not self.data_source:
                 await self.init()
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
@@ -2486,10 +2544,6 @@ class JiraConnector(BaseConnector):
         """
         if not self.data_source:
             raise ValueError("DataSource not initialized")
-
-        if not self.cloud_id:
-            self.logger.error("❌ cloud_id is not set. Cannot fetch issues.")
-            return
 
         # Build JQL query
         jql_conditions = [f'project = "{project_key}"']
@@ -4159,7 +4213,7 @@ class JiraConnector(BaseConnector):
         Stream record content (issue, comment, or attachment).
         """
         try:
-            if not self.cloud_id:
+            if not self.data_source:
                 await self.init()
 
             if record.record_type == RecordType.TICKET:

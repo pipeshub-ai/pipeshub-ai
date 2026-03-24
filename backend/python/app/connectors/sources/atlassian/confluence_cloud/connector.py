@@ -37,6 +37,7 @@ from app.connectors.core.registry.auth_builder import (
     OAuthScopeConfig,
 )
 from app.connectors.core.registry.connector_builder import (
+    AuthField,
     CommonFields,
     ConnectorBuilder,
     ConnectorScope,
@@ -125,9 +126,38 @@ PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
             app_description="OAuth application for accessing Confluence Cloud API and collaboration features",
             app_categories=["Knowledge Management", "Collaboration"]
         ),
-        # AuthBuilder.type(AuthType.API_TOKEN).fields([
-        #     CommonFields.api_token("Atlassian API Token")
-        # ])
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            AuthField(
+                name="baseUrl",
+                display_name="Base URL",
+                placeholder="https://yourcompany.atlassian.net",
+                description="The base URL of your Atlassian instance",
+                field_type="URL",
+                required=True,
+                max_length=2000,
+                is_secret=False,
+            ),
+            AuthField(
+                name="email",
+                display_name="Email",
+                placeholder="your-email@company.com",
+                description="Your Atlassian account email",
+                field_type="TEXT",
+                required=True,
+                max_length=500,
+                is_secret=False,
+            ),
+            AuthField(
+                name="apiToken",
+                display_name="API Token",
+                placeholder="your-api-token",
+                description="API token from Atlassian account settings",
+                field_type="PASSWORD",
+                required=True,
+                max_length=2000,
+                is_secret=True,
+            ),
+        ])
     ])\
     .with_info("⚠️ Important: In order for users to get access to Confluence data, each user needs to make their email visible in their Confluence account settings. Users can do this by going to their Confluence profile settings and switching email visibility to Public.")\
     .configure(lambda builder: builder
@@ -308,6 +338,8 @@ class ConfluenceConnector(BaseConnector):
         3. Updates client ONLY if token changed (mutation)
         4. Returns datasource with current token
 
+        For API_TOKEN auth, returns existing datasource (no token refresh needed).
+
         Returns:
             ConfluenceDataSource with current valid token
         """
@@ -320,7 +352,15 @@ class ConfluenceConnector(BaseConnector):
         if not config:
             raise Exception("Confluence configuration not found")
 
-        # Extract fresh OAuth access token
+        # Check auth type
+        auth_config = config.get("auth", {}) or {}
+        auth_type = auth_config.get("authType", "OAUTH")
+
+        # For API_TOKEN auth, no token refresh needed - return existing datasource
+        if auth_type == "API_TOKEN":
+            return ConfluenceDataSource(self.external_client)
+
+        # For OAuth, extract fresh access token and update if changed
         credentials_config = config.get("credentials", {}) or {}
         fresh_token = credentials_config.get("access_token", "")
 

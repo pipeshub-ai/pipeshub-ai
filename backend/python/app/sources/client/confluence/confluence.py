@@ -265,31 +265,29 @@ class ConfluenceClient(IClient):
             if not auth_config:
                 raise ValueError("Auth configuration not found in Confluence connector configuration")
 
-            credentials_config = config.get("credentials",{}) or {}
-            if not credentials_config:
-                raise ValueError("Credentials configuration not found in Confluence connector configuration")
-
             # Extract configuration values
-            auth_type = auth_config.get("authType", "BEARER_TOKEN")  # token, username_password, api_key
+            auth_type = auth_config.get("authType", "BEARER_TOKEN")
 
             # Create appropriate client based on auth type
-            # to be implemented
-            # if auth_type == "USERNAME_PASSWORD":
-            #     username = auth_config.get("username", "")
-            #     password = auth_config.get("password", "")
-            #     if not username or not password:
-            #         raise ValueError("Username and password required for username_password auth type")
-            #     client = ConfluenceRESTClientViaUsernamePassword(base_url, username, password)
+            if auth_type == "API_TOKEN":
+                # API Token authentication - uses Basic auth with email:apiToken
+                base_url = auth_config.get("baseUrl", "").strip()
+                email = auth_config.get("email", "").strip()
+                api_token = auth_config.get("apiToken", "").strip()
 
-            # to be implemented
-            # elif auth_type == "API_KEY":
-            #     email = auth_config.get("email", "")
-            #     api_key = auth_config.get("api_key", "")
-            #     if not email or not api_key:
-            #         raise ValueError("Email and API key required for api_key auth type")
-            #     client = ConfluenceRESTClientViaApiKey(base_url, email, api_key)
+                if not base_url:
+                    raise ValueError("Base URL is required for API_TOKEN auth")
+                if not email or not api_token:
+                    raise ValueError("Email and API token are required for API_TOKEN auth")
 
-            if auth_type == "BEARER_TOKEN":  # Default to token auth
+                # Normalize base URL and append Confluence API v2 path if needed
+                base_url = base_url.rstrip('/')
+                if not base_url.endswith('/wiki/api/v2'):
+                    base_url = f"{base_url}/wiki/api/v2"
+
+                client = ConfluenceRESTClientViaApiKey(base_url, email, api_token)
+
+            elif auth_type == "BEARER_TOKEN":  # Default to token auth
                 token = auth_config.get("bearerToken", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
@@ -302,6 +300,9 @@ class ConfluenceClient(IClient):
 
                 client = ConfluenceRESTClientViaToken(base_url, token)
             elif auth_type == "OAUTH":
+                credentials_config = config.get("credentials", {}) or {}
+                if not credentials_config:
+                    raise ValueError("Credentials configuration not found for OAuth auth type")
                 access_token = credentials_config.get("access_token", "")
                 if not access_token:
                     raise ValueError("Access token required for OAuth auth type")
