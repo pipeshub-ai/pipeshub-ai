@@ -216,6 +216,28 @@ class GithubConnector(BaseConnector):
             self.logger.error(f"Failed to initialize Github client: {e}", exc_info=True)
             return False
 
+    # --------------------Sync Points------------------------#
+    async def _fetch_sync_point_of_issue(self, repo_name: str) -> str:
+        """ summary """
+        try:
+            issue_sync_point_key = generate_record_sync_point_key(
+                "github",repo_name, "issues"
+            )
+            sync_point_data = await self.record_sync_point.read_sync_point(issue_sync_point_key)
+            return sync_point_data.get("last_sync_time") if sync_point_data else None
+        except Exception:
+            return None
+
+    async def _update_sync_point_of_issue(self, repo_name: str, last_sync_time: int) -> None:
+        """ summary """
+        try:
+            issue_sync_point_key = generate_record_sync_point_key(
+                "github",repo_name, "issues"
+            )
+            await self.record_sync_point.update_sync_point(issue_sync_point_key, {"last_sync_time": last_sync_time})
+        except Exception:
+            return
+
     async def test_connection_and_access(self) -> bool:
         """_summary_
 
@@ -434,11 +456,11 @@ class GithubConnector(BaseConnector):
             )
             # TODO: Place for code indexing records
             await self._fetch_issues_batched(
-                repo_name=repo.name, last_sync_time=last_sync_time
+                full_repo_name=repo.full_name
             )
 
     async def _fetch_issues_batched(
-        self, repo_name: str, last_sync_time: str | None = None
+        self, full_repo_name: str
     ) -> None:
         """
         received: batch of issues
@@ -448,19 +470,20 @@ class GithubConnector(BaseConnector):
             issue_batch (List[Issue]): _description_
             last_sync_time (str): _description_
         """
-        auth_res = self.data_source.get_authenticated()
-        user_login = auth_res.data.login
-        owner = user_login
-
+        owner, repo_name = full_repo_name.split("/")
+        # fetch sync point of issues of this repo
+        last_sync_time = await self._fetch_sync_point_of_issue(repo_name)
         if last_sync_time:
-            since_dt = datetime.strptime(last_sync_time, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc
-            )
+            ts = round(last_sync_time)
+            if ts >= 10**12:
+                ts = ts / 1000
+                # ts+=1 # to avoid last duplicates
+            since_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
         else:
             since_dt = None
         self.logger.info(f"Fetching issues for repository: {repo_name}")
         issues_res = self.data_source.list_issues(
-            owner, repo_name, state="all", since=since_dt
+            owner, repo_name, state="all", since=since_dt,sort="updated",direction="asc",
         )
         issues_batch: list[Issue] = []
         if not issues_res.success:
@@ -490,16 +513,31 @@ class GithubConnector(BaseConnector):
         return None
 
     async def _process_new_records(self, batch_records: list[RecordUpdate]) -> None:
+        need_sync_update:bool=True
         for i in range(0, len(batch_records), self.batch_size):
             batch = batch_records[i : i + self.batch_size]
-            batch_sent: list[tuple[Record, Permission]] = [
+            batch_sent: list[tuple[Record, list[Permission]]] = [
                 (record_update.record, record_update.new_permissions)
                 for record_update in batch
             ]
             try:
                 await self.data_entities_processor.on_new_records(batch_sent)
+                if not need_sync_update:
+                    continue
+                last_sync_time = None
+                repo_name:str=""
+                for record_update in batch:
+                    if record_update.record.record_type in (RecordType.TICKET,RecordType.PULL_REQUEST):
+                        last_sync_time=record_update.record.source_updated_at
+                        repo_url  = record_update.record.external_record_group_id
+                        repo_name = repo_url.split("/")[-1]
+                    else:
+                        continue
+                if repo_name and last_sync_time:
+                    await self._update_sync_point_of_issue(repo_name,last_sync_time)
             except Exception as e:
                 self.logger.error(f"Error in processing new record batch, batch partially processed: {e}")
+                need_sync_update=False
 
     async def _build_issue_records(
         self, issue_batch: list[Issue], last_sync_time: str | None = None
@@ -979,7 +1017,7 @@ class GithubConnector(BaseConnector):
             )
             return None
 
-    async def _build_pull_request_blocks(self, record: Record) -> tuple[BlocksContainer,list[RecordUpdate]]:
+    async def _build_pull_request_blocks(self, record: Record) -> BlocksContainer:
         # TODO: think for BG as code file updates how as in newer commit some files same as old
         # TODO: think of keys when PR gets updated like only when metadata is getting updated or say body and also consider it for file changes
         # pr_url = record.weburl.split("/")
@@ -1388,7 +1426,7 @@ class GithubConnector(BaseConnector):
         # make sure it's timezone-aware (assume UTC if missing)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp() * 1000)
+        return round(dt.timestamp() * 1000)
 
     async def _get_api_token_(self) -> str:
         """getting bearer token for file data streaming

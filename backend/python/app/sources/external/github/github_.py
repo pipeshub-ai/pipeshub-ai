@@ -183,14 +183,16 @@ class GitHubDataSource:
         state: str = "open",
         labels: Sequence[str] | None = None,
         assignee: str | None = None,
-        since: str | None = None,
+        since: datetime.datetime | None = None,
         per_page: int | None = None,
         page: int | None = None,
+        sort:str|None=None,
+        direction:str|None=None,
     ) -> GitHubResponse[list[Issue]]:
         """List issues with filters. When both per_page and page are None (e.g. from connector), returns all issues. Otherwise returns one page (default 10 per page, max 50)."""
         try:
             r = self._repo(owner, repo)
-            params = self._not_none(labels=labels, assignee=assignee, since=since)
+            params = self._not_none(labels=labels, assignee=assignee, since=since,direction=direction,sort=sort)
             paginated = r.get_issues(state=state, **params)
             if per_page is None and page is None:
                 issues = list(paginated)
