@@ -141,6 +141,11 @@ export const microsoftAuthConfigSchema = z.object({
     .strict(),
 });
 
+/**
+ * Note: .passthrough() is intentionally used here because different SAML IdPs
+ * may include provider-specific attributes. We validate required keys while
+ * allowing extra properties to flow through for downstream processing.
+ */
 export const ssoConfigSchema = z.object({
   body: z
     .object({
