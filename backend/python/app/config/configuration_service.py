@@ -4,7 +4,8 @@ import hashlib
 import os
 import threading
 import time
-from typing import List, Optional, Union
+from logging import Logger
+from typing import Any
 
 import dotenv
 from cachetools import LRUCache
@@ -20,7 +21,7 @@ dotenv.load_dotenv()
 class ConfigurationService:
     """Service to manage configuration using etcd or Redis store with caching."""
 
-    def __init__(self, logger, key_value_store: KeyValueStore) -> None:
+    def __init__(self, logger: Logger, key_value_store: KeyValueStore) -> None:
         self.logger = logger
         self.logger.debug("🔧 Initializing ConfigurationService")
 
@@ -50,14 +51,14 @@ class ConfigurationService:
         self.logger.debug("📋 KV store type: %s", self._kv_store_type)
 
         # Redis Pub/Sub subscription task (for Redis store)
-        self._pubsub_task: Optional[asyncio.Task] = None
+        self._pubsub_task: asyncio.Task | None = None
 
         # Start watch in background (etcd) or schedule Pub/Sub setup (Redis)
         self._start_watch()
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
-    async def get_config(self, key: str, default: Union[str, int, float, bool, dict, list, None] = None, use_cache: bool = True) -> Union[str, int, float, bool, dict, list, None]:
+    async def get_config(self, key: str, default: str | int | float | bool | dict | list | None = None, use_cache: bool = False) -> str | int | float | bool | dict | list | None:
         """Get configuration value with LRU cache and environment variable fallback"""
         try:
             # Check cache first
@@ -87,7 +88,7 @@ class ConfigurationService:
                 return env_fallback
             return default
 
-    def _get_env_fallback(self, key: str) -> Union[dict, None]:
+    def _get_env_fallback(self, key: str) -> dict | None:
         """Get environment variable fallback for specific configuration keys"""
         if key == config_node_constants.KAFKA.value:
             # Kafka configuration fallback
@@ -186,7 +187,7 @@ class ConfigurationService:
         # This key is stored as plain text, so we read it directly from Redis
         migration_flag_key = "/migrations/etcd_to_redis"
 
-        async def check_migration_flag_direct(redis_client, key_prefix: str) -> bool:
+        async def check_migration_flag_direct(redis_client: Any, key_prefix: str) -> bool:
             """Check migration flag directly from Redis without encryption.
 
             The migration flag is stored by Node.js as plain 'true' string,
@@ -287,7 +288,7 @@ class ConfigurationService:
         except Exception as e:
             self.logger.error("❌ Failed to clear cache: %s", str(e))
 
-    async def set_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
+    async def set_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
         """Set configuration value with optional encryption"""
         try:
             self.logger.info("📝 set_config called for key: %s (store type: %s)", key, type(self.store).__name__)
@@ -315,7 +316,7 @@ class ConfigurationService:
             self.logger.error("❌ Failed to set config %s: %s", key, str(e))
             return False
 
-    async def update_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
+    async def update_config(self, key: str, value: str | int | float | bool | dict | list) -> bool:
         """Update configuration value with optional encryption"""
         try:
             # Check if key exists
@@ -399,7 +400,7 @@ class ConfigurationService:
         except Exception as e:
             self.logger.warning("Error closing ConfigurationService: %s", str(e))
 
-    def _etcd_watch_callback(self, event) -> None:
+    def _etcd_watch_callback(self, event: Any) -> None:
         """Handle etcd watch events to update cache.
 
         TODO: Remove this method when all deployments migrate to Redis KV store.
@@ -416,6 +417,6 @@ class ConfigurationService:
         except Exception as e:
             self.logger.error("❌ Error in etcd watch callback: %s", str(e))
 
-    async def list_keys_in_directory(self, directory: str) -> List[str]:
+    async def list_keys_in_directory(self, directory: str) -> list[str]:
         """List all keys in a directory"""
         return await self.store.list_keys_in_directory(directory)

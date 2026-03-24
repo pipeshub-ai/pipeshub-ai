@@ -1,14 +1,13 @@
 import asyncio
 import base64
 import hashlib
-import random
 import re
 import uuid
-from enum import Enum
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from enum import Enum
 from io import BytesIO
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
@@ -75,17 +74,17 @@ async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
 @dataclass
 class RecordUpdate:
     """Track updates to a record"""
-    record: Optional[FileRecord]
+    record: FileRecord | None
     is_new: bool
     is_updated: bool
     is_deleted: bool
     metadata_changed: bool
     content_changed: bool
     permissions_changed: bool
-    old_permissions: Optional[List[Permission]] = None
-    new_permissions: Optional[List[Permission]] = None
-    external_record_id: Optional[str] = None
-    html_bytes: Optional[bytes] = None
+    old_permissions: list[Permission] | None = None
+    new_permissions: list[Permission] | None = None
+    external_record_id: str | None = None
+    html_bytes: bytes | None = None
 
 @dataclass
 class RetryUrl:
@@ -331,21 +330,21 @@ class WebConnector(BaseConnector):
         self.connector_id = connector_id
 
         # Configuration
-        self.url: Optional[str] = None
+        self.url: str | None = None
         self.crawl_type: str = "single"
         self.max_depth: int = 3
         self.max_pages: int = 100
         self.follow_external: bool = False
         self.restrict_to_start_path: bool = False
         self.start_path_prefix: str = "/"
-        self.url_should_contain: List[str] = []
+        self.url_should_contain: list[str] = []
 
         # Crawling state
-        self.visited_urls: Set[str] = set()
+        self.visited_urls: set[str] = set()
         self.retry_urls: dict[str, RetryUrl] = {}
         self.processed_urls: int = 0
-        self.base_domain: Optional[str] = None
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.base_domain: str | None = None
+        self.session: aiohttp.ClientSession | None = None
 
         # Batch processing
         self.batch_size: int = 50
@@ -357,7 +356,7 @@ class WebConnector(BaseConnector):
     async def init(self) -> bool:
         """Initialize the web connector with configuration."""
         try:
-            config_values = await self._fetch_and_parse_config(use_cache=True)
+            config_values = await self._fetch_and_parse_config()
 
             self.url = config_values["url"]
             self.crawl_type = config_values["crawl_type"]
@@ -411,7 +410,7 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to initialize web connector: {e}", exc_info=True)
             return False
 
-    async def _fetch_and_parse_config(self, use_cache: bool = True) -> Dict:
+    async def _fetch_and_parse_config(self) -> dict:
         """
         Fetch and parse connector configuration.
 
@@ -433,7 +432,6 @@ class WebConnector(BaseConnector):
         try:
             config = await self.config_service.get_config(
                 f"/services/connectors/{self.connector_id}/config",
-                use_cache=use_cache
             )
 
             if not config or not isinstance(config, dict):
@@ -554,7 +552,7 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to access website: {e}")
             return False
 
-    def get_app_users(self, users: List[User]) -> List[AppUser]:
+    def get_app_users(self, users: list[User]) -> list[AppUser]:
         """Convert User objects to AppUser objects."""
         return [
             AppUser(
@@ -571,7 +569,7 @@ class WebConnector(BaseConnector):
             if user.email
         ]
 
-    async def create_record_group(self, app_users: List[AppUser]) -> None:
+    async def create_record_group(self, app_users: list[AppUser]) -> None:
         """
         Create a record group with external_group_id as self.url and give permissions to all app_users.
 
@@ -626,7 +624,7 @@ class WebConnector(BaseConnector):
         """Reload the connector configuration."""
         try:
             self.logger.debug("running reload config")
-            config_values = await self._fetch_and_parse_config(use_cache=False)
+            config_values = await self._fetch_and_parse_config()
 
             new_url =  config_values["url"]
             new_crawl_type = config_values["crawl_type"]
@@ -736,7 +734,7 @@ class WebConnector(BaseConnector):
                 if record_update.is_updated:
                     await self._handle_record_updates(record_update)
                 elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
-                    pair: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
+                    pair: tuple[Record, list[Permission]] = (record_update.record, record_update.new_permissions)
                     await self.data_entities_processor.on_new_records([pair])
                     self.processed_urls += 1
                 self.logger.info(f"✅ Indexed single page: {url}")
@@ -768,7 +766,7 @@ class WebConnector(BaseConnector):
                 return
 
             timestamp = get_epoch_timestamp_in_ms()
-            placeholder_records: List[Tuple[FileRecord, List[Permission]]] = []
+            placeholder_records: list[tuple[FileRecord, list[Permission]]] = []
 
             # Build prefix URLs for every segment except the last one
             for i in range(1, len(segments)):
@@ -878,7 +876,7 @@ class WebConnector(BaseConnector):
             # segment of the start URL before we begin crawling.
             await self._create_ancestor_placeholder_records(start_url)
 
-            batch_records: List[Tuple[FileRecord, List[Permission]]] = []
+            batch_records: list[tuple[FileRecord, list[Permission]]] = []
 
             async for record_update in self._crawl_recursive_generator(start_url, depth):
 
@@ -886,7 +884,7 @@ class WebConnector(BaseConnector):
                     await self._handle_record_updates(record_update)
                     continue
                 elif record_update.is_new and record_update.record is not None and record_update.new_permissions is not None:
-                    entry: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
+                    entry: tuple[Record, list[Permission]] = (record_update.record, record_update.new_permissions)
                     batch_records.append(entry)
 
                     # Process batch when it reaches the size limit
@@ -917,7 +915,7 @@ class WebConnector(BaseConnector):
             Tuple of (FileRecord, List[Permission])
         """
         # Queue for BFS crawling: (url, depth, referer)
-        queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
+        queue: list[tuple[str, int, str | None]] = [(start_url, depth, None)]
 
         while (queue or self.retry_urls) and len(self.visited_urls) < self.max_pages:
             if not queue:
@@ -1008,7 +1006,7 @@ class WebConnector(BaseConnector):
 
     async def _fetch_and_process_url(
         self, url: str, depth: int, referer: str | None = None
-    ) -> Optional[RecordUpdate]:
+    ) -> RecordUpdate | None:
         """Fetch URL content using multi-strategy fallback and create a RecordUpdate."""
         try:
             if self.session is None:
@@ -1278,8 +1276,8 @@ class WebConnector(BaseConnector):
             await self.data_entities_processor.on_record_content_update(record_update.record)
 
     async def _extract_links_from_content(
-        self, base_url: str, html_bytes: Optional[bytes], file_record: FileRecord, referer: Optional[str] = None
-    ) -> List[str]:
+        self, base_url: str, html_bytes: bytes | None, file_record: FileRecord, referer: str | None = None
+    ) -> list[str]:
         """Extract valid links from HTML content."""
         links = []
 
@@ -1551,7 +1549,7 @@ class WebConnector(BaseConnector):
         except Exception:
             return url
 
-    def _determine_mime_type(self, url: str, content_type: str) -> Tuple[MimeTypes, Optional[str]]:
+    def _determine_mime_type(self, url: str, content_type: str) -> tuple[MimeTypes, str | None]:
         """Determine MIME type and extension from URL and content-type header."""
         # First, try to get from content-type header
         if content_type:
@@ -1617,7 +1615,7 @@ class WebConnector(BaseConnector):
         # Default to HTML
         return MimeTypes.HTML, 'html'
 
-    def _pass_extension_filter(self, extension: Optional[str]) -> bool:
+    def _pass_extension_filter(self, extension: str | None) -> bool:
         """
         Checks if the file extension passes the configured file extensions filter.
 
@@ -1733,7 +1731,7 @@ class WebConnector(BaseConnector):
             self.logger.warning(f"⚠️ Error in _ensure_trailing_slash for url '{url}': {e}")
         return url
 
-    def _get_parent_url(self, url: str) -> Optional[str]:
+    def _get_parent_url(self, url: str) -> str | None:
         """Derive the parent URL by stripping the last non-empty path segment.
 
         Returns ``None`` when the URL is already at the domain root or when
@@ -1749,7 +1747,7 @@ class WebConnector(BaseConnector):
             return None  # Parent is the domain root — no parent record exists
         return urlunparse((parsed.scheme, parsed.netloc, parent_path, '', '', ''))
 
-    async def _ensure_parent_records_exist(self, parent_url: Optional[str]) -> None:
+    async def _ensure_parent_records_exist(self, parent_url: str | None) -> None:
         """Ensure that every ancestor record up to (and including) *parent_url*
         exists in the data store before the child record is upserted.
 
@@ -1777,14 +1775,14 @@ class WebConnector(BaseConnector):
 
         try:
             # ── Step 1: build the segment list (closest → root) ─────────────
-            segments: List[str] = []
-            current: Optional[str] = parent_url
+            segments: list[str] = []
+            current: str | None = parent_url
             while current:
                 segments.append(current)
                 current = self._get_parent_url(current)
 
             # ── Step 2: walk segments, collect the ones that are missing ─────
-            batch_parent_records: List[Tuple[FileRecord, List[Permission]]] = []
+            batch_parent_records: list[tuple[FileRecord, list[Permission]]] = []
             timestamp = get_epoch_timestamp_in_ms()
 
             for segment_url in segments:
@@ -1898,7 +1896,7 @@ class WebConnector(BaseConnector):
         self.visited_urls.clear()
         self.logger.info("✅ Web connector cleanup completed")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, record_results: list[Record]) -> None:
         """Reindex records - not implemented for Web connector yet."""
 
         try:
@@ -1920,17 +1918,17 @@ class WebConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> FilterOptionsResponse:
         """Web connector does not support dynamic filter options."""
         raise NotImplementedError("Web connector does not support dynamic filter options")
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:  # type: ignore[override]
+    async def handle_webhook_notification(self, notification: dict) -> None:  # type: ignore[override]
         """Web connector doesn't support webhooks."""
         pass
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:  # type: ignore[override]
+    async def get_signed_url(self, record: Record) -> str | None:  # type: ignore[override]
         """Return the web URL as the signed URL."""
         return record.weburl if record.weburl else None
 
@@ -2154,7 +2152,7 @@ class WebConnector(BaseConnector):
         soup: BeautifulSoup,
         base_url: str,
         headers: dict,
-        preferred_strategy: Optional[str] = None
+        preferred_strategy: str | None = None
     ) -> None:
         """
         Process a single image tag: download if needed and convert to base64.
@@ -2333,7 +2331,7 @@ class WebConnector(BaseConnector):
 
         return content_type.split(';')[0].strip().lower()
 
-    def _convert_svg_bytes_to_png_base64(self, svg_bytes: bytes, url: str) -> Optional[str]:
+    def _convert_svg_bytes_to_png_base64(self, svg_bytes: bytes, url: str) -> str | None:
         """Convert SVG bytes to PNG base64 string."""
         try:
             svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
@@ -2351,7 +2349,7 @@ class WebConnector(BaseConnector):
             self.logger.warning(f"⚠️ Failed to convert SVG to PNG: {e}. Removing image.")
             return None
 
-    def _convert_avif_bytes_to_png_base64(self, avif_bytes: bytes, url: str) -> Optional[str]:
+    def _convert_avif_bytes_to_png_base64(self, avif_bytes: bytes, url: str) -> str | None:
         """
         Convert AVIF bytes to PNG base64 string. use pillow_avif to convert AVIF to PNG.
         """
@@ -2381,7 +2379,7 @@ class WebConnector(BaseConnector):
         soup: BeautifulSoup,
         base_url: str,
         headers: dict,
-        preferred_strategy: Optional[str] = None
+        preferred_strategy: str | None = None
     ) -> None:
         """Process all image tags in the soup."""
         for img in soup.find_all('img'):
@@ -2392,8 +2390,8 @@ class WebConnector(BaseConnector):
         content_bytes: bytes,
         record: Record,
         headers: dict,
-        preferred_strategy: Optional[str] = None
-    ) -> Optional[str]:
+        preferred_strategy: str | None = None
+    ) -> str | None:
         """
         Process HTML content: parse, clean, and convert images to base64.
 
@@ -2435,7 +2433,7 @@ class WebConnector(BaseConnector):
 
     # ==================== Main Stream Record Method ====================
 
-    async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> Optional[StreamingResponse]:  # type: ignore[override]
+    async def stream_record(self, record: Record, user_id: str | None = None, convertTo: str | None = None) -> StreamingResponse | None:  # type: ignore[override]
         """
         Stream the web page content with proper content extraction.
         """

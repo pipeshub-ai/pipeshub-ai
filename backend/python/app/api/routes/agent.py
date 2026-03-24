@@ -828,7 +828,7 @@ async def _enrich_agent_models(agent: dict[str, Any], config_service: Configurat
         return
 
     try:
-        ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value, use_cache=True)
+        ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
         llm_configs = ai_models.get("llm", []) if ai_models else []
 
         enriched_models = []
