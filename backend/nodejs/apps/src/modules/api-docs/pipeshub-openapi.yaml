@@ -5348,24 +5348,18 @@ paths:
       operationId: validateEmailChangeToken
       security:
         - scopedToken: []
-      parameters:
-        - name: token
-          in: query
-          required: true
-          description: Email change token received via email
-          schema:
-            type: string
       responses:
         '200':
-          description: Token is valid
+          description: Email change token is valid and email is updated successfully
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  valid:
-                    type: boolean
-                    description: Whether the token is valid for email change
+                  message:
+                    type: string
+                    description: Success message for email update
+                    example: Email updated successfully
         '400':
           description: Invalid request or malformed token
           content:

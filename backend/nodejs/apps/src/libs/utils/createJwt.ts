@@ -169,7 +169,6 @@ export const jwtGeneratorForValidateEmailLink = (
   orgId: string,
   scopedJwtSecret: string,
 ) => {
-  // Token for password reset
   const validateEmailToken = jwt.sign(
     {
       userEmail,

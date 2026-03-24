@@ -38,6 +38,7 @@
     "@typescript-eslint/parser": "^8.18.1",
     "c8": "^11.0.0",
     "chai": "^4.5.0",
+    "cross-env": "^10.1.0",
     "eslint": "^9.39.1",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-prettier": "^5.2.1",
@@ -116,4 +117,3 @@
     "fast-xml-parser": "5.3.4"
   }
 }
-
