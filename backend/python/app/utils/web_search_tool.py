@@ -20,13 +20,11 @@ def _search_with_duckduckgo(query: str, config: Dict[str, Any]) -> List[Dict[str
     """Search using DuckDuckGo (default, no API key needed)."""
     from ddgs import DDGS
 
-    backend = config.get("backend", "duckduckgo")
     with DDGS() as ddgs:
         raw_results = ddgs.text(
             query,
             max_results=10,
             timelimit=None,
-            backend=backend,
         )
     return [
         {"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")}

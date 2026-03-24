@@ -132,7 +132,7 @@ dependencies = [
     "cachetools==6.2.4",
     "cloudscraper==1.2.71",
     "cryptography==44.0.1",
-    "ddgs==9.10.0",
+    "ddgs==9.11.4",
     "curl-cffi==0.14.0",
     # "databricks-sdk>=0.85.0",
     "dependency-injector==4.44.0",
