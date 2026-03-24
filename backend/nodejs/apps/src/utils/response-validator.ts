@@ -8,7 +8,7 @@ export const sendValidatedJson = (
     res: Response,
     schema: z.ZodTypeAny,
     payload: unknown,
-    statusCode: number = HTTP_STATUS.OK,
+    statusCode: number,
   ): Response => {
     const result = schema.safeParse(payload);
     if (!result.success) {
