@@ -1,435 +1,20 @@
 import { z } from 'zod';
-import { googleWorkspaceTypes, storageTypes } from '../constants/constants';
+import { storageTypes } from '../constants/constants';
 
-export const baseStorageSchema = z.object({
-  storageType: z.enum([
-    storageTypes.LOCAL,
-    storageTypes.S3,
-    storageTypes.AZURE_BLOB,
-  ]),
-});
+// ============================================================================
+// Shared Constants
+// ============================================================================
 
-const slackBotConfigBodySchema = z.object({
-  name: z.string().trim().min(1, { message: 'Slack Bot name is required' }),
-  botToken: z.string().trim().min(1, { message: 'Bot token is required' }),
-  signingSecret: z.string().trim().min(1, { message: 'Signing secret is required' }),
-  agentId: z.string().trim().optional().or(z.literal('')),
-});
-
-export const s3ConfigSchema = baseStorageSchema.extend({
-  storageType: z.literal(storageTypes.S3),
-  s3AccessKeyId: z.string().min(1, { message: 'S3 access key ID is required' }),
-  s3SecretAccessKey: z.string().min(1, {
-    message: 'S3 secret access key is required',
-  }),
-  s3Region: z.string().min(1, { message: 'S3 region is required' }),
-  s3BucketName: z.string().min(1, { message: 'S3 bucket name is required' }),
-});
-
-export const azureBlobConfigSchema = baseStorageSchema.extend({
-  storageType: z.literal(storageTypes.AZURE_BLOB),
-  // Option 1: Connection string approach
-  azureBlobConnectionString: z.string().optional(),
-  // Option 2: Individual parameter approach
-  endpointProtocol: z.enum(['http', 'https']).optional().default('https'),
-  accountName: z
-    .string()
-    .min(1, { message: 'Azure account name is required' })
-    .optional(),
-  accountKey: z
-    .string()
-    .min(1, { message: 'Azure account key is required' })
-    .optional(),
-  endpointSuffix: z
-    .string()
-    .min(1, { message: 'Azure endpoint suffix is required' })
-    .optional()
-    .default('core.windows.net'),
-  containerName: z
-    .string()
-    .min(1, { message: 'Azure container name is required' }),
-});
-
-export const azureBlobConfigSchemaRefined = azureBlobConfigSchema.refine(
-  (data) => {
-    const option1Params =
-      !!data.azureBlobConnectionString && !!data.containerName;
-    const option2Params = !!(
-      data.accountName &&
-      data.accountKey &&
-      data.containerName
-    );
-    return option1Params || option2Params;
-  },
-  {
-    message:
-      'You must provide either a (connection string OR all of these parameters: accountName, accountKey), and containerName',
-    path: ['body'],
-  },
-);
-
-export const localConfigSchema = baseStorageSchema.extend({
-  storageType: z.literal(storageTypes.LOCAL),
-  // You can add local storage specific fields here if needed
-  mountName: z.string().optional(),
-  baseUrl: z.string().url().optional(),
-});
-
-export const storageValidationSchema = z.object({
-  body: z.discriminatedUnion('storageType', [
-    s3ConfigSchema,
-    azureBlobConfigSchema,
-    localConfigSchema,
-  ]),
-});
-
-export const smtpConfigSchema = z.object({
-  body: z.object({
-    host: z.string().min(1, { message: 'SMTP host is required' }),
-    port: z.number().min(1, { message: 'SMTP port is required' }),
-    username: z.string().optional(),
-    password: z.string().optional(),
-    fromEmail: z.string().min(1, { message: 'SMTP from is required' }),
-  }),
-});
-
-export const azureAdConfigSchema = z.object({
-  body: z.object({
-    clientId: z.string().min(1, { message: 'Azure client ID is required' }),
-    tenantId: z.string().optional().default('common'),
-    enableJit: z.boolean().optional().default(true),
-  }),
-});
-
-export const ssoConfigSchema = z.object({
-  body: z.object({
-    entryPoint: z.string().min(1, { message: 'SSO entry point is required' }),
-    certificate: z.string().min(1, { message: 'SSO certificate is required' }),
-    emailKey: z.string().min(1, { message: 'SSO Email Key is required' }),
-    enableJit: z.boolean().optional().default(true),
-    samlPlatform: z.string().optional(),
-  }),
-});
-
-export const googleAuthConfigSchema = z.object({
-  body: z.object({
-    clientId: z.string().min(1, { message: 'Google client ID is required' }),
-    enableJit: z.boolean().optional().default(true),
-  }),
-});
-
-export const oauthConfigSchema = z.object({
-  body: z.object({
-    providerName: z.string().min(1, { message: 'Provider name is required' }),
-    clientId: z.string().min(1, { message: 'Client ID is required' }),
-    clientSecret: z.string().optional(),
-    authorizationUrl: z.string().url().optional().or(z.literal('')),
-    tokenEndpoint: z.string().url().optional().or(z.literal('')),
-    userInfoEndpoint: z.string().url().optional().or(z.literal('')),
-    scope: z.string().optional(),
-    redirectUri: z.string().url().optional().or(z.literal('')),
-    enableJit: z.boolean().optional().default(true),
-  }),
-});
-
-export const microsoftConfigSchema = z.object({
-  clientId: z.string().min(1, { message: 'Microsoft client ID is required' }),
-  tenantId: z.string().optional().default('common'),
-  enableJit: z.boolean().optional().default(false),
-});
-
-export const mongoDBConfigSchema = z.object({
-  body: z.object({
-    uri: z.string().url(),
-  }),
-});
-
-export const arangoDBConfigSchema = z.object({
-  body: z.object({
-    url: z.string().url(),
-    username: z.string().optional(),
-    password: z.string().optional(),
-  }),
-});
-
-// Unified database configuration schema
-export const dbConfigSchema = z.object({
-  body: z
-    .object({
-      mongodb: mongoDBConfigSchema.optional(),
-      arangodb: arangoDBConfigSchema.optional(),
-    })
-    .refine(
-      (data) => {
-        // Count how many database configs are provided
-        const configCount = [data.mongodb, data.arangodb].filter(
-          Boolean,
-        ).length;
-
-        // Ensure at least one database configuration is provided
-        return configCount >= 1;
-      },
-      {
-        message:
-          "At least one database configuration must be provided: 'mongodb' and/or 'arangodb'",
-        path: ['body'],
-      },
-    ),
-});
-
-export const redisConfigSchema = z.object({
-  body: z.object({
-    host: z.string().min(1, { message: 'Redis host is required' }),
-    port: z.number().min(1, { message: 'Redis port is required' }),
-    password: z.string().optional(),
-    tls: z.boolean().optional(),
-  }),
-});
-
-export const qdrantConfigSchema = z.object({
-  body: z.object({
-    host: z.string().min(1, { message: 'Qdrant host is required' }),
-    port: z.number().min(1, { message: 'Qdrant Port is required' }),
-    grpcPort: z.number().optional(),
-    apiKey: z.string().optional(),
-  }),
-});
-
-// Platform settings schema (feature flags and upload limits)
-export const platformSettingsSchema = z.object({
-  body: z.object({
-    fileUploadMaxSizeBytes: z
-      .number()
-      .int()
-      .positive()
-      .max(1024 * 1024 * 1024, { message: 'Max 1GB per file' }) // safety upper bound
-      .describe('Max per-file upload size in bytes'),
-    featureFlags: z
-      .record(z.boolean())
-      .default({})
-      .describe('Feature flags map, e.g., { ENABLE_WORKFLOW_BUILDER: true }'),
-  }),
-});
-
-
-
-export const createSlackBotConfigSchema = z.object({
-  body: slackBotConfigBodySchema,
-});
-
-export const updateSlackBotConfigSchema = z.object({
-  params: z.object({
-    configId: z.string().min(1, { message: 'Config ID is required' }),
-  }),
-  body: slackBotConfigBodySchema,
-});
-
-export const deleteSlackBotConfigSchema = z.object({
-  params: z.object({
-    configId: z.string().min(1, { message: 'Config ID is required' }),
-  }),
-});
-
-export const kafkaConfigSchema = z.object({
-  body: z.object({
-    brokers: z.array(z.string().url()), // Ensures an array of valid URLs
-    sasl: z
-      .object({
-        mechanism: z.string(),
-        username: z.string(),
-        password: z.string(),
-      })
-      .optional(),
-  }),
-});
-
-export const googleWorkspaceBusinessCredentialsSchema = z.object({
-  type: z.string().min(1, { message: 'Account type is required' }),
-  project_id: z
-    .string()
-    .min(1, { message: 'Google workspace project ID is required' }),
-  private_key_id: z
-    .string()
-    .min(1, { message: 'Google workspace private key ID is required' }),
-  private_key: z
-    .string()
-    .min(1, { message: 'Google workspace private key is required' }),
-  client_email: z
-    .string()
-    .min(1, { message: 'Google workspace client email is required' }),
-  client_id: z
-    .string()
-    .min(1, { message: 'Google workspace client ID is required' }),
-  auth_uri: z
-    .string()
-    .min(1, { message: 'Google workspace auth URI is required' }),
-  token_uri: z
-    .string()
-    .min(1, { message: 'Google workspace token URI is required' }),
-  auth_provider_x509_cert_url: z.string().min(1, {
-    message: 'Google workspace auth provider X509 certificate URL is required',
-  }),
-  client_x509_cert_url: z.string().min(1, {
-    message: 'Google workspace client X509 certificate URL is required',
-  }),
-  universe_domain: z
-    .string()
-    .min(1, { message: 'Google workspace universe domain is required' }),
-});
-
-export const googleWorkspaceIndividualCredentialsSchema = z.object({
-  access_token: z
-    .string()
-    .min(1, { message: 'Google workspace access token is required' }),
-  refresh_token: z
-    .string()
-    .min(1, { message: 'Google workspace refresh token is required' }),
-  access_token_expiry_time: z.number().min(1, {
-    message: 'Google workspace access token expiry time is required',
-  }),
-  refresh_token_expiry_time: z.number().optional(),
-});
-
-export const googleWorkspaceCredentialsSchema = z.object({
-  body: z.object({
-    userType: z.enum([
-      googleWorkspaceTypes.BUSINESS,
-      googleWorkspaceTypes.INDIVIDUAL,
-    ]),
-  }),
-  files: z.record(
-    z.string(),
-    z
-      .any()
-      .refine(
-        (file) => file.mimetype === 'application/json',
-        'All configuration files must be JSON files',
-      ),
-  ),
-});
-export const googleWorkspaceConfigSchema = z.object({
-  body: z.object({
-    clientId: z.string().min(1, { message: 'Google client ID is required' }),
-    clientSecret: z
-      .string()
-      .min(1, { message: 'Google client Secret is required' }),
-    enableRealTimeUpdates: z.union([z.boolean(), z.string()]).optional(),
-    topicName: z.string().optional(),
-  }),
-});
-
-export const atlassianCredentialsSchema = z.object({
-  body: z.object({
-    clientId: z.string().min(1, { message: 'Atlassian client ID is required' }),
-    clientSecret: z.string().min(1, { message: 'Atlassian client Secret is required' }),
-  }),
-});
-
-export const microsoftConnectorCredentialsSchema = z.object({
-  body: z.object({
-    clientId: z.string().min(1, { message: 'Client ID is required' }),
-    clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
-    tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
-    hasAdminConsent: z.boolean().optional(),
-  }),
-});
-
-export const sharepointCredentialsSchema = z.object({
-  body: z.object({
-    clientId: z.string().min(1, { message: 'Client ID is required' }),
-    clientSecret: z.string().min(1, { message: 'Client Secret is required' }),
-    tenantId: z.string().min(1, { message: 'Tenant ID is required' }),
-    sharepointDomain: z.string().min(1, { message: 'SharePoint Domain is required' }),
-    hasAdminConsent: z.boolean().optional(),
-  }),
-});
-
-export const onedriveCredentialsSchema = microsoftConnectorCredentialsSchema;
-
-
-
-// export const aiModelsConfigSchema = z.object({
-//   body: z
-//     .object({
-//       ocr: z.array(z.record(z.any())).optional(),
-//       embedding: z.array(z.record(z.any())).optional(),
-//       slm: z.array(z.record(z.any())).optional(),
-//       llm: z.array(z.record(z.any())).optional(),
-//       reasoning: z.array(z.record(z.any())).optional(),
-//       multiModal: z.array(z.record(z.any())).optional(),
-//     })
-//     .strict({
-//       message:
-//         'ai models can be ocr, embedding, llm, slm, reasoning, multimodal',
-//     })
-//     .refine(
-//       (data) => {
-//         // Ensure at least one field is present and non-empty
-//         return Object.values(data).some(
-//           (value) => Array.isArray(value) && value.length > 0,
-//         );
-//       },
-//       {
-//         message: 'At least one AI model type must be configured',
-//       },
-//     ),
-// });
-
-export const urlSchema = z.object({
-  body: z.object({
-    url: z.string().url(),
-  }),
-});
-
-export const publicUrlSchema = z.object({
-  body: z.object({
-    frontendUrl: z.string().url().optional(),
-    connectorUrl: z.string().url().optional(),
-  }),
-});
-
-export const metricsCollectionToggleSchema = z.object({
-  body: z
-    .object({
-      enableMetricCollection: z.boolean(),
-    })
-    .transform((data) => {
-      return {
-        enableMetricCollection: data.enableMetricCollection.toString(),
-      };
-    }),
-});
-
-export const metricsCollectionPushIntervalSchema = z.object({
-  body: z
-    .object({
-      pushIntervalMs: z.number(),
-    })
-    .transform((data) => {
-      return {
-        pushIntervalMs: data.pushIntervalMs.toString(),
-      };
-    }),
-});
-
-export const metricsCollectionRemoteServerSchema = z.object({
-  body: z.object({
-    serverUrl: z.string().url(),
-  }),
-});
-
-
-// Enum definitions
-export const modelType = z.enum([
+const AI_MODEL_TYPE_VALUES = [
   'llm',
   'embedding',
   'ocr',
   'slm',
   'reasoning',
-  'multiModal'
-]);
+  'multiModal',
+] as const;
 
-export const embeddingProvider = z.enum([
+const EMBEDDING_PROVIDER_VALUES = [
   'anthropic',
   'bedrock',
   'azureAI',
@@ -447,10 +32,10 @@ export const embeddingProvider = z.enum([
   'sentenceTransformers',
   'together',
   'vertexAI',
-  'voyage'
-]);
+  'voyage',
+] as const;
 
-export const llmProvider = z.enum([
+const LLM_PROVIDER_VALUES = [
   'anthropic',
   'bedrock',
   'azureAI',
@@ -465,56 +50,362 @@ export const llmProvider = z.enum([
   'openAICompatible',
   'together',
   'vertexAI',
-  'xai'
-]);
+  'xai',
+] as const;
 
-export const ocrProvider = z.enum([
-  'azureDI',
-  'ocrmypdf'
-]);
+const OCR_PROVIDER_VALUES = ['azureDI', 'ocrmypdf'] as const;
 
-// Combined provider type that accepts embedding, LLM, and OCR providers
+// ============================================================================
+// Request Schemas - Storage
+// ============================================================================
+
+export const baseStorageSchema = z.object({
+  storageType: z.enum([storageTypes.LOCAL, storageTypes.S3, storageTypes.AZURE_BLOB]),
+});
+
+export const s3ConfigSchema = baseStorageSchema
+  .extend({
+    storageType: z.literal(storageTypes.S3),
+    s3AccessKeyId: z.string().min(1, { message: 'S3 access key ID is required' }),
+    s3SecretAccessKey: z.string().min(1, { message: 'S3 secret access key is required' }),
+    s3Region: z.string().min(1, { message: 'S3 region is required' }),
+    s3BucketName: z.string().min(1, { message: 'S3 bucket name is required' }),
+  })
+  .strict();
+
+export const azureBlobConfigSchema = baseStorageSchema
+  .extend({
+    storageType: z.literal(storageTypes.AZURE_BLOB),
+    endpointProtocol: z.enum(['http', 'https']).optional().default('https'),
+    accountName: z.string().min(1, { message: 'Azure account name is required' }).optional(),
+    accountKey: z.string().min(1, { message: 'Azure account key is required' }).optional(),
+    endpointSuffix: z
+      .string()
+      .min(1, { message: 'Azure endpoint suffix is required' })
+      .optional()
+      .default('core.windows.net'),
+    containerName: z.string().min(1, { message: 'Azure container name is required' }),
+  })
+  .strict();
+
+export const localConfigSchema = baseStorageSchema
+  .extend({
+    storageType: z.literal(storageTypes.LOCAL),
+    mountName: z.string().optional(),
+    baseUrl: z.string().url().optional(),
+  })
+  .strict();
+
+const storageConfigBodySchema = z
+  .discriminatedUnion('storageType', [s3ConfigSchema, azureBlobConfigSchema, localConfigSchema])
+
+export const storageValidationSchema = z.object({ body: storageConfigBodySchema });
+
+// ============================================================================
+// Request Schemas - SMTP
+// ============================================================================
+
+export const smtpConfigSchema = z.object({
+  body: z
+    .object({
+      host: z.string().min(1, { message: 'SMTP host is required' }),
+      port: z.coerce.number().int().min(1, { message: 'SMTP port is required' }),
+      username: z.string().optional(),
+      password: z.string().optional(),
+      fromEmail: z.string().min(1, { message: 'SMTP from is required' }),
+    })
+    .strict(),
+});
+
+// ============================================================================
+// Request Schemas - Auth
+// ============================================================================
+
+export const azureAdConfigSchema = z.object({
+  body: z
+    .object({
+      clientId: z.string().trim().min(1, { message: 'Azure client ID is required' }),
+      tenantId: z.string().trim().optional().default('common'),
+      enableJit: z.boolean().optional().default(true),
+    })
+    .strict(),
+});
+
+export const microsoftAuthConfigSchema = z.object({
+  body: z
+    .object({
+      clientId: z.string().trim().min(1, { message: 'Microsoft client ID is required' }),
+      tenantId: z.string().trim().optional().default('common'),
+      enableJit: z.boolean().optional().default(true),
+    })
+    .strict(),
+});
+
+export const ssoConfigSchema = z.object({
+  body: z
+    .object({
+      entryPoint: z.string().trim().min(1, { message: 'SSO entry point is required' }),
+      certificate: z.string().trim().min(1, { message: 'SSO certificate is required' }),
+      emailKey: z.string().trim().min(1, { message: 'SSO Email Key is required' }),
+      enableJit: z.boolean().optional().default(true),
+      samlPlatform: z.string().optional(),
+    })
+    .passthrough(),
+});
+
+export const googleAuthConfigSchema = z.object({
+  body: z
+    .object({
+      clientId: z.string().trim().min(1, { message: 'Google client ID is required' }),
+      enableJit: z.boolean().optional().default(true),
+    })
+    .strict(),
+});
+
+export const oauthConfigSchema = z.object({
+  body: z
+    .object({
+      providerName: z.string().trim().min(1, { message: 'Provider name is required' }),
+      clientId: z.string().trim().min(1, { message: 'Client ID is required' }),
+      clientSecret: z.string().trim().optional(),
+      authorizationUrl: z.string().trim().url().optional().or(z.literal('')),
+      tokenEndpoint: z.string().trim().url().optional().or(z.literal('')),
+      userInfoEndpoint: z.string().trim().url().optional().or(z.literal('')),
+      scope: z.string().optional(),
+      redirectUri: z.string().trim().url().optional().or(z.literal('')),
+      enableJit: z.boolean().optional().default(true),
+    })
+    .strict(),
+});
+
+// Backward compatible alias
+export const microsoftConfigSchema = microsoftAuthConfigSchema;
+
+// ============================================================================
+// Request Schemas - Data/Infra (Legacy — not exposed via cm_routes)
+// ============================================================================
+
+export const mongoDBConfigSchema = z.object({
+  body: z.object({ uri: z.string().url() }).strict(),
+});
+
+export const arangoDBConfigSchema = z.object({
+  body: z
+    .object({
+      url: z.string().url(),
+      username: z.string().optional(),
+      password: z.string().optional(),
+    })
+    .strict(),
+});
+
+export const dbConfigSchema = z.object({
+  body: z
+    .object({
+      mongodb: mongoDBConfigSchema.optional(),
+      arangodb: arangoDBConfigSchema.optional(),
+    })
+    .refine(
+      (data) => [data.mongodb, data.arangodb].filter(Boolean).length >= 1,
+      {
+        message:
+          "At least one database configuration must be provided: 'mongodb' and/or 'arangodb'",
+        path: ['body'],
+      },
+    ),
+});
+
+export const redisConfigSchema = z.object({
+  body: z
+    .object({
+      host: z.string().min(1, { message: 'Redis host is required' }),
+      port: z.number().min(1, { message: 'Redis port is required' }),
+      password: z.string().optional(),
+      tls: z.boolean().optional(),
+    })
+    .strict(),
+});
+
+export const qdrantConfigSchema = z.object({
+  body: z
+    .object({
+      host: z.string().min(1, { message: 'Qdrant host is required' }),
+      port: z.number().min(1, { message: 'Qdrant Port is required' }),
+      grpcPort: z.number().optional(),
+      apiKey: z.string().optional(),
+    })
+    .strict(),
+});
+
+export const kafkaConfigSchema = z.object({
+  body: z
+    .object({
+      brokers: z.array(z.string().url()),
+      sasl: z
+        .object({ mechanism: z.string(), username: z.string(), password: z.string() })
+        .strict()
+        .optional(),
+    })
+    .strict(),
+});
+
+export const urlSchema = z.object({
+  body: z.object({ url: z.string().trim().url() }).strict(),
+});
+
+export const publicUrlSchema = z.object({
+  body: z
+    .object({
+      frontendUrl: z.string().trim().url().optional(),
+      connectorUrl: z.string().trim().url().optional(),
+    })
+    .strict(),
+});
+
+// ============================================================================
+// Request Schemas - Platform Settings
+// ============================================================================
+
+export const platformSettingsSchema = z.object({
+  body: z
+    .object({
+      fileUploadMaxSizeBytes: z.coerce
+        .number()
+        .int()
+        .positive()
+        .max(1024 * 1024 * 1024, { message: 'Max 1GB per file' })
+        .describe('Max per-file upload size in bytes'),
+      featureFlags: z
+        .record(z.boolean())
+        .default({})
+        .describe('Feature flags map, e.g., { ENABLE_WORKFLOW_BUILDER: true }'),
+    })
+    .strict(),
+});
+
+// ============================================================================
+// Request Schemas - Slack Bot
+// ============================================================================
+
+const slackBotConfigBodySchema = z
+  .object({
+    name: z.string().trim().min(1, { message: 'Slack Bot name is required' }),
+    botToken: z.string().trim().min(1, { message: 'Bot token is required' }),
+    signingSecret: z.string().trim().min(1, { message: 'Signing secret is required' }),
+    agentId: z.string().trim().optional().or(z.literal('')),
+  })
+  .strict();
+
+export const slackBotConfigIdParamsSchema = z.object({
+  configId: z.string().min(1, { message: 'Config ID is required' }),
+});
+
+export const createSlackBotConfigSchema = z.object({ body: slackBotConfigBodySchema });
+
+export const updateSlackBotConfigSchema = z.object({
+  params: slackBotConfigIdParamsSchema,
+  body: slackBotConfigBodySchema,
+});
+
+export const deleteSlackBotConfigSchema = z.object({ params: slackBotConfigIdParamsSchema });
+
+// ============================================================================
+// Request Schemas - Custom System Prompt
+// ============================================================================
+
+export const customSystemPromptSchema = z.object({
+  body: z.object({ customSystemPrompt: z.string() }).strict(),
+});
+
+// ============================================================================
+// Request Schemas - Metrics Collection
+// ============================================================================
+
+export const metricsCollectionToggleSchema = z.object({
+  body: z.object({ enableMetricCollection: z.boolean() }).strict(),
+});
+
+export const metricsCollectionPushIntervalSchema = z.object({
+  body: z.object({ pushIntervalMs: z.coerce.number().int().positive() }).strict(),
+});
+
+export const metricsCollectionRemoteServerSchema = z.object({
+  body: z.object({ serverUrl: z.string().trim().url() }).strict(),
+});
+
+// ============================================================================
+// Request Schemas - AI Models
+// ============================================================================
+
+export const modelType = z.enum(AI_MODEL_TYPE_VALUES);
+export const embeddingProvider = z.enum(EMBEDDING_PROVIDER_VALUES);
+export const llmProvider = z.enum(LLM_PROVIDER_VALUES);
+export const ocrProvider = z.enum(OCR_PROVIDER_VALUES);
+
+/** Combined provider enum for embedding, LLM, and OCR providers. */
 export const providerType = z.union([embeddingProvider, llmProvider, ocrProvider]);
 
-// Model Configuration schema
-export const configurationSchema = z.object({
-  model: z.string().optional().describe("Model name(s) - can be comma-separated for multiple models (e.g., 'gpt-4o, gpt-4o-mini')"),
-  modelFriendlyName: z.string().optional().describe("Friendly name for the model (only allowed when model contains a single model name, not comma-separated)"),
-  apiKey: z.string().optional().describe("API key for the model"),
-  endpoint: z.string().optional().describe("Endpoint URL for the model"),
-  organizationId: z.string().optional().describe("Organization ID"),
-  deploymentName: z.string().optional().describe("Azure deployment name"),
-  provider: z.string().optional().describe("Provider name"),
-  awsAccessKeyId: z.string().optional().describe("AWS access key ID"),
-  awsAccessSecretKey: z.string().optional().describe("AWS secret access key"),
-  region: z.string().optional().describe("AWS region"),
-  model_kwargs: z.record(z.any()).optional().describe("Additional model kwargs"),
-  encode_kwargs: z.record(z.any()).optional().describe("Additional encoding kwargs"),
-  cache_folder: z.string().optional().describe("Cache folder for models")
-}).refine(
-  (data) => {
-    // If modelFriendlyName is provided, model must be a single model (not comma-separated)
-    if (data.modelFriendlyName && data.modelFriendlyName.trim() !== '') {
-      if (!data.model || data.model.includes(',')) {
-        return false;
+/**
+ * NOT strict — AI provider configuration keys vary by provider.
+ * Unknown keys are stripped (default z.object behaviour) rather than rejected.
+ */
+export const configurationSchema = z
+  .object({
+    model: z
+      .string()
+      .optional()
+      .describe("Model name(s) — comma-separated for multiple (e.g. 'gpt-4o, gpt-4o-mini')"),
+    modelFriendlyName: z
+      .string()
+      .optional()
+      .describe('Friendly name (only allowed when model is a single name, not comma-separated)'),
+    apiKey: z.string().optional(),
+    endpoint: z.string().optional(),
+    organizationId: z.string().optional(),
+    deploymentName: z.string().optional(),
+    provider: z.string().optional(),
+    awsAccessKeyId: z.string().optional(),
+    awsAccessSecretKey: z.string().optional(),
+    region: z.string().optional(),
+    model_kwargs: z.record(z.any()).optional(),
+    encode_kwargs: z.record(z.any()).optional(),
+    cache_folder: z.string().optional(),
+  })
+  .refine(
+    (data) => {
+      if (data.modelFriendlyName && data.modelFriendlyName.trim() !== '') {
+        if (!data.model || data.model.includes(',')) return false;
       }
-    }
-    return true;
-  },
-  {
-    message: "Model friendly name can only be set when a single model name is provided (not comma-separated)",
-    path: ["modelFriendlyName"],
-  }
-);
+      return true;
+    },
+    {
+      message:
+        'Model friendly name can only be set when a single model name is provided (not comma-separated)',
+      path: ['modelFriendlyName'],
+    },
+  );
 
-// Add Provider Request schema
 export const modelConfigurationSchema = z.object({
   provider: providerType,
   configuration: configurationSchema,
-  isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
-  isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
-  isDefault: z.boolean().default(false).describe("Whether this should be the default model"),
-  contextLength: z.number().optional().nullable().describe("Context length for the model")
+  isMultimodal: z.boolean().default(false).describe('Whether the model supports multimodal input'),
+  isReasoning: z.boolean().default(false).describe('Whether the model supports reasoning'),
+  isDefault: z.boolean().default(false).describe('Whether this should be the default model'),
+  contextLength: z.number().optional().nullable().describe('Context length for the model'),
+});
+
+export const addProviderRequestSchema = z.object({
+  body: z
+    .object({
+      modelType: modelType,
+      provider: providerType,
+      configuration: configurationSchema,
+      isMultimodal: z.boolean().default(false),
+      isReasoning: z.boolean().default(false),
+      isDefault: z.boolean().default(false),
+      contextLength: z.number().optional().nullable(),
+    })
+    .strict(),
 });
 
 export const updateProviderRequestSchema = z.object({
@@ -522,29 +413,18 @@ export const updateProviderRequestSchema = z.object({
     modelType: modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
-  body: z.object({
-    provider: providerType,
-    configuration: configurationSchema,
-    isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
-    isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
-    isDefault: z.boolean().default(false).describe("Whether this should be the default model"),
-    contextLength: z.number().optional().nullable().describe("Context length for the model")
-  }),
+  body: z
+    .object({
+      provider: providerType,
+      configuration: configurationSchema,
+      isMultimodal: z.boolean().default(false),
+      isReasoning: z.boolean().default(false),
+      isDefault: z.boolean().default(false),
+      contextLength: z.number().optional().nullable(),
+    })
+    .strict(),
 });
 
-export const addProviderRequestSchema = z.object({
-  body: z.object({
-    modelType: modelType,
-    provider: providerType,
-    configuration: configurationSchema,
-    isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
-    isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
-    isDefault: z.boolean().default(false).describe("Whether this should be the default model"),
-    contextLength: z.number().optional().nullable().describe("Context length for the model")
-  }),
-});
-
-// Updated AI Models Config schema with proper typing
 export const aiModelsConfigSchema = z.object({
   body: z
     .object({
@@ -554,63 +434,437 @@ export const aiModelsConfigSchema = z.object({
       llm: z.array(modelConfigurationSchema).optional(),
       reasoning: z.array(modelConfigurationSchema).optional(),
       multiModal: z.array(modelConfigurationSchema).optional(),
-      custom_system_prompt: z.string().optional().nullable(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, and custom_system_prompt',
+      message:
+        'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal',
     })
     .refine(
-      (data) => {
-        // Ensure at least one field is present and non-empty
-        return Object.values(data).some(
-          (value) => Array.isArray(value) && value.length > 0,
-        );
-      },
-      {
-        message: 'At least one AI model type must be configured',
-      },
+      (data) => Object.values(data).some((value) => Array.isArray(value) && value.length > 0),
+      { message: 'At least one AI model type must be configured' },
     ),
 });
 
-
-
 export const modelTypeSchema = z.object({
-  params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-    ]),
-  }),
+  params: z.object({ modelType }),
 });
 
 export const updateDefaultModelSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-    ]),
+    modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });
 
 export const deleteProviderSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-    ]),
+    modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });
+
+// ============================================================================
+// Response Schemas - Shared primitives
+// ============================================================================
+
+/**
+ * Accepts both native numbers and numeric strings (e.g. from Redis/KV stores
+ * that stringify numbers on retrieval).
+ */
+const numericStringSchema = z
+  .string()
+  .regex(/^-?\d+(\.\d+)?$/, { message: 'Expected numeric string' });
+const booleanLikeSchema = z.union([z.boolean(), z.literal('true'), z.literal('false')]);
+const numberLikeSchema = z.union([z.number(), numericStringSchema]);
+
+export const cmMessageResponseSchema = z
+  .object({
+    message: z.string(),
+    warningMessage: z.unknown().optional(),
+  })
+  .strict();
+
+export const cmSuccessStatusSchema = z
+  .object({
+    status: z.literal('success'),
+  })
+  .strict();
+
+// ============================================================================
+// Response Schemas - Storage
+// ============================================================================
+
+/**
+ * Strict discriminated union — every branch requires `storageType` and only
+ * exposes known fields. Extra fields from the KV store are caught by safeParse.
+ */
+export const storageConfigResponseSchema = z.discriminatedUnion('storageType', [
+  z
+    .object({
+      storageType: z.literal(storageTypes.S3),
+      accessKeyId: z.string(),
+      secretAccessKey: z.string(),
+      region: z.string(),
+      bucketName: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      storageType: z.literal(storageTypes.AZURE_BLOB),
+      endpointProtocol: z.string().optional(),
+      accountName: z.string().optional(),
+      accountKey: z.string().optional(),
+      endpointSuffix: z.string().optional(),
+      containerName: z.string().optional(),
+      // Connection strings are not echoed back for security reasons
+    })
+    .strict(),
+  z
+    .object({
+      storageType: z.literal(storageTypes.LOCAL),
+      mountName: z.string().optional(),
+      baseUrl: z.string().optional(),
+    })
+    .strict(),
+]);
+
+// ============================================================================
+// Response Schemas - SMTP
+// ============================================================================
+
+/** All fields optional — returns {} when SMTP is not yet configured. */
+export const smtpConfigResponseSchema = z
+  .object({
+    host: z.string(),
+    port: numberLikeSchema,
+    username: z.string().optional(),
+    password: z.string().optional(),
+    fromEmail: z.string(),
+  })
+  .strict();
+
+// ============================================================================
+// Response Schemas - Auth
+// ============================================================================
+
+/** All fields optional — returns {} when the auth provider is not configured. */
+export const azureAdAuthConfigResponseSchema = z
+  .object({
+    clientId: z.string(),
+    tenantId: z.string(),
+    authority: z.string(),
+    enableJit: z.boolean().optional(),
+  })
+  .strict();
+
+export const microsoftAuthConfigResponseSchema = azureAdAuthConfigResponseSchema;
+
+export const googleAuthConfigResponseSchema = z
+  .object({
+    clientId: z.string(),
+    enableJit: z.boolean().optional(),
+  })
+  .strict();
+
+export const ssoAuthConfigResponseSchema = z
+  .object({
+    certificate: z.string(),
+    entryPoint: z.string(),
+    emailKey: z.string(),
+    enableJit: z.boolean().optional(),
+    samlPlatform: z.string().optional(),
+  })
+  .strict();
+
+export const oauthAuthConfigResponseSchema = z
+  .object({
+    providerName: z.string(),
+    clientId: z.string(),
+    clientSecret: z.string().optional(),
+    authorizationUrl: z.string(),
+    tokenEndpoint: z.string(),
+    userInfoEndpoint: z.string(),
+    scope: z.string().optional(),
+    redirectUri: z.string().optional().or(z.literal('')),
+    enableJit: z.boolean().optional(),
+  })
+  .strict();
+
+// ============================================================================
+// Response Schemas - Platform
+// ============================================================================
+
+export const platformSettingsResponseSchema = z
+  .object({
+    fileUploadMaxSizeBytes: z.number(),
+    featureFlags: z.record(z.boolean()),
+  })
+  .strict();
+
+export const availablePlatformFlagsResponseSchema = z
+  .object({
+    flags: z.array(
+      z
+        .object({
+          key: z.string(),
+          label: z.string(),
+          description: z.string().optional(),
+          defaultEnabled: z.boolean().optional(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+// ============================================================================
+// Response Schemas - Slack Bot
+// ============================================================================
+
+export const slackBotResponseConfigSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    agentId: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    botToken: z.string(),
+    signingSecret: z.string(),
+  })
+  .strict();
+
+export const slackBotConfigsResponseSchema = cmSuccessStatusSchema
+  .extend({
+    configs: z.array(slackBotResponseConfigSchema),
+  })
+  .strict();
+
+export const slackBotConfigMutationResponseSchema = cmSuccessStatusSchema
+  .extend({
+    config: slackBotResponseConfigSchema,
+  })
+  .strict();
+
+export const slackBotConfigDeleteResponseSchema = cmSuccessStatusSchema
+  .extend({
+    message: z.string(),
+  })
+  .strict();
+
+// ============================================================================
+// Response Schemas - Custom System Prompt
+// ============================================================================
+
+export const customSystemPromptResponseSchema = z
+  .object({
+    customSystemPrompt: z.string(),
+  })
+  .strict();
+
+export const customSystemPromptUpdateResponseSchema = cmMessageResponseSchema
+  .extend({
+    customSystemPrompt: z.string(),
+  })
+  .strict();
+
+// ============================================================================
+// Response Schemas - URL (Legacy)
+// ============================================================================
+
+export const frontendPublicUrlResponseSchema = z.union([
+  z.object({ url: z.string().url() }).strict(),
+  z.object({}).strict(),
+]);
+
+export const connectorPublicUrlResponseSchema = frontendPublicUrlResponseSchema;
+
+
+
+// ============================================================================
+// Response Schemas - Database
+// ============================================================================
+
+export const arangoDbConfigResponseSchema = z.object({
+  url: z.string().url(),
+  username: z.string(),
+  password: z.string(),
+  db: z.string(),
+});
+
+export const mongoDbConfigResponseSchema = z.object({
+  uri: z.string().url(),
+  db: z.string(),
+});
+
+export const redisConfigResponseSchema = z.object({
+  host: z.string(),
+  port: z.number(),
+  password: z.string(),
+  tls: z.boolean(),
+});
+
+export const kafkaConfigResponseSchema = z.object({
+  brokers: z.array(z.string()),
+  sasl: z.object({
+    username: z.string(),
+    password: z.string(),
+  }),
+});
+
+export const qdrantConfigResponseSchema = z.object({
+  port: z.number(),
+  apiKey: z.string(),
+  host: z.string(),
+  grpcPort: z.number(),
+});
+
+// ============================================================================
+// Response Schemas - AI Models
+// ============================================================================
+
+/**
+ * Individual model config item.
+ * NOT strict — AI provider configs contain provider-specific fields not
+ * enumerated at this level. passthrough() preserves them for callers.
+ */
+export const aiModelConfigItemSchema = z
+  .object({
+    provider: z.string().optional(),
+    configuration: z.record(z.any()).optional(),
+    modelKey: z.string().optional(),
+    isMultimodal: z.boolean().optional(),
+    isReasoning: z.boolean().optional(),
+    isDefault: z.boolean().optional(),
+    contextLength: z.number().nullable().optional(),
+    modelFriendlyName: z.string().optional(),
+  });
+
+export const aiModelsConfigResponseSchema = z
+  .object({
+    ocr: z.array(aiModelConfigItemSchema).optional(),
+    embedding: z.array(aiModelConfigItemSchema).optional(),
+    slm: z.array(aiModelConfigItemSchema).optional(),
+    llm: z.array(aiModelConfigItemSchema).optional(),
+    reasoning: z.array(aiModelConfigItemSchema).optional(),
+    multiModal: z.array(aiModelConfigItemSchema).optional(),
+    customSystemPrompt: z.string().optional(),
+  });
+
+export const aiModelsByTypeResponseSchema = cmSuccessStatusSchema
+  .extend({
+    models: z.array(aiModelConfigItemSchema),
+    message: z.string(),
+  })
+  .strict();
+
+export const aiModelsAvailableItemResponseSchema = z
+  .object({
+    modelType: modelType.optional(),
+    provider: z.string(),
+    modelName: z.string(),
+    modelKey: z.string(),
+    isMultimodal: z.boolean().optional(),
+    isReasoning: z.boolean().optional(),
+    isDefault: z.boolean().optional(),
+    modelFriendlyName: z.string().optional(),
+  })
+  .strict();
+
+export const aiModelsAvailableByTypeResponseSchema = cmSuccessStatusSchema
+  .extend({
+    models: z.array(aiModelsAvailableItemResponseSchema),
+    message: z.string(),
+  })
+  .strict();
+
+export const aiModelsProvidersResponseSchema = cmSuccessStatusSchema
+  .extend({
+    models: z
+      .object({
+        ocr: z.array(aiModelConfigItemSchema),
+        embedding: z.array(aiModelConfigItemSchema),
+        slm: z.array(aiModelConfigItemSchema),
+        llm: z.array(aiModelConfigItemSchema),
+        reasoning: z.array(aiModelConfigItemSchema),
+        multiModal: z.array(aiModelConfigItemSchema),
+        customSystemPrompt: z.string(),
+      })
+      .strict(),
+    message: z.string(),
+  })
+  .strict();
+
+export const aiModelMutationResponseSchema = cmSuccessStatusSchema
+  .extend({
+    message: z.string(),
+    details: z
+      .object({
+        modelKey: z.string(),
+        modelType,
+        provider: z.string().optional(),
+        model: z.string().optional(),
+        isDefault: z.boolean().optional(),
+        wasDefault: z.boolean().optional(),
+        contextLength: z.number().nullable().optional(),
+        isMultimodal: z.boolean().optional(),
+        isReasoning: z.boolean().optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
+// ============================================================================
+// Response Schemas - Metrics Collection
+// ============================================================================
+
+export const metricsCollectionResponseSchema = z
+  .object({
+    enableMetricCollection: booleanLikeSchema.optional(),
+    pushIntervalMs: numberLikeSchema.optional(),
+    serverUrl: z.string().optional(),
+  })
+
+// ============================================================================
+// Inferred Request Types
+// (Import these in controllers instead of typing req.body as `any`)
+// ============================================================================
+
+// — Body types —
+export type StorageConfigBody = z.infer<typeof storageValidationSchema>['body'];
+export type SmtpConfigBody = z.infer<typeof smtpConfigSchema>['body'];
+export type AzureAdConfigBody = z.infer<typeof azureAdConfigSchema>['body'];
+export type MicrosoftAuthConfigBody = z.infer<typeof microsoftAuthConfigSchema>['body'];
+export type SsoConfigBody = z.infer<typeof ssoConfigSchema>['body'];
+export type GoogleAuthConfigBody = z.infer<typeof googleAuthConfigSchema>['body'];
+export type OAuthConfigBody = z.infer<typeof oauthConfigSchema>['body'];
+export type PlatformSettingsBody = z.infer<typeof platformSettingsSchema>['body'];
+export type CreateSlackBotConfigBody = z.infer<typeof createSlackBotConfigSchema>['body'];
+export type UpdateSlackBotConfigBody = z.infer<typeof updateSlackBotConfigSchema>['body'];
+export type CustomSystemPromptBody = z.infer<typeof customSystemPromptSchema>['body'];
+export type AIModelsConfigBody = z.infer<typeof aiModelsConfigSchema>['body'];
+export type AddProviderBody = z.infer<typeof addProviderRequestSchema>['body'];
+export type UpdateProviderBody = z.infer<typeof updateProviderRequestSchema>['body'];
+export type MetricsCollectionToggleBody = z.infer<typeof metricsCollectionToggleSchema>['body'];
+export type MetricsCollectionPushIntervalBody = z.infer<
+  typeof metricsCollectionPushIntervalSchema
+>['body'];
+export type MetricsCollectionRemoteServerBody = z.infer<
+  typeof metricsCollectionRemoteServerSchema
+>['body'];
+
+// — Param types —
+export type UpdateSlackBotConfigParams = z.infer<typeof updateSlackBotConfigSchema>['params'];
+export type DeleteSlackBotConfigParams = z.infer<typeof deleteSlackBotConfigSchema>['params'];
+export type UpdateProviderParams = z.infer<typeof updateProviderRequestSchema>['params'];
+export type DeleteProviderParams = z.infer<typeof deleteProviderSchema>['params'];
+export type ModelTypeParams = z.infer<typeof modelTypeSchema>['params'];
+export type UpdateDefaultModelParams = z.infer<typeof updateDefaultModelSchema>['params'];
+
+// — Response types —
+export type StorageConfigResponse = z.infer<typeof storageConfigResponseSchema>;
+export type SmtpConfigResponse = z.infer<typeof smtpConfigResponseSchema>;
+export type PlatformSettingsResponse = z.infer<typeof platformSettingsResponseSchema>;
+export type SlackBotConfigEntry = z.infer<typeof slackBotResponseConfigSchema>;
+export type SlackBotConfigsResponse = z.infer<typeof slackBotConfigsResponseSchema>;
+export type AIModelsConfigResponse = z.infer<typeof aiModelsConfigResponseSchema>;
+export type AIModelMutationResponse = z.infer<typeof aiModelMutationResponseSchema>;
+export type MetricsCollectionResponse = z.infer<typeof metricsCollectionResponseSchema>;

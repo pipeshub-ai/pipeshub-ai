@@ -20,21 +20,6 @@ export const messageBrokerTypes = {
   KAFKA: 'kafka',
 };
 
-export const googleWorkspaceTypes = {
-  INDIVIDUAL: 'individual',
-  BUSINESS: 'business',
-};
-
-export const googleWorkspaceServiceTypes = {
-  GOOGLE_DRIVE: 'googleDrive',
-  GOOGLE_DOCS: 'googleDocs',
-  GOOGLE_SHEETS: 'googleSheets',
-  GOOGLE_SLIDES: 'googleSlides',
-  GOOGLE_CALENDAR: 'googleCalendar',
-  GOOGLE_CONTACTS: 'googleContacts',
-  GOOGLE_MAIL: 'gmail',
-};
-
 export const aiModelsTypes = {
   OCR: 'ocr',
   EMBEDDING: 'embedding',
@@ -48,9 +33,6 @@ export const dbTypes = {
   MONGO_DB: 'mongodb',
   ARANGO_DB: 'arangodb',
 };
-
-export const aiModelRoute = `api/v1/configurationManager/internal/aiModelsConfig`;
-
 export interface AIServiceResponse {
   statusCode: number;
   data?: any;
