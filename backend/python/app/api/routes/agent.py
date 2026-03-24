@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.api.middlewares.auth import require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
@@ -52,21 +52,183 @@ NO_KB_SELECTED_FILTER = "NO_KB_SELECTED"
 # ============================================================================
 
 class ChatQuery(BaseModel):
-    query: str
-    limit: int | None = 50
+    query: str = Field(min_length=1)
+    limit: int | None = Field(default=50, ge=1, le=200)
     previousConversations: list[dict] = []
     quickMode: bool = False
     filters: dict[str, Any] | None = None
-    retrievalMode: str | None = "HYBRID"
+    retrievalMode: Literal["HYBRID", "VECTOR", "KEYWORD"] | None = "HYBRID"
     systemPrompt: str | None = None
     instructions: str | None = None
     tools: list[str] | None = None
-    chatMode: str | None = "auto"
+    chatMode: Literal["auto", "quick", "react", "deep"] | None = "auto"
     modelKey: str | None = None
     modelName: str | None = None
     timezone: str | None = None
     currentTime: str | None = None
     conversationId: str | None = None
+
+    @field_validator("query")
+    @classmethod
+    def _validate_query(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("query must not be empty")
+        return v
+
+# ============================
+# Agent CRUD Request/Response
+# ============================
+
+class ModelEntry(BaseModel):
+    modelKey: str
+    modelName: str
+    provider: str | None = None
+    isReasoning: bool | None = None
+
+class ToolItem(BaseModel):
+    name: str
+    fullName: str
+    description: str | None = None
+
+class ToolsetItem(BaseModel):
+    id: str | None = None
+    name: str
+    displayName: str
+    type: str
+    tools: list[ToolItem] = []
+    instanceId: str | None = None
+
+class KnowledgeItem(BaseModel):
+    id: str | None = None
+    connectorId: str
+    filters: dict[str, Any] | None = None
+
+class CreateAgentRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = None
+    systemPrompt: str | None = None
+    startMessage: str | None = None
+    instructions: str | None = None
+    models: list[ModelEntry] = Field(min_length=1)
+    tags: list[str] | None = None
+    toolsets: list[ToolsetItem] | None = None
+    knowledge: list[KnowledgeItem] | None = None
+    shareWithOrg: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _trim_name(cls, v: str) -> str:
+        return v.strip()
+
+class UpdateAgentRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+    systemPrompt: str | None = None
+    startMessage: str | None = None
+    instructions: str | None = None
+    models: list[ModelEntry] | None = None
+    tags: list[str] | None = None
+    toolsets: list[ToolsetItem] | None = None
+    knowledge: list[KnowledgeItem] | None = None
+    shareWithOrg: bool | None = None
+
+class PaginationMeta(BaseModel):
+    currentPage: int
+    limit: int
+    totalItems: int
+    totalPages: int
+    hasNext: bool
+    hasPrev: bool
+
+class AgentDetailResponse(BaseModel):
+    status: str
+    message: str
+    agent: 'AgentOut'
+
+class AgentListResponse(BaseModel):
+    success: bool
+    agents: list['AgentOut']
+    pagination: PaginationMeta
+
+class AgentCreateResponse(BaseModel):
+    status: str
+    message: str
+    agent: 'AgentOut'
+    warnings: list[dict] | None = None
+
+class AgentUpdateResponse(BaseModel):
+    status: str
+    message: str
+
+class AgentDeleteResponse(BaseModel):
+    status: str
+    message: str
+    deleted: dict
+
+# ============================
+# Agent Output Models (DTO)
+# ============================
+
+class ToolOut(BaseModel):
+    name: str
+    fullName: str
+    description: str | None = None
+
+    model_config = {"extra": "allow"}
+
+class ToolsetOut(BaseModel):
+    name: str
+    displayName: str
+    type: str
+    tools: list[ToolOut] = []
+    instanceId: str | None = None
+    instanceName: str | None = None
+
+    model_config = {"extra": "allow"}
+
+class KnowledgeOut(BaseModel):
+    connectorId: str
+    filters: dict[str, Any] | None = None
+
+    model_config = {"extra": "allow"}
+
+class AgentModelOut(BaseModel):
+    modelKey: str
+    modelName: str
+    provider: str | None = None
+    isReasoning: bool | None = None
+    isMultimodal: bool | None = None
+    isDefault: bool | None = None
+    modelFriendlyName: str | None = None
+
+    model_config = {"extra": "allow"}
+
+class AgentOut(BaseModel):
+    _key: str | None = None
+    name: str
+    description: str | None = None
+    startMessage: str | None = None
+    systemPrompt: str | None = None
+    instructions: str | None = None
+    models: list[AgentModelOut] | list[str]
+    tags: list[str] | None = None
+    isActive: bool | None = None
+    createdBy: str | None = None
+    updatedBy: str | None = None
+    createdAtTimestamp: int | None = None
+    updatedAtTimestamp: int | None = None
+    isDeleted: bool | None = None
+    toolsets: list[ToolsetOut] | None = None
+    knowledge: list[KnowledgeOut] | None = None
+    shareWithOrg: bool | None = None
+
+    model_config = {"extra": "allow"}
+
+# Forward refs
+AgentDetailResponse.model_rebuild()
+AgentListResponse.model_rebuild()
+AgentCreateResponse.model_rebuild()
 
 
 class RouteDecision(BaseModel):
@@ -165,6 +327,33 @@ async def get_services(request: Request) -> dict[str, Any]:
         "llm": llm,
     }
 
+
+def _normalize_agent_for_output(agent: dict[str, Any]) -> dict[str, Any]:
+    """
+    Normalize provider/DB-specific shapes to match AgentOut for API responses.
+    - knowledge[*].filters: ensure dict (parse JSON strings, prefer filtersParsed if present)
+    """
+    try:
+        if not isinstance(agent, dict):
+            return agent
+
+        # Normalize knowledge filters
+        knowledge = agent.get("knowledge")
+        if isinstance(knowledge, list):
+            for k in knowledge:
+                if not isinstance(k, dict):
+                    continue
+                # Prefer filtersParsed when available and dict
+                if "filtersParsed" in k and isinstance(k.get("filtersParsed"), dict):
+                    k["filters"] = k["filtersParsed"]
+                elif "filters" in k and isinstance(k.get("filters"), str):
+                    try:
+                        k["filters"] = json.loads(k["filters"])
+                    except Exception:
+                        k["filters"] = {}
+        return agent
+    except Exception:
+        return agent
 
 def _get_user_context(request: Request) -> dict[str, Any]:
     """Extract user context from request"""
@@ -962,8 +1151,12 @@ async def stream_response(
 # Agent CRUD Endpoints
 # ============================================================================
 
-@router.post("/create", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
-async def create_agent(request: Request) -> JSONResponse:
+@router.post(
+    "/create",
+    dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))],
+    response_model=AgentCreateResponse,
+)
+async def create_agent(request: Request) -> AgentCreateResponse:
     """Create a new agent using graph-based architecture"""
     try:
         services = await get_services(request)
@@ -971,6 +1164,7 @@ async def create_agent(request: Request) -> JSONResponse:
         user_context = _get_user_context(request)
 
         body = _parse_request_body(await request.body())
+        create_req = CreateAgentRequest(**body)
         _validate_required_fields(body, ["name"])
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
@@ -979,7 +1173,7 @@ async def create_agent(request: Request) -> JSONResponse:
         time = get_epoch_timestamp_in_ms()
 
         # Parse and validate models
-        raw_models = body.get("models", [])
+        raw_models = [m.dict() for m in create_req.models]
         model_entries, has_reasoning_model = _parse_models(raw_models, logger)
 
         if not model_entries:
@@ -993,21 +1187,21 @@ async def create_agent(request: Request) -> JSONResponse:
             )
 
         # Parse toolsets and knowledge BEFORE starting transaction
-        toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
-        knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+        toolsets_with_tools = _parse_toolsets([t.dict() for t in (create_req.toolsets or [])])
+        knowledge_sources = _parse_knowledge_sources([k.dict() for k in (create_req.knowledge or [])])
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
-        share_with_org = body.get("shareWithOrg", False)
+        share_with_org = bool(create_req.shareWithOrg or False)
 
         # Create agent document
         agent_key = str(uuid.uuid4())
         agent = {
             "_key": agent_key,
-            "name": body["name"].strip(),
-            "description": body.get("description", "").strip() or "AI agent for task automation",
-            "startMessage": body.get("startMessage", "").strip() or "Hello! How can I help you today?",
-            "systemPrompt": body.get("systemPrompt", "").strip() or "You are a helpful assistant.",
-            "instructions": body.get("instructions", "").strip() or None,
+            "name": create_req.name.strip(),
+            "description": (create_req.description or "").strip() or "AI agent for task automation",
+            "startMessage": (create_req.startMessage or "").strip() or "Hello! How can I help you today?",
+            "systemPrompt": (create_req.systemPrompt or "").strip() or "You are a helpful assistant.",
+            "instructions": (create_req.instructions or "").strip() or None,
             "models": model_entries,
             "tags": body.get("tags", []) or [],
             "isActive": True,
@@ -1110,7 +1304,10 @@ async def create_agent(request: Request) -> JSONResponse:
                     toolset_nodes.append(toolset_node)
                     toolset_mapping[toolset_name] = {
                         "key": toolset_key,
+                        "name": toolset_name,
                         "displayName": display_name,
+                        "type": toolset_type,
+                        "instanceId": instance_id,
                         "tools": tools_list
                     }
 
@@ -1178,7 +1375,7 @@ async def create_agent(request: Request) -> JSONResponse:
                     await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction_id)
 
                 # Build response for created toolsets
-                for toolset_info in toolset_mapping.values():
+                for ts_name, toolset_info in toolset_mapping.items():
                     created_tools = []
                     for tool_data in toolset_info["tools"]:
                         full_name = tool_data["fullName"]
@@ -1186,15 +1383,21 @@ async def create_agent(request: Request) -> JSONResponse:
                             created_tools.append({
                                 "name": tool_mapping[full_name]["name"],
                                 "fullName": full_name,
+                                "description": tool_data.get("description"),
                                 "key": tool_mapping[full_name]["key"]
                             })
 
-                    created_toolsets.append({
-                        "name": toolset_name,
+                    ts_entry: dict[str, Any] = {
+                        "name": ts_name,
                         "displayName": toolset_info["displayName"],
+                        "type": toolset_info["type"],
                         "key": toolset_info["key"],
-                        "tools": created_tools
-                    })
+                        "tools": created_tools,
+                    }
+                    if toolset_info.get("instanceId"):
+                        ts_entry["instanceId"] = toolset_info["instanceId"]
+
+                    created_toolsets.append(ts_entry)
 
                 logger.debug(f"Created {len(created_toolsets)} toolset(s) for agent: {agent_key}")
 
@@ -1281,19 +1484,17 @@ async def create_agent(request: Request) -> JSONResponse:
             "toolsets": created_toolsets,
             "knowledge": created_knowledge,
         }
+        response_agent = _normalize_agent_for_output(response_agent)
 
         status = "partial_success" if failed_toolsets else "success"
         message = f"Agent created with warnings: {len(failed_toolsets)} toolset(s) failed" if failed_toolsets else "Agent created successfully"
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": status,
-                "message": message,
-                "agent": response_agent,
-                "warnings": failed_toolsets if failed_toolsets else None,
-            }
-        )
+        return {
+            "status": status,
+            "message": message,
+            "agent": response_agent,  # conforms to AgentOut via nested fields and extra=allow
+            "warnings": failed_toolsets if failed_toolsets else None,
+        }
 
     except HTTPException:
         raise
@@ -1301,8 +1502,12 @@ async def create_agent(request: Request) -> JSONResponse:
         logger.error(f"Error creating agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-@router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
-async def get_agent(request: Request, agent_id: str) -> JSONResponse:
+@router.get(
+    "/{agent_id}",
+    dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))],
+    response_model=AgentDetailResponse,
+)
+async def get_agent(request: Request, agent_id: str) -> AgentDetailResponse:
     """Get an agent by ID with enriched data"""
     try:
         services = await get_services(request)
@@ -1319,14 +1524,22 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         await _enrich_agent_models(agent, services["config_service"], services["logger"])
         agent.pop("modelsEnriched", None)
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": "Agent retrieved successfully",
-                "agent": agent,
-            }
-        )
+        # Normalize provider-specific shapes to match AgentOut
+        agent = _normalize_agent_for_output(agent)
+
+        # Validate against AgentOut to ensure response consistency
+        try:
+            services["logger"].debug(f"Agent document: {agent}")
+            _ = AgentOut.model_validate(agent)
+        except Exception as e:
+            services["logger"].error(f"AgentOut validation failed: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Agent schema validation failed")
+
+        return {
+            "status": "success",
+            "message": "Agent retrieved successfully",
+            "agent": agent,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1334,7 +1547,11 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@router.get("/", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
+@router.get(
+    "/",
+    dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))],
+    response_model=AgentListResponse,
+)
 async def get_agents(
     request: Request,
     page: int = Query(1, ge=1, description="Page number (1-based)"),
@@ -1342,7 +1559,7 @@ async def get_agents(
     search: str | None = Query(None, description="Search by name/description/tags"),
     sort_by: str = Query("updatedAtTimestamp", description="Field to sort by"),
     sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
-) -> JSONResponse:
+) -> AgentListResponse:
     """Get all agents with pagination and search"""
     try:
         services = await get_services(request)
@@ -1371,6 +1588,21 @@ async def get_agents(
             agents = result.get("agents", [])
             total_items = int(result.get("totalItems", len(agents)))
 
+        # Normalize each agent to ensure consistent API contract
+        normalized_agents: list[dict] = []
+        for a in agents or []:
+            if isinstance(a, dict):
+                norm = _normalize_agent_for_output(a)
+                try:
+                    # Validate against AgentOut to guarantee uniform shape
+                    validated = AgentOut.model_validate(norm)
+                    normalized_agents.append(validated.model_dump())
+                except Exception:
+                    # If validation fails, still return normalized dict (shouldn't happen after normalization)
+                    normalized_agents.append(norm)
+            else:
+                normalized_agents.append(a)
+
         # Build pagination envelope
         current_page = page
         per_page = limit
@@ -1380,21 +1612,18 @@ async def get_agents(
 
         # Avoid 404s; return empty list with valid pagination
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "success": True,
-                "agents": agents or [],
-                "pagination": {
-                    "currentPage": current_page,
-                    "limit": per_page,
-                    "totalItems": total_items,
-                    "totalPages": total_pages,
-                    "hasNext": has_next,
-                    "hasPrev": has_prev,
-                },
-            }
-        )
+        return {
+            "success": True,
+            "agents": normalized_agents or [],
+            "pagination": {
+                "currentPage": current_page,
+                "limit": per_page,
+                "totalItems": total_items,
+                "totalPages": total_pages,
+                "hasNext": has_next,
+                "hasPrev": has_prev,
+            },
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1402,22 +1631,29 @@ async def get_agents(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
-@router.put("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
-async def update_agent(request: Request, agent_id: str) -> JSONResponse:
+@router.put(
+    "/{agent_id}",
+    dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))],
+    response_model=AgentUpdateResponse,
+)
+async def update_agent(request: Request, agent_id: str) -> AgentUpdateResponse:
     """Update an agent using graph-based architecture"""
     try:
         services = await get_services(request)
         logger = services["logger"]
         user_context = _get_user_context(request)
 
-        body = _parse_request_body(await request.body())
+        # Manually parse body to avoid FastAPI conflict with Request + Body params
+        raw_body = await request.body()
+        update_req = UpdateAgentRequest(**json.loads(raw_body))
+        body = update_req.model_dump(exclude_unset=True)
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         user_key = user_doc["_key"]
         org_key = user_context["orgId"]
 
         # Validate models if provided in update body
-        if "models" in body:
-            raw_models = body.get("models", [])
+        if update_req.models is not None:
+            raw_models = [m.dict() for m in update_req.models]
             model_entries, has_reasoning_model = _parse_models(raw_models, logger)
 
             if not model_entries:
@@ -1439,8 +1675,8 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             raise PermissionDeniedError("edit this agent (only owner can edit)")
 
         # Handle shareWithOrg flag changes
-        if "shareWithOrg" in body:
-            new_share_with_org = bool(body.get("shareWithOrg", False))
+        if update_req.shareWithOrg is not None:
+            new_share_with_org = bool(update_req.shareWithOrg)
             current_share_with_org = bool(agent.get("shareWithOrg", False))
 
             if new_share_with_org and not current_share_with_org:
@@ -1474,14 +1710,15 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
 
         # Update agent document
+        # Persist update (use original body to avoid changing storage format)
         result = await services["graph_provider"].update_agent(agent_id, body, user_key, org_key)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to update agent")
 
         # Update toolsets if provided in request (even if empty array - means delete all)
-        if "toolsets" in body:
+        if update_req.toolsets is not None:
             # Parse toolsets first to validate before deletion
-            toolsets_with_tools = _parse_toolsets(body.get("toolsets", []))
+            toolsets_with_tools = _parse_toolsets([t.dict() for t in (update_req.toolsets or [])])
 
             # Use transaction for atomic delete-then-create operation
             graph_provider = services["graph_provider"]
@@ -1642,9 +1879,9 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 logger.info(f"All toolsets removed for agent {agent_id}")
 
         # Update knowledge if provided in request (even if empty array - means delete all)
-        if "knowledge" in body:
+        if update_req.knowledge is not None:
             # Parse knowledge sources first to validate before deletion
-            knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []))
+            knowledge_sources = _parse_knowledge_sources([k.dict() for k in (update_req.knowledge or [])])
 
             # Use transaction for atomic delete-then-create operation
             graph_provider = services["graph_provider"]
@@ -1751,18 +1988,19 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             else:
                 logger.info(f"All knowledge sources removed for agent {agent_id}")
 
-        return JSONResponse(
-            status_code=200,
-            content={"status": "success", "message": "Agent updated successfully"}
-        )
+        return {"status": "success", "message": "Agent updated successfully"}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error updating agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e)) from e
 
-@router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
-async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
+@router.delete(
+    "/{agent_id}",
+    dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))],
+    response_model=AgentDeleteResponse,
+)
+async def delete_agent(request: Request, agent_id: str) -> AgentDeleteResponse:
     """Delete an agent using a transaction to ensure atomicity"""
     txn_id = None
     services = None
@@ -1812,20 +2050,17 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         await services["graph_provider"].commit_transaction(txn_id)
         services["logger"].info(f"✅ Successfully deleted agent {agent_id} in transaction {txn_id}")
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": "Agent deleted successfully",
-                "deleted": {
-                    "agents": result.get("agents_deleted", 0),
-                    "toolsets": result.get("toolsets_deleted", 0),
-                    "tools": result.get("tools_deleted", 0),
-                    "knowledge": result.get("knowledge_deleted", 0),
-                    "edges": result.get("edges_deleted", 0)
-                }
+        return {
+            "status": "success",
+            "message": "Agent deleted successfully",
+            "deleted": {
+                "agents": result.get("agents_deleted", 0),
+                "toolsets": result.get("toolsets_deleted", 0),
+                "tools": result.get("tools_deleted", 0),
+                "knowledge": result.get("knowledge_deleted", 0),
+                "edges": result.get("edges_deleted", 0)
             }
-        )
+        }
     except HTTPException:
         if txn_id is not None and services is not None:
             try:
@@ -1857,6 +2092,14 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     try:
         from app.agents.constants.toolset_constants import get_toolset_config_path
 
+        # Parse body manually — using both Request and Body(...) causes a conflict
+        # because the body stream can only be consumed once
+        try:
+            raw_body = await request.body()
+            chat_query = ChatQuery(**json.loads(raw_body))
+        except Exception as parse_err:
+            raise HTTPException(status_code=422, detail=f"Invalid request body: {parse_err}") from parse_err
+
         services = await get_services(request)
         logger = services["logger"]
         config_service = services["config_service"]
@@ -1867,9 +2110,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         config_service = services["config_service"]
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
-
-        body = _parse_request_body(await request.body())
-        chat_query = ChatQuery(**body)
 
         # Get user and org info first (needed to fetch agent)
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
@@ -35,8 +35,8 @@ router = APIRouter()
 
 # Pydantic models
 class ChatQuery(BaseModel):
-    query: str
-    limit: Optional[int] = 50
+    query: str = Field(min_length=1)
+    limit: Optional[int] = Field(default=50, ge=1, le=200)
     previousConversations: List[Dict] = []
     filters: Optional[Dict[str, Any]] = None
     retrievalMode: Optional[str] = "HYBRID"
@@ -46,6 +46,14 @@ class ChatQuery(BaseModel):
     modelName: Optional[str] = None  # e.g., "gpt-4o-mini", "claude-3-5-sonnet", "llama3.2"
     chatMode: Optional[str] = "standard"  # "quick", "analysis", "deep_research", "creative", "precise"
     mode: Optional[str] = "json"  # "json" for full metadata, "simple" for answer only
+
+    @field_validator("query")
+    @classmethod
+    def _validate_query(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("query must not be empty")
+        return v
 
 
 # Dependency injection functions

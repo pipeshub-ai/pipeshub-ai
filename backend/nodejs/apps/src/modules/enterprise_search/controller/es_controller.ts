@@ -52,6 +52,48 @@ import { IConversation } from '../types/conversation.interfaces';
 import { Conversation } from '../schema/conversation.schema';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
+  conversationsListResponseSchema,
+  conversationByIdResponseSchema,
+  deleteConversationResponseSchema,
+  agentCreateResponseSchema,
+  agentDetailResponseSchema,
+  agentListResponseSchema,
+  agentUpdateResponseSchema,
+  agentDeleteResponseSchema,
+  agentConversationsListResponseSchema,
+  agentConversationByIdResponseSchema,
+  archiveConversationResponseSchema,
+  listArchivesResponseSchema,
+  enterpriseSearchResponseSchema,
+  simpleMessageResponseSchema,
+  updateTitleResponseSchema,
+  updateFeedbackResponseSchema,
+  shareConversationResponseSchema,
+  unshareConversationResponseSchema,
+  searchHistoryResponseSchema,
+  searchByIdResponseSchema,
+  deleteAgentConversationResponseSchema,
+} from '../validators/es_validators';
+import { z } from 'zod';
+import { ValidationError } from '../../../libs/errors/validation.error';
+import { ValidationUtils } from '../../../libs/utils/validation.utils';
+
+const sendValidatedJson = (
+  res: Response,
+  schema: z.ZodTypeAny,
+  payload: unknown,
+  statusCode: number,
+) => {
+  const result = schema.safeParse(payload);
+  if (!result.success) {
+    throw new ValidationError(
+      'Validation failed',
+      ValidationUtils.formatZodError(result.error),
+    );
+  }
+  return res.status(statusCode).json(result.data);
+};
+import {
   addComputedFields,
   buildAIResponseMessage,
   buildFiltersMetadata,
@@ -1165,10 +1207,19 @@ export const getAllConversations = async (
     );
 
     // Build response metadata
+    const paginationRaw = buildPaginationMetadata(totalCount, page, limit);
     const response = {
       conversations: processedConversations,
       sharedWithMeConversations: processedSharedWithMeConversations,
-      pagination: buildPaginationMetadata(totalCount, page, limit),
+      // Map to schema-required keys (hasNext/hasPrev)
+      pagination: {
+        page: paginationRaw.page,
+        limit: paginationRaw.limit,
+        totalCount: paginationRaw.totalCount,
+        totalPages: paginationRaw.totalPages,
+        hasNext: Boolean(paginationRaw.hasNextPage),
+        hasPrev: Boolean(paginationRaw.hasPrevPage),
+      },
       filters: buildFiltersMetadata(filter, req.query),
       meta: {
         requestId,
@@ -1184,7 +1235,7 @@ export const getAllConversations = async (
       duration: Date.now() - startTime,
     });
 
-    res.status(200).json(response);
+    sendValidatedJson(res, conversationsListResponseSchema, response, 200);
   } catch (error: any) {
     logger.error('Error fetching conversations', {
       requestId,
@@ -1315,7 +1366,7 @@ export const getConversationById = async (
       duration: Date.now() - startTime,
     });
 
-    res.status(200).json(response);
+    sendValidatedJson(res, conversationByIdResponseSchema, response, 200);
   } catch (error: any) {
     logger.error('Error fetching conversation', {
       requestId,
@@ -1452,7 +1503,7 @@ export const deleteConversationById = async (
       duration: Date.now() - startTime,
     });
 
-    res.status(200).json(response);
+    sendValidatedJson(res, deleteConversationResponseSchema, response, 200);
   } catch (error: any) {
     logger.error('Error deleting conversation', {
       requestId,
@@ -1630,7 +1681,7 @@ export const shareConversationById =
         },
       };
 
-      res.status(200).json(response);
+      sendValidatedJson(res, shareConversationResponseSchema, response, 200);
     } catch (error: any) {
       logger.error('Error sharing conversation', {
         requestId,
@@ -1766,7 +1817,7 @@ export const unshareConversationById = async (
       },
     };
 
-    res.status(200).json(response);
+    sendValidatedJson(res, unshareConversationResponseSchema, response, 200);
   } catch (error: any) {
     logger.error('Error un-sharing conversation', {
       requestId,
@@ -2304,7 +2355,7 @@ export const updateTitle = async (
       duration: Date.now() - startTime,
     });
 
-    res.status(HTTP_STATUS.OK).json(response);
+    sendValidatedJson(res, updateTitleResponseSchema, response, HTTP_STATUS.OK);
   } catch (error: any) {
     logger.error('Error updating conversation title', {
       requestId,
@@ -2436,7 +2487,7 @@ export const updateFeedback = async (
       },
     };
 
-    res.status(200).json(response);
+    sendValidatedJson(res, updateFeedbackResponseSchema, response, 200);
   } catch (error: any) {
     logger.error('Error updating conversation feedback', {
       requestId,
@@ -2547,7 +2598,7 @@ export const archiveConversation = async (
       duration: Date.now() - startTime,
     });
 
-    res.status(HTTP_STATUS.OK).json(response);
+    sendValidatedJson(res, archiveConversationResponseSchema, response, HTTP_STATUS.OK);
   } catch (error: any) {
     logger.error('Error archiving conversation', {
       requestId,
@@ -2657,7 +2708,7 @@ export const unarchiveConversation = async (
       duration: Date.now() - startTime,
     });
 
-    res.status(HTTP_STATUS.OK).json(response);
+    sendValidatedJson(res, archiveConversationResponseSchema, response, HTTP_STATUS.OK);
   } catch (error: any) {
     logger.error('Error un-archiving conversation', {
       requestId,
@@ -2745,7 +2796,7 @@ export const listAllArchivesConversation = async (
       duration: Date.now() - startTime,
     });
 
-    res.status(HTTP_STATUS.OK).json(response);
+    sendValidatedJson(res, listArchivesResponseSchema, response, HTTP_STATUS.OK);
   } catch (error: any) {
     logger.error('Error fetching archived conversations', {
       requestId,
@@ -2860,10 +2911,15 @@ export const search =
       });
 
       // Return the response
-      res.status(HTTP_STATUS.OK).json({
-        searchId: searchRecord._id,
-        searchResponse: aiResponse.data,
-      });
+      sendValidatedJson(
+        res,
+        enterpriseSearchResponseSchema,
+        {
+          searchId: searchRecord._id,
+          searchResponse: aiResponse.data,
+        },
+        HTTP_STATUS.OK,
+      );
     } catch (error: any) {
       logger.error('Error searching query', {
         requestId,
@@ -2915,7 +2971,7 @@ export const searchHistory = async (
         duration: Date.now() - startTime,
       },
     };
-    res.status(HTTP_STATUS.OK).json(response);
+    sendValidatedJson(res, searchHistoryResponseSchema, response, HTTP_STATUS.OK);
   } catch (error: any) {
     logger.error('Error searching history', {
       requestId,
@@ -2956,7 +3012,7 @@ export const getSearchById = async (
       throw new NotFoundError('Search Id not found');
     }
 
-    res.status(HTTP_STATUS.OK).json(search);
+    sendValidatedJson(res, searchByIdResponseSchema, search, HTTP_STATUS.OK);
   } catch (error: any) {
     logger.error('Error getting search by ID', {
       requestId,
@@ -2994,7 +3050,12 @@ export const deleteSearchById = async (
     // delete related citations
     await Citation.deleteMany({ _id: { $in: search.citationIds } });
 
-    res.status(HTTP_STATUS.OK).json({ message: 'Search deleted successfully' });
+    sendValidatedJson(
+      res,
+      simpleMessageResponseSchema,
+      { message: 'Search deleted successfully' },
+      HTTP_STATUS.OK,
+    );
   } catch (error: any) {
     logger.error('Error deleting search by ID', {
       requestId,
@@ -3112,7 +3173,7 @@ export const shareSearch =
         );
       }
 
-      res.status(HTTP_STATUS.OK).json(updatedSearch);
+      sendValidatedJson(res, z.any(), updatedSearch, HTTP_STATUS.OK);
     } catch (error: any) {
       logger.error('Error sharing search', {
         requestId,
@@ -3220,7 +3281,7 @@ export const unshareSearch =
         },
       };
 
-      res.status(200).json(response);
+      sendValidatedJson(res, unshareConversationResponseSchema, response, 200);
     } catch (error: any) {
       logger.error('Error un-sharing search', {
         requestId,
@@ -3405,9 +3466,12 @@ export const deleteSearchHistory = async (
     await EnterpriseSemanticSearch.deleteMany(filter);
     await Citation.deleteMany({ _id: { $in: citationIds } });
 
-    res.status(HTTP_STATUS.OK).json({
-      message: 'Search history deleted successfully',
-    });
+    sendValidatedJson(
+      res,
+      simpleMessageResponseSchema,
+      { message: 'Search history deleted successfully' },
+      HTTP_STATUS.OK,
+    );
   } catch (error: any) {
     logger.error('Error deleting search history', {
       requestId,
@@ -3450,7 +3514,7 @@ export const createAgent =
         throw handleBackendError(aiResponse.data, 'Create Agent');
       }
       const agent = aiResponse.data;
-      res.status(HTTP_STATUS.CREATED).json(agent);
+      sendValidatedJson(res, agentCreateResponseSchema, agent, HTTP_STATUS.CREATED);
     } catch (error: any) {
       logger.error('Error creating agent', {
         requestId,
@@ -3490,7 +3554,7 @@ export const getAgent =
         throw handleBackendError(aiResponse.data, 'Get Agent');
       }
       const agent = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agent);
+      sendValidatedJson(res, agentDetailResponseSchema, agent, HTTP_STATUS.OK);
     } catch (error: any) {
       logger.error('Error getting agent', {
         requestId,
@@ -3538,7 +3602,7 @@ export const listAgents =
         res.status(HTTP_STATUS.OK).json({ success: true, agents: [], pagination: { currentPage: Number(page ?? 1), limit: Number(limit ?? 20), totalItems: 0, totalPages: 0, hasNext: false, hasPrev: false } });
         return;
       }
-      res.status(HTTP_STATUS.OK).json(aiResponse.data);
+      sendValidatedJson(res, agentListResponseSchema, aiResponse.data, HTTP_STATUS.OK);
     } catch (error: any) {
       logger.error('Error getting agents', {
         requestId,
@@ -3578,8 +3642,8 @@ export const updateAgent =
       if (aiResponse && aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Update Agent');
       }
-      const agent = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agent);
+      const payload = aiResponse.data;
+      sendValidatedJson(res, agentUpdateResponseSchema, payload, HTTP_STATUS.OK);
     } catch (error: any) {
       logger.error('Error updating agent', {
         requestId,
@@ -3618,8 +3682,8 @@ export const deleteAgent =
       if (aiResponse && aiResponse.statusCode !== 200) {
         throw handleBackendError(aiResponse.data, 'Delete Agent');
       }
-      const agent = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(agent);
+      const payload = aiResponse.data;
+      sendValidatedJson(res, agentDeleteResponseSchema, payload, HTTP_STATUS.OK);
     } catch (error: any) {
       logger.error('Error deleting agent', {
         requestId,
@@ -4619,7 +4683,12 @@ export const getAllAgentConversations = async (
       duration: Date.now() - startTime,
     });
 
-    res.status(200).json(response);
+    sendValidatedJson(
+      res,
+      agentConversationsListResponseSchema,
+      response,
+      HTTP_STATUS.OK,
+    );
   } catch (error: any) {
     logger.error('Error fetching conversations', {
       requestId,
@@ -4691,14 +4760,23 @@ export const getAgentConversationById = async (
     const conversationWithMessages = await AgentConversation.findOne(baseFilter)
       .select({
         messages: { $slice: [skip, effectiveLimit] },
+        agentKey: 1,
+        userId: 1,
+        orgId: 1,
         title: 1,
         initiator: 1,
         createdAt: 1,
+        updatedAt: 1,
         isShared: 1,
         sharedWith: 1,
+        isDeleted: 1,
+        isArchived: 1,
+        lastActivityAt: 1,
         status: 1,
         failReason: 1,
         modelInfo: 1,
+        conversationSource: 1,
+        conversationErrors: 1,
       })
       .populate({
         path: 'messages.citations.citationId',
@@ -4716,7 +4794,7 @@ export const getAgentConversationById = async (
     );
 
     // Build conversation response using existing helper
-    const conversationResponse = buildConversationResponse(
+    const conversationResponseBase = buildConversationResponse(
       conversationWithMessages as unknown as IAgentConversationDocument,
       userId,
       {
@@ -4729,6 +4807,20 @@ export const getAgentConversationById = async (
       },
       sortedMessages,
     );
+
+    // Augment with agent-specific fields that buildConversationResponse doesn't include
+    const conversationResponse = {
+      ...conversationResponseBase,
+      agentKey: (conversationWithMessages as any)?.agentKey,
+      userId: (conversationWithMessages as any)?.userId,
+      orgId: (conversationWithMessages as any)?.orgId,
+      conversationSource: (conversationWithMessages as any)?.conversationSource,
+      isDeleted: (conversationWithMessages as any)?.isDeleted,
+      isArchived: (conversationWithMessages as any)?.isArchived,
+      lastActivityAt: (conversationWithMessages as any)?.lastActivityAt,
+      conversationErrors: (conversationWithMessages as any)?.conversationErrors,
+      updatedAt: (conversationWithMessages as any)?.updatedAt,
+    };
 
     // Build filters metadata using existing helper
     const filtersMetadata = buildFiltersMetadata(
@@ -4756,7 +4848,12 @@ export const getAgentConversationById = async (
       duration: Date.now() - startTime,
     });
 
-    res.status(200).json(response);
+    sendValidatedJson(
+      res,
+      agentConversationByIdResponseSchema,
+      response,
+      HTTP_STATUS.OK,
+    );
   } catch (error: any) {
     logger.error('Error fetching conversation', {
       requestId,
@@ -4789,10 +4886,15 @@ export const deleteAgentConversationById = async (
       orgId as string,
     );
 
-    res.status(200).json({
-      message: 'Conversation deleted successfully',
-      conversation,
-    });
+    sendValidatedJson(
+      res,
+      deleteAgentConversationResponseSchema,
+      {
+        message: 'Conversation deleted successfully',
+        conversation,
+      },
+      200,
+    );
   } catch (error: any) {
       logger.error('Error deleting conversation', {
       requestId,

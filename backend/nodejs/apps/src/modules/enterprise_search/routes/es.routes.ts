@@ -54,6 +54,12 @@ import {
   updateFeedbackParamsSchema,
   searchShareParamsSchema,
   regenerateAgentAnswersParamsSchema,
+  agentStreamSchema,
+  agentAddMessageSchema,
+  agentKeyParamsOnlySchema,
+  agentConversationParamsSchema,
+  createAgentSchema,
+  updateAgentSchema,
 } from '../validators/es_validators'; 
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -388,6 +394,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentStreamSchema),
     streamAgentConversation(appConfig),
   );
 
@@ -396,6 +403,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentAddMessageSchema),
     addMessageStreamToAgentConversation(appConfig),
   );
 
@@ -404,6 +412,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentAddMessageSchema),
     addMessageStreamToAgentConversationInternal(appConfig),
   );
 
@@ -412,6 +421,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentStreamSchema),
     streamAgentConversationInternal(appConfig),
   );
 
@@ -431,6 +441,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentKeyParamsOnlySchema),
     getAllAgentConversations,
   );
 
@@ -439,6 +450,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentConversationParamsSchema),
     getAgentConversationById,
   );
 
@@ -447,6 +459,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentConversationParamsSchema),
     deleteAgentConversationById,
   );
 
@@ -456,6 +469,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(createAgentSchema),
     createAgent(appConfig),
   );
 
@@ -464,6 +478,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentKeyParamsOnlySchema),
     getAgent(appConfig),
   );
 
@@ -472,6 +487,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(updateAgentSchema),
     updateAgent(appConfig),
   );
 
@@ -480,6 +496,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     metricsMiddleware(container),
+    ValidationMiddleware.validate(agentKeyParamsOnlySchema),
     deleteAgent(appConfig),
   );
 
