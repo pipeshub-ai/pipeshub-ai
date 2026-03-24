@@ -10,16 +10,22 @@ Authentication: OAuth 2.0 (3-legged OAuth)
 """
 
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -638,7 +644,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Group sync failed: {e}", exc_info=True)
             raise
 
-    async def _sync_spaces(self) -> List[RecordGroup]:
+    async def _sync_spaces(self) -> list[RecordGroup]:
         """
         Sync spaces from Confluence with permissions using cursor-based pagination.
 
@@ -1143,7 +1149,7 @@ class ConfluenceConnector(BaseConnector):
         self,
         start_date_ms: int,
         end_date_ms: int
-    ) -> List[str]:
+    ) -> list[str]:
         """
         Fetch audit logs and extract content titles that had permission changes.
 
@@ -1196,7 +1202,7 @@ class ConfluenceConnector(BaseConnector):
 
         return list(content_titles_set)
 
-    def _extract_content_title_from_audit_record(self, record: Dict[str, Any]) -> Optional[str]:
+    def _extract_content_title_from_audit_record(self, record: dict[str, Any]) -> Optional[str]:
         """
         Extract content title from an audit record if it's a content permission change.
 
@@ -1231,7 +1237,7 @@ class ConfluenceConnector(BaseConnector):
         return content_obj.get("name")
 
 
-    async def _sync_content_permissions_by_titles(self, titles: List[str]) -> None:
+    async def _sync_content_permissions_by_titles(self, titles: list[str]) -> None:
         """
         Search for content by titles and sync their current permissions.
 
@@ -1356,7 +1362,7 @@ class ConfluenceConnector(BaseConnector):
 
         self.logger.info(f"✅ Permission sync complete. Items updated: {total_synced}, Permissions: {total_permissions}")
 
-    async def _fetch_space_permissions(self, space_id: str, space_name: str) -> List[Permission]:
+    async def _fetch_space_permissions(self, space_id: str, space_name: str) -> list[Permission]:
         """
         Fetch all permissions for a space with cursor-based pagination.
 
@@ -1413,7 +1419,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch permissions for space {space_name}: {e}")
             return []  # Return empty list on error, space will be created without permissions
 
-    async def _fetch_page_permissions(self, page_id: str) -> List[Permission]:
+    async def _fetch_page_permissions(self, page_id: str) -> list[Permission]:
         """
         Fetch permissions for a Confluence page using v1 API.
 
@@ -1459,11 +1465,11 @@ class ConfluenceConnector(BaseConnector):
         page_id: str,
         page_title: str,
         comment_type: str,
-        page_permissions: List[Permission],
+        page_permissions: list[Permission],
         parent_space_id: Optional[str],
         parent_type: str = "page",
         parent_node_id: Optional[str] = None
-    ) -> List[tuple[CommentRecord, List[Permission]]]:
+    ) -> list[tuple[CommentRecord, list[Permission]]]:
         """
         Recursively fetch all comments (footer or inline) for a page or blogpost.
 
@@ -1609,9 +1615,9 @@ class ConfluenceConnector(BaseConnector):
         comment_type: str,
         page_id: str,
         parent_space_id: Optional[str],
-        page_permissions: List[Permission],
+        page_permissions: list[Permission],
         parent_node_id: Optional[str] = None
-    ) -> List[tuple[CommentRecord, List[Permission]]]:
+    ) -> list[tuple[CommentRecord, list[Permission]]]:
         """
         Recursively fetch all children (replies) of a comment.
 
@@ -1724,7 +1730,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_comment_record(
         self,
-        comment_data: Dict[str, Any],
+        comment_data: dict[str, Any],
         page_id: str,
         parent_space_id: Optional[str],
         comment_type: str,
@@ -1835,7 +1841,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform comment: {e}")
             return None
 
-    def _construct_web_url(self, links: Dict[str, Any], base_url: Optional[str] = None) -> Optional[str]:
+    def _construct_web_url(self, links: dict[str, Any], base_url: Optional[str] = None) -> Optional[str]:
         """
         Construct web URL from _links dictionary.
 
@@ -2014,7 +2020,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
             return None
 
-    async def _transform_space_permission(self, perm_data: Dict[str, Any]) -> Optional[Permission]:
+    async def _transform_space_permission(self, perm_data: dict[str, Any]) -> Optional[Permission]:
         """
         Transform Confluence space permission to Permission object.
 
@@ -2124,8 +2130,8 @@ class ConfluenceConnector(BaseConnector):
 
     async def _transform_page_restriction_to_permissions(
         self,
-        restriction_data: Dict[str, Any]
-    ) -> List[Permission]:
+        restriction_data: dict[str, Any]
+    ) -> list[Permission]:
         """
         Transform page restriction data (from v1 API) to Permission objects.
         Creates pseudo-groups for users without email to preserve permissions.
@@ -2201,7 +2207,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_space_record_group(
         self,
-        space_data: Dict[str, Any],
+        space_data: dict[str, Any],
         base_url: Optional[str] = None
     ) -> Optional[RecordGroup]:
         """
@@ -2256,7 +2262,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_webpage_record(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         record_type: RecordType,
         existing_record: Optional[Record] = None
     ) -> Optional[WebpageRecord]:
@@ -2407,7 +2413,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_attachment_file_record(
         self,
-        attachment_data: Dict[str, Any],
+        attachment_data: dict[str, Any],
         parent_external_record_id: str,
         parent_external_record_group_id: Optional[str],
         existing_record: Optional[Record] = None,
@@ -2560,10 +2566,10 @@ class ConfluenceConnector(BaseConnector):
 
     async def _process_webpage_with_update(
         self,
-        data: Dict[str, Any],
+        data: dict[str, Any],
         record_type: RecordType,
         existing_record: Optional[Record],
-        permissions: List[Permission]
+        permissions: list[Permission]
     ) -> RecordUpdate:
         """Process webpage with change detection.
 
@@ -2628,7 +2634,7 @@ class ConfluenceConnector(BaseConnector):
             external_record_id=webpage_record.external_record_id
         )
 
-    async def _fetch_group_members(self, group_id: str, group_name: str) -> List[str]:
+    async def _fetch_group_members(self, group_id: str, group_name: str) -> list[str]:
         """
         Fetch all members of a group with pagination.
 
@@ -2686,7 +2692,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
             return []
 
-    async def _get_app_users_by_emails(self, emails: List[str]) -> List[AppUser]:
+    async def _get_app_users_by_emails(self, emails: list[str]) -> list[AppUser]:
         """
         Get AppUser objects by their email addresses from database.
 
@@ -2723,7 +2729,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.error(f"❌ Failed to get users by emails: {e}")
             return []
 
-    def _transform_to_app_user(self, user_data: Dict[str, Any]) -> Optional[AppUser]:
+    def _transform_to_app_user(self, user_data: dict[str, Any]) -> Optional[AppUser]:
         """
         Transform Confluence user data to AppUser entity.
 
@@ -2763,7 +2769,7 @@ class ConfluenceConnector(BaseConnector):
 
     def _transform_to_user_group(
         self,
-        group_data: Dict[str, Any]
+        group_data: dict[str, Any]
     ) -> Optional[AppUserGroup]:
         """
         Transform Confluence group data to AppUserGroup entity.
@@ -3069,7 +3075,7 @@ class ConfluenceConnector(BaseConnector):
         """Run incremental sync (delegates to full sync)."""
         await self.run_sync()
 
-    async def reindex_records(self, records: List[Record]) -> None:
+    async def reindex_records(self, records: list[Record]) -> None:
         """Reindex a list of Confluence records.
 
         This method:
@@ -3130,7 +3136,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch record from source and return data for reindexing.
 
         Args:
@@ -3159,7 +3165,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_page(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch page from source for reindexing."""
         try:
             page_id = record.external_record_id
@@ -3215,7 +3221,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_blogpost(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch blogpost from source for reindexing."""
         try:
             blogpost_id = record.external_record_id
@@ -3270,7 +3276,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_comment(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch comment from source for reindexing."""
         try:
             comment_id = record.external_record_id
@@ -3355,7 +3361,7 @@ class ConfluenceConnector(BaseConnector):
 
     async def _check_and_fetch_updated_attachment(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> Optional[tuple[Record, list[Permission]]]:
         """Fetch attachment from source for reindexing."""
         try:
             attachment_id = record.external_record_id
@@ -3754,7 +3760,7 @@ class ConfluenceConnector(BaseConnector):
             cursor=next_cursor
         )
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications (not implemented)."""
         self.logger.warning("Webhook notifications not yet supported for Confluence")
         pass
