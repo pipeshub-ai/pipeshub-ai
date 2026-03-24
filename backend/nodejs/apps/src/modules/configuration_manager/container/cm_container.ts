@@ -7,7 +7,6 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ConfigService } from '../services/updateConfig.service';
 import { SamlController } from '../../auth/controller/saml.controller';
-import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 
 export enum CMContainerToken {
   ConfigurationManagerConfig = 'ConfigurationManagerConfig',
@@ -85,9 +84,6 @@ export class ConfigurationManagerContainer {
         .bind<AuthMiddleware>(CMContainerToken.AuthMiddleware)
         .toConstantValue(authMiddleware);
 
-      this.logger.debug("SCopedToken: " + authTokenService.generateScopedToken({
-        scopes:   Object.values(TokenScopes),
-      }));
       this.logger.info(
         'Configuration Manager services initialized successfully',
       );
