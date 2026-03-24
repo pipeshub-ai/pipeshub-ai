@@ -535,11 +535,11 @@ export const storageConfigResponseSchema = z.discriminatedUnion('storageType', [
 /** All fields optional — returns {} when SMTP is not yet configured. */
 export const smtpConfigResponseSchema = z
   .object({
-    host: z.string(),
-    port: numberLikeSchema,
+    host: z.string().optional(),
+    port: numberLikeSchema.optional(),
     username: z.string().optional(),
     password: z.string().optional(),
-    fromEmail: z.string(),
+    fromEmail: z.string().optional(),
   })
   .strict();
 
@@ -550,9 +550,9 @@ export const smtpConfigResponseSchema = z
 /** All fields optional — returns {} when the auth provider is not configured. */
 export const azureAdAuthConfigResponseSchema = z
   .object({
-    clientId: z.string(),
-    tenantId: z.string(),
-    authority: z.string(),
+    clientId: z.string().optional(),
+    tenantId: z.string().optional(),
+    authority: z.string().optional(),
     enableJit: z.boolean().optional(),
   })
   .strict();
@@ -561,16 +561,16 @@ export const microsoftAuthConfigResponseSchema = azureAdAuthConfigResponseSchema
 
 export const googleAuthConfigResponseSchema = z
   .object({
-    clientId: z.string(),
+    clientId: z.string().optional(),
     enableJit: z.boolean().optional(),
   })
   .strict();
 
 export const ssoAuthConfigResponseSchema = z
   .object({
-    certificate: z.string(),
-    entryPoint: z.string(),
-    emailKey: z.string(),
+    certificate: z.string().optional(),
+    entryPoint: z.string().optional(),
+    emailKey: z.string().optional(),
     enableJit: z.boolean().optional(),
     samlPlatform: z.string().optional(),
   })
@@ -578,12 +578,12 @@ export const ssoAuthConfigResponseSchema = z
 
 export const oauthAuthConfigResponseSchema = z
   .object({
-    providerName: z.string(),
-    clientId: z.string(),
+    providerName: z.string().optional(),
+    clientId: z.string().optional(),
     clientSecret: z.string().optional(),
-    authorizationUrl: z.string(),
-    tokenEndpoint: z.string(),
-    userInfoEndpoint: z.string(),
+    authorizationUrl: z.string().optional(),
+    tokenEndpoint: z.string().optional(),
+    userInfoEndpoint: z.string().optional(),
     scope: z.string().optional(),
     redirectUri: z.string().optional().or(z.literal('')),
     enableJit: z.boolean().optional(),
