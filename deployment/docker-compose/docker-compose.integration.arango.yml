@@ -25,6 +25,12 @@ services:
           memory: 10G
     shm_size: 2gb
     init: true
+    logging:
+      driver: local
+      options:
+        max-size: "${LOG_MAX_SIZE:-20m}"
+        max-file: "${LOG_MAX_FILE:-15}"
+        compress: "true"
     environment:
       # Core environment settings
       - NODE_ENV=${NODE_ENV:-development}
