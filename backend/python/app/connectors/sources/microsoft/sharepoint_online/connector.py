@@ -1855,11 +1855,6 @@ class SharePointConnector(BaseConnector):
                         self.logger.debug(f"⏭️ Skipping page (date filter) '{page_id}' {page_name}")
                         continue
 
-                    page_key = f"{page_id}:{site_id}"
-                    if not self._pass_page_ids_filters(page_key):
-                        self.logger.debug(f"⏭️ Skipping page (ID filter) '{page_key}' {page_name}")
-                        continue
-
                     # Check the 'created_by' field to skip System Account created pages
                     is_system_page = False
                     created_by = getattr(page, 'created_by', None)
@@ -2124,56 +2119,6 @@ class SharePointConnector(BaseConnector):
 
         # Unknown operator, default to allowing the drive
         self.logger.warning(f"Unknown filter operator '{operator_str}' for DRIVE_IDS filter, allowing drive")
-        return True
-
-    def _pass_page_ids_filters(self, page_key: str) -> bool:
-        """
-        Checks if the page passes the configured page IDs filter.
-
-        For MULTISELECT filters:
-        - Operator IN: Only allow pages with IDs in the selected list (inclusion list)
-        - Operator NOT_IN: Allow pages with IDs NOT in the selected list (exclusion list)
-
-        Args:
-            page_key: The SharePoint page key to check
-
-        Returns:
-            True if the page should be synced, False if it should be skipped
-        """
-        # Get the page IDs filter
-        page_ids_filter = self.sync_filters.get(SyncFilterKey.PAGE_IDS)
-
-        # If no filter configured or filter is empty, allow all pages
-        if page_ids_filter is None or page_ids_filter.is_empty():
-            return True
-
-        # Get the list of page IDs from the filter value
-        filter_page_ids = page_ids_filter.value
-        if not isinstance(filter_page_ids, list):
-            return True  # Invalid filter value, allow the page
-
-        # Handle empty or None page_key
-        if not page_key:
-            self.logger.warning("Page key is empty or None, skipping")
-            return False
-
-        # Create set for O(1) lookup (case-sensitive for GUIDs)
-        filter_page_ids_set = {pid.strip() for pid in filter_page_ids if pid}
-        page_key_normalized = page_key.strip()
-
-        # Apply the filter based on operator
-        operator = page_ids_filter.get_operator()
-        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
-
-        if operator_str == FilterOperator.IN:
-            # Only allow pages with IDs in the inclusion list
-            return page_key_normalized in filter_page_ids_set
-        elif operator_str == FilterOperator.NOT_IN:
-            # Allow pages with IDs NOT in the exclusion list
-            return page_key_normalized not in filter_page_ids_set
-
-        # Unknown operator, default to allowing the page
-        self.logger.warning(f"Unknown filter operator '{operator_str}' for PAGE_IDS filter, allowing page")
         return True
 
     def _create_document_library_record_group(self, drive: dict, site_id: str, internal_site_record_group_id: str) -> Optional[RecordGroup]:
