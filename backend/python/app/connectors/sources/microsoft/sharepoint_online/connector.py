@@ -320,15 +320,6 @@ class CountryToRegionMapper:
             option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(FilterField(
-            name="page_ids",
-            display_name="Page name",
-            description="Filter specific pages by name.",
-            filter_type=FilterType.LIST,
-            category=FilterCategory.SYNC,
-            default_value=[],
-            option_source_type=OptionSourceType.DYNAMIC
-        ))
-        .add_filter_field(FilterField(
             name="drive_ids",
             display_name="Document Library Names",
             description="Filter specific document libraries by name.",
@@ -4298,9 +4289,7 @@ class SharePointConnector(BaseConnector):
 
         if filter_key == SyncFilterKey.SITE_IDS:
             return await self._get_site_options(page, limit, search)
-        elif filter_key == SyncFilterKey.PAGE_IDS:
-            return await self._get_page_options(page, limit, search)
-        elif filter_key == SyncFilterKey.DRIVE_IDS:  # Add this
+        elif filter_key == SyncFilterKey.DRIVE_IDS:
             return await self._get_document_library_options(page, limit, search)
         else:
             raise ValueError(f"Unsupported filter key: {filter_key}")
@@ -4361,103 +4350,6 @@ class SharePointConnector(BaseConnector):
                         options.append(FilterOption(
                             id=site_id or web_url,
                             label=label
-                        ))
-
-        has_more = (page * limit) < total
-
-        return FilterOptionsResponse(
-            success=True,
-            options=options,
-            page=page,
-            limit=limit,
-            has_more=has_more,
-            cursor=None
-        )
-
-    async def _get_page_options(
-        self,
-        page: int,
-        limit: int,
-        search: Optional[str]
-    ) -> FilterOptionsResponse:
-        """Get dynamic filter options for SharePoint pages."""
-
-        search_query = search.strip() if search else ""
-        full_query = f"{search_query}* filetype:aspx"
-
-        # 1. Get Raw Result
-        raw_result = await self.msgraph_client.search_query(
-            entity_types=["listItem"],
-            query=full_query,
-            page=page,
-            limit=limit,
-            region=self.tenant_region
-        )
-
-        options = []
-        total = 0
-
-        if raw_result:
-            additional_data = getattr(raw_result, 'additional_data', {}) or {}
-            value_list = additional_data.get('value', [])
-
-            for search_resp in value_list:
-                hits_containers = search_resp.get('hitsContainers', [])
-
-                for container in hits_containers:
-                    total = container.get('total', 0)
-
-                    for hit in container.get('hits', []):
-                        resource = hit.get('resource', {})
-
-                        item_id = resource.get('id')
-                        web_url = resource.get('webUrl')
-                        site_id = resource.get('parentReference', {}).get('siteId')
-
-                        # Skip System Account pages (templates)
-                        created_by = resource.get('createdBy', {})
-                        user = created_by.get('user', {})
-                        user.get('displayName', '').lower()
-
-                        if not site_id:
-                            continue
-
-
-                        if not item_id:
-                            continue
-
-                        # --- 1. Extract Page Name ---
-                        name = resource.get('name')
-                        if not name and web_url:
-                            try:
-                                # Get filename: .../SitePages/Home.aspx -> Home.aspx
-                                name = unquote(web_url.split('/')[-1])
-                            except Exception:
-                                name = "Unknown Page"
-
-                        page_label = name or resource.get('displayName') or "Unknown Page"
-
-                        # --- 2. Extract Site Name from URL ---
-                        # Structure is usually: https://tenant.sharepoint.com/sites/SiteName/...
-                        site_name = "Unknown Site"
-                        if web_url and "/sites/" in web_url:
-                            try:
-                                # Split at /sites/ and take the chunk immediately after
-                                after_sites = web_url.split("/sites/")[1]
-                                raw_site_name = after_sites.split("/")[0]
-                                site_name = unquote(raw_site_name)
-                            except Exception:
-                                pass
-                        elif web_url:
-                            site_name = "Root Site"
-
-                        # --- 3. Format Final Label ---
-                        final_label = f"{page_label} ({site_name})"
-                        page_key = f"{item_id}:{site_id}"
-
-                        options.append(FilterOption(
-                            id=page_key,
-                            label=final_label
                         ))
 
         has_more = (page * limit) < total
