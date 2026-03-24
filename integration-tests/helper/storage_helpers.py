@@ -160,11 +160,24 @@ class GCSStorageHelper:
 
     def __init__(self, service_account_json: str) -> None:
         # Accept either a path to a JSON file or the JSON payload itself.
-        path = Path(service_account_json)
-        if path.exists():
-            credentials = service_account.Credentials.from_service_account_file(
-                str(path)
-            )
+        raw_value = (service_account_json or "").strip()
+
+        # Most test setups pass the service-account payload directly.
+        # Trying Path.exists() on a long JSON string can raise OSError
+        # ("File name too long"), so detect likely JSON first.
+        is_json_payload = raw_value.startswith("{")
+
+        if not is_json_payload:
+            path = Path(raw_value).expanduser()
+            try:
+                is_file = path.exists()
+            except OSError:
+                is_file = False
+        else:
+            is_file = False
+
+        if is_file:
+            credentials = service_account.Credentials.from_service_account_file(str(path))
         else:
             info = json.loads(service_account_json)
             credentials = service_account.Credentials.from_service_account_info(info)

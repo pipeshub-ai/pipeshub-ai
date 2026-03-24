@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import sys
 import time
 import warnings
@@ -22,6 +23,52 @@ from pipeshub_client import PipeshubClient  # noqa: E402
 
 # Module-level ref so pytest_runtest_logreport can append even when report.config is missing (e.g. some pytest versions)
 _integration_test_reports: List[TestReportEntry] = []
+_SENSITIVE_KEY_PATTERN = re.compile(
+    r"(SECRET|PASSWORD|TOKEN|API[_-]?KEY|ACCESS[_-]?KEY|CONNECTION[_-]?STRING|PRIVATE[_-]?KEY|CREDENTIAL)",
+    re.IGNORECASE,
+)
+
+
+def _collect_secret_values() -> List[str]:
+    values: List[str] = []
+    for key, raw_value in os.environ.items():
+        if not _SENSITIVE_KEY_PATTERN.search(key):
+            continue
+        value = (raw_value or "").strip()
+        if value and len(value) >= 4:
+            values.append(value)
+    # Sort longest-first to avoid partial replacements.
+    return sorted(set(values), key=len, reverse=True)
+
+
+def _redact_text(text: str) -> str:
+    if not text:
+        return text
+
+    redacted = text
+    for secret in _collect_secret_values():
+        redacted = redacted.replace(secret, "[REDACTED]")
+
+    # Generic scrubbing for auth-like fields that may not map to env values directly.
+    redacted = re.sub(
+        r"(?i)(authorization['\"]?\s*[:=]\s*['\"]?bearer\s+)[^'\"\s]+",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)((client_secret|access_token|password)\s*['\"]?\s*[:=]\s*['\"]?)[^'\"\s,}]+",
+        r"\1[REDACTED]",
+        redacted,
+    )
+    return redacted
+
+
+class _RedactingLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
+        message = record.getMessage()
+        record.msg = _redact_text(message)
+        record.args = ()
+        return True
 
 
 def _load_env() -> None:
@@ -134,11 +181,17 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Initialize list to collect test outcomes for the report."""
+    """Initialize report collection and global secret-redacting log filter."""
     global _integration_test_reports
     _integration_test_reports = []
     config._integration_test_reports = _integration_test_reports  # type: ignore[attr-defined]
     config._integration_session_start = time.monotonic()  # type: ignore[attr-defined]
+
+    redacting_filter = _RedactingLogFilter()
+    root_logger = logging.getLogger()
+    root_logger.addFilter(redacting_filter)
+    for handler in root_logger.handlers:
+        handler.addFilter(redacting_filter)
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
@@ -154,9 +207,9 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     longrepr = getattr(report, "longrepr", None)
     longreprtext = getattr(report, "longreprtext", None)
     if longreprtext:
-        full_text = longreprtext.strip()
+        full_text = _redact_text(longreprtext.strip())
     elif longrepr is not None:
-        full_text = str(longrepr).strip()
+        full_text = _redact_text(str(longrepr).strip())
     else:
         full_text = ""
 
@@ -168,9 +221,9 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     stderr_captured = None
     for name, content in getattr(report, "sections", []) or []:
         if name == "Captured stdout call" or name == "Captured stdout":
-            stdout_captured = (stdout_captured or "") + content
+            stdout_captured = (stdout_captured or "") + _redact_text(content)
         elif name == "Captured stderr call" or name == "Captured stderr":
-            stderr_captured = (stderr_captured or "") + content
+            stderr_captured = (stderr_captured or "") + _redact_text(content)
 
     reports.append(
         TestReportEntry(
