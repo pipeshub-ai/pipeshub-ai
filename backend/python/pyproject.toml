@@ -240,7 +240,6 @@ dependencies = [
     "ocrmypdf==16.8.0",
     "opencv-python-headless==4.11.0.86",
     "openpyxl==3.1.5",
-    "opik==1.9.37",
     "pagerduty>=5.0.0",
     "pandas==2.2.3",
     "Pillow<12.0.0",
