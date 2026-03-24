@@ -192,7 +192,7 @@ class DoclingDocToBlocksConverter():
                 if result:
                     if isinstance(result, Block):
                         child_block_indices.append(result.index)
-                    else:
+                    elif isinstance(result, BlockGroup):
                         child_block_group_indices.append(result.index)
 
             if block_group:

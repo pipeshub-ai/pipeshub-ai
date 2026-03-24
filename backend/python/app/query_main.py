@@ -320,6 +320,5 @@ def run(host: str = "0.0.0.0", port: int = 8000, reload: bool = True) -> None:
         "app.query_main:app", host=host, port=port, log_level="info", reload=reload
     )
 
-
 if __name__ == "__main__":
     run(reload=False)

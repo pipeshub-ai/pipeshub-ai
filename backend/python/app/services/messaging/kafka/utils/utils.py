@@ -87,7 +87,6 @@ class KafkaUtils:
             "records_consumer_group",
             ["record-events"],
         )
-        config.enable_auto_commit = False
         return config
 
 

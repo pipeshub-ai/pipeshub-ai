@@ -578,6 +578,8 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True) -> None:
     """Run the application"""
+    if reload and workers > 1:
+        workers = 1
     uvicorn.run(
         "app.connectors_main:app",
         host=host,

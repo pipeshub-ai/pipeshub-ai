@@ -58,7 +58,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.worker_executor: Optional[ThreadPoolExecutor] = None
         self.worker_loop: Optional[asyncio.AbstractEventLoop] = None
         self.worker_loop_ready = threading.Event()  # Signal when worker loop is ready
-        self.main_loop: Optional[asyncio.AbstractEventLoop] = None
         # Dual semaphores for parsing and indexing phases (created in worker thread)
         self.parsing_semaphore: Optional[asyncio.Semaphore] = None
         self.indexing_semaphore: Optional[asyncio.Semaphore] = None
@@ -66,10 +65,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Track active futures for proper cleanup
         self._active_futures: set[Future[Any]] = set()
         self._futures_lock = threading.Lock()
-        self._message_count = 0
-        self._commit_lock: Optional[asyncio.Lock] = None
-        self._next_commit_offset: dict[tuple[str, int], int] = {}
-        self._completed_offsets: dict[tuple[str, int], set[int]] = {}
         self._backpressure_logged = False
 
     @staticmethod
@@ -148,8 +143,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if not self.kafka_config:
                 raise ValueError("Kafka configuration is not valid")
 
-            self.main_loop = asyncio.get_running_loop()
-            self._commit_lock = asyncio.Lock()
+
 
             # Start worker thread first
             self.__start_worker_thread()
@@ -349,7 +343,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         await asyncio.sleep(0.1)
                         continue
 
-                    for topic_partition, messages in message_batch.items():
+                    for _, messages in message_batch.items():
                         for message in messages:
                             # Check if we should stop before processing
                             if not self.running:
@@ -358,7 +352,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
                             try:
                                 self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
-                                await self.__start_processing_task(message, topic_partition)
+                                await self.__start_processing_task(message)
                             except Exception as e:
                                 self.logger.error(f"Error processing individual message: {e}")
                                 continue
@@ -426,7 +420,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
             return None
 
-    async def __start_processing_task(self, message: ConsumerRecord, topic_partition: TopicPartition) -> None:
+    async def __start_processing_task(self, message: ConsumerRecord) -> None:
         """Start a new task for processing a message with semaphore control.
         Submits the task to the worker thread's event loop instead of the main loop.
         Tracks futures to ensure proper cleanup during shutdown.
@@ -438,10 +432,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if not self.running:
             self.logger.warning("Consumer is stopping, skipping message processing")
             return
-
-        partition_key = (topic_partition.topic, topic_partition.partition)
-        self._next_commit_offset.setdefault(partition_key, message.offset)
-        self._completed_offsets.setdefault(partition_key, set())
 
         # Submit coroutine to worker thread's event loop and track the future
         future = asyncio.run_coroutine_threadsafe(
@@ -459,60 +449,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self._active_futures.discard(f)
 
             try:
-                success = f.result()
+                _ = f.result()
             except Exception as exc:
                 self.logger.error(f"Task completed with unhandled exception: {exc}")
-                success = False
-
-            if self.main_loop and self.running:
-                self.main_loop.call_soon_threadsafe(
-                    asyncio.create_task,
-                    self.__handle_task_completion(topic_partition, message.offset, success=success)
-                )
 
         future.add_done_callback(on_future_done)
-
-        # Log active task count periodically
-        self._message_count += 1
-        if self._message_count % FUTURE_CLEANUP_INTERVAL == 0:
-            with self._futures_lock:
-                active_count = len(self._active_futures)
-            self.logger.info(f"📊 Active processing tasks: {active_count}")
-
-    async def __handle_task_completion(self, topic_partition: TopicPartition, offset: int, *, success: bool) -> None:
-        """Commit only contiguous successfully processed offsets."""
-        if not self.consumer:
-            return
-
-        partition_key = (topic_partition.topic, topic_partition.partition)
-
-        if not success:
-            self.logger.warning(
-                f"Processing failed for {topic_partition.topic}-{topic_partition.partition}-{offset}; offset will remain uncommitted"
-            )
-            return
-
-        if not self._commit_lock:
-            return
-
-        async with self._commit_lock:
-            next_offset = self._next_commit_offset.setdefault(partition_key, offset)
-            completed_offsets = self._completed_offsets.setdefault(partition_key, set())
-            completed_offsets.add(offset)
-
-            commit_upto = next_offset
-            while commit_upto in completed_offsets:
-                completed_offsets.remove(commit_upto)
-                commit_upto += 1
-
-            if commit_upto == next_offset:
-                return
-
-            await self.consumer.commit({topic_partition: commit_upto})  # type: ignore
-            self._next_commit_offset[partition_key] = commit_upto
-            self.logger.info(
-                f"Committed offset {commit_upto} for topic={topic_partition.topic}, partition={topic_partition.partition}"
-            )
 
     async def __process_message_wrapper(self, message: ConsumerRecord) -> bool:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
