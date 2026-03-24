@@ -85,9 +85,6 @@ class Routes(Enum):
     )
     BUSINESS_CREDENTIALS = "/api/v1/configurationManager/internal/connectors/business/googleWorkspaceCredentials"
 
-    # AI Model paths
-    AI_MODEL_CONFIG = "/api/v1/configurationManager/internal/aiModelsConfig"
-
     # Storage paths
     STORAGE_PLACEHOLDER = "/api/v1/document/internal/placeholder"
     STORAGE_DIRECT_UPLOAD = "/api/v1/document/internal/{documentId}/directUpload"
