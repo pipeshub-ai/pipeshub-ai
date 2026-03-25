@@ -10,7 +10,8 @@
 	dev-docker-menu prod-docker-menu dev-docker-up dev-docker-down dev-docker-stop dev-docker-clean dev-docker-hard-clean \
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
 	check-and-kill-ports \
-	lint lint-python lint-python-ruff lint-python-pyright lint-nodejs
+	lint lint-python lint-python-ruff lint-python-pyright lint-nodejs \
+	test-nodejs test-nodejs-coverage
 
 # ==============================================================================
 # Configuration
@@ -93,6 +94,10 @@ help: ## Show this help message
 	@echo "$(GREEN)Environment Cleanup:$(NC)"
 	@echo "  make clean-env            - Remove all .env files"
 	@echo "  make check-and-kill-ports - Check and kill ports"
+	@echo ""
+	@echo "$(GREEN)Testing:$(NC)"
+	@echo "  make test-nodejs          - Run Node.js unit tests"
+	@echo "  make test-nodejs-coverage - Run Node.js unit tests with coverage"
 	@echo ""
 	@echo "$(GREEN)Linting (changed files only):$(NC)"
 	@echo "  make lint                 - Lint all changed files (Python + Node.js)"
@@ -631,6 +636,21 @@ check-and-kill-ports: ## Check for running processes on required ports and ask t
 	else \
 		echo "$(GREEN)No conflicting processes found on required ports.$(NC)"; \
 	fi
+
+# ==============================================================================
+# Testing
+# ==============================================================================
+
+test-nodejs: ## Run Node.js unit tests
+	@echo "$(BLUE)Running Node.js unit tests...$(NC)"
+	@cd $(ROOT_DIR)/backend/nodejs/apps && npm run test
+	@echo "$(GREEN)Node.js unit tests complete!$(NC)"
+
+test-nodejs-coverage: ## Run Node.js unit tests with coverage
+	@echo "$(BLUE)Running Node.js unit tests with coverage...$(NC)"
+	@cd $(ROOT_DIR)/backend/nodejs/apps && npm run test:coverage
+	@echo "$(GREEN)Node.js unit tests with coverage complete!$(NC)"
+	@echo "$(YELLOW)Coverage report available at: backend/nodejs/apps/coverage/$(NC)"
 
 # ==============================================================================
 # Linting (changed files only — same as CI)

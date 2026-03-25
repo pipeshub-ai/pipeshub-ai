@@ -4,12 +4,8 @@ Enhanced tool decorator with automatic parameter extraction and metadata support
 
 import functools
 import inspect
-from typing import Callable, Dict, List, Optional, Type, get_origin
-
-try:
-    from typing import get_type_hints
-except ImportError:
-    from typing_extensions import get_type_hints
+from collections.abc import Callable
+from typing import get_origin, get_type_hints
 
 from pydantic import BaseModel
 
@@ -22,21 +18,21 @@ from app.agents.tools.registry import _global_tools_registry
 def tool(
     app_name: str,
     tool_name: str,
-    description: Optional[str] = None,  # User-friendly description (for frontend)
-    parameters: Optional[List[ToolParameter]] = None,  # DEPRECATED: Use args_schema instead
-    args_schema: Optional[Type[BaseModel]] = None,  # NEW: Pydantic schema for validation
-    returns: Optional[str] = None,
-    examples: Optional[List[Dict]] = None,
-    tags: Optional[List[str]] = None,
+    description: str | None = None,  # User-friendly description (for frontend)
+    parameters: list[ToolParameter] | None = None,  # DEPRECATED: Use args_schema instead
+    args_schema: type[BaseModel] | None = None,  # NEW: Pydantic schema for validation
+    returns: str | None = None,
+    examples: list[dict] | None = None,
+    tags: list[str] | None = None,
     category: ToolCategory = ToolCategory.UTILITY,
     is_essential: bool = False,
     requires_auth: bool = True,
-    llm_description: Optional[str] = None,  # NEW: Detailed description for LLM planner
+    llm_description: str | None = None,  # NEW: Detailed description for LLM planner
     # Enhanced metadata for intelligent tool selection
-    when_to_use: Optional[List[str]] = None,  # Explicit scenarios when to use
-    when_not_to_use: Optional[List[str]] = None,  # Anti-patterns
+    when_to_use: list[str] | None = None,  # Explicit scenarios when to use
+    when_not_to_use: list[str] | None = None,  # Anti-patterns
     primary_intent: ToolIntent = ToolIntent.ACTION,  # Main use case
-    typical_queries: Optional[List[str]] = None,  # Example queries for few-shot
+    typical_queries: list[str] | None = None,  # Example queries for few-shot
 ) -> Callable:
     """
     Enhanced decorator to register a function as a tool.
@@ -93,26 +89,24 @@ def tool(
         tool_description = description or (func.__doc__ or "").strip()
 
         # Validate args_schema if provided
-        if args_schema is not None:
-            if not issubclass(args_schema, BaseModel):
-                raise ValueError(f"args_schema must be a Pydantic BaseModel subclass, got {type(args_schema)}")
+        if args_schema is not None and not issubclass(args_schema, BaseModel):
+            raise ValueError(f"args_schema must be a Pydantic BaseModel subclass, got {type(args_schema)}")
 
         # Auto-generate parameters if not provided and no schema
         tool_parameters = parameters or (None if args_schema else _extract_parameters(func))
 
-        # Build structured llm_description if not provided and when_to_use/when_not_to_use are available
-        final_llm_description = llm_description
-        if not final_llm_description and (when_to_use or when_not_to_use):
-            parts = [tool_description]
+        # Build structured llm_description with when_to_use/when_not_to_use guidance
+        final_llm_description = llm_description or tool_description
+        if when_to_use or when_not_to_use:
+            parts = [final_llm_description]
             if when_to_use:
                 parts.append("\n**WHEN TO USE**:")
-                for item in when_to_use:
-                    parts.append(f"- {item}")
+                parts.extend(f"- {item}" for item in when_to_use)
             if when_not_to_use:
                 parts.append("\n**WHEN NOT TO USE**:")
-                for item in when_not_to_use:
-                    parts.append(f"- {item}")
-            final_llm_description = "\n".join(parts)
+                parts.extend(f"- {item}" for item in when_not_to_use)
+            # Join with newlines and ensure trailing newline for proper spacing with Parameters section
+            final_llm_description = "\n".join(parts) + "\n"
 
         # Create tool object
         tool_obj = Tool(
@@ -159,7 +153,7 @@ def tool(
     return decorator
 
 
-def _extract_parameters(func: Callable) -> List[ToolParameter]:
+def _extract_parameters(func: Callable) -> list[ToolParameter]:
     """
     Extract parameters from function signature with type hints.
 
@@ -198,7 +192,7 @@ def _extract_parameters(func: Callable) -> List[ToolParameter]:
     return parameters
 
 
-def _infer_parameter_type(type_hint) -> ParameterType:
+def _infer_parameter_type(type_hint: type) -> ParameterType:
     """
     Infer ParameterType from Python type hint.
     Args:

@@ -5,7 +5,10 @@ import remarkGfm from 'remark-gfm';
 import { Icon } from '@iconify/react';
 import ReactMarkdown from 'react-markdown';
 import refreshIcon from '@iconify-icons/mdi/refresh';
+import downloadIcon from '@iconify-icons/mdi/download';
 import accountIcon from '@iconify-icons/mdi/account-outline';
+import axios from 'src/utils/axios';
+
 import React, {
   useRef,
   useMemo,
@@ -20,6 +23,7 @@ import {
   Box,
   Paper,
   Stack,
+  Button,
   Dialog,
   Popper,
   Divider,
@@ -41,6 +45,28 @@ import MessageFeedback from './message-feedback';
 import CitationHoverCard from './citations-hover-card';
 import SourcesAndCitations from './sources-citations'; // Import the new unified component
 import { extractAndProcessCitations } from '../utils/styles/content-processing';
+
+/** Parse ::download_conversation_task[label](url) markers out of content; strip them and return tasks for buttons. */
+export function parseDownloadMarkers(content: string): {
+  text: string;
+  tasks: Array<{ fileName: string; url: string }>;
+} {
+  const tasks: Array<{ fileName: string; url: string }> = [];
+  const regex = /::download_conversation_task\[([^\]]+)\]\(([^)]+)\)/g;
+  const text = content.replace(regex, (_, fileName, url) => {
+    tasks.push({ fileName: fileName?.trim() || 'Download', url: (url ?? '').trim() });
+    return '';
+  });
+  return { text: text.trimEnd(), tasks };
+}
+
+function isSignedUrl(url: string): boolean {
+  return (
+    url.includes('X-Amz-Signature') ||
+    url.includes('AWSAccessKeyId') ||
+    (url.includes('se=') && url.includes('sig='))
+  );
+}
 
 interface StreamingContextType {
   streamingState: {
@@ -264,6 +290,11 @@ const StreamingContent = React.memo(
       fallbackContent,
       fallbackCitations,
     ]);
+
+    const { text: contentWithoutDownloads, tasks: downloadTasks } = useMemo(
+      () => parseDownloadMarkers(processedContent),
+      [processedContent]
+    );
 
     // Show streaming indicator when actively streaming
     const showStreamingIndicator = isStreaming && processedContent.length > 0;
@@ -715,8 +746,68 @@ const StreamingContent = React.memo(
           }}
         >
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-            {processedContent}
+            {contentWithoutDownloads}
           </ReactMarkdown>
+          {downloadTasks.length > 0 && (
+            <Stack spacing={1} sx={{ mt: 1.5 }}>
+              <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.8rem' }}>
+                You can download the complete query results:
+              </Typography>
+              <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }}>
+                {downloadTasks.map((task, idx) => (
+                  <Button
+                    key={idx}
+                    size="small"
+                    variant="outlined"
+                    startIcon={<Icon icon={downloadIcon} width={16} height={16} />}
+                    onClick={async () => {
+                      try {
+                        if (isSignedUrl(task.url)) {
+                          // S3 presigned — direct download, no token needed
+                          const a = document.createElement('a');
+                          a.href = task.url;
+                          a.target = '_blank';
+                          a.rel = 'noopener noreferrer';
+                          a.download = task.fileName;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                        } else {
+                          // Internal API — needs auth token (axios has interceptor)
+                          const response = await axios.get(task.url, { responseType: 'blob' });
+                          const objectUrl = window.URL.createObjectURL(response.data);
+                          const a = document.createElement('a');
+                          a.href = objectUrl;
+                          a.download = task.fileName;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                          window.URL.revokeObjectURL(objectUrl);
+                        }
+                      } catch (e) {
+                        console.error('Download failed:', e);
+                      }
+                    }}
+                    sx={{
+                      textTransform: 'none',
+                      fontSize: '0.8rem',
+                      borderRadius: 2,
+                      borderColor: (t) =>
+                        t.palette.mode === 'dark' ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)',
+                      color: 'text.secondary',
+                      '&:hover': {
+                        borderColor: 'primary.main',
+                        color: 'primary.main',
+                        backgroundColor: (t) => alpha(t.palette.primary.main, 0.08),
+                      },
+                    }}
+                  >
+                    {task.fileName}
+                  </Button>
+                ))}
+              </Stack>
+            </Stack>
+          )}
         </Box>
 
         <Popper

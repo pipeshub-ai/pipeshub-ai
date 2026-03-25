@@ -61,6 +61,7 @@ resources:
   requests:
     cpu: 4
     memory: 4Gi
+  # For small clusters (e.g. kind), use lower requests so the pod can schedule: --set resources.requests.cpu=500m --set resources.requests.memory=1Gi
 
 volumes: {}
 
@@ -282,3 +283,49 @@ qdrant:
   tolerations: []
   affinity: {}
   apiKey: "api_key"
+
+# Neo4j (optional). When enabled, the app uses Neo4j as the graph database (DATA_STORE=neo4j).
+# Override neo4j.auth.password in production (e.g. --set neo4j.auth.password=... or values from secret manager).
+neo4j:
+  enabled: false
+  image:
+    repository: neo4j
+    tag: "5.26.0"
+    pullPolicy: IfNotPresent
+  auth:
+    username: "neo4j"
+    password: "your_password"
+    database: "neo4j"
+  persistence:
+    enabled: true
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClass: "" # Fill
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 1000m
+      memory: 1Gi
+  podSecurityContext:
+    runAsUser: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+  # Optional: apoc plugin and memory tuning. Values below fit small clusters (e.g. kind with 2Gi limit).
+  # Increase for production (e.g. heap 2G, pagecache 512m when node has 4Gi+).
+  env:
+    NEO4J_PLUGINS: '["apoc"]'
+    NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+    NEO4J_dbms_memory_heap_initial__size: 256m
+    NEO4J_dbms_memory_heap_max__size: 512m
+    NEO4J_dbms_memory_pagecache_size: 256m

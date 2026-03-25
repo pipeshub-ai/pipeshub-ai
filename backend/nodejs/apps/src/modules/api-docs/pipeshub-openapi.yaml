@@ -306,9 +306,6 @@ components:
             connector:delete: Delete connectors
             config:read: Read system configuration
             config:write: Update system configuration
-            document:read: Read documents
-            document:write: Upload and update documents
-            document:delete: Delete documents
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
             crawl:delete: Delete crawling jobs
@@ -349,9 +346,6 @@ components:
             connector:delete: Delete connectors
             config:read: Read system configuration
             config:write: Update system configuration
-            document:read: Read documents
-            document:write: Upload and update documents
-            document:delete: Delete documents
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
 
@@ -2344,6 +2338,9 @@ components:
         indexingStatus:
           type: string
           nullable: true
+        isInternal:
+          type: boolean
+          description: True when the node is an internal/system record group or record (doesn't come from source)
         createdAt:
           type: integer
           description: Creation timestamp (epoch ms)
@@ -4058,6 +4055,15 @@ components:
           type: string
           description: SAML attribute name for user email
           example: "email"
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time (JIT) user provisioning
+          default: true
+          example: true
+        samlPlatform:
+          type: string
+          description: Name of the SAML platform or provider (e.g., Okta, Azure AD)
+          example: "Okta"
 
     GenericOAuthConfig:
       type: object
@@ -6653,12 +6659,28 @@ paths:
       tags:
         - SAML
       summary: SAML sign-in callback
-      description: |
-        Handle the SAML Identity Provider callback after user authentication. This endpoint receives the SAML assertion from the IdP.
       operationId: samlSignInCallback
+      description: |
+        Handles the callback from the SAML Identity Provider (IDP)
+        after successful user authentication.
+
+        This endpoint is invoked by the IDP and not directly by clients.
+
+        Flow:
+        1. IDP posts SAMLResponse and RelayState
+        2. Server validates the SAML assertion signature
+        3. Server extracts user identity
+        4. Server completes authentication
+        5. Redirects to frontend with authentication result
+
+        RelayState contains the session token or state used to resume
+        the authentication process.
+
       security: []
+
       requestBody:
         description: "SAML response from Identity Provider"
+        required: false
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -6672,9 +6694,65 @@ paths:
                   description: Relay state from the original request
       responses:
         '302':
-          description: Redirect to application with authentication tokens
+          description: Redirect to frontend with authentication result
+          headers:
+            Location:
+              description: Frontend URL containing authentication result parameters
+              schema:
+                type: string
+
+        '400':
+          description: Invalid or malformed SAML response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
         '401':
-          description: SAML authentication failed
+          description: SAML assertion validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+        '404':
+          description: Session expired or user not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+        '500':
+          description: Internal server error during SAML processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+  /saml/updateAppConfig:
+    post:
+      tags:
+        - SAML
+      summary: Reload SAML application configuration (Internal)
+      description: |
+        Internal endpoint to reload SAML configuration from the configuration manager.
+        This is called by other services when SAML settings are updated.<br><br>
+        <b>Purpose:</b><br>
+        When SAML configuration is updated in the Configuration Manager, this endpoint
+        is called to reload the settings into the authentication service without restart.<br><br>
+        <b>Effects:</b><br>
+        <ul>
+        <li>Reloads AppConfig from configuration files</li>
+        <li>Rebinds authentication controllers with new config</li>
+        <li>Updates SAML passport strategy settings</li>
+        </ul>
+        <b>Note:</b> This is an internal service-to-service endpoint.
+      operationId: updateSamlAppConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Configuration reloaded successfully
           content:
             application/json:
               schema:
@@ -9833,7 +9911,7 @@ paths:
       operationId: downloadDocument
       security:
         - bearerAuth: []
-        - oauth2: [document:read]
+        - oauth2: [kb:read]
       parameters:
         - name: documentId
           in: path
@@ -9907,7 +9985,7 @@ paths:
   #     operationId: uploadDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     requestBody:
   #       required: true
   #       content:
@@ -9945,7 +10023,7 @@ paths:
   #     operationId: createPlaceholderDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     requestBody:
   #       required: true
   #       description: "Request payload"
@@ -9978,7 +10056,7 @@ paths:
   #     operationId: getDocumentById
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:read]
+  #       - oauth2: [kb:read]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10008,7 +10086,7 @@ paths:
   #     operationId: deleteDocumentById
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:delete]
+  #       - oauth2: [kb:delete]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10042,7 +10120,7 @@ paths:
   #     operationId: uploadNextVersionDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10086,7 +10164,7 @@ paths:
   #     operationId: rollBackToPreviousVersion
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10129,7 +10207,7 @@ paths:
   #     operationId: getDocumentBuffer
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:read]
+  #       - oauth2: [kb:read]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10160,7 +10238,7 @@ paths:
   #     operationId: createDocumentBuffer
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10208,7 +10286,7 @@ paths:
   #     operationId: uploadDirectDocument
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:write]
+  #       - oauth2: [kb:write]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -10251,7 +10329,7 @@ paths:
   #     operationId: documentDiffChecker
   #     security:
   #       - bearerAuth: []
-  #       - oauth2: [document:read]
+  #       - oauth2: [kb:read]
   #     parameters:
   #       - name: documentId
   #         in: path
@@ -15550,6 +15628,12 @@ paths:
                     type: boolean
                   config:
                     $ref: '#/components/schemas/ConnectorConfig'
+                  message:
+                    type: string
+                    description: Success message
+                  syncFiltersChanged:
+                    type: boolean
+                    description: Indicates whether sync filters changed, requiring a full resync
         '401':
           description: Unauthorized
         '404':
@@ -16444,6 +16528,19 @@ paths:
       operationId: getMyToolsets
       security:
         - bearerAuth: []
+      parameters:
+        - name: includeRegistry
+          in: query
+          required: false
+          description: When true, include toolsets from the registry that are not yet configured as synthetic, non-configured entries.
+          schema:
+            type: boolean
+        - name: search
+          in: query
+          required: false
+          description: Optional search filter applied to instanceName, displayName, or toolsetType.
+          schema:
+            type: string
       responses:
         '200':
           description: Toolsets retrieved successfully
@@ -16451,7 +16548,63 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties: true
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  toolsets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      properties:
+                        instanceId:
+                          type: string
+                          description: Empty string for registry-only (synthetic) entries.
+                        instanceName:
+                          type: string
+                        toolsetType:
+                          type: string
+                        authType:
+                          type: string
+                          enum: [OAUTH, API_TOKEN, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
+                        oauthConfigId:
+                          type: string
+                          nullable: true
+                        displayName:
+                          type: string
+                        description:
+                          type: string
+                        iconPath:
+                          type: string
+                        category:
+                          type: string
+                          example: app
+                        supportedAuthTypes:
+                          type: array
+                          items:
+                            type: string
+                        toolCount:
+                          type: integer
+                        tools:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: false
+                            properties:
+                              name:
+                                type: string
+                              fullName:
+                                type: string
+                              description:
+                                type: string
+                        isConfigured:
+                          type: boolean
+                        isAuthenticated:
+                          type: boolean
+                        isFromRegistry:
+                          type: boolean
+                          description: true for registry-only (synthetic) entries.
         '401':
           description: Unauthorized
 
@@ -16623,6 +16776,46 @@ paths:
           description: Instance not found
 
   /toolsets/instances/{instanceId}/credentials:
+    put:
+      tags:
+        - Toolset Instances
+      summary: Update toolset credentials
+      operationId: updateToolsetCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                auth:
+                  type: object
+                  properties:
+                    email:
+                      type: string
+                    apiToken:
+                      type: string
+                    username:
+                      type: string
+                    password:
+                      type: string
+      responses:
+        '200':
+          description: Credentials updated successfully
+        '400':
+          description: Invalid credentials payload
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
     delete:
       tags:
         - Toolset Instances

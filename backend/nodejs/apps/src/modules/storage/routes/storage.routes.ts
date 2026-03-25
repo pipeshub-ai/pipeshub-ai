@@ -43,7 +43,7 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/upload',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
+    requireScopes(OAuthScopeNames.KB_UPLOAD),
     metricsMiddleware(container),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
@@ -102,7 +102,7 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/placeholder',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(CreateDocumentSchema),
     async (
@@ -146,7 +146,7 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/:documentId',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_READ),
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (
@@ -182,7 +182,7 @@ export function createStorageRouter(container: Container): Router {
   router.delete(
     '/:documentId/',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_DELETE),
+    requireScopes(OAuthScopeNames.KB_DELETE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (
@@ -218,7 +218,7 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/:documentId/download',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_READ),
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParamsWithVersion),
     async (
@@ -254,7 +254,7 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/:documentId/buffer',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_READ),
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(GetBufferSchema),
     async (
@@ -292,7 +292,7 @@ export function createStorageRouter(container: Container): Router {
   router.put(
     '/:documentId/buffer',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
@@ -348,7 +348,7 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/:documentId/uploadNextVersion',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
+    requireScopes(OAuthScopeNames.KB_WRITE),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: Object.values(extensionToMimeType),
@@ -410,7 +410,7 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/:documentId/rollBack',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(RollBackToPreviousVersionSchema),
     async (
@@ -456,7 +456,7 @@ export function createStorageRouter(container: Container): Router {
   router.post(
     '/:documentId/directUpload',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_WRITE),
+    requireScopes(OAuthScopeNames.KB_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(DirectUploadSchema),
     async (
@@ -493,7 +493,7 @@ export function createStorageRouter(container: Container): Router {
   router.get(
     '/:documentId/isModified',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.DOCUMENT_READ),
+    requireScopes(OAuthScopeNames.KB_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(DocumentIdParams),
     async (

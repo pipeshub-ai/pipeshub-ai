@@ -2,9 +2,10 @@
 Client factories for Jira.
 """
 
-from typing import Any, Dict
+from typing import Any, Optional
 
 from app.agents.tools.factories.base import ClientFactory
+from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.jira.jira import JiraClient
 
 # ============================================================================
@@ -20,10 +21,10 @@ class JiraClientFactory(ClientFactory):
 
     async def create_client(
         self,
-        config_service,
-        logger,
-        toolset_config: Dict[str, Any],
-        state=None
+        config_service: object,
+        logger: Optional[object],
+        toolset_config: dict[str, Any],
+        state: Optional[ChatState] = None
     ) -> JiraClient:
         """
         Create Jira client instance from toolset configuration.
@@ -40,4 +41,5 @@ class JiraClientFactory(ClientFactory):
         return await JiraClient.build_from_toolset(
             toolset_config=toolset_config,
             logger=logger,
+            config_service=config_service,
         )

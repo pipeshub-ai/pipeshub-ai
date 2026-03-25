@@ -790,6 +790,8 @@ export const useConnectorConfig = ({
     privateKeyError,
   ]);
 
+  const appCategoriesKey = (connector.appCategories ?? []).join(',');
+
   // Load connector configuration - simplified with proper dependency management
   useEffect(() => {
     // Skip if account type is still loading
@@ -931,7 +933,7 @@ export const useConnectorConfig = ({
     connector.authType,
     connector.supportsRealtime,
     connector.appDescription,
-    connector.appCategories,
+    appCategoriesKey,
     connector.iconPath,
     connector._key,
     isCreateMode,
@@ -1718,7 +1720,7 @@ export const useConnectorConfig = ({
         const syncToSave = prepareSyncConfig();
 
         // Save filters and sync using new endpoint
-        await ConnectorApiService.updateConnectorInstanceFiltersSyncConfig(connector._key, {
+        const filtersSyncResponse = await ConnectorApiService.updateConnectorInstanceFiltersSyncConfig(connector._key, {
           filters: filtersPayload,
           sync: syncToSave,
         });
@@ -1726,7 +1728,13 @@ export const useConnectorConfig = ({
         // If enableMode, toggle connector to enable it
         let connectorWillBeActive = connector.isActive;
         if (enableMode) {
-          await ConnectorApiService.toggleConnectorInstance(connector._key, 'sync');
+          // Pass fullSync so the toggle's immediate sync event carries the flag,
+          // avoiding a separate resync API call
+          await ConnectorApiService.toggleConnectorInstance(
+            connector._key,
+            'sync',
+            filtersSyncResponse?.syncFiltersChanged ?? false,
+          );
           connectorWillBeActive = true; // After toggling, connector will be active
         }
 

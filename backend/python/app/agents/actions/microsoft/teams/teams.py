@@ -382,10 +382,18 @@ class AddMemberInput(BaseModel):
     team_id: str = Field(description="ID of the Microsoft Team")
     user_id: str = Field(description="User ID or Azure AD object ID to add")
     role: Optional[str] = Field(default="member", description="Role for the new member: 'member' or 'owner'")
+    channel_id: Optional[str] = Field(
+        default=None,
+        description="Optional channel ID. If omitted, adds user to team. For private channel, user is added directly to channel.",
+    )
 
 
 class GetMembersInput(BaseModel):
     team_id: str = Field(description="ID of the Microsoft Team")
+    channel_id: Optional[str] = Field(
+        default=None,
+        description="Optional channel ID. If provided, returns members for that channel.",
+    )
     top: Optional[int] = Field(default=100, description="Maximum number of members to return (default 100, max 500)")
 
 
@@ -621,6 +629,7 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
                     "OnlineMeetings.Read",
                     "OnlineMeetingTranscript.Read.All",
                     "OnlineMeetingArtifact.Read.All",
+                    "ChannelMember.ReadWrite.All",
                 ],
             ),
             additional_params={
@@ -2264,51 +2273,16 @@ class Teams:
         except Exception as e:
             return self._handle_error(e, "create team")
 
-    # @tool(
-    #     app_name="teams",
-    #     tool_name="delete_team",
-    #     description="Delete a Microsoft Team permanently",
-    #     args_schema=DeleteTeamInput,
-    #     when_to_use=[
-    #         "User wants to delete or remove a Microsoft Team",
-    #         "User asks to permanently remove a team",
-    #     ],
-    #     when_not_to_use=[
-    #         "User wants to delete only a channel (use delete_channel)",
-    #         "User wants to remove a member from a team (use remove_member)",
-    #         "No Teams mention",
-    #     ],
-    #     primary_intent=ToolIntent.ACTION,
-    #     typical_queries=[
-    #         "Delete the team with ID X",
-    #         "Remove the Project Alpha team",
-    #         "Permanently delete this Teams workspace",
-    #     ],
-    #     category=ToolCategory.COMMUNICATION,
-    # )
-    # async def delete_team(self, team_id: str) -> tuple[bool, str]:
-    #     try:
-    #         response = await self.client.teams_team_delete_team(team_id=team_id)
-    #         if response.success:
-    #             return True, json.dumps({
-    #                 "message": "Team deleted successfully",
-    #                 "team_id": team_id,
-    #             })
-    #         return False, json.dumps({"error": response.error or "Failed to delete team"})
-    #     except Exception as e:
-    #         return self._handle_error(e, f"delete team {team_id}")
-
-    # ------------------------------------------------------------------
-    # Member tools
-    # ------------------------------------------------------------------
+   
 
     @tool(
         app_name="teams",
         tool_name="get_members",
-        description="List members in a Microsoft Team",
+        description="List members in a Microsoft Team or channel",
         args_schema=GetMembersInput,
         when_to_use=[
             "User wants to list members of a specific Microsoft Team",
+            "User wants members of a specific Teams channel",
             "User needs member IDs before remove_member",
             "User asks who is in a Teams team",
         ],
@@ -2320,48 +2294,106 @@ class Teams:
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
             "Show members in team X",
+            "List members in channel Y of team X",
             "List users in this Microsoft Team",
         ],
         category=ToolCategory.SEARCH,
     )
-    async def get_members(self, team_id: str, top: Optional[int] = 100) -> tuple[bool, str]:
+    async def get_members(
+        self,
+        team_id: str,
+        channel_id: Optional[str] = None,
+        top: Optional[int] = 100,
+    ) -> tuple[bool, str]:
         try:
-            response = await self.client.teams_list_members(team_id=team_id)
+            membership_scope = "team"
+            membership_type: Optional[str] = None
+
+            if channel_id:
+                channels_response = await self.client.teams_get_channels(team_id=team_id)
+                if not channels_response.success:
+                    return False, json.dumps({
+                        "error": channels_response.error or "Failed to fetch channels to resolve membership scope"
+                    })
+
+                serialized_channels = self._serialize_response(channels_response.data)
+                channels = self._extract_collection_items(serialized_channels)
+                channel_obj = next(
+                    (
+                        channel
+                        for channel in channels
+                        if isinstance(channel, dict) and channel.get("id") == channel_id
+                    ),
+                    None,
+                )
+                if not channel_obj:
+                    return False, json.dumps({
+                        "error": f"Channel '{channel_id}' was not found in team '{team_id}'"
+                    })
+
+                membership_type = str(
+                    channel_obj.get("membershipType")
+                    or channel_obj.get("membership_type")
+                    or "standard"
+                ).strip().lower()
+
+                # Standard channels inherit team membership.
+                if membership_type == "standard":
+                    response = await self.client.teams_list_members(team_id=team_id)
+                    membership_scope = "team"
+                else:
+                    response = await self.client.teams_list_channel_members(
+                        team_id=team_id,
+                        channel_id=channel_id,
+                    )
+                    membership_scope = "channel"
+            else:
+                response = await self.client.teams_list_members(team_id=team_id)
+
             if response.success:
                 serialized = self._serialize_response(response.data)
                 members = self._extract_collection_items(serialized)
                 limit = min(top or 100, 500)
                 members = members[:limit]
-                return True, json.dumps({
+                payload: Dict[str, Any] = {
                     "data": {
                         "results": members,
                     },
                     "members": members,
                     "count": len(members),
                     "team_id": team_id,
-                })
+                }
+                if channel_id:
+                    payload["channel_id"] = channel_id
+                    payload["membership_type"] = membership_type
+                    payload["membership_scope"] = membership_scope
+                return True, json.dumps(payload)
             return False, json.dumps({"error": response.error or "Failed to get members"})
         except Exception as e:
             return self._handle_error(e, f"get members for team {team_id}")
 
+
     @tool(
         app_name="teams",
         tool_name="add_member",
-        description="Add a member to a Microsoft Team",
+        description="Add a member to a Microsoft Team or channel (supports team, standard channel, and private channel)",
         args_schema=AddMemberInput,
         when_to_use=[
-            "User wants to add someone to a Team",
-            "User asks to invite a member to a team",
+            "User wants to add someone to a Microsoft Team",
+            "User wants to add a user to a specific private Teams channel",
+            "User asks to invite a member or owner to a team/channel",
         ],
         when_not_to_use=[
             "User wants to remove a member (use remove_member)",
-            "User wants to add a member to a channel (not a team)",
+            "User wants to list members (use get_members)",
+            "User wants to add members to a shared channel (not supported by this tool)",
             "No Teams mention",
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
             "Add user 123 to team ABC",
-            "Invite this user as owner to the team",
+            "Invite jane@company.com as owner in this team",
+            "Add this user to the private channel in team X",
         ],
         category=ToolCategory.COMMUNICATION,
     )
@@ -2370,75 +2402,103 @@ class Teams:
         team_id: str,
         user_id: str,
         role: Optional[str] = "member",
+        channel_id: Optional[str] = None,
     ) -> tuple[bool, str]:
         try:
+            logger.info(f"Adding member to team {team_id} with user {user_id} and role {role} and channel {channel_id}")
             normalized_role = (role or "member").strip().lower()
             roles = ["owner"] if normalized_role == "owner" else []
-            request_body: Dict[str, Any] = {
+            safe_user_id = user_id.replace("'", "''")
+            request_body = {
                 "@odata.type": "#microsoft.graph.aadUserConversationMember",
                 "roles": roles,
-                "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{user_id}')",
+                "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{safe_user_id}')",
             }
-            response = await self.client.me_joined_teams_create_members(
-                team_id=team_id,
-                body=request_body,
-            )
-            if response.success:
-                return True, json.dumps({
-                    "message": "Member added successfully",
-                    "team_id": team_id,
-                    "user_id": user_id,
-                    "role": "owner" if roles else "member",
-                    "result": self._serialize_response(response.data),
+
+            # CASE 1 — Add to team
+            if not channel_id:
+                response = await self.client.me_joined_teams_create_members(
+                    team_id=team_id,
+                    body=request_body,
+                )
+                if response.success:
+                    return True, json.dumps({
+                        "message": "Member added to team successfully",
+                        "team_id": team_id,
+                        "user_id": user_id,
+                    })
+                return False, json.dumps({"error": response.error or "Failed to add member to team"})
+
+            # CASE 2 — Channel provided: determine membership type first
+            channels_response = await self.client.teams_get_channels(team_id=team_id)
+            if not channels_response.success:
+                return False, json.dumps({
+                    "error": channels_response.error or "Failed to fetch channels to resolve membership type"
                 })
-            return False, json.dumps({"error": response.error or "Failed to add member"})
+
+            serialized_channels = self._serialize_response(channels_response.data)
+            channels = self._extract_collection_items(serialized_channels)
+            channel_obj = next(
+                (
+                    channel
+                    for channel in channels
+                    if isinstance(channel, dict) and channel.get("id") == channel_id
+                ),
+                None,
+            )
+            if not channel_obj:
+                return False, json.dumps({
+                    "error": f"Channel '{channel_id}' was not found in team '{team_id}'"
+                })
+
+            membership_type = str(
+                channel_obj.get("membershipType")
+                or channel_obj.get("membership_type")
+                or "standard"
+            ).strip().lower()
+
+            # Standard channel inherits team membership
+            if membership_type == "standard":
+                response = await self.client.me_joined_teams_create_members(
+                    team_id=team_id,
+                    body=request_body,
+                )
+                if response.success:
+                    return True, json.dumps({
+                        "message": "User added to team (standard channel inherits team members)",
+                        "team_id": team_id,
+                        "channel_id": channel_id,
+                        "user_id": user_id,
+                    })
+                return False, json.dumps({
+                    "error": response.error or "Failed to add user to team for standard channel"
+                })
+
+            # Private channel
+            elif membership_type == "private":
+                response = await self.client.teams_channels_create_members(
+                    team_id=team_id,
+                    channel_id=channel_id,
+                    body=request_body,
+                )
+                if response.success:
+                    return True, json.dumps({
+                        "message": "User added to private channel",
+                        "team_id": team_id,
+                        "channel_id": channel_id,
+                        "user_id": user_id,
+                    })
+                return False, json.dumps({
+                    "error": response.error or "Failed to add user to private channel"
+                })
+
+            return False, json.dumps({
+                "error": f"Unsupported channel membership type: {membership_type}"
+            })
+
         except Exception as e:
-            return self._handle_error(e, f"add member to team {team_id}")
-
-    # @tool(
-    #     app_name="teams",
-    #     tool_name="remove_member",
-    #     description="Remove a member from a Microsoft Team by their membership ID",
-    #     args_schema=RemoveMemberInput,
-    #     when_to_use=[
-    #         "User wants to remove someone from a Team",
-    #         "User asks to kick or remove a member from a team",
-    #     ],
-    #     when_not_to_use=[
-    #         "User wants to add a member (use add_member)",
-    #         "User wants to delete the entire team (use delete_team)",
-    #         "No Teams mention",
-    #     ],
-    #     primary_intent=ToolIntent.ACTION,
-    #     typical_queries=[
-    #         "Remove user from team ABC",
-    #         "Kick member with membership ID XYZ from the team",
-    #     ],
-    #     category=ToolCategory.COMMUNICATION,
-    # )
-    # async def remove_member(
-    #     self,
-    #     team_id: str,
-    #     membership_id: str,
-    # ) -> tuple[bool, str]:
-    #     try:
-    #         response = await self.client.teams_delete_members(
-    #             team_id=team_id,
-    #             conversationMember_id=membership_id,
-    #         )
-    #         if response.success:
-    #             return True, json.dumps({
-    #                 "message": "Member removed successfully",
-    #                 "team_id": team_id,
-    #                 "membership_id": membership_id,
-    #             })
-    #         return False, json.dumps({"error": response.error or "Failed to remove member"})
-    #     except Exception as e:
-    #         return self._handle_error(e, f"remove member from team {team_id}")
-
-    # ------------------------------------------------------------------
-    # Channel tools
-    # ------------------------------------------------------------------
+            return self._handle_error(e, "add member")
+        
 
     @tool(
         app_name="teams",

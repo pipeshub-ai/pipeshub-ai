@@ -1,0 +1,12 @@
+require:
+  - 'reflect-metadata'
+  - 'ts-node/register'
+  - './tests/helpers/mock-ioredis-global.ts'
+spec: 'tests/**/*.test.ts'
+timeout: 10000
+recursive: true
+exit: true
+extension:
+  - ts
+parallel: true
+jobs: 4

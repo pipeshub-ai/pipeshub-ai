@@ -16,7 +16,6 @@ import {
   DialogContent,
   DialogTitle,
   TextField,
-  Button as MuiButton,
   Button,
   Paper,
   IconButton,
@@ -53,7 +52,9 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
     // State
     connector,
     connectorConfig,
-    loading,
+    initialLoading,
+    refreshing,
+    statsRefreshCallbackRef,
     error,
     success,
     successMessage,
@@ -120,8 +121,8 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
 
   const [configMode, setConfigMode] = React.useState<'auth' | 'sync' | 'syncSettings' | null>(null);
 
-  // Loading state with skeleton
-  if (loading) {
+  // Show skeleton only on initial load before any data is available
+  if (initialLoading) {
     return <ConnectorLoadingSkeleton showStats={showStats} />;
   }
 
@@ -375,7 +376,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
         }}
       >
         {/* Header */}
-        <ConnectorHeader connector={connector} loading={loading} onRefresh={handleRefresh} />
+        <ConnectorHeader connector={connector} refreshing={refreshing} onRefresh={handleRefresh} />
 
         {/* Content */}
         <Box sx={{ p: 2 }}>
@@ -426,7 +427,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                 <ConnectorActionsSidebar
                   connector={connector}
                   isAuthenticated={isAuthenticated}
-                  loading={loading}
+                  loading={refreshing}
                   onAuthenticate={handleAuthenticate}
                   onConfigureAuth={() => {
                     setConfigMode('auth');
@@ -493,6 +494,7 @@ const ConnectorManager: React.FC<ConnectorManagerProps> = ({ showStats = true })
                   connector={connector}
                   showUploadTab={false}
                   showActions={isActive}
+                  refreshCallbackRef={statsRefreshCallbackRef}
                 />
               </Box>
             )}

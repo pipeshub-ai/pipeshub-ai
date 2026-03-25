@@ -33,6 +33,7 @@ import { Org } from '../../user_management/schema/org.schema';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { generateFetchConfigAuthToken } from '../../auth/utils/generateAuthToken';
+import { SamlController } from '../../auth/controller/saml.controller';
 import axios from 'axios';
 import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
 import { ConfigService } from '../services/updateConfig.service';
@@ -1975,10 +1976,13 @@ export const setSharePointCredentials =
   };
 
 export const setSsoAuthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (
+    keyValueStoreService: KeyValueStoreService,
+    samlController: SamlController,
+  ) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { entryPoint, emailKey, enableJit } = req.body;
+      const { entryPoint, emailKey, enableJit , samlPlatform} = req.body;
       let { certificate } = req.body;
       certificate = certificate
         .replace(/\\n/g, '') // Remove \n
@@ -2000,11 +2004,12 @@ export const setSsoAuthConfig =
       const encryptedSsoConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit ?? true }));
+      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit ?? true , samlPlatform }));
       await keyValueStoreService.set<string>(
         configPaths.auth.sso,
         encryptedSsoConfig,
       );
+      await samlController.updateSamlStrategiesWithCallback();
       res.status(200).json({ message: 'Sso config created successfully' });
     } catch (error: any) {
       logger.error('Error creating Sso config', { error });

@@ -11,7 +11,6 @@ import uuid
 from datetime import datetime, timezone
 from itertools import accumulate
 from logging import Logger
-from typing import Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from aiolimiter import AsyncLimiter
@@ -88,7 +87,7 @@ DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
 GCS_CONSOLE_BASE_URL = "https://console.cloud.google.com/storage/browser"
 
 
-def get_file_extension(key: str) -> Optional[str]:
+def get_file_extension(key: str) -> str | None:
     """Extracts the extension from a GCS key."""
     if "." in key:
         parts = key.split(".")
@@ -97,7 +96,7 @@ def get_file_extension(key: str) -> Optional[str]:
     return None
 
 
-def get_parent_path_from_key(key: str) -> Optional[str]:
+def get_parent_path_from_key(key: str) -> str | None:
     """Extracts the parent path from a GCS key (without leading slash).
 
     For a key like 'a/b/c/file.txt', returns 'a/b/c'
@@ -113,7 +112,7 @@ def get_parent_path_from_key(key: str) -> Optional[str]:
     return parent_path if parent_path else None
 
 
-def get_folder_path_segments_from_key(key: str) -> List[str]:
+def get_folder_path_segments_from_key(key: str) -> list[str]:
     """Derives folder path segments from a GCS key for hierarchy creation.
 
     GCS, like S3, represents folders implicitly via object keys.
@@ -138,7 +137,7 @@ def get_folder_path_segments_from_key(key: str) -> List[str]:
     return list(accumulate(parts[:-1], lambda acc, part: f"{acc}/{part}"))
 
 
-def get_mimetype_for_gcs(key: str, is_folder: bool = False) -> str:
+def get_mimetype_for_gcs(key: str, *, is_folder: bool = False) -> str:
     """Determines the correct MimeTypes string value for a GCS object."""
     if is_folder:
         return MimeTypes.FOLDER.value
@@ -152,7 +151,7 @@ def get_mimetype_for_gcs(key: str, is_folder: bool = False) -> str:
     return MimeTypes.BIN.value
 
 
-def parse_parent_external_id(parent_external_id: str) -> Tuple[str, Optional[str]]:
+def parse_parent_external_id(parent_external_id: str) -> tuple[str, str | None]:
     """Parse parent_external_id to extract bucket_name and normalized path.
 
     Args:
@@ -191,7 +190,7 @@ def get_parent_weburl_for_gcs(parent_external_id: str) -> str:
         return f"{GCS_CONSOLE_BASE_URL}/{bucket_name}"
 
 
-def get_parent_path_for_gcs(parent_external_id: str) -> Optional[str]:
+def get_parent_path_for_gcs(parent_external_id: str) -> str | None:
     """Extract directory path from GCS parent external_id.
 
     Args:
@@ -330,19 +329,19 @@ class GCSConnector(BaseConnector):
 
         self.record_sync_point = _create_sync_point(SyncDataPointType.RECORDS)
 
-        self.data_source: Optional[GCSDataSource] = None
+        self.data_source: GCSDataSource | None = None
         self.batch_size = 100
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
-        self.bucket_name: Optional[str] = None
-        self.connector_scope: Optional[str] = None
-        self.created_by: Optional[str] = None
-        self.project_id: Optional[str] = None
+        self.bucket_name: str | None = None
+        self.connector_scope: str | None = None
+        self.created_by: str | None = None
+        self.project_id: str | None = None
 
         # Initialize filter collections
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
-    def get_app_users(self, users: List[User]) -> List[AppUser]:
+    def get_app_users(self, users: list[User]) -> list[AppUser]:
         """Convert User objects to AppUser objects for GCS connector."""
         return [
             AppUser(
@@ -483,7 +482,7 @@ class GCSConnector(BaseConnector):
             self.logger.error(f"❌ Error in GCS connector run: {ex}", exc_info=True)
             raise
 
-    async def _create_record_groups_for_buckets(self, bucket_names: List[str]) -> None:
+    async def _create_record_groups_for_buckets(self, bucket_names: list[str]) -> None:
         """Create record groups for buckets with appropriate permissions.
 
         Processes buckets one at a time to avoid database lock contention issues.
@@ -583,12 +582,12 @@ class GCSConnector(BaseConnector):
         if failed_buckets:
             self.logger.warning(f"Failed to create record groups for {len(failed_buckets)} bucket(s): {failed_buckets}")
 
-    def _get_date_filters(self) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+    def _get_date_filters(self) -> tuple[int | None, int | None, int | None, int | None]:
         """Extract date filter values from sync_filters."""
-        modified_after_ms: Optional[int] = None
-        modified_before_ms: Optional[int] = None
-        created_after_ms: Optional[int] = None
-        created_before_ms: Optional[int] = None
+        modified_after_ms: int | None = None
+        modified_before_ms: int | None = None
+        created_after_ms: int | None = None
+        created_before_ms: int | None = None
 
         modified_date_filter = self.sync_filters.get(SyncFilterKey.MODIFIED)
         if modified_date_filter and not modified_date_filter.is_empty():
@@ -618,7 +617,7 @@ class GCSConnector(BaseConnector):
 
     async def _process_records_with_retry(
         self,
-        records_with_permissions: List[Tuple[FileRecord, List[Permission]]],
+        records_with_permissions: list[tuple[FileRecord, list[Permission]]],
         max_retries: int = 3,
         base_delay: float = 1.0
     ) -> None:
@@ -653,11 +652,11 @@ class GCSConnector(BaseConnector):
 
     def _pass_date_filters(
         self,
-        obj: Dict,
-        modified_after_ms: Optional[int] = None,
-        modified_before_ms: Optional[int] = None,
-        created_after_ms: Optional[int] = None,
-        created_before_ms: Optional[int] = None
+        obj: dict,
+        modified_after_ms: int | None = None,
+        modified_before_ms: int | None = None,
+        created_after_ms: int | None = None,
+        created_before_ms: int | None = None
     ) -> bool:
         """Returns True if GCS object PASSES date filters (should be kept)."""
         key = obj.get("Key", "")
@@ -884,39 +883,22 @@ class GCSConnector(BaseConnector):
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
     async def _ensure_parent_folders_exist(
-        self, bucket_name: str, path_segments: List[str]
+        self, bucket_name: str, path_segments: list[str]
     ) -> None:
-        """Ensure folder records exist for each path segment (root to leaf). No duplicates.
+        """Ensure folder records exist for each path segment (root to leaf).
 
         GCS, like S3, represents folders implicitly via object keys.
-        For each segment (e.g. 'a', 'a/b', 'a/b/c'), create a folder record if one does not
-        already exist (by external_id = bucket_name/segment). Process in order so parent
-        exists before child.
+        For each segment (e.g. 'a', 'a/b', 'a/b/c'), upsert a folder record and its edges.
+        Always processes all segments so that edges are re-created after full sync.
+        Process in order so parent exists before child.
         """
         if not path_segments:
             return
 
         timestamp_ms = get_epoch_timestamp_in_ms()
-        external_ids = [f"{bucket_name}/{segment}" for segment in path_segments]
-
-        async with self.data_store_provider.transaction() as tx_store:
-            results = await asyncio.gather(
-                *[
-                    tx_store.get_record_by_external_id(
-                        connector_id=self.connector_id, external_id=eid
-                    )
-                    for eid in external_ids
-                ]
-            )
-
-        existing_external_ids = {
-            eid for eid, rec in zip(external_ids, results) if rec is not None
-        }
 
         for i, segment in enumerate(path_segments):
             external_id = f"{bucket_name}/{segment}"
-            if external_id in existing_external_ids:
-                continue
 
             # Root folder: first segment has no parent. Others: parent is previous segment.
             parent_external_id = (
@@ -958,7 +940,7 @@ class GCSConnector(BaseConnector):
             permissions = await self._create_gcs_permissions(bucket_name, segment + "/")
             await self._process_records_with_retry([(folder_record, permissions)])
 
-    def _get_gcs_revision_id(self, obj: Dict) -> str:
+    def _get_gcs_revision_id(self, obj: dict) -> str:
         """
         Determines a stable revision ID for a GCS object.
 
@@ -984,8 +966,8 @@ class GCSConnector(BaseConnector):
         return ""
 
     async def _process_gcs_object(
-        self, obj: Dict, bucket_name: str
-    ) -> Tuple[Optional[FileRecord], List[Permission]]:
+        self, obj: dict, bucket_name: str
+    ) -> tuple[FileRecord | None, list[Permission]]:
         """Process a single GCS object and convert it to a FileRecord.
 
         Logic mirrors S3:
@@ -1051,11 +1033,6 @@ class GCSConnector(BaseConnector):
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
-                if current_revision_id and stored_revision and current_revision_id == stored_revision:
-                    self.logger.debug(
-                        f"Skipping {normalized_key}: externalRecordId and externalRevisionId unchanged"
-                    )
-                    return None, []
 
                 # Content changed or missing revision - sync properly from GCS
                 if current_revision_id and stored_revision and current_revision_id != stored_revision:
@@ -1091,7 +1068,7 @@ class GCSConnector(BaseConnector):
             # Prepare record data: all items are RecordType.FILE; folders have is_file=False
             record_type = RecordType.FILE
             extension = get_file_extension(normalized_key) if is_file else None
-            mime_type = obj.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder)
+            mime_type = obj.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder=is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else None
@@ -1107,10 +1084,7 @@ class GCSConnector(BaseConnector):
                 async with self.data_store_provider.transaction() as tx_store:
                     await self._remove_old_parent_relationship(record_id, tx_store)
 
-            if not existing_record:
-                version = 0
-            else:
-                version = existing_record.version + 1
+            version = 0 if not existing_record else existing_record.version + 1
 
             file_record = FileRecord(
                 id=record_id,
@@ -1141,9 +1115,12 @@ class GCSConnector(BaseConnector):
                 crc32_hash=obj.get("Crc32c"),
             )
 
-            if hasattr(self, 'indexing_filters') and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            if (
+                hasattr(self, 'indexing_filters')
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+            ):
+                file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_gcs_permissions(bucket_name, key)
 
@@ -1155,7 +1132,7 @@ class GCSConnector(BaseConnector):
 
     async def _create_gcs_permissions(
         self, bucket_name: str, key: str
-    ) -> List[Permission]:
+    ) -> list[Permission]:
         """Create permissions for a GCS object based on connector scope."""
         try:
             permissions = []
@@ -1221,7 +1198,7 @@ class GCSConnector(BaseConnector):
             self.logger.error(f"GCS connection test failed: {e}", exc_info=True)
             return False
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> str | None:
         """Generate a signed URL for a GCS object."""
         if not self.data_source:
             return None
@@ -1319,8 +1296,8 @@ class GCSConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None
+        search: str | None = None,
+        cursor: str | None = None
     ) -> FilterOptionsResponse:
         """Get dynamic filter options for filters."""
         if filter_key == "buckets":
@@ -1332,7 +1309,7 @@ class GCSConnector(BaseConnector):
         self,
         page: int,
         limit: int,
-        search: Optional[str]
+        search: str | None
     ) -> FilterOptionsResponse:
         """Get list of available buckets."""
         try:
@@ -1408,11 +1385,11 @@ class GCSConnector(BaseConnector):
                 message=f"Error: {str(e)}"
             )
 
-    def handle_webhook_notification(self, notification: Dict) -> None:
+    def handle_webhook_notification(self, notification: dict) -> None:
         """Handle webhook notifications from the source."""
         raise NotImplementedError("This method is not supported")
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, record_results: list[Record]) -> None:
         """Reindex records by checking for updates at source and publishing reindex events."""
         try:
             if not record_results:
@@ -1457,7 +1434,7 @@ class GCSConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         """Check if record has been updated at source and fetch updated data."""
         try:
             bucket_name = record.external_record_group_id
@@ -1526,7 +1503,7 @@ class GCSConnector(BaseConnector):
             is_file = not is_folder
 
             extension = get_file_extension(normalized_key) if is_file else None
-            mime_type = obj_metadata.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder)
+            mime_type = obj_metadata.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder=is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else None
@@ -1569,9 +1546,12 @@ class GCSConnector(BaseConnector):
                 crc32_hash=obj_metadata.get("Crc32c"),
             )
 
-            if hasattr(self, 'indexing_filters') and self.indexing_filters:
-                if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
-                    updated_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            if (
+                hasattr(self, 'indexing_filters')
+                and self.indexing_filters
+                and not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
+            ):
+                updated_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_gcs_permissions(bucket_name, normalized_key)
 
@@ -1642,7 +1622,7 @@ class GCSConnector(BaseConnector):
         data_store_provider: DataStoreProvider,
         config_service: ConfigurationService,
         connector_id: str,
-        **kwargs,
+        **kwargs: object,
     ) -> "GCSConnector":
         """Factory method to create and initialize connector."""
         data_entities_processor = GCSDataSourceEntitiesProcessor(
@@ -1650,7 +1630,7 @@ class GCSConnector(BaseConnector):
         )
         await data_entities_processor.initialize()
 
-        connector = cls(
+        return cls(
             logger,
             data_entities_processor,
             data_store_provider,
@@ -1658,4 +1638,3 @@ class GCSConnector(BaseConnector):
             connector_id,
         )
 
-        return connector
