@@ -99,7 +99,7 @@ async def start_kafka_consumers(app_container: QueryAppContainer) -> list:
                 logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
         raise
 
-async def stop_kafka_consumers(container: QueryAppContainer) -> bool:
+async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
     """Stop all Kafka consumers"""
     logger = container.logger()
     consumers = getattr(container, 'kafka_consumers', [])
@@ -295,7 +295,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         # Try to log the request body
         await request.json()
     except Exception:
-        pass
+        print("Could not parse request body as JSON.")
 
     # You can customize the response, but for now, we'll just re-raise
     # or return the default FastAPI response structure.

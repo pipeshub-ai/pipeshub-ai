@@ -409,7 +409,7 @@ class EventProcessor:
                     needs_ocr = await self._pdf_needs_ocr(file_content)
                     self.logger.info("📊 OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
                 except Exception as e:
-                    self.logger.warning(f"⚠️ Error checking OCR need: {str(e)}, defaulting to layout parser")
+                    self.logger.warning("⚠️ Error checking OCR need: %s, defaulting to layout parser", str(e))
                     needs_ocr = False
 
                 if needs_ocr:
