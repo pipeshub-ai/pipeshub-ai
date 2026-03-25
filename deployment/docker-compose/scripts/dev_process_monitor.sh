@@ -29,15 +29,32 @@ log "Starting Node.js backend..."
 cd /app/backend
 npm run dev &
 
-log "Starting frontend..."
-cd /app/frontend
-npm run dev &
+sleep 5
 
-log "Starting remaining services..."
+log "Starting remaining Python services..."
 cd /app/python
 watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m app.indexing_main &
 watchmedo auto-restart --recursive --pattern="*.py" --directory="." -- python -m app.docling_main &
 
-log "All services started"
+sleep 10
+
+log "Starting frontend (Vite dev server on port 3001)..."
+cd /app/frontend
+npm run dev &
+FRONTEND_PID=$!
+
+log "All services started. Frontend PID: $FRONTEND_PID"
+
+while true; do
+    sleep 10
+    if ! kill -0 $FRONTEND_PID 2>/dev/null; then
+        log "Frontend process (PID $FRONTEND_PID) exited. Restarting in 3s..."
+        sleep 3
+        cd /app/frontend
+        npm run dev &
+        FRONTEND_PID=$!
+        log "Frontend restarted with PID $FRONTEND_PID"
+    fi
+done &
 
 wait

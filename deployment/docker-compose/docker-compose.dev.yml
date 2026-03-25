@@ -23,7 +23,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 10G
+          memory: 12G
     shm_size: 2gb
     init: true
     logging:
@@ -36,7 +36,7 @@ services:
       # Core environment settings
       - NODE_ENV=${NODE_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       # Security settings - allow override with custom secret
@@ -125,6 +125,7 @@ services:
       - ENABLE_PYMUPDF_PROCESSOR=${ENABLE_PYMUPDF_PROCESSOR:-false}
 
       # Vite frontend dev server
+      - DOCKER_DEV=true
       - VITE_BACKEND_URL=http://localhost:3000
       - VITE_AUTH_URL=http://localhost:3000
       - VITE_IAM_URL=http://localhost:3000

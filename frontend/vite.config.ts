@@ -6,6 +6,7 @@ import react from '@vitejs/plugin-react-swc';
 // ----------------------------------------------------------------------
 
 const PORT = 3001;
+const isDocker = !!process.env.DOCKER_DEV;
 
 export default defineConfig({
   plugins: [
@@ -34,6 +35,13 @@ export default defineConfig({
       },
     ],
   },
-  server: { port: PORT, host: true },
+  server: {
+    port: PORT,
+    host: true,
+    ...(isDocker && {
+      allowedHosts: true,
+      watch: { usePolling: true, interval: 1000 },
+    }),
+  },
   preview: { port: PORT, host: true },
 });

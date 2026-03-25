@@ -175,6 +175,6 @@
     "prettier": "^3.3.3",
     "typescript": "^5.5.4",
     "vite": "^7.2.6",
-    "vite-plugin-checker": "^0.7.2"
+    "vite-plugin-checker": "^0.12.0"
   }
 }
