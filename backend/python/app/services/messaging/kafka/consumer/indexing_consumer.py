@@ -308,24 +308,37 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Check if consumer is running"""
         return self.running
 
-    async def __wait_for_capacity(self) -> None:
-        """Apply backpressure before draining more Kafka messages into memory."""
-        while self.running:
-            active_count = self._get_active_task_count()
-            if active_count < MAX_PENDING_INDEXING_TASKS:
-                if self._backpressure_logged:
-                    self.logger.info(
-                        f"Backpressure cleared: active tasks back to {active_count}/{MAX_PENDING_INDEXING_TASKS}"
-                    )
-                    self._backpressure_logged = False
-                return
+    def __apply_backpressure(self) -> None:
+        """Pause or resume Kafka partitions based on active task capacity.
 
+        This ensures getmany() is always called (keeping the consumer alive
+        and resetting max_poll_interval_ms), while preventing new messages
+        from being returned when at capacity.
+        """
+        active_count = self._get_active_task_count()
+
+        if active_count >= MAX_PENDING_INDEXING_TASKS:
+            # Pause partitions that aren't already paused
+            assigned = self.consumer.assignment()
+            not_paused = assigned - self.consumer.paused()
+            if not_paused:
+                self.consumer.pause(*not_paused)
             if not self._backpressure_logged:
                 self.logger.warning(
-                    f"Backpressure engaged: {active_count} active tasks queued; pausing Kafka reads at cap {MAX_PENDING_INDEXING_TASKS}"
+                    f"Backpressure engaged: {active_count} active tasks queued; "
+                    f"pausing Kafka partition reads at cap {MAX_PENDING_INDEXING_TASKS}"
                 )
                 self._backpressure_logged = True
-            await asyncio.sleep(0.1)
+        else:
+            # Resume any paused partitions
+            paused = self.consumer.paused()
+            if paused:
+                self.consumer.resume(*paused)
+            if self._backpressure_logged:
+                self.logger.info(
+                    f"Backpressure cleared: active tasks back to {active_count}/{MAX_PENDING_INDEXING_TASKS}"
+                )
+                self._backpressure_logged = False
 
     async def __consume_loop(self) -> None:
         """Main consumption loop with dual semaphore control"""
@@ -333,14 +346,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.logger.info("Starting Kafka consumer loop")
             while self.running:
                 try:
-                    await self.__wait_for_capacity()
-                    if not self.running:
-                        break
+                    self.__apply_backpressure()
+                    
 
                     message_batch = await self.consumer.getmany(timeout_ms=1000, max_records=1)  # type: ignore
 
                     if not message_batch:
-                        await asyncio.sleep(0.1)
                         continue
 
                     for _, messages in message_batch.items():
