@@ -6,9 +6,9 @@ import threading
 from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
-from typing import Any, Optional
+from typing import Any
 
-from aiokafka import AIOKafkaConsumer # type: ignore
+from aiokafka import AIOKafkaConsumer  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore
 from typing_extensions import override
 
@@ -58,7 +58,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.worker_executor: ThreadPoolExecutor | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
         self.worker_loop_ready = threading.Event()  # Signal when worker loop is ready
-        self.main_loop: Optional[asyncio.AbstractEventLoop] = None
+        self.main_loop: asyncio.AbstractEventLoop | None = None
         # Dual semaphores for parsing and indexing phases (created in worker thread)
         self.parsing_semaphore: asyncio.Semaphore | None = None
         self.indexing_semaphore: asyncio.Semaphore | None = None

@@ -734,7 +734,7 @@ class ExcelParser:
             if isinstance(cell, MergedCell):
                 # Look for the merged range that contains this cell.
                 merged_value = None
-                
+
                 for merged_range in cell.parent.merged_cells.ranges:
                     if cell.coordinate in merged_range:
                         # Get the top-left cell of the merged range
