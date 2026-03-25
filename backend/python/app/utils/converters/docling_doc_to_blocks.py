@@ -1,5 +1,5 @@
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from docling.datamodel.document import DoclingDocument
 
@@ -35,7 +35,7 @@ DOCLING_REF_NODE= "$ref"
 
 
 class DoclingDocToBlocksConverter():
-    def __init__(self, logger, config) -> None:
+    def __init__(self, logger: Any, config: Any) -> None:  # noqa: ANN401
         self.logger = logger
         self.config = config
 
@@ -89,7 +89,7 @@ class DoclingDocToBlocksConverter():
     # }
     #
     # Todo: Handle Bounding Boxes, PPTX, CSV, Excel, Docx, markdown, html etc.
-    async def _process_content_in_order(self, doc: DoclingDocument, page_number: int = None) -> BlocksContainer|bool:
+    async def _process_content_in_order(self, doc: DoclingDocument, page_number: int | None = None) -> BlocksContainer|bool:
         """
         Process document content in proper reading order by following references.
 
@@ -103,7 +103,7 @@ class DoclingDocToBlocksConverter():
         blocks = []
         processed_refs = set() # check by block_source_id
 
-        def _enrich_metadata(block: Block|BlockGroup, item: dict, doc_dict: dict, default_page_number: int = None) -> None:
+        def _enrich_metadata(block: Block|BlockGroup, item: dict[str, Any], doc_dict: dict[str, Any], default_page_number: int | None = None) -> None:
             page_metadata = doc_dict.get("pages", {})
             # self.logger.debug(f"Page metadata: {json.dumps(page_metadata, indent=4)}")
             # self.logger.debug(f"Item: {json.dumps(item, indent=4)}")
@@ -146,7 +146,7 @@ class DoclingDocToBlocksConverter():
                 else:
                     block.citation_metadata.page_number = default_page_number
 
-        async def _handle_text_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Optional[Block]:
+        async def _handle_text_block(item: dict[str, Any], doc_dict: dict[str, Any], parent_index: int | None, ref_path: str,level: int,doc: DoclingDocument) -> Optional[Block]:
             block = None
             if item.get("text") != "":
                 block = Block(
@@ -171,7 +171,7 @@ class DoclingDocToBlocksConverter():
 
             return block
 
-        async def _handle_group_block(item: dict, doc_dict: dict, parent_index: int, level: int,doc: DoclingDocument) -> BlockGroup:
+        async def _handle_group_block(item: dict[str, Any], doc_dict: dict[str, Any], parent_index: int | None, level: int,doc: DoclingDocument) -> BlockGroup:
             # For groups, process children and return their blocks
             label = item.get("label", "")
             block_group = None
@@ -192,7 +192,7 @@ class DoclingDocToBlocksConverter():
                 if result:
                     if isinstance(result, Block):
                         child_block_indices.append(result.index)
-                    elif isinstance(result, BlockGroup):
+                    else:
                         child_block_group_indices.append(result.index)
 
             if block_group:
@@ -203,7 +203,7 @@ class DoclingDocToBlocksConverter():
 
             return block_group
 
-        def _get_ref_text(ref_path: str, doc_dict: dict) -> str:
+        def _get_ref_text(ref_path: str, doc_dict: dict[str, Any]) -> str:
             """Get text content from a reference path."""
             if not ref_path.startswith("#/"):
                 return ""
@@ -211,21 +211,18 @@ class DoclingDocToBlocksConverter():
             item_type = "texts"
             items = doc_dict.get(item_type, [])
             item_index = int(path_parts[1])
-            if item_index < len(items):
-                item = items[item_index]
-            else:
-                item = None
+            item = items[item_index] if item_index < len(items) else None
             if item and isinstance(item, dict):
                 return item.get("text", "")
             return ""
 
-        def _resolve_ref_list(refs: list) -> list[str]:
+        def _resolve_ref_list(refs: list[Any]) -> list[str]:
                 return [
                     _get_ref_text(ref.get(DOCLING_REF_NODE, ""), doc_dict) if isinstance(ref, dict) else str(ref)
                     for ref in refs
                 ]
 
-        async def _handle_image_block(item: dict, doc_dict: dict, parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> Block:
+        async def _handle_image_block(item: dict[str, Any], doc_dict: dict[str, Any], parent_index: int | None, ref_path: str,level: int,doc: DoclingDocument) -> Block:
             _captions = item.get("captions", [])
             _captions = _resolve_ref_list(_captions)
             _footnotes = item.get("footnotes", [])
@@ -236,7 +233,7 @@ class DoclingDocToBlocksConverter():
                     index=len(blocks),
                     type=BlockType.IMAGE,
                     format=DataFormat.BASE64,
-                    data=item.get("image",None ),
+                    data=item.get("image"),
                     comments=[],
                     source_creation_date=None,
                     source_update_date=None,
@@ -258,7 +255,7 @@ class DoclingDocToBlocksConverter():
 
             return block
 
-        async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> BlockGroup|None:
+        async def _handle_table_block(item: dict[str, Any], doc_dict: dict[str, Any],parent_index: int | None, ref_path: str,level: int,doc: DoclingDocument) -> BlockGroup|None:
             table_data = item.get("data", {})
             cell_data = table_data.get("table_cells", [])
             if len(cell_data) == 0:
@@ -267,12 +264,10 @@ class DoclingDocToBlocksConverter():
 
             # Get table grid for summary generation
             table_grid = table_data.get("grid", [])
-            table_grid_data = []
-            for row in table_grid:
-                row_data = []
-                for cell in row:
-                    row_data.append(cell.get("text", ""))
-                table_grid_data.append(row_data)
+            table_grid_data = [
+                [cell.get("text", "") for cell in row]
+                for row in table_grid
+            ]
 
             response = await get_table_summary_n_headers(self.config, table_grid_data)
             table_summary = response.summary if response else ""
@@ -313,7 +308,7 @@ class DoclingDocToBlocksConverter():
             _enrich_metadata(block_group, item, doc_dict, default_page_number=page_number)
 
             table_row_block_indices = []
-            for i,row in enumerate(table_rows):
+            for i, _row in enumerate(table_rows):
                 index = len(blocks)
                 block = Block(
                     id=str(uuid.uuid4()),
@@ -345,14 +340,11 @@ class DoclingDocToBlocksConverter():
 
             return block_group
 
-        async def _process_item(ref, doc: DoclingDocument, level=0, parent_index=None) -> None:
+        async def _process_item(ref: Any, doc: DoclingDocument, level: int = 0, parent_index: int | None = None) -> Block | BlockGroup | None:  # noqa: ANN401
             """Recursively process items following references and return a BlockContainer"""
             # e.g. {"$ref": "#/texts/0"}
 
-            if isinstance(ref, dict):
-                ref_path = ref.get(DOCLING_REF_NODE, "")
-            else:
-                ref_path = ref
+            ref_path = ref.get(DOCLING_REF_NODE, "") if isinstance(ref, dict) else ref
 
             if not ref_path or ref_path in processed_refs:
                 return None
@@ -410,9 +402,8 @@ class DoclingDocToBlocksConverter():
         self.logger.debug(f"Processed {len(blocks)} items in order")
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
-    async def convert(self, doc: DoclingDocument, page_number: int = None) -> BlocksContainer|bool:
-        block_containers = await self._process_content_in_order(doc, page_number=page_number)
-        return block_containers
+    async def convert(self, doc: DoclingDocument, page_number: int | None = None) -> BlocksContainer|bool:
+        return await self._process_content_in_order(doc, page_number=page_number)
 
 
 
