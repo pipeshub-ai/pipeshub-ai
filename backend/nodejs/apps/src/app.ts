@@ -653,7 +653,7 @@ export class Application {
     try {
       const samlController = this.authServiceContainer.get<SamlController>('SamlController');
       samlController.updateSamlStrategiesWithCallback()
-      this.logger.info('SSO SAML passport strategies updated successfully');
+      this.logger.info('SSO SAML passport strategies updated successfully')
     } catch (error) {
       this.logger.warn('Failed to update passport strategies', {
         error: error instanceof Error ? error.message : 'Unknown error',
