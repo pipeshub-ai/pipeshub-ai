@@ -25,7 +25,7 @@ Usage:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional
 
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 
@@ -43,11 +43,11 @@ class OAuthScopeType(str, Enum):
 @dataclass
 class OAuthScopeConfig:
     """Configuration for OAuth scopes by use case"""
-    personal_sync: List[str] = field(default_factory=list)
-    team_sync: List[str] = field(default_factory=list)
-    agent: List[str] = field(default_factory=list)
+    personal_sync: list[str] = field(default_factory=list)
+    team_sync: list[str] = field(default_factory=list)
+    agent: list[str] = field(default_factory=list)
 
-    def get_scopes_for_type(self, scope_type: OAuthScopeType) -> List[str]:
+    def get_scopes_for_type(self, scope_type: OAuthScopeType) -> list[str]:
         """Get scopes for a specific scope type"""
         if scope_type == OAuthScopeType.PERSONAL_SYNC:
             return self.personal_sync
@@ -57,12 +57,12 @@ class OAuthScopeConfig:
             return self.agent
         return []
 
-    def get_all_scopes(self) -> List[str]:
+    def get_all_scopes(self) -> list[str]:
         """Get all unique scopes across all types"""
         all_scopes = set(self.personal_sync + self.team_sync + self.agent)
-        return sorted(list(all_scopes))
+        return sorted(all_scopes)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary"""
         return {
             "personal_sync": self.personal_sync,
@@ -71,7 +71,7 @@ class OAuthScopeConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'OAuthScopeConfig':
+    def from_dict(cls, data: dict[str, Any]) -> 'OAuthScopeConfig':
         """Create from dictionary"""
         return cls(
             personal_sync=data.get("personal_sync", []),
@@ -101,19 +101,19 @@ class OAuthConfig:
     token_url: str
     redirect_uri: str
     scopes: OAuthScopeConfig = field(default_factory=OAuthScopeConfig)
-    auth_fields: List[AuthField] = field(default_factory=list)
+    auth_fields: list[AuthField] = field(default_factory=list)
     token_access_type: Optional[str] = None
-    additional_params: Dict[str, Any] = field(default_factory=dict)
+    additional_params: dict[str, Any] = field(default_factory=dict)
     scope_parameter_name: str = "scope"  # Parameter name for scopes in authorization URL (e.g., "scope", "user_scope", "resource")
     token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
     # Display metadata - stored in OAuth config to make it self-contained
     icon_path: str = "/assets/icons/connectors/default.svg"
     app_group: str = ""
     app_description: str = ""
-    app_categories: List[str] = field(default_factory=list)
-    documentation_links: List[DocumentationLink] = field(default_factory=list)
+    app_categories: list[str] = field(default_factory=list)
+    documentation_links: list[DocumentationLink] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary"""
         return {
             "connector_name": self.connector_name,
@@ -129,6 +129,7 @@ class OAuthConfig:
                     "placeholder": field.placeholder,
                     "description": field.description,
                     "required": field.required,
+                    "usage": field.usage,
                     "default_value": field.default_value,
                     "min_length": field.min_length,
                     "max_length": field.max_length,
@@ -155,7 +156,7 @@ class OAuthConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'OAuthConfig':
+    def from_dict(cls, data: dict[str, Any]) -> 'OAuthConfig':
         """Create from dictionary"""
         auth_fields = []
         for field_data in data.get("auth_fields", []):
@@ -166,6 +167,7 @@ class OAuthConfig:
                 placeholder=field_data.get("placeholder", ""),
                 description=field_data.get("description", ""),
                 required=field_data.get("required", True),
+                usage=field_data.get("usage", "BOTH"),
                 default_value=field_data.get("default_value", ""),
                 min_length=field_data.get("min_length", 1),
                 max_length=field_data.get("max_length", 1000),
@@ -243,11 +245,11 @@ class AuthBuilder:
 
     def __init__(self, auth_type: str) -> None:
         self.auth_type = auth_type.upper()
-        self._fields: List[AuthField] = []
+        self._fields: list[AuthField] = []
         self._oauth_config: Optional[OAuthConfig] = None
 
     @classmethod
-    def type(cls, auth_type: Union[str, AuthType]) -> 'AuthBuilder':
+    def type(cls, auth_type: str | AuthType) -> 'AuthBuilder':
         """
         Create a new AuthBuilder for a specific auth type.
 
@@ -264,16 +266,16 @@ class AuthBuilder:
         token_url: str,
         redirect_uri: str,
         scopes: Optional[OAuthScopeConfig] = None,
-        fields: Optional[List[AuthField]] = None,
+        fields: Optional[list[AuthField]] = None,
         token_access_type: Optional[str] = None,
-        additional_params: Optional[Dict[str, Any]] = None,
+        additional_params: Optional[dict[str, Any]] = None,
         scope_parameter_name: Optional[str] = None,
         token_response_path: Optional[str] = None,
         icon_path: Optional[str] = None,
         app_group: Optional[str] = None,
         app_description: Optional[str] = None,
-        app_categories: Optional[List[str]] = None,
-        documentation_links: Optional[List[DocumentationLink]] = None
+        app_categories: Optional[list[str]] = None,
+        documentation_links: Optional[list[DocumentationLink]] = None
     ) -> 'AuthBuilder':
         """
         Configure OAuth authentication - creates and registers OAuth config internally.
@@ -332,7 +334,7 @@ class AuthBuilder:
         self._oauth_config = oauth_config
         return self
 
-    def fields(self, fields: List[AuthField]) -> 'AuthBuilder':
+    def fields(self, fields: list[AuthField]) -> 'AuthBuilder':
         """
         Specify auth fields for this auth type.
 
@@ -355,14 +357,14 @@ class AuthBuilder:
         self._fields.append(field)
         return self
 
-    def build(self) -> Dict[str, Any]:
+    def build(self) -> dict[str, Any]:
         """
         Build the auth configuration for this auth type.
 
         Returns:
             Dictionary with auth_type, fields, and optional oauth_config
         """
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             "auth_type": self.auth_type,
             "fields": self._fields.copy()
         }
@@ -379,7 +381,7 @@ class AuthBuilder:
         """Get the auth type"""
         return self.auth_type
 
-    def get_fields(self) -> List[AuthField]:
+    def get_fields(self) -> list[AuthField]:
         """Get all fields (from oauth_config if available, otherwise manual fields)"""
         if self._oauth_config and self._oauth_config.auth_fields:
             return self._oauth_config.auth_fields
@@ -388,4 +390,3 @@ class AuthBuilder:
     def get_oauth_config(self) -> Optional[OAuthConfig]:
         """Get the OAuth config if set"""
         return self._oauth_config
-

@@ -1,4 +1,4 @@
-from typing import Optional
+import logging
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
@@ -9,6 +9,7 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.sync.task_manager import sync_task_manager
 from app.containers.connector import (
     ConnectorAppContainer,
 )
@@ -17,9 +18,12 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class EntityEventService(BaseEventService):
-    def __init__(self, logger,
-                graph_provider: IGraphDBProvider,
-                app_container: ConnectorAppContainer) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        graph_provider: IGraphDBProvider,
+        app_container: ConnectorAppContainer,
+    ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
         self.app_container = app_container
@@ -395,6 +399,7 @@ class EntityEventService(BaseEventService):
             sync_action = payload.get("syncAction", "none")
             connector_id = payload.get("connectorId", "")
             scope = payload.get("scope", ConnectorScopes.PERSONAL.value)
+            full_sync = payload.get("fullSync", False)
             # Get org details to check account type
             org = await self.graph_provider.get_document(
                 org_id, CollectionNames.ORGS.value
@@ -410,9 +415,10 @@ class EntityEventService(BaseEventService):
                         event_type=f"{app_name.lower()}.start",
                         value={
                             "orgId": org_id,
-                            "connector":app_name,
-                            "connectorId":connector_id,
+                            "connector": app_name,
+                            "connectorId": connector_id,
                             "scope": scope,
+                            "fullSync": full_sync,
                         },
                     )
 
@@ -461,6 +467,13 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 app_updates, CollectionNames.APPS.value
             )
+
+            # Cancel any running sync task so it stops promptly
+            try:
+                await sync_task_manager.cancel_sync(connector_id)
+                self.logger.info(f"✅ Cancelled running sync for connector {connector_id}")
+            except Exception as cancel_err:
+                self.logger.error(f"❌ Failed to cancel sync for connector {connector_id}: {cancel_err}")
 
             self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
             return True
@@ -572,7 +585,7 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
             return {}
 
-    async def __create_kb_connector_app_instance(self, org_id: str, created_by_user_id: Optional[str] = None) -> Optional[dict]:
+    async def __create_kb_connector_app_instance(self, org_id: str, created_by_user_id: str | None = None) -> dict | None:
         """
         Automatically create a Knowledge Base connector instance when an org is created.
 
@@ -695,7 +708,7 @@ class EntityEventService(BaseEventService):
             # Don't fail org creation if KB connector creation fails
             return None
 
-    async def __get_or_create_kb_app_for_org(self, org_id: str, created_by_user_id: Optional[str] = None) -> Optional[dict]:
+    async def __get_or_create_kb_app_for_org(self, org_id: str, created_by_user_id: str | None = None) -> dict | None:
         """
         Get or create a Knowledge Base connector instance for an org.
 
@@ -721,8 +734,7 @@ class EntityEventService(BaseEventService):
 
             # Create KB app if it doesn't exist
             self.logger.info(f"KB app not found for org {org_id}, creating one...")
-            new_kb_app = await self.__create_kb_connector_app_instance(org_id, created_by_user_id)
-            return new_kb_app
+            return await self.__create_kb_connector_app_instance(org_id, created_by_user_id)
 
         except Exception as e:
             self.logger.error(f"❌ Error getting or creating KB app for org {org_id}: {str(e)}")

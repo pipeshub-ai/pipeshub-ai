@@ -204,7 +204,17 @@ class DataSourceEntitiesProcessor:
                 f"Unsupported parent record type: {parent_record_type.value}. for _handle_parent_record"
             )
 
-    async def _handle_parent_record(self, record: Record, tx_store: TransactionStore) -> None:
+    async def _handle_parent_record(self, record: Record, tx_store: TransactionStore, existing_record: Optional[Record] = None) -> None:
+
+        # Delete the old parent-child edge if it exists and the parent external record id has changed
+        if (
+            existing_record
+            and existing_record.parent_external_record_id
+            and record.parent_external_record_id != existing_record.parent_external_record_id
+        ):
+            self.logger.debug(f"Deleting parent-child edge from {existing_record.id} to {record.id}")
+            await tx_store.delete_parent_child_edge_to_record(existing_record.id)
+
         if record.parent_external_record_id:
             parent_record = await tx_store.get_record_by_external_id(
                 connector_id=record.connector_id,
@@ -680,10 +690,22 @@ class DataSourceEntitiesProcessor:
     async def on_updated_record_permissions(self, record: Record, permissions: List[Permission]) -> None:
         self.logger.info(f"Starting permission update for record: {record.record_name} ({record.id})")
 
-
-
         try:
             async with self.data_store_provider.transaction() as tx_store:
+                # If BELONGS_TO was removed (e.g. full sync deletes sync edges), restore structural
+                # edges only; permissions are still applied in this method below.
+                record_node_id = f"{CollectionNames.RECORDS.value}/{record.id}"
+                belongs_to_edges = await tx_store.get_edges_from_node(
+                    record_node_id, CollectionNames.BELONGS_TO.value
+                )
+                if not belongs_to_edges:
+                    self.logger.info(
+                        "No BELONGS_TO edge for record %s; running _process_record without permissions "
+                        "to restore graph edges",
+                        record.record_name,
+                    )
+                    await self._process_record(record, [], tx_store)
+
                 # Step 1: Delete all existing permission edges that point TO this record.
                 deleted_count = await tx_store.delete_edges_to(
                     to_id=record.id,
@@ -751,7 +773,7 @@ class DataSourceEntitiesProcessor:
             await self._link_record_to_group(record, record_group_id, tx_store, existing_record)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
-        await self._handle_parent_record(record, tx_store)
+        await self._handle_parent_record(record, tx_store, existing_record)
 
         # Handle related external records (issue links, project links, etc.)
         # For TicketRecord and ProjectRecord, ALWAYS call this to clean up stale link edges even when related_external_records is empty (handles removed links)
@@ -836,6 +858,10 @@ class DataSourceEntitiesProcessor:
                             f"with AUTO_INDEX_OFF status"
                         )
                         continue
+                        
+                    if record.is_internal:
+                        self.logger.debug(f"Skipping automatic indexing event for internal record {record.id}")
+                        continue
 
                     await self.messaging_producer.send_message(
                             "record-events",
@@ -894,17 +920,24 @@ class DataSourceEntitiesProcessor:
             if not records:
                 self.logger.info("No records to reindex")
                 return
+            
+            skipped_records = 0
 
             # Reset status to QUEUED for all records before reindexing
             async with self.data_store_provider.transaction() as tx_store:
                 for record in records:
                     current_status = record.indexing_status if hasattr(record, 'indexing_status') else None
-                    # Only reset if not already QUEUED or EMPTY
-                    if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value]:
+                    # Only reset if not already QUEUED or EMPTY or internal record
+                    if current_status not in [ProgressStatus.QUEUED.value, ProgressStatus.EMPTY.value] and not record.is_internal:
                         await self._reset_indexing_status_to_queued(record.id, tx_store)
 
             # Now send the reindex events
             for record in records:
+                if record.is_internal:
+                    self.logger.debug(f"Skipping reindex event for internal record {record.id}")
+                    skipped_records += 1
+                    continue
+
                 payload = record.to_kafka_record()
 
                 await self.messaging_producer.send_message(
@@ -917,7 +950,7 @@ class DataSourceEntitiesProcessor:
                     key=record.id
                 )
 
-            self.logger.info(f"Published reindex events for {len(records)} records")
+            self.logger.info(f"Published reindex events for {len(records) - skipped_records} records and skipped {skipped_records} internal records")
         except Exception as e:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e

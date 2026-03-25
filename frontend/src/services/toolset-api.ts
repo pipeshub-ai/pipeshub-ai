@@ -28,6 +28,48 @@ export interface ToolsetInstance {
   toolCount?: number;
 }
 
+/**
+ * Filter counts returned by GET /my-toolsets.
+ * Always reflects the current search query *before* auth_status filtering,
+ * so each filter chip shows a meaningful count regardless of which is active.
+ */
+export interface BackendFilterCounts {
+  all: number;
+  authenticated: number;
+  notAuthenticated: number;
+}
+
+/** Standard pagination envelope returned by all paginated endpoints. */
+export interface PaginationInfo {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+  hasNext: boolean;
+  hasPrev: boolean;
+}
+
+/**
+ * Auth configuration for toolset setup.
+ * Lists every field used across all auth types explicitly —
+ * avoids open-ended index signatures.
+ */
+export interface AuthConfigInput {
+  type: string;
+  clientId?: string;
+  clientSecret?: string;
+  apiToken?: string;
+  bearerToken?: string;
+  oauthAppId?: string;
+  username?: string;
+  password?: string;
+  scopes?: string[];
+  redirectUri?: string;
+  authorizeUrl?: string;
+  tokenUrl?: string;
+  baseUrl?: string;
+}
+
 /** Merged view item from GET /my-toolsets */
 export interface MyToolset {
   instanceId: string;
@@ -44,9 +86,12 @@ export interface MyToolset {
   tools: Array<{ name: string; fullName: string; description: string }>;
   isConfigured: boolean;
   isAuthenticated: boolean;
+  isFromRegistry?: boolean;
   createdBy?: string;
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
+  /** Stored credential payload — shape depends on auth type. */
+  auth?: Record<string, unknown>;
 }
 
 /**
@@ -93,14 +138,7 @@ class ToolsetApiService {
   }): Promise<{
     toolsets: RegistryToolset[];
     categorizedToolsets?: Record<string, RegistryToolset[]>;
-    pagination: {
-      page: number;
-      limit: number;
-      total: number;
-      totalPages: number;
-      hasNext: boolean;
-      hasPrev: boolean;
-    };
+    pagination: PaginationInfo;
   }> {
     try {
       const queryParams = new URLSearchParams();
@@ -131,17 +169,13 @@ class ToolsetApiService {
       const response = await axios.get(
         `/api/v1/toolsets/registry?${queryParams.toString()}`
       );
+      const fallbackPagination: PaginationInfo = {
+        page: 1, limit: 20, total: 0, totalPages: 0, hasNext: false, hasPrev: false,
+      };
       return {
         toolsets: response.data.toolsets || [],
         categorizedToolsets: response.data.categorizedToolsets,
-        pagination: response.data.pagination || {
-          page: 1,
-          limit: 20,
-          total: 0,
-          totalPages: 0,
-          hasNext: false,
-          hasPrev: false,
-        },
+        pagination: (response.data.pagination as PaginationInfo) || fallbackPagination,
       };
     } catch (error) {
       console.error('Failed to fetch registry toolsets:', error);
@@ -153,7 +187,7 @@ class ToolsetApiService {
    * Get toolset schema/configuration for a specific toolset type
    * Returns auth schemas, supported auth types, and field definitions
    */
-  static async getToolsetSchema(toolsetType: string): Promise<any> {
+  static async getToolsetSchema(toolsetType: string): Promise<unknown> {
     try {
       const response = await axios.get(
         `/api/v1/toolsets/registry/${toolsetType}/schema`
@@ -200,7 +234,7 @@ class ToolsetApiService {
     search?: string;
   }): Promise<{
     toolsets: RegistryToolset[];
-    pagination: any;
+    pagination: PaginationInfo;
   }> {
     try {
       const queryParams = new URLSearchParams();
@@ -211,9 +245,12 @@ class ToolsetApiService {
       const response = await axios.get(
         `/api/v1/tools/toolsets?${queryParams.toString()}`
       );
+      const fallbackPagination: PaginationInfo = {
+        page: 1, limit: 20, total: 0, totalPages: 0, hasNext: false, hasPrev: false,
+      };
       return {
         toolsets: response.data.toolsets || [],
-        pagination: response.data.pagination || {},
+        pagination: (response.data.pagination as PaginationInfo) || fallbackPagination,
       };
     } catch (error) {
       console.error('Failed to fetch toolsets with tools:', error);
@@ -284,13 +321,12 @@ class ToolsetApiService {
       iconPath: string;
       supportedAuthTypes: string[];
       toolCount: number;
-      tools: any[];
+      tools: Array<{ name: string; fullName: string; description: string }>;
       userId: string;
       config: {
-        auth?: any;
+        auth?: Record<string, unknown>;
         isAuthenticated?: boolean;
         isConfigured?: boolean;
-        [key: string]: any;
       };
       schema: {
         toolset: {
@@ -301,19 +337,17 @@ class ToolsetApiService {
           supportedAuthTypes: string[];
           config: {
             auth: {
-              schemas?: Record<string, { fields: any[] }>;
-              [key: string]: any;
+              schemas?: Record<string, { fields: Record<string, unknown>[] }>;
             };
           };
-          tools: any[];
-          oauthConfig?: any;
+          tools: Array<{ name: string; description: string }>;
+          oauthConfig?: Record<string, unknown>;
         };
       };
-      oauthConfig?: any;
+      oauthConfig?: Record<string, unknown>;
       isConfigured: boolean;
       isAuthenticated: boolean;
       authType?: string;
-      [key: string]: any;
     };
   }> {
     try {
@@ -335,15 +369,7 @@ class ToolsetApiService {
     name: string;
     displayName: string;
     type: string;
-    auth: {
-      type: string;
-      clientId?: string;
-      clientSecret?: string;
-      apiToken?: string;
-      oauthAppId?: string;
-      scopes?: string[];
-      [key: string]: any;
-    };
+    auth: AuthConfigInput;
     baseUrl?: string;
   }): Promise<string> {
     try {
@@ -364,15 +390,7 @@ class ToolsetApiService {
   static async updateToolsetConfig(
     toolsetId: string,
     config: {
-      auth: {
-        type: string;
-        clientId?: string;
-        clientSecret?: string;
-        apiToken?: string;
-        oauthAppId?: string;
-        scopes?: string[];
-        [key: string]: any;
-      };
+      auth: AuthConfigInput;
       baseUrl?: string;
     }
   ): Promise<void> {
@@ -395,14 +413,7 @@ class ToolsetApiService {
   static async saveToolsetConfig(
     toolsetId: string,
     config: {
-      auth: {
-        type: string;
-        clientId?: string;
-        clientSecret?: string;
-        apiToken?: string;
-        oauthAppId?: string;
-        scopes?: string[];
-      };
+      auth: AuthConfigInput;
     }
   ): Promise<void> {
     try {
@@ -573,14 +584,7 @@ class ToolsetApiService {
     search?: string;
   }): Promise<{
     instances: ToolsetInstance[];
-    pagination: {
-      page: number;
-      limit: number;
-      total: number;
-      totalPages: number;
-      hasNext: boolean;
-      hasPrev: boolean;
-    };
+    pagination: PaginationInfo;
   }> {
     try {
       const queryParams = new URLSearchParams();
@@ -591,11 +595,12 @@ class ToolsetApiService {
       const response = await axios.get(
         `/api/v1/toolsets/instances?${queryParams.toString()}`
       );
+      const fallbackPagination: PaginationInfo = {
+        page: 1, limit: 50, total: 0, totalPages: 0, hasNext: false, hasPrev: false,
+      };
       return {
         instances: response.data.instances || [],
-        pagination: response.data.pagination || {
-          page: 1, limit: 50, total: 0, totalPages: 0, hasNext: false, hasPrev: false,
-        },
+        pagination: (response.data.pagination as PaginationInfo) || fallbackPagination,
       };
     } catch (error) {
       console.error('Failed to fetch toolset instances:', error);
@@ -625,12 +630,8 @@ class ToolsetApiService {
     toolsetType: string;
     authType: string;
     baseUrl?: string;
-    authConfig?: {
-      clientId?: string;
-      clientSecret?: string;
-      [key: string]: any;
-    };
-    [key: string]: any;
+    authConfig?: AuthConfigInput;
+    oauthConfigId?: string;
   }): Promise<ToolsetInstance> {
     try {
       const response = await axios.post('/api/v1/toolsets/instances', params);
@@ -651,11 +652,7 @@ class ToolsetApiService {
       instanceName?: string;
       baseUrl?: string;
       oauthConfigId?: string;
-      authConfig?: {
-        clientId?: string;
-        clientSecret?: string;
-        [key: string]: any;
-      };
+      authConfig?: AuthConfigInput;
     }
   ): Promise<ToolsetInstance> {
     try {
@@ -686,15 +683,36 @@ class ToolsetApiService {
    */
   static async getMyToolsets(params?: {
     search?: string;
-  }): Promise<{ toolsets: MyToolset[] }> {
+    includeRegistry?: boolean;
+    page?: number;
+    limit?: number;
+    /** Server-side auth filter — never filter on the frontend. */
+    authStatus?: 'authenticated' | 'not-authenticated';
+  }): Promise<{ toolsets: MyToolset[]; pagination: PaginationInfo; filterCounts: BackendFilterCounts }> {
     try {
       const queryParams = new URLSearchParams();
       if (params?.search) queryParams.append('search', params.search);
+      if (params?.includeRegistry) queryParams.append('includeRegistry', 'true');
+      if (params?.page) queryParams.append('page', String(params.page));
+      if (params?.limit) queryParams.append('limit', String(params.limit));
+      if (params?.authStatus) queryParams.append('authStatus', params.authStatus);
 
       const response = await axios.get(
         `/api/v1/toolsets/my-toolsets?${queryParams.toString()}`
       );
-      return { toolsets: response.data.toolsets || [] };
+      const toolsets = (response.data.toolsets || []) as MyToolset[];
+      const fallbackPagination: PaginationInfo = {
+        page: params?.page ?? 1,
+        limit: params?.limit ?? 20,
+        total: toolsets.length,
+        totalPages: 1,
+        hasNext: false,
+        hasPrev: false,
+      };
+      const pagination: PaginationInfo = (response.data.pagination as PaginationInfo) || fallbackPagination;
+      const fallbackFilterCounts: BackendFilterCounts = { all: 0, authenticated: 0, notAuthenticated: 0 };
+      const filterCounts: BackendFilterCounts = (response.data.filterCounts as BackendFilterCounts) || fallbackFilterCounts;
+      return { toolsets, pagination, filterCounts };
     } catch (error) {
       console.error('Failed to fetch my toolsets:', error);
       throw error;
@@ -707,22 +725,37 @@ class ToolsetApiService {
    */
   static async authenticateToolsetInstance(
     instanceId: string,
-    credentials: {
+    auth: {
       apiToken?: string;
       bearerToken?: string;
       username?: string;
       password?: string;
-      [key: string]: any;
     }
   ): Promise<{ isAuthenticated: boolean }> {
     try {
       const response = await axios.post(
         `/api/v1/toolsets/instances/${instanceId}/authenticate`,
-        { credentials }
+        { auth }
       );
       return response.data;
     } catch (error) {
       console.error('Failed to authenticate toolset instance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update the current user's credentials for a toolset instance.
+   */
+  static async updateToolsetCredentials(instanceId: string, auth: Record<string, unknown>): Promise<{ status: string; message: string }> {
+    try {
+      const response = await axios.put(
+        `/api/v1/toolsets/instances/${instanceId}/credentials`,
+        { auth }
+      );
+      return response.data;
+    } catch (error) {
+      console.error('Failed to update toolset credentials:', error);
       throw error;
     }
   }
@@ -829,7 +862,6 @@ class ToolsetApiService {
         tokenUrl?: string;
         scopes?: string[];
         redirectUri?: string;
-        [key: string]: any;
       };
       baseUrl?: string;
     }

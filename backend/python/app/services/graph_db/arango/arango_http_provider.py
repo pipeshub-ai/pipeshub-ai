@@ -6,20 +6,20 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 
 All operations are non-blocking and use aiohttp for async I/O.
 """
+import asyncio
+import contextlib
 import time
+import traceback
 import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Optional
 
 from app.config.configuration_service import ConfigurationService
 
 if TYPE_CHECKING:
     from fastapi import Request
-
-
-import contextlib
 
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
@@ -168,7 +168,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         self.logger = logger
         self.config_service = config_service
-        self.http_client: Optional[ArangoHTTPClient] = None
+        self.http_client: ArangoHTTPClient | None = None
 
         # Connector-specific delete permissions
         self.connector_delete_permissions = {
@@ -233,7 +233,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     # ==================== Translation Layer ====================
     # Methods to translate between generic format and ArangoDB-specific format
 
-    def _translate_node_to_arango(self, node: Dict) -> Dict:
+    def _translate_node_to_arango(self, node: dict) -> dict:
         """
         Translate generic node format to ArangoDB format.
 
@@ -250,7 +250,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             arango_node["_key"] = arango_node.pop("id")
         return arango_node
 
-    def _translate_node_from_arango(self, arango_node: Dict) -> Dict:
+    def _translate_node_from_arango(self, arango_node: dict) -> dict:
         """
         Translate ArangoDB node to generic format.
 
@@ -267,7 +267,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             node["id"] = node.pop("_key")
         return node
 
-    def _translate_edge_to_arango(self, edge: Dict) -> Dict:
+    def _translate_edge_to_arango(self, edge: dict) -> dict:
         """
         Translate generic edge format to ArangoDB format.
 
@@ -302,7 +302,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         return arango_edge
 
-    def _translate_edge_from_arango(self, arango_edge: Dict) -> Dict:
+    def _translate_edge_from_arango(self, arango_edge: dict) -> dict:
         """
         Translate ArangoDB edge to generic format.
 
@@ -334,19 +334,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         return edge
 
-    def _translate_nodes_to_arango(self, nodes: List[Dict]) -> List[Dict]:
+    def _translate_nodes_to_arango(self, nodes: list[dict]) -> list[dict]:
         """Batch translate nodes to ArangoDB format."""
         return [self._translate_node_to_arango(node) for node in nodes]
 
-    def _translate_nodes_from_arango(self, arango_nodes: List[Dict]) -> List[Dict]:
+    def _translate_nodes_from_arango(self, arango_nodes: list[dict]) -> list[dict]:
         """Batch translate nodes from ArangoDB format."""
         return [self._translate_node_from_arango(node) for node in arango_nodes]
 
-    def _translate_edges_to_arango(self, edges: List[Dict]) -> List[Dict]:
+    def _translate_edges_to_arango(self, edges: list[dict]) -> list[dict]:
         """Batch translate edges to ArangoDB format."""
         return [self._translate_edge_to_arango(edge) for edge in edges]
 
-    def _translate_edges_from_arango(self, arango_edges: List[Dict]) -> List[Dict]:
+    def _translate_edges_from_arango(self, arango_edges: list[dict]) -> list[dict]:
         """Batch translate edges from ArangoDB format."""
         return [self._translate_edge_from_arango(edge) for edge in arango_edges]
 
@@ -473,7 +473,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.info("Knowledge graph already exists, skipping creation")
 
             # 3. Ensure persistent indexes for frequent query patterns
-            await self._ensure_indexes()
+            # await self._ensure_indexes()
 
             # 4. Seed departments collection with predefined department types
             await self._ensure_departments_seed()
@@ -491,10 +491,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Indexes are built here: each call to ensure_persistent_index() creates (or ensures)
         the index via the ArangoDB HTTP API (see arango_http_client.ensure_persistent_index).
 
-        Currently no custom indexes are required - edge collections have automatic
-        indexes on _from and _to fields which optimize graph traversals.
+        Edge collections have automatic indexes on _from and _to fields which optimize
+        graph traversals. Custom indexes below cover document-lookup hot paths.
         """
-        pass
+        # COMPOSITE: virtualRecordId + orgId
+        # Pattern: FOR record IN records FILTER record.virtualRecordId IN @ids AND record.orgId == @orgId
+        # Used in: get_records_by_virtual_record_ids (Phase 3 batch fetch after Qdrant search)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["virtualRecordId", "orgId"],
+        )
 
     async def _ensure_departments_seed(self) -> None:
         """Initialize departments collection with predefined department types if missing."""
@@ -523,7 +529,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     # ==================== Transaction Management ====================
 
-    async def begin_transaction(self, read: List[str], write: List[str]) -> str:
+    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
         """
         Begin a database transaction - FULLY ASYNC.
 
@@ -572,8 +578,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         document_key: str,
         collection: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+        transaction: str | None = None
+    ) -> dict | None:
         """
         Get a document by key - FULLY ASYNC.
 
@@ -598,7 +604,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return None
 
     def _create_typed_record_from_arango(
-        self, record_dict: Dict, type_doc: Optional[Dict]
+        self, record_dict: dict, type_doc: dict | None
     ) -> Record:
         """
         Build a typed Record (FileRecord, MailRecord, etc.) from Arango record + type doc.
@@ -637,14 +643,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_record_by_id(
         self,
-        id: str,
-        transaction: Optional[str] = None,
-    ) -> Optional[Record]:
+        record_id: str,
+        transaction: str | None = None,
+    ) -> Record | None:
         """
         Get record by internal ID (_key) with associated type document (file/mail/etc.).
 
         Args:
-            id: Internal record ID (_key)
+            record_id: Internal record ID (_key)
             transaction: Optional transaction ID
 
         Returns:
@@ -668,7 +674,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
             results = await self.execute_query(
                 query,
-                bind_vars={"id": id},
+                bind_vars={"id": record_id},
                 transaction=transaction,
             )
             if not results:
@@ -679,7 +685,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 result.get("typeDoc"),
             )
         except Exception as e:
-            self.logger.error("❌ Failed to get record by id %s: %s", id, str(e))
+            self.logger.error("❌ Failed to get record by id %s: %s", record_id, str(e))
             return None
 
     async def _check_record_group_permissions(
@@ -687,7 +693,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_group_id: str,
         user_key: str,
         org_id: str,
-    ) -> Dict:
+    ) -> dict:
         """
         Check if user has permission to access a record group.
 
@@ -772,9 +778,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         collection: str,
         instance_name: str,
         scope: str,
-        org_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        transaction: Optional[str] = None,
+        org_id: str | None = None,
+        user_id: str | None = None,
+        transaction: str | None = None,
     ) -> bool:
         """Check if a connector instance name already exists for the given scope."""
         try:
@@ -824,10 +830,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def batch_update_connector_status(
         self,
         collection: str,
-        connector_keys: List[str],
+        connector_keys: list[str],
+        *,
         is_active: bool,
         is_agent_active: bool,
-        transaction: Optional[str] = None,
+        transaction: str | None = None,
     ) -> int:
         """Batch update isActive and isAgentActive status for multiple connectors."""
         try:
@@ -867,8 +874,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         team_scope: str,
         personal_scope: str,
-        transaction: Optional[str] = None,
-    ) -> List[Dict]:
+        transaction: str | None = None,
+    ) -> list[dict]:
         """Get all connector instances accessible to a user (personal + team)."""
         try:
             query = """
@@ -899,15 +906,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         edge_collection: str,
         org_id: str,
         user_id: str,
-        scope: Optional[str] = None,
-        search: Optional[str] = None,
+        scope: str | None = None,
+        search: str | None = None,
         skip: int = 0,
         limit: int = 20,
+        *,
         exclude_kb: bool = True,
-        kb_connector_type: Optional[str] = None,
+        kb_connector_type: str | None = None,
         is_admin: bool = False,
-        transaction: Optional[str] = None,
-    ) -> Tuple[List[Dict], int, Dict[str, int]]:
+        transaction: str | None = None,
+    ) -> tuple[list[dict], int, dict[str, int]]:
         """Get filtered connector instances with pagination and scope counts."""
         try:
             # Build base query
@@ -1004,7 +1012,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         depth: int,
         user_id: str,
         org_id: str,
-    ) -> Dict:
+    ) -> dict:
         """
         Validate record group and user permissions for reindexing.
         Does NOT publish events; caller (router/service) should publish.
@@ -1082,8 +1090,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_key: str,
+        *,
         check_drive_inheritance: bool = True,
-    ) -> Dict:
+    ) -> dict:
         """
         Generic permission checker for any record type.
         Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, and optionally Drive-level access
@@ -1338,7 +1347,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         request: Optional["Request"] = None,
         depth: int = 0,
-    ) -> Dict:
+    ) -> dict:
         """
         Reindex a single record with permission checks and event publishing.
         Depth comes from caller: 0 = only this record (record-details, collections/KB);
@@ -1411,7 +1420,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
 
-            await self._reset_indexing_status_to_queued(record_id)
+            if not rec.get("isInternal"):
+                await self._reset_indexing_status_to_queued(record_id)
 
             # Create event data for router to publish
             try:
@@ -1479,10 +1489,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_nodes(
         self,
-        nodes: List[Dict],
+        nodes: list[dict],
         collection: str,
-        transaction: Optional[str] = None
-    ) -> Optional[bool]:
+        transaction: str | None = None
+    ) -> bool | None:
         """
         Batch upsert nodes - FULLY ASYNC.
 
@@ -1513,9 +1523,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def delete_nodes(
         self,
-        keys: List[str],
+        keys: list[str],
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """
         Delete multiple nodes - FULLY ASYNC.
@@ -1541,8 +1551,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         key: str,
         collection: str,
-        updates: Dict,
-        transaction: Optional[str] = None
+        updates: dict,
+        transaction: str | None = None
     ) -> bool:
         """
         Update a single node - FULLY ASYNC.
@@ -1569,9 +1579,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_create_edges(
         self,
-        edges: List[Dict],
+        edges: list[dict],
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """
         Batch create edges - FULLY ASYNC.
@@ -1622,8 +1632,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_create_entity_relations(
         self,
-        edges: List[Dict],
-        transaction: Optional[str] = None
+        edges: list[dict],
+        transaction: str | None = None
     ) -> bool:
         """
         Batch create entity relation edges - FULLY ASYNC.
@@ -1684,8 +1694,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+        transaction: str | None = None
+    ) -> dict | None:
         """
         Get an edge between two nodes - FULLY ASYNC.
 
@@ -1732,7 +1742,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """
         Delete an edge - FULLY ASYNC.
@@ -1761,7 +1771,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         from_id: str,
         from_collection: str,
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> int:
         """
         Delete all edges from a node - FULLY ASYNC.
@@ -1801,8 +1811,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: List[str],
-        transaction: Optional[str] = None
+        relationship_types: list[str],
+        transaction: str | None = None
     ) -> int:
         """
         Delete edges by relationship types from a node - FULLY ASYNC.
@@ -1851,7 +1861,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> int:
         """
         Delete all edges to a node - FULLY ASYNC.
@@ -1890,7 +1900,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         node_key: str,
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> int:
         """Delete all edges connected to a node (both incoming and outgoing)"""
         try:
@@ -1928,14 +1938,71 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Delete all edges for node failed: {str(e)}")
             raise
+
+    async def _delete_all_edges_for_nodes(
+        self,
+        transaction: str | None,
+        node_ids: list[str],
+        edge_collections: list[str],
+    ) -> tuple[int, list[str]]:
+        """
+        Delete all edges where _from or _to matches any of the node_ids.
+        Iterates through each edge collection dynamically.
+
+        Returns:
+            Tuple of (total_deleted_count, list_of_failed_collections)
+        """
+        if not node_ids:
+            return (0, [])
+
+        total_deleted = 0
+        failed_collections: list[str] = []
+
+        deletion_query = """
+        FOR edge IN @@edge_collection
+            FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+            REMOVE edge IN @@edge_collection
+            RETURN 1
+        """
+
+        for edge_collection in edge_collections:
+            try:
+                results = await self.http_client.execute_aql(
+                    query=deletion_query,
+                    bind_vars={
+                        "@edge_collection": edge_collection,
+                        "node_ids": node_ids,
+                    },
+                    txn_id=transaction,
+                )
+                deleted_count = len(results or [])
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.debug(f"🗑️ Deleted {deleted_count} edges from {edge_collection}")
+
+            except Exception as e:
+                self.logger.error(f"❌ Error deleting edges from {edge_collection}: {str(e)}")
+                failed_collections.append(edge_collection)
+                # Continue with other collections
+
+        if failed_collections:
+            self.logger.warning(
+                f"⚠️ Failed to delete edges from {len(failed_collections)} collections: {failed_collections}"
+            )
+        else:
+            self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections")
+
+        return (total_deleted, failed_collections)
+
     # ==================== Query Operations ====================
 
     async def execute_query(
         self,
         query: str,
-        bind_vars: Optional[Dict] = None,
-        transaction: Optional[str] = None
-    ) -> Optional[List[Dict]]:
+        bind_vars: dict | None = None,
+        transaction: str | None = None
+    ) -> list[dict] | None:
         """
         Execute AQL query - FULLY ASYNC.
 
@@ -1958,10 +2025,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_nodes_by_filters(
         self,
         collection: str,
-        filters: Dict[str, Any],
-        return_fields: Optional[List[str]] = None,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        filters: dict[str, Any],
+        return_fields: list[str] | None = None,
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Get nodes by field filters - FULLY ASYNC.
 
@@ -2004,10 +2071,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         collection: str,
         field: str,
-        values: List[Any],
-        return_fields: Optional[List[str]] = None,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        values: list[Any],
+        return_fields: list[str] | None = None,
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Get nodes where field value is in list - FULLY ASYNC.
 
@@ -2047,8 +2114,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         collection: str,
         field: str,
-        value: Union[str, int, bool, None],
-        transaction: Optional[str] = None
+        *,
+        field_value: str | int | bool | None,
+        transaction: str | None = None,
     ) -> int:
         """
         Remove nodes matching field value - FULLY ASYNC.
@@ -2056,7 +2124,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             collection: Collection name
             field: Field name
-            value: Field value to match
+            field_value: Field value to match
             transaction: Optional transaction ID
 
         Returns:
@@ -2072,7 +2140,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={"value": value},
+                bind_vars={"value": field_value},
                 txn_id=transaction
             )
             return len(results)
@@ -2084,8 +2152,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Get all edges pointing to a node - FULLY ASYNC.
 
@@ -2118,8 +2186,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Get all edges originating from a node.
 
@@ -2154,8 +2222,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         edge_collection: str,
         target_collection: str,
         direction: str = "outbound",
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Get related nodes through an edge - FULLY ASYNC.
 
@@ -2204,8 +2272,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         target_collection: str,
         field: str,
         direction: str = "outbound",
-        transaction: Optional[str] = None
-    ) -> List[Any]:
+        transaction: str | None = None
+    ) -> list[Any]:
         """
         Get specific field from related nodes - FULLY ASYNC.
 
@@ -2257,8 +2325,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Record]:
+        transaction: str | None = None
+    ) -> Record | None:
         """Get record by external ID"""
         query = f"""
         FOR doc IN {CollectionNames.RECORDS.value}
@@ -2288,8 +2356,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_record_path(
         self,
         record_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """
         Get full hierarchical path for a record by traversing graph bottom to top.
 
@@ -2352,8 +2420,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_revision_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Record]:
+        transaction: str | None = None
+    ) -> Record | None:
         """Get record by external revision ID (e.g., etag)"""
         query = f"""
         FOR doc IN {CollectionNames.RECORDS.value}
@@ -2384,8 +2452,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         external_id: str,
         connector_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """Get record key by external ID"""
         try:
             query = """
@@ -2412,8 +2480,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         path: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+        transaction: str | None = None
+    ) -> dict | None:
         """
         Get a record from the FILES collection using its path.
 
@@ -2463,11 +2531,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         org_id: str,
         connector_id: str,
-        status_filters: List[str],
-        limit: Optional[int] = None,
+        status_filters: list[str],
+        limit: int | None = None,
         offset: int = 0,
-        transaction: Optional[str] = None
-    ) -> List[Record]:
+        transaction: str | None = None
+    ) -> list[Record]:
         """
         Get records by their indexing status with pagination support.
         Returns properly typed Record instances (FileRecord, MailRecord, etc.)
@@ -2568,11 +2636,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         org_id: str,
         depth: int,
-        user_key: Optional[str] = None,
-        limit: Optional[int] = None,
+        user_key: str | None = None,
+        limit: int | None = None,
         offset: int = 0,
-        transaction: Optional[str] = None
-    ) -> List[Record]:
+        transaction: str | None = None
+    ) -> list[Record]:
         """
         Get all records belonging to a record group up to a specified depth.
         Includes:
@@ -2814,11 +2882,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         org_id: str,
         depth: int,
-        user_key: Optional[str] = None,
-        limit: Optional[int] = None,
+        user_key: str | None = None,
+        limit: int | None = None,
         offset: int = 0,
-        transaction: Optional[str] = None
-    ) -> List[Record]:
+        transaction: str | None = None
+    ) -> list[Record]:
         """
         Get all child records of a parent record (folder) up to a specified depth.
         Uses graph traversal on recordRelations edge collection. Parent record is always included.
@@ -2956,8 +3024,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         collection: str,
         status: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Get all documents with a specific indexing status.
 
@@ -2988,7 +3056,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get documents by status from {collection}: {str(e)}")
             return []
 
-    def _create_typed_record_from_arango(self, record_dict: Dict, type_doc: Optional[Dict]) -> Record:
+    def _create_typed_record_from_arango(self, record_dict: dict, type_doc: dict | None) -> Record:
         """
         Factory method to create properly typed Record instances from ArangoDB data.
         Uses centralized RECORD_TYPE_COLLECTION_MAPPING to determine which types have type collections.
@@ -3046,8 +3114,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         thread_id: str,
         org_id: str,
         user_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Record]:
+        transaction: str | None = None
+    ) -> Record | None:
         """Get record by conversation index"""
         try:
 
@@ -3092,8 +3160,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         issue_key: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Record]:
+        transaction: str | None = None
+    ) -> Record | None:
         """
         Get Jira issue record by issue key (e.g., PROJ-123) by searching weburl pattern.
         Returns a TicketRecord with the type field populated for proper Epic detection.
@@ -3159,9 +3227,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_record_by_weburl(
         self,
         weburl: str,
-        org_id: Optional[str] = None,
-        transaction: Optional[str] = None
-    ) -> Optional[Record]:
+        org_id: str | None = None,
+        transaction: str | None = None
+    ) -> Record | None:
         """
         Get record by weburl (exact match).
         Skips LinkRecords and returns the first non-LinkRecord found.
@@ -3220,9 +3288,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         parent_external_record_id: str,
-        record_type: Optional[str] = None,
-        transaction: Optional[str] = None
-    ) -> List[Record]:
+        record_type: str | None = None,
+        transaction: str | None = None
+    ) -> list[Record]:
         """
         Get all child records for a parent record by parent_external_record_id.
         Optionally filter by record_type.
@@ -3284,8 +3352,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[RecordGroup]:
+        transaction: str | None = None
+    ) -> RecordGroup | None:
         """
         Get record group by external ID.
 
@@ -3322,14 +3390,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_record_group_by_id(
         self,
-        id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+        record_group_id: str,
+        transaction: str | None = None
+    ) -> dict | None:
         """Get record group by ID"""
         try:
             return await self.http_client.get_document(
                 CollectionNames.RECORD_GROUPS.value,
-                id,
+                record_group_id,
                 txn_id=transaction
             )
         except Exception as e:
@@ -3338,19 +3406,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_file_record_by_id(
         self,
-        id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[FileRecord]:
+        record_id: str,
+        transaction: str | None = None
+    ) -> FileRecord | None:
         """Get file record by ID"""
         try:
             file = await self.http_client.get_document(
                 CollectionNames.FILES.value,
-                id,
+                record_id,
                 txn_id=transaction
             )
             record = await self.http_client.get_document(
                 CollectionNames.RECORDS.value,
-                id,
+                record_id,
                 txn_id=transaction
             )
             if file and record:
@@ -3368,8 +3436,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_user_by_email(
         self,
         email: str,
-        transaction: Optional[str] = None
-    ) -> Optional[User]:
+        transaction: str | None = None
+    ) -> User | None:
         """
         Get user by email.
         """
@@ -3402,8 +3470,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         source_user_id: str,
         connector_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[User]:
+        transaction: str | None = None
+    ) -> User | None:
         """
         Get a user by their source system ID (sourceUserId field in userAppRelation edge).
 
@@ -3464,7 +3532,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_user_by_user_id(
         self,
         user_id: str
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """
         Get user by user ID.
         Note: user_id is the userId field value, not the _key.
@@ -3485,7 +3553,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             return None
 
-    async def get_user_apps(self, user_key: str) -> List[Dict]:
+    async def get_user_apps(self, user_key: str) -> list[dict]:
         """Get all apps (connectors) associated with a user by user document key (_key)."""
         try:
             query = f"""
@@ -3501,7 +3569,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to get user apps: %s", str(e))
             return []
 
-    async def _get_user_app_ids(self, user_id: str) -> List[str]:
+    async def _get_user_app_ids(self, user_id: str) -> list[str]:
         """Get list of accessible app connector IDs for a user (user_id = external userId)."""
         try:
             user = await self.get_user_by_user_id(user_id)
@@ -3519,8 +3587,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_users(
         self,
         org_id: str,
-        active: bool = True
-    ) -> List[Dict]:
+        *,
+        active: bool = True,
+    ) -> list[dict]:
         """
         Fetch all active users from the database who belong to the organization.
 
@@ -3560,8 +3629,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         email: str,
         connector_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[AppUser]:
+        transaction: str | None = None
+    ) -> AppUser | None:
         """
         Get app user by email and app name, including sourceUserId from edge.
 
@@ -3632,7 +3701,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         org_id: str,
         connector_id: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Fetch all users from the database who belong to the organization
         and are connected to the specified app via userAppRelation edge.
@@ -3697,8 +3766,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[AppUserGroup]:
+        transaction: str | None = None
+    ) -> AppUserGroup | None:
         """
         Get user group by external ID.
 
@@ -3737,8 +3806,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         org_id: str,
-        transaction: Optional[str] = None
-    ) -> List[AppUserGroup]:
+        transaction: str | None = None
+    ) -> list[AppUserGroup]:
         """
         Get all user groups for a specific connector and organization.
         Args:
@@ -3781,8 +3850,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_people(
         self,
-        people: List[Person],
-        transaction: Optional[str] = None
+        people: list[Person],
+        transaction: str | None = None
     ) -> None:
         """Upsert people to PEOPLE collection."""
         try:
@@ -3807,8 +3876,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         external_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[AppRole]:
+        transaction: str | None = None
+    ) -> AppRole | None:
         """
         Get app role by external ID.
 
@@ -3845,9 +3914,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_all_orgs(
         self,
+        *,
         active: bool = True,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None,
+    ) -> list[dict]:
         """
         Get all organizations.
 
@@ -3876,8 +3946,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_records(
         self,
-        records: List[Record],
-        transaction: Optional[str] = None
+        records: list[Record],
+        transaction: str | None = None
     ) -> None:
         """
         Batch upsert records (base + specific type + IS_OF_TYPE edges).
@@ -3950,7 +4020,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         from_record_id: str,
         to_record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """
         Create a relation edge between two records.
@@ -3979,8 +4049,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_record_groups(
         self,
-        record_groups: List[RecordGroup],
-        transaction: Optional[str] = None
+        record_groups: list[RecordGroup],
+        transaction: str | None = None
     ) -> None:
         """
         Batch upsert record groups.
@@ -4002,7 +4072,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         record_group_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """
         Create BELONGS_TO edge from record to record group.
@@ -4026,7 +4096,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         child_id: str,
         parent_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """
         Create BELONGS_TO edge from child record group to parent record group.
@@ -4050,7 +4120,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         record_group_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """
         Create INHERIT_PERMISSIONS edge from record to record group.
@@ -4074,7 +4144,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         record_group_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """
         Delete INHERIT_PERMISSIONS edge from record to record group.
@@ -4092,8 +4162,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_all_documents(
         self,
         collection: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Get all documents from a collection.
 
@@ -4123,8 +4193,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_app_creator_user(
         self,
         connector_id: str,
-        transaction:Optional[str]=None
-    ) -> Optional[User]:
+        transaction:str | None=None
+    ) -> User | None:
         try:
             app_doc = await self.get_document(
                 document_key=connector_id,
@@ -4149,7 +4219,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_org_apps(
         self,
         org_id: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get organization apps.
         """
@@ -4170,9 +4240,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_departments(
         self,
-        org_id: Optional[str] = None,
-        transaction: Optional[str] = None
-    ) -> List[str]:
+        org_id: str | None = None,
+        transaction: str | None = None
+    ) -> list[str]:
         """
         Get all departments that either have no org_id or match the given org_id.
 
@@ -4208,8 +4278,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         new_indexing_status: str,
-        virtual_record_id: Optional[str] = None,
-        transaction: Optional[str] = None,
+        virtual_record_id: str | None = None,
+        transaction: str | None = None,
     ) -> int:
         """
         Find all QUEUED duplicate records with the same md5 hash and update their status.
@@ -4343,8 +4413,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def batch_upsert_record_permissions(
         self,
         record_id: str,
-        permissions: List[Dict],
-        transaction: Optional[str] = None
+        permissions: list[dict],
+        transaction: str | None = None
     ) -> None:
         """Batch upsert record permissions"""
         try:
@@ -4364,8 +4434,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_file_permissions(
         self,
         file_key: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """Get file permissions"""
         try:
             query = """
@@ -4388,8 +4458,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         node_id: str,
         node_collection: str,
-        transaction: Optional[str] = None
-    ) -> Optional[User]:
+        transaction: str | None = None
+    ) -> User | None:
         """
         Get first user with permission to node.
 
@@ -4433,8 +4503,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         node_id: str,
         node_collection: str,
-        transaction: Optional[str] = None
-    ) -> List[User]:
+        transaction: str | None = None
+    ) -> list[User]:
         """
         Get all users with permission to node.
 
@@ -4473,8 +4543,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_record_owner_source_user_email(
         self,
         record_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """Get record owner source user email"""
         try:
             query = f"""
@@ -4501,8 +4571,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_file_parents(
         self,
         file_key: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Get parent file external IDs for a given file.
 
@@ -4587,8 +4657,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         key: str,
         collection: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+        transaction: str | None = None
+    ) -> dict | None:
         """
         Get sync point by syncPointKey field.
         """
@@ -4614,9 +4684,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def upsert_sync_point(
         self,
         sync_point_key: str,
-        sync_point_data: Dict,
+        sync_point_data: dict,
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """
         Upsert sync point by syncPointKey field.
@@ -4668,7 +4738,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         key: str,
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """
         Remove sync point by syncPointKey field.
@@ -4692,8 +4762,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_app_users(
         self,
-        users: List[AppUser],
-        transaction: Optional[str] = None
+        users: list[AppUser],
+        transaction: str | None = None
     ) -> None:
         """
         Batch upsert app users.
@@ -4769,8 +4839,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_user_groups(
         self,
-        user_groups: List[AppUserGroup],
-        transaction: Optional[str] = None
+        user_groups: list[AppUserGroup],
+        transaction: str | None = None
     ) -> None:
         """
         Batch upsert user groups.
@@ -4790,8 +4860,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_app_roles(
         self,
-        app_roles: List[AppRole],
-        transaction: Optional[str] = None
+        app_roles: list[AppRole],
+        transaction: str | None = None
     ) -> None:
         """
         Batch upsert app roles.
@@ -4811,8 +4881,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_orgs(
         self,
-        orgs: List[Dict],
-        transaction: Optional[str] = None
+        orgs: list[dict],
+        transaction: str | None = None
     ) -> None:
         """Batch upsert organizations"""
         try:
@@ -4831,8 +4901,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_domains(
         self,
-        domains: List[Dict],
-        transaction: Optional[str] = None
+        domains: list[dict],
+        transaction: str | None = None
     ) -> None:
         """Batch upsert domains"""
         try:
@@ -4851,8 +4921,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_anyone(
         self,
-        anyone: List[Dict],
-        transaction: Optional[str] = None
+        anyone: list[dict],
+        transaction: str | None = None
     ) -> None:
         """Batch upsert anyone entities"""
         try:
@@ -4871,8 +4941,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_anyone_with_link(
         self,
-        anyone_with_link: List[Dict],
-        transaction: Optional[str] = None
+        anyone_with_link: list[dict],
+        transaction: str | None = None
     ) -> None:
         """Batch upsert anyone with link"""
         try:
@@ -4891,8 +4961,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_upsert_anyone_same_org(
         self,
-        anyone_same_org: List[Dict],
-        transaction: Optional[str] = None
+        anyone_same_org: list[dict],
+        transaction: str | None = None
     ) -> None:
         """Batch upsert anyone same org"""
         try:
@@ -4911,7 +4981,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_create_user_app_edges(
         self,
-        edges: List[Dict]
+        edges: list[dict]
     ) -> int:
         """Batch create user app edges"""
         try:
@@ -4931,8 +5001,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_entity_id_by_email(
         self,
         email: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """
         Get entity ID by email (searches users and groups).
 
@@ -5000,9 +5070,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def bulk_get_entity_ids_by_email(
         self,
-        emails: List[str],
-        transaction: Optional[str] = None
-    ) -> Dict[str, Tuple[str, str, str]]:
+        emails: list[str],
+        transaction: str | None = None
+    ) -> dict[str, tuple[str, str, str]]:
         """
         Bulk get entity IDs for multiple emails across users, groups, and people collections.
 
@@ -5115,8 +5185,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         file_key: str,
         entity_key: str,
-        permission_data: Dict,
-        transaction: Optional[str] = None,
+        permission_data: dict,
+        transaction: str | None = None,
     ) -> bool:
         """Store or update permission relationship with change detection."""
         try:
@@ -5221,7 +5291,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 raise
             return False
 
-    def _permission_needs_update(self, existing: Dict, new: Dict) -> bool:
+    def _permission_needs_update(self, existing: dict, new: dict) -> bool:
         """Check if permission data needs to be updated"""
         self.logger.info("🚀 Checking if permission data needs to be updated")
         relevant_fields = ["role", "permissionDetails", "active"]
@@ -5246,8 +5316,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         org_id: str,
         file_key: str,
-        permissions_data: List[Dict],
-        transaction: Optional[str] = None,
+        permissions_data: list[dict],
+        transaction: str | None = None,
     ) -> bool:
         """
         Process file permissions by comparing new permissions with existing ones.
@@ -5413,8 +5483,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def delete_records_and_relations(
         self,
         node_key: str,
+        *,
         hard_delete: bool = False,
-        transaction: Optional[str] = None,
+        transaction: str | None = None,
     ) -> bool:
         """Delete a node and its edges from all edge collections (Records, Files)."""
         try:
@@ -5516,8 +5587,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_id: str,
-        transaction: Optional[str] = None
-    ) -> Dict:
+        transaction: str | None = None
+    ) -> dict:
         """
         Main entry point for record deletion - routes to connector-specific methods.
 
@@ -5577,7 +5648,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         external_id: str,
         user_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """
         Delete a record by external ID.
@@ -5621,7 +5692,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         external_id: str,
         user_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """
         Remove a user's access to a record (for inbox-based deletions).
@@ -5675,7 +5746,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
             raise
 
-    async def _collect_connector_entities(self, connector_id: str, transaction: Optional[str] = None) -> Dict:
+    async def _collect_connector_entities(self, connector_id: str, transaction: str | None = None) -> dict:
         """
         Collect all entity IDs for a connector in a single pass.
         Returns record keys, virtual record IDs, and full node IDs for edge deletion.
@@ -5765,7 +5836,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         return result
 
-    async def _get_all_edge_collections(self) -> List[str]:
+    async def _get_all_edge_collections(self) -> list[str]:
         """
         Get all edge collection names from the graph definition.
         This makes the deletion future-proof when new edge types are added.
@@ -5790,10 +5861,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def _delete_edges_by_connector_id(
         self,
-        transaction: Optional[str],
+        transaction: str | None,
         connector_id: str,
-        edge_collections: List[str]
-    ) -> Tuple[int, List[str]]:
+        edge_collections: list[str]
+    ) -> tuple[int, list[str]]:
         """
         Delete all edges connected to nodes belonging to a connector.
 
@@ -5921,7 +5992,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         return (total_deleted, failed_collections)
 
-    async def _collect_isoftype_targets(self, transaction: Optional[str], connector_id: str) -> Tuple[List[Dict], bool]:
+    async def _collect_isoftype_targets(self, transaction: str | None, connector_id: str) -> tuple[list[dict], bool]:
         """
         Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges.
 
@@ -5961,9 +6032,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _delete_isoftype_targets_from_collected(
         self,
         transaction: str,
-        targets: List[Dict],
-        edge_collections: List[str]
-    ) -> Tuple[int, List[str]]:
+        targets: list[dict],
+        edge_collections: list[str]
+    ) -> tuple[int, list[str]]:
         """
         Delete isOfType target nodes using pre-collected targets.
         This is called after edges are deleted, using targets collected before deletion.
@@ -5980,7 +6051,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return (0, [])
 
         # Group targets by collection
-        targets_by_collection: Dict[str, List[str]] = {}
+        targets_by_collection: dict[str, list[str]] = {}
         for target in targets:
             coll = target["collection"]
             key = target["key"]
@@ -6021,7 +6092,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
         return (total_deleted, [])
 
-    async def _delete_nodes_by_keys(self, transaction: str, keys: List[str], collection: str, batch_size: int = 5000) -> Tuple[int, int]:
+    async def _delete_nodes_by_keys(self, transaction: str, keys: list[str], collection: str, batch_size: int = 5000) -> tuple[int, int]:
         """
         Delete documents by their _key values using batching.
 
@@ -6072,7 +6143,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         return (total_deleted, failed_batches)
 
-    async def _delete_nodes_by_connector_id(self, transaction: str, connector_id: str, collection: str) -> Tuple[int, bool]:
+    async def _delete_nodes_by_connector_id(self, transaction: str, connector_id: str, collection: str) -> tuple[int, bool]:
         """
         Delete all documents with matching connectorId.
 
@@ -6106,8 +6177,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def delete_sync_points_by_connector_id(
         self,
         connector_id: str,
-        transaction: Optional[str] = None
-    ) -> Tuple[int, bool]:
+        transaction: str | None = None
+    ) -> tuple[int, bool]:
         """
         Delete all sync points for a given connector.
 
@@ -6124,12 +6195,49 @@ class ArangoHTTPProvider(IGraphDBProvider):
             collection=CollectionNames.SYNC_POINTS.value
         )
 
+    async def delete_connector_sync_edges(
+        self,
+        connector_id: str,
+        transaction: str | None = None
+    ) -> tuple[int, bool]:
+        """
+        Delete only sync-created edges for this connector. Leaves nodes and
+        isOfType/indexing data intact.
+        """
+        try:
+            collected = await self._collect_connector_entities(connector_id, transaction)
+            node_ids = collected.get("all_node_ids") or []
+            if not node_ids:
+                self.logger.info(f"No connector entities found for {connector_id}, nothing to delete")
+                return (0, True)
+
+            sync_edge_collections = [
+                CollectionNames.BELONGS_TO.value,
+                CollectionNames.RECORD_RELATIONS.value,
+                CollectionNames.PERMISSION.value,
+                CollectionNames.INHERIT_PERMISSIONS.value,
+                CollectionNames.USER_APP_RELATION.value,
+                CollectionNames.ENTITY_RELATIONS.value,
+                CollectionNames.ANYONE.value,
+            ]
+            deleted_count, failed = await self._delete_all_edges_for_nodes(
+                transaction, node_ids, sync_edge_collections
+            )
+            if failed:
+                self.logger.warning(f"Failed to delete edges from collections: {failed}")
+                return (deleted_count, False)
+            self.logger.info(f"Deleted {deleted_count} sync edges for connector {connector_id}")
+            return (deleted_count, True)
+        except Exception as e:
+            self.logger.error(f"Error deleting connector sync edges for {connector_id}: {e}", exc_info=True)
+            return (0, False)
+
     async def delete_connector_instance(
         self,
         connector_id: str,
         org_id: str,
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+        transaction: str | None = None
+    ) -> dict[str, Any]:
         """
         Delete a connector instance and ALL its related data using a generic graph-based approach.
 
@@ -6399,9 +6507,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_id: str,
-        record: Dict,
-        transaction: Optional[str] = None
-    ) -> Dict:
+        record: dict,
+        transaction: str | None = None
+    ) -> dict:
         """Delete a Knowledge Base record - handles uploads and KB-specific logic."""
         try:
             self.logger.info(f"🗂️ Deleting Knowledge Base record {record_id}")
@@ -6450,9 +6558,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_id: str,
-        record: Dict,
-        transaction: Optional[str] = None
-    ) -> Dict:
+        record: dict,
+        transaction: str | None = None
+    ) -> dict:
         """Delete a Google Drive record - handles Drive-specific permissions and logic."""
         try:
             self.logger.info(f"🔌 Deleting Google Drive record {record_id}")
@@ -6492,9 +6600,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_id: str,
-        record: Dict,
-        transaction: Optional[str] = None
-    ) -> Dict:
+        record: dict,
+        transaction: str | None = None
+    ) -> dict:
         """Delete a Gmail record - handles Gmail-specific permissions and logic."""
         try:
             self.logger.info(f"📧 Deleting Gmail record {record_id}")
@@ -6534,9 +6642,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_id: str,
-        record: Dict,
-        transaction: Optional[str] = None
-    ) -> Dict:
+        record: dict,
+        transaction: str | None = None
+    ) -> dict:
         """Delete an Outlook record - handles email and its attachments."""
         try:
             self.logger.info(f"📧 Deleting Outlook record {record_id}")
@@ -6575,8 +6683,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_key_by_external_file_id(
         self,
         external_file_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """
         Get internal file key using the external file ID.
 
@@ -6624,8 +6732,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_key_by_external_message_id(
         self,
         external_message_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """
         Get internal key by external message ID.
 
@@ -6675,8 +6783,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         relation_type: str,
         edge_collection: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Get related records connected via a specific relation type.
 
@@ -6732,8 +6840,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_key: str,
         collection: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """
         Get messageIdHeader field from a mail record by its key.
 
@@ -6784,8 +6892,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         message_id_header: str,
         exclude_key: str,
         collection: str,
-        transaction: Optional[str] = None
-    ) -> List[str]:
+        transaction: str | None = None
+    ) -> list[str]:
         """
         Find all mail records with the same messageIdHeader, excluding a specific key.
 
@@ -6838,10 +6946,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def batch_update_nodes(
         self,
-        node_ids: List[str],
-        updates: Dict[str, Any],
+        node_ids: list[str],
+        updates: dict[str, Any],
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """
         Batch update multiple nodes with the same updates.
@@ -6891,9 +6999,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         collection: str,
         scope: str,
-        user_id: Optional[str] = None,
+        user_id: str | None = None,
+        *,
         is_admin: bool = False,
-        transaction: Optional[str] = None
+        transaction: str | None = None,
     ) -> int:
         """
         Count connector instances by scope with access control.
@@ -6948,8 +7057,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         user_id: str,
         collection: str,
-        edge_collection: Optional[str] = None,
-        transaction: Optional[str] = None
+        edge_collection: str | None = None,
+        transaction: str | None = None
     ) -> bool:
         """
         Check if connector instance name is unique based on scope.
@@ -7026,14 +7135,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_connector_instances_with_filters(
         self,
         collection: str,
-        scope: Optional[str] = None,
-        user_id: Optional[str] = None,
+        scope: str | None = None,
+        user_id: str | None = None,
+        *,
         is_admin: bool = False,
-        search: Optional[str] = None,
+        search: str | None = None,
         page: int = 1,
         limit: int = 20,
-        transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
+        transaction: str | None = None,
+    ) -> tuple[list[dict], int]:
         """
         Get connector instances with filters, pagination, and access control.
 
@@ -7123,8 +7233,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_id: str,
         team_scope: str,
         personal_scope: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Get connector instances by scope and user (for _get_all_connector_instances).
 
@@ -7175,7 +7285,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         user_email: str,
         service_type: str
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """
         Get user's sync state for a specific service.
 
@@ -7216,7 +7326,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_email: str,
         state: str,
         service_type: str = Connectors.GOOGLE_DRIVE.value
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """
         Update user's sync state in USER_APP_RELATION collection for specific service.
 
@@ -7289,7 +7399,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_drive_sync_state(
         self,
         drive_id: str
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Get drive's sync state.
 
@@ -7347,8 +7457,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         resource_id: str,
         user_email: str,
         token: str,
-        expiration: Optional[str] = None,
-    ) -> Optional[Dict]:
+        expiration: str | None = None,
+    ) -> dict | None:
         """Store page token with user channel information."""
         try:
             self.logger.info(
@@ -7406,7 +7516,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         channel_id: str = None,
         resource_id: str = None,
         user_email: str = None
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Get page token for specific channel."""
         try:
             self.logger.info(
@@ -7507,7 +7617,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         org_id: str,
         connector_id: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get failed records along with active users who have permissions.
 
@@ -7553,7 +7663,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         org_id: str,
         connector_id: str
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Get all failed records for an organization and connector.
 
@@ -7598,7 +7708,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         from_id: str,
         from_collection: str,
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> int:
         """
         Delete all edges from the given node if those edges are pointing to nodes in the groups or roles collection.
@@ -7654,7 +7764,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         from_collection: str,
         edge_collection: str,
         to_collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> int:
         """
         Delete all edges from a specific node to any nodes in the target collection.
@@ -7716,10 +7826,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def delete_nodes_and_edges(
         self,
-        keys: List[str],
+        keys: list[str],
         collection: str,
         graph_name: str = GraphNames.KNOWLEDGE_GRAPH.value,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """
         Delete nodes and all their connected edges.
@@ -7753,6 +7863,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     CollectionNames.INHERIT_PERMISSIONS.value,
                     CollectionNames.IS_OF_TYPE.value,
                     CollectionNames.USER_APP_RELATION.value,
+                    CollectionNames.ENTITY_RELATIONS.value,
+                    CollectionNames.ANYONE.value,
                 ]
             else:
                 # ArangoDB REST API returns graph info with 'graph' key containing the definition
@@ -7805,9 +7917,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         from_key: str,
         to_key: str,
-        edge_updates: Dict,
+        edge_updates: dict,
         collection: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """Update edge"""
         try:
@@ -7838,8 +7950,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_key: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """Check user's permission role on a record."""
         try:
             query = f"""
@@ -7870,8 +7982,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_key: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """Check Google Drive specific permissions."""
         try:
             self.logger.info(f"🔍 Checking Drive permissions for record {record_id} and user {user_key}")
@@ -7944,8 +8056,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_key: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """Check Gmail specific permissions."""
         try:
             self.logger.info(f"🔍 Checking Gmail permissions for record {record_id} and user {user_key}")
@@ -8014,8 +8126,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _get_kb_context_for_record(
         self,
         record_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+        transaction: str | None = None
+    ) -> dict | None:
         """Get KB context for a record."""
         try:
             self.logger.info(f"🔍 Finding KB context for record {record_id}")
@@ -8055,8 +8167,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         user_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """Get user's permission on a KB. Returns highest role from direct and team-based access."""
         try:
             self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
@@ -8144,12 +8256,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         skip: int,
         limit: int,
-        search: Optional[str] = None,
-        permissions: Optional[List[str]] = None,
+        search: str | None = None,
+        permissions: list[str] | None = None,
         sort_by: str = "name",
         sort_order: str = "asc",
-        transaction: Optional[str] = None,
-    ) -> Tuple[List[Dict], int, Dict]:
+        transaction: str | None = None,
+    ) -> tuple[list[dict], int, dict]:
         """
         List knowledge bases with pagination, search, and filtering.
         Includes both direct user permissions and team-based permissions.
@@ -8429,7 +8541,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 }
             """
 
-            main_bind_vars: Dict[str, Any] = {
+            main_bind_vars: dict[str, Any] = {
                 "user_from": f"users/{user_id}",
                 "org_id": org_id,
                 "kb_type": Connectors.KNOWLEDGE_BASE.value,
@@ -8445,7 +8557,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if permissions:
                 main_bind_vars["permissions"] = permissions
 
-            count_bind_vars: Dict[str, Any] = {
+            count_bind_vars: dict[str, Any] = {
                 "count_user_from": f"users/{user_id}",
                 "count_org_id": org_id,
                 "count_kb_type": Connectors.KNOWLEDGE_BASE.value,
@@ -8498,23 +8610,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
         skip: int,
         limit: int,
         level: int = 1,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
         sort_by: str = "name",
         sort_order: str = "asc",
-        transaction: Optional[str] = None,
-    ) -> Dict:
+        transaction: str | None = None,
+    ) -> dict:
         """
         Get KB root contents with folders_first pagination and level order traversal.
         """
         try:
-            def build_filters() -> Tuple[str, str, Dict]:
+            def build_filters() -> tuple[str, str, dict]:
                 folder_conditions = []
                 record_conditions = []
-                bind_vars: Dict[str, Any] = {}
+                bind_vars: dict[str, Any] = {}
+                bind_vars: dict[str, Any] = {}
 
                 if search:
                     folder_conditions.append(
@@ -8743,7 +8856,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }}
             """
 
-            bind_vars: Dict[str, Any] = {
+            bind_vars: dict[str, Any] = {
                 "kb_id": kb_id,
                 "skip": skip,
                 "limit": limit,
@@ -8780,23 +8893,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
         skip: int,
         limit: int,
         level: int = 1,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
+        search: str | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connectors: list[str] | None = None,
+        indexing_status: list[str] | None = None,
         sort_by: str = "name",
         sort_order: str = "asc",
-        transaction: Optional[str] = None,
-    ) -> Dict:
+        transaction: str | None = None,
+    ) -> dict:
         """
         Get folder contents with folders_first pagination and level order traversal.
         """
         try:
-            def build_filters() -> Tuple[str, str, Dict]:
+            def build_filters() -> tuple[str, str, dict]:
                 folder_conditions = []
                 record_conditions = []
-                bind_vars: Dict[str, Any] = {}
+                bind_vars: dict[str, Any] = {}
+                bind_vars: dict[str, Any] = {}
 
                 if search:
                     folder_conditions.append(
@@ -9054,7 +9168,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return {"success": False, "reason": str(e)}
 
-    def _normalize_name(self, name: Optional[str]) -> Optional[str]:
+    def _normalize_name(self, name: str | None) -> str | None:
         """Normalize a file/folder name to NFC and trim whitespace."""
         if name is None:
             return None
@@ -9063,7 +9177,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception:
             return str(name).strip()
 
-    def _normalized_name_variants_lower(self, name: str) -> List[str]:
+    def _normalized_name_variants_lower(self, name: str) -> list[str]:
         """Provide lowercase variants for equality comparisons (NFC and NFD)."""
         nfc = self._normalize_name(name) or ""
         try:
@@ -9075,11 +9189,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _check_name_conflict_in_parent(
         self,
         kb_id: str,
-        parent_folder_id: Optional[str],
+        parent_folder_id: str | None,
         item_name: str,
-        mime_type: Optional[str] = None,
-        transaction: Optional[str] = None,
-    ) -> Dict:
+        mime_type: str | None = None,
+        transaction: str | None = None,
+    ) -> dict:
         """Check if an item (folder or file) name already exists in the target parent."""
         try:
             name_variants = self._normalized_name_variants_lower(item_name)
@@ -9088,7 +9202,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if parent_folder_id
                 else f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
             )
-            bind_vars: Dict[str, Any] = {
+            bind_vars: dict[str, Any] = {
                 "parent_from": parent_from,
                 "name_variants": name_variants,
                 "@record_relations": CollectionNames.RECORD_RELATIONS.value,
@@ -9156,8 +9270,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         user_id: str,
-        transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+        transaction: str | None = None,
+    ) -> dict | None:
         """Get knowledge base with user permissions."""
         try:
             user_role = await self.get_user_kb_permission(kb_id, user_id, transaction=transaction)
@@ -9225,8 +9339,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def update_knowledge_base(
         self,
         kb_id: str,
-        updates: Dict,
-        transaction: Optional[str] = None,
+        updates: dict,
+        transaction: str | None = None,
     ) -> bool:
         """Update knowledge base."""
         try:
@@ -9258,8 +9372,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def delete_knowledge_base(
         self,
         kb_id: str,
-        transaction: Optional[str] = None,
-    ) -> Dict:
+        transaction: str | None = None,
+    ) -> dict:
         """
         Delete a knowledge base with ALL nested content
         - All folders (recursive, any depth)
@@ -9514,9 +9628,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def _create_deleted_record_event_payload(
         self,
-        record: Dict,
-        file_record: Optional[Dict] = None
-    ) -> Dict:
+        record: dict,
+        file_record: dict | None = None
+    ) -> dict:
         """Create deleted record event payload matching Node.js format"""
         try:
             # Get extension and mimeType from file record
@@ -9539,7 +9653,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
             return {}
 
-    async def _create_new_record_event_payload(self, record_doc: Dict, file_doc: Dict, storage_url: str) -> Optional[Dict]:
+    async def _create_new_record_event_payload(self, record_doc: dict, file_doc: dict, storage_url: str) -> dict | None:
         """
         Creates NewRecordEvent payload for Kafka.
         """
@@ -9574,10 +9688,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def _create_update_record_event_payload(
         self,
-        record: Dict,
-        file_record: Optional[Dict] = None,
-        content_changed: bool = True
-    ) -> Optional[Dict]:
+        record: dict,
+        file_record: dict | None = None,
+        *,
+        content_changed: bool = True,
+    ) -> dict | None:
         """Create update record event payload matching Node.js format"""
         try:
             endpoints = await self.config_service.get_config(
@@ -9609,7 +9724,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to create update record event payload: {str(e)}")
             return None
 
-    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional["Request"] = None, record_id: Optional[str] = None) -> Dict:
+    async def _create_reindex_event_payload(self, record: dict, file_record: dict | None, user_id: str | None = None, request: Optional["Request"] = None, record_id: str | None = None) -> dict:
         """Create reindex event payload"""
         try:
             # Handle both translated (_key -> id) and untranslated document formats
@@ -9679,7 +9794,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
             raise
 
-    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> Dict:
+    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> dict:
         """Shared validation logic for folder creation."""
         try:
             user = await self.get_user_by_user_id(user_id)
@@ -9702,9 +9817,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         folder_name: str,
-        parent_folder_id: Optional[str] = None,
-        transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+        parent_folder_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
         """Find a folder by name within a specific parent (KB root or folder)."""
         try:
             name_variants = self._normalized_name_variants_lower(folder_name)
@@ -9796,8 +9911,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         folder_id: str,
-        transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+        transaction: str | None = None,
+    ) -> dict | None:
         """Get folder by ID and validate it belongs to the specified KB."""
         try:
             query = """
@@ -9852,9 +9967,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         kb_id: str,
         folder_name: str,
         org_id: str,
-        parent_folder_id: Optional[str] = None,
-        transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+        parent_folder_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
         """Create folder with proper RECORDS document and edges."""
         try:
             folder_id = str(uuid.uuid4())
@@ -9995,8 +10110,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         folder_id: str,
-        transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+        transaction: str | None = None,
+    ) -> dict | None:
         """Get folder contents (container, folders, records)."""
         result = await self.get_folder_children(
             kb_id=kb_id,
@@ -10012,7 +10127,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         folder_id: str,
-        transaction: Optional[str] = None,
+        transaction: str | None = None,
     ) -> bool:
         """Validate that a folder exists and belongs to the KB."""
         try:
@@ -10058,7 +10173,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         folder_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """
         Validate folder exists in specific KB.
@@ -10106,8 +10221,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def update_folder(
         self,
         folder_id: str,
-        updates: Dict,
-        transaction: Optional[str] = None,
+        updates: dict,
+        transaction: str | None = None,
     ) -> bool:
         """Update folder."""
         try:
@@ -10143,8 +10258,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         folder_id: str,
-        transaction: Optional[str] = None,
-    ) -> Dict:
+        transaction: str | None = None,
+    ) -> dict:
         """Delete a folder with ALL nested content."""
         try:
             txn_id = transaction
@@ -10318,10 +10433,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         user_id: str,
-        updates: Dict,
-        file_metadata: Optional[Dict] = None,
-        transaction: Optional[str] = None,
-    ) -> Optional[Dict]:
+        updates: dict,
+        file_metadata: dict | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
         """Update a record by ID with automatic KB and permission detection."""
         try:
             user = await self.get_user_by_user_id(user_id)
@@ -10386,11 +10501,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def delete_records(
         self,
-        record_ids: List[str],
+        record_ids: list[str],
         kb_id: str,
-        folder_id: Optional[str] = None,
-        transaction: Optional[str] = None,
-    ) -> Dict:
+        folder_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict:
         """Delete multiple records."""
         try:
             if not record_ids:
@@ -10502,10 +10617,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         requester_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
+        user_ids: list[str],
+        team_ids: list[str],
         role: str,
-    ) -> Dict:
+    ) -> dict:
         """Create KB permissions for users and teams."""
         try:
             timestamp = get_epoch_timestamp_in_ms()
@@ -10617,7 +10732,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def count_kb_owners(
         self,
         kb_id: str,
-        transaction: Optional[str] = None,
+        transaction: str | None = None,
     ) -> int:
         """Count the number of owners for a knowledge base."""
         try:
@@ -10644,14 +10759,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def remove_kb_permission(
         self,
         kb_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
-        transaction: Optional[str] = None,
+        user_ids: list[str],
+        team_ids: list[str],
+        transaction: str | None = None,
     ) -> bool:
         """Remove permissions for multiple users and teams from a KB."""
         try:
             conditions = []
-            bind_vars: Dict[str, Any] = {
+            bind_vars: dict[str, Any] = {
                 "kb_id": kb_id,
                 "@permissions_collection": CollectionNames.PERMISSION.value,
             }
@@ -10683,14 +10798,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_kb_permissions(
         self,
         kb_id: str,
-        user_ids: Optional[List[str]] = None,
-        team_ids: Optional[List[str]] = None,
-        transaction: Optional[str] = None,
-    ) -> Dict[str, Dict[str, str]]:
+        user_ids: list[str] | None = None,
+        team_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, dict[str, str]]:
         """Get current roles for multiple users and teams on a KB."""
         try:
             conditions = []
-            bind_vars: Dict[str, Any] = {
+            bind_vars: dict[str, Any] = {
                 "kb_id": kb_id,
                 "@permissions_collection": CollectionNames.PERMISSION.value,
             }
@@ -10728,10 +10843,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         requester_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
+        user_ids: list[str],
+        team_ids: list[str],
         new_role: str,
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """Optimistically update permissions for users and teams on a knowledge base"""
         try:
             self.logger.info(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
@@ -10879,8 +10994,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def list_kb_permissions(
         self,
         kb_id: str,
-        transaction: Optional[str] = None,
-    ) -> List[Dict]:
+        transaction: str | None = None,
+    ) -> list[dict]:
         """List all permissions for a KB with entity details."""
         try:
             query = """
@@ -10936,18 +11051,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         skip: int,
         limit: int,
-        search: Optional[str],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connectors: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        permissions: Optional[List[str]],
-        date_from: Optional[int],
-        date_to: Optional[int],
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        permissions: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
         sort_by: str,
         sort_order: str,
         source: str,
-    ) -> Tuple[List[Dict], int, Dict]:
+    ) -> tuple[list[dict], int, dict]:
         """List all records the user can access. Returns (records, total_count, available_filters)."""
         try:
             include_kb = source in ("all", "local")
@@ -10958,7 +11073,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 include_kb = False
             user_from = f"users/{user_id}"
             filter_conditions = []
-            filter_bind: Dict[str, Any] = {}
+            filter_bind: dict[str, Any] = {}
             if search:
                 filter_conditions.append("(LIKE(LOWER(record.recordName), @search) OR LIKE(LOWER(record.externalRecordId), @search))")
                 filter_bind["search"] = f"%{(search or '').lower()}%"
@@ -11055,18 +11170,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         skip: int,
         limit: int,
-        search: Optional[str],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connectors: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        permissions: Optional[List[str]],
-        date_from: Optional[int],
-        date_to: Optional[int],
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        permissions: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
         sort_by: str,
         sort_order: str,
         source: str,
-    ) -> Tuple[List[Dict], int, Dict]:
+    ) -> tuple[list[dict], int, dict]:
         """
         List all records the user can access.
         Resolves external user_id to user key and delegates to list_all_records.
@@ -11107,24 +11222,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         skip: int,
         limit: int,
-        search: Optional[str],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connectors: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        date_from: Optional[int],
-        date_to: Optional[int],
+        search: str | None,
+        record_types: list[str] | None,
+        origins: list[str] | None,
+        connectors: list[str] | None,
+        indexing_status: list[str] | None,
+        date_from: int | None,
+        date_to: int | None,
         sort_by: str,
         sort_order: str,
-        folder_id: Optional[str] = None,
-    ) -> Tuple[List[Dict], int, Dict]:
+        folder_id: str | None = None,
+    ) -> tuple[list[dict], int, dict]:
         """List records in a KB. Returns (records, total_count, available_filters)."""
         try:
             user_perm = await self.get_user_kb_permission(kb_id, user_id)
             if not user_perm:
                 return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
             filter_conditions = []
-            filter_bind: Dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
+            filter_bind: dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
+            filter_bind: dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
             if search:
                 filter_conditions.append("(LIKE(LOWER(record.recordName), @search) OR LIKE(LOWER(record.externalRecordId), @search))")
                 filter_bind["search"] = f"%{(search or '').lower()}%"
@@ -11227,7 +11343,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to list KB records: {str(e)}")
             return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
 
-    def _validation_error(self, code: int, reason: str) -> Dict:
+    def _validation_error(self, code: int, reason: str) -> dict:
         """Helper to create validation error response."""
         return {"valid": False, "success": False, "code": code, "reason": reason}
 
@@ -11236,8 +11352,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         kb_id: str,
         user_id: str,
         org_id: str,
-        parent_folder_id: Optional[str] = None,
-    ) -> Dict:
+        parent_folder_id: str | None = None,
+    ) -> dict:
         """Unified validation for all upload scenarios."""
         try:
             user = await self.get_user_by_user_id(user_id=user_id)
@@ -11268,10 +11384,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             return self._validation_error(500, f"Validation failed: {str(e)}")
 
-    def _analyze_upload_structure(self, files: List[Dict], validation_result: Dict) -> Dict:
+    def _analyze_upload_structure(self, files: list[dict], validation_result: dict) -> dict:
         """Analyze folder hierarchy from file paths for upload."""
-        folder_hierarchy: Dict[str, Dict[str, Any]] = {}
-        file_destinations: Dict[int, Dict[str, Any]] = {}
+        folder_hierarchy: dict[str, dict[str, Any]] = {}
+        file_destinations: dict[int, dict[str, Any]] = {}
         for index, file_data in enumerate(files):
             file_path = file_data.get("filePath", "")
             if "/" in file_path:
@@ -11322,12 +11438,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         org_id: str,
-        folder_analysis: Dict,
-        validation_result: Dict,
+        folder_analysis: dict,
+        validation_result: dict,
         txn_id: str,
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Ensure all needed folders exist; return hierarchy_path -> folder_id map."""
-        folder_map: Dict[str, str] = {}
+        folder_map: dict[str, str] = {}
         upload_parent_folder_id = None
         if validation_result.get("upload_target") == "folder" and validation_result.get("parent_folder"):
             upload_parent_folder_id = validation_result["parent_folder"].get("_key") or validation_result["parent_folder"].get("id")
@@ -11365,7 +11481,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     raise ValueError(f"Failed to create folder: {folder_name}")
         return folder_map
 
-    def _populate_file_destinations(self, folder_analysis: Dict, folder_map: Dict[str, str]) -> None:
+    def _populate_file_destinations(self, folder_analysis: dict, folder_map: dict[str, str]) -> None:
         """Update file destinations with resolved folder IDs."""
         for destination in folder_analysis["file_destinations"].values():
             if destination["type"] == "folder":
@@ -11373,7 +11489,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if hierarchy_path and hierarchy_path in folder_map:
                     destination["folder_id"] = folder_map[hierarchy_path]
 
-    def _generate_upload_message(self, result: Dict, upload_type: str) -> str:
+    def _generate_upload_message(self, result: dict, upload_type: str) -> str:
         """Generate success message for upload."""
         total_created = result.get("total_created", 0)
         folders_created = result.get("folders_created", 0)
@@ -11388,15 +11504,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _create_files_batch(
         self,
         kb_id: str,
-        files: List[Dict],
-        parent_folder_id: Optional[str],
-        transaction: Optional[str],
+        files: list[dict],
+        parent_folder_id: str | None,
+        transaction: str | None,
         timestamp: int,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Create a batch of file records and edges; skip name conflicts."""
         if not files:
             return []
-        valid_files: List[Dict] = []
+        valid_files: list[dict] = []
+        valid_files: list[dict] = []
         for file_data in files:
             file_record = file_data.get("fileRecord") or {}
             record = file_data.get("record") or {}
@@ -11450,7 +11567,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         await self.batch_upsert_nodes(records, CollectionNames.RECORDS.value, transaction=transaction)
         await self.batch_upsert_nodes(file_records, CollectionNames.FILES.value, transaction=transaction)
-        edges_to_create: List[Dict] = []
+        edges_to_create: list[dict] = []
         for file_data in valid_files:
             record_id = (file_data.get("record") or {}).get("_key")
             file_id = (file_data.get("fileRecord") or {}).get("_key")
@@ -11511,10 +11628,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _create_files_in_kb_root(
         self,
         kb_id: str,
-        files: List[Dict],
-        transaction: Optional[str],
+        files: list[dict],
+        transaction: str | None,
         timestamp: int,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Create files directly in KB root."""
         return await self._create_files_batch(
             kb_id=kb_id,
@@ -11528,10 +11645,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         folder_id: str,
-        files: List[Dict],
-        transaction: Optional[str],
+        files: list[dict],
+        transaction: str | None,
         timestamp: int,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Create files in a specific folder."""
         return await self._create_files_batch(
             kb_id=kb_id,
@@ -11544,17 +11661,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _create_records(
         self,
         kb_id: str,
-        files: List[Dict],
-        folder_analysis: Dict,
-        transaction: Optional[str],
+        files: list[dict],
+        folder_analysis: dict,
+        transaction: str | None,
         timestamp: int,
-    ) -> Dict:
+    ) -> dict:
         """Create all file records and relationships from upload."""
         total_created = 0
-        failed_files: List[str] = []
-        created_files_data: List[Dict] = []
-        root_files: List[Tuple[Dict, Optional[str]]] = []
-        folder_files: Dict[str, List[Dict]] = {}
+        failed_files: list[str] = []
+        created_files_data: list[dict] = []
+        root_files: list[tuple[dict, str | None]] = []
+        folder_files: dict[str, list[dict]] = {}
         parent_folder_id = folder_analysis.get("parent_folder_id")
         for index, file_data in enumerate(files):
             destination = folder_analysis["file_destinations"].get(index, {})
@@ -11567,7 +11684,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 else:
                     failed_files.append(file_data.get("filePath", ""))
         kb_root_files = [f for f, fid in root_files if fid is None]
-        parent_folder_files_map: Dict[str, List[Dict]] = {}
+        parent_folder_files_map: dict[str, list[dict]] = {}
         for file_data, fid in root_files:
             if fid is not None:
                 parent_folder_files_map.setdefault(fid, []).append(file_data)
@@ -11623,10 +11740,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         kb_id: str,
         user_id: str,
         org_id: str,
-        files: List[Dict],
-        folder_analysis: Dict,
-        validation_result: Dict,
-    ) -> Dict:
+        files: list[dict],
+        folder_analysis: dict,
+        validation_result: dict,
+    ) -> dict:
         """Run upload in a single transaction: folders, then records."""
         try:
             txn_id = await self.begin_transaction(
@@ -11691,9 +11808,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         kb_id: str,
         user_id: str,
         org_id: str,
-        files: List[Dict],
-        parent_folder_id: Optional[str] = None,
-    ) -> Dict:
+        files: list[dict],
+        parent_folder_id: str | None = None,
+    ) -> dict:
         """Upload records to KB root or a folder. Full flow: validate, analyze structure, run transaction."""
         try:
             upload_type = "folder" if parent_folder_id else "KB root"
@@ -11767,8 +11884,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _get_attachment_ids(
         self,
         record_id: str,
-        transaction: Optional[str] = None
-    ) -> List[str]:
+        transaction: str | None = None
+    ) -> list[str]:
         """Get attachment IDs for a record."""
         attachments_query = f"""
         FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
@@ -11787,8 +11904,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _delete_record_with_type(
         self,
         record_id: str,
-        type_collections: List[str],
-        transaction: Optional[str] = None
+        type_collections: list[str],
+        transaction: str | None = None
     ) -> None:
         """Delete a record and its type-specific documents using existing generic methods."""
         record_key = record_id
@@ -11813,9 +11930,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _execute_outlook_record_deletion(
         self,
         record_id: str,
-        record: Dict,
-        transaction: Optional[str] = None
-    ) -> Dict:
+        record: dict,
+        transaction: str | None = None
+    ) -> dict:
         """Execute Outlook record deletion - deletes email and all attachments."""
         try:
             # Get attachments (child records with ATTACHMENT relation)
@@ -11867,7 +11984,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _delete_outlook_edges(
         self,
         record_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """Delete Outlook specific edges."""
         edge_strategies = {
@@ -11922,7 +12039,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _delete_file_record(
         self,
         record_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """Delete file record from files collection."""
         file_deletion_query = """
@@ -11942,7 +12059,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _delete_mail_record(
         self,
         record_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """Delete mail record from mails collection."""
         mail_deletion_query = """
@@ -11962,7 +12079,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _delete_main_record(
         self,
         record_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """Delete main record from records collection."""
         record_deletion_query = """
@@ -11982,7 +12099,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _delete_drive_specific_edges(
         self,
         record_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """Delete Google Drive specific edges with optimized queries."""
         drive_edge_collections = self.connector_delete_permissions[Connectors.GOOGLE_DRIVE.value]["edge_collections"]
@@ -12065,7 +12182,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _delete_drive_anyone_permissions(
         self,
         record_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """Delete Drive-specific 'anyone' permissions."""
         anyone_deletion_query = """
@@ -12087,7 +12204,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _delete_kb_specific_edges(
         self,
         record_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """Delete KB-specific edges."""
         kb_edge_collections = self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["edge_collections"]
@@ -12124,10 +12241,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _execute_gmail_record_deletion(
         self,
         record_id: str,
-        record: Dict,
+        record: dict,
         user_role: str,
-        transaction: Optional[str] = None
-    ) -> Dict:
+        transaction: str | None = None
+    ) -> dict:
         """Execute Gmail record deletion."""
         try:
             # Get mail and file records for event publishing before deletion
@@ -12214,10 +12331,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _execute_drive_record_deletion(
         self,
         record_id: str,
-        record: Dict,
+        record: dict,
         user_role: str,
-        transaction: Optional[str] = None
-    ) -> Dict:
+        transaction: str | None = None
+    ) -> dict:
         """Execute Drive record deletion."""
         try:
             # Get file record for event publishing before deletion
@@ -12276,10 +12393,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _execute_kb_record_deletion(
         self,
         record_id: str,
-        record: Dict,
-        kb_context: Dict,
-        transaction: Optional[str] = None
-    ) -> Dict:
+        record: dict,
+        kb_context: dict,
+        transaction: str | None = None
+    ) -> dict:
         """Execute KB record deletion."""
         try:
             # Get file record for event publishing before deletion
@@ -12334,14 +12451,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         user_key: str,
         org_id: str,
-        user_app_ids: List[str],
+        user_app_ids: list[str],
         skip: int,
         limit: int,
         sort_field: str,
         sort_dir: str,
+        *,
         only_containers: bool,
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
         """Get root level nodes (Apps) for Knowledge Hub."""
         start = time.perf_counter()
         query = """
@@ -12410,9 +12528,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int,
         sort_field: str,
         sort_dir: str,
+        *,
         only_containers: bool = False,
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+        record_group_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
         """
         Get direct children of a node for tree navigation (browse mode).
 
@@ -12428,6 +12548,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             sort_field: Field to sort by.
             sort_dir: Sort direction ('ASC' or 'DESC').
             only_containers: If True, only return nodes that can have children.
+            record_group_ids: Optional list of record group IDs to restrict visibility.
             transaction: Optional transaction ID.
         """
         start = time.perf_counter()
@@ -12435,7 +12556,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # Use optimized split query for recordGroup types
         if parent_type == "recordGroup":
             result = await self._get_record_group_children_split(
-                parent_id, user_key, skip, limit, sort_field, sort_dir, only_containers, transaction
+                parent_id, user_key, skip, limit, sort_field, sort_dir,
+                only_containers=only_containers, transaction=transaction,
             )
             elapsed = time.perf_counter() - start
             self.logger.info(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
@@ -12461,6 +12583,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             **parent_bind_vars,
         }
 
+        # Build optional record_group_ids filter for the AQL query
+        rg_filter_line = ""
+        if record_group_ids:
+            rg_filter_line = 'FILTER node.nodeType != "recordGroup" OR node.origin != "COLLECTION" OR node.id IN @record_group_ids'
+            bind_vars["record_group_ids"] = record_group_ids
+
         # Simple query for direct children with sorting and pagination
         query = f"""
         {sub_query}
@@ -12469,6 +12597,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR node IN raw_children
                 // Include all container types (app, kb, recordGroup, folder) even if empty
                 FILTER @only_containers == false OR node.hasChildren == true OR node.nodeType IN ["app", "recordGroup", "folder"]
+                {rg_filter_line}
                 RETURN node
         )
         LET sorted_children = (FOR child IN filtered_children SORT child[@sort_field] @sort_dir RETURN child)
@@ -12491,20 +12620,22 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int,
         sort_field: str,
         sort_dir: str,
-        search_query: Optional[str] = None,
-        node_types: Optional[List[str]] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connector_ids: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        created_at: Optional[Dict[str, Optional[int]]] = None,
-        updated_at: Optional[Dict[str, Optional[int]]] = None,
-        size: Optional[Dict[str, Optional[int]]] = None,
+        search_query: str | None = None,
+        node_types: list[str] | None = None,
+        record_types: list[str] | None = None,
+        origins: list[str] | None = None,
+        connector_ids: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        created_at: dict[str, int | None] | None = None,
+        updated_at: dict[str, int | None] | None = None,
+        size: dict[str, int | None] | None = None,
+        *,
         only_containers: bool = False,
-        parent_id: Optional[str] = None,  # For scoped search
-        parent_type: Optional[str] = None,  # Type of parent (app/recordGroup/record)
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+        parent_id: str | None = None,  # For scoped search
+        parent_type: str | None = None,  # Type of parent (app/recordGroup/record)
+        record_group_ids: list[str] | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
         """
         Unified search for knowledge hub nodes with permission-first traversal.
 
@@ -12532,6 +12663,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             origins=origins,
             connector_ids=connector_ids,
             only_containers=only_containers,
+            record_group_ids=record_group_ids,
         )
 
         # Convert to AQL FILTER statements - add FILTER keyword before each condition
@@ -12568,7 +12700,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         else:
             # For app-level scope or global search, apply scope filters as before
             scope_filter_rg, scope_filter_record, scope_filter_rg_inline, scope_filter_record_inline = self._build_scope_filters(
-                parent_id, parent_type, parent_connector_id
+                parent_id, parent_type, parent_connector_id, record_group_ids=record_group_ids
             )
 
         # Build bind variables
@@ -12580,6 +12712,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "sort_field": sort_field,
             "sort_dir": sort_dir,
         }
+
+        # Add record_group_ids to bind vars for scope filter binding
+        if record_group_ids:
+            bind_vars["record_group_ids"] = record_group_ids
 
         # Add bind variables based on parent_type
         if parent_id:
@@ -12983,6 +13119,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0
 
+                // Compute sharingStatus for KB recordGroups only
+                LET sharingStatus = rg.connectorName == "KB" ? (
+                    LET user_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == rg._id
+                            FILTER perm.type == "USER"
+                            RETURN 1
+                    )
+                    LET team_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == rg._id
+                            FILTER perm.type == "TEAM"
+                            RETURN 1
+                    )
+                    LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
+                    RETURN (has_multiple_access ? "shared" : "private")
+                )[0] : null
+
                 RETURN {{
                     id: rg._key,
                     name: rg.groupName,
@@ -13002,7 +13156,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: null,
                     webUrl: rg.webUrl,
                     hasChildren: has_children,
-                    previewRenderable: true
+                    previewRenderable: true,
+                    sharingStatus: sharingStatus,
+                    isInternal: rg.isInternal ? true : false
                 }}
         )
 
@@ -13045,7 +13201,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: file_info ? file_info.extension : null,
                     webUrl: record.webUrl,
                     hasChildren: has_children,
-                    previewRenderable: record.previewRenderable != null ? record.previewRenderable : true
+                    previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
+                    isInternal: record.isInternal ? true : false
                 }}
         )
 
@@ -13080,8 +13237,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_knowledge_hub_breadcrumbs(
         self,
         node_id: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        transaction: str | None = None
+    ) -> list[dict[str, Any]]:
         """
         Get breadcrumb trail for a node.
 
@@ -13184,8 +13341,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 LET app_doc = DOCUMENT(edge._to)
                                 FILTER app_doc != null
                                 FILTER PARSE_IDENTIFIER(edge._to).collection == "apps"
-                                // Exclude KB apps from breadcrumbs
-                                FILTER app_doc.type != "KB"
                                 RETURN PARSE_IDENTIFIER(edge._to).key
                         )
                     )[0]
@@ -13239,8 +13394,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_user_app_ids(
         self,
         user_key: str,
-        transaction: Optional[str] = None
-    ) -> List[str]:
+        transaction: str | None = None
+    ) -> list[str]:
         """Get list of app IDs the user has access to."""
         query = """
         FOR app IN OUTBOUND CONCAT("users/", @user_key) userAppRelation
@@ -13254,9 +13409,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         user_key: str,
         org_id: str,
-        parent_id: Optional[str],
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+        parent_id: str | None,
+        transaction: str | None = None
+    ) -> dict[str, Any]:
         """
         Get user's context-level permissions.
         Supports both direct user permissions and team-based permissions.
@@ -13593,9 +13748,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_knowledge_hub_node_info(
         self,
         node_id: str,
-        folder_mime_types: List[str],
-        transaction: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        folder_mime_types: list[str],
+        transaction: str | None = None
+    ) -> dict[str, Any] | None:
         """Get node information including type and subtype."""
         start = time.perf_counter()
         query = """
@@ -13630,9 +13785,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_knowledge_hub_parent_node(
         self,
         node_id: str,
-        folder_mime_types: List[str],
-        transaction: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        folder_mime_types: list[str],
+        transaction: str | None = None
+    ) -> dict[str, Any] | None:
         """Get the parent node of a given node in a single query."""
         start = time.perf_counter()
         query = """
@@ -13753,8 +13908,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         user_key: str,
         org_id: str,
-        transaction: Optional[str] = None
-    ) -> Dict[str, List[Dict[str, Any]]]:
+        transaction: str | None = None
+    ) -> dict[str, list[dict[str, Any]]]:
         """
         Get available filter options (connector Apps) for a user.
         Returns connector apps the user has access to. Excludes the Collection app (type='KB').
@@ -13791,8 +13946,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_id: str,
         org_id: str,
         record_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+        transaction: str | None = None
+    ) -> dict | None:
         """
         Check record access and return record details if accessible.
 
@@ -14248,8 +14403,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_account_type(
         self,
         org_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
+        transaction: str | None = None
+    ) -> str | None:
         """
         Get account type for an organization.
 
@@ -14291,8 +14446,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         org_id: str,
         connector_id: str,
-        transaction: Optional[str] = None
-    ) -> Dict:
+        transaction: str | None = None
+    ) -> dict:
         """
         Get connector statistics for a specific connector.
 
@@ -14323,6 +14478,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR doc IN 1..1 INBOUND rgId {CollectionNames.BELONGS_TO.value}
                         FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", doc._id)
                         FILTER doc.recordType != @drive_record_type
+                        FILTER doc.isInternal != true
 
                         LET targetDoc = FIRST(
                             FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
@@ -14365,7 +14521,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "data": None,
             }
 
-    def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> Tuple[str, Dict[str, Any]]:
+    def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> tuple[str, dict[str, Any]]:
         """Generate AQL sub-query to fetch RecordGroups for an App.
 
         Simplified unified approach:
@@ -14427,6 +14583,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0)
 
+                // Compute sharingStatus for KB recordGroups only
+                LET sharingStatus = node.connectorName == "KB" ? (
+                    LET user_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "USER"
+                            RETURN 1
+                    )
+                    LET team_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "TEAM"
+                            RETURN 1
+                    )
+                    LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
+                    RETURN (has_multiple_access ? "shared" : "private")
+                )[0] : null
+
                 RETURN MERGE(node, {{
                     id: node._key,
                     name: node.groupName,
@@ -14444,7 +14618,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: null,
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    sharingStatus: sharingStatus,
+                    isInternal: node.isInternal ? true : false
                 }})
         )
         """
@@ -14458,9 +14634,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int,
         sort_field: str,
         sort_dir: str,
+        *,
         only_containers: bool,
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
         """
         Get children of a recordGroup by executing separate queries for child recordGroups
         and direct records, then combining results in Python.
@@ -14522,7 +14699,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false
                 }}
         ) : []
         RETURN internal_records
@@ -14572,6 +14750,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0)
 
+                // Compute sharingStatus for KB recordGroups only
+                LET sharingStatus = node.connectorName == "KB" ? (
+                    LET user_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "USER"
+                            RETURN 1
+                    )
+                    LET team_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "TEAM"
+                            RETURN 1
+                    )
+                    LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
+                    RETURN (has_multiple_access ? "shared" : "private")
+                )[0] : null
+
                 RETURN {{
                     id: node._key,
                     name: node.groupName,
@@ -14591,7 +14787,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: null,
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    sharingStatus: sharingStatus,
+                    isInternal: node.isInternal ? true : false
                 }}
         )
         RETURN child_rgs
@@ -14655,7 +14853,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false
                 }}
         )
         RETURN direct_records
@@ -14683,7 +14882,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         return {"nodes": paginated_children, "total": total_count}
 
-    def _get_record_group_children_subquery(self, rg_id: str, org_id: str, parent_type: str, user_key: str) -> Tuple[str, Dict[str, Any]]:
+    def _get_record_group_children_subquery(self, rg_id: str, org_id: str, parent_type: str, user_key: str) -> tuple[str, dict[str, Any]]:
         """Generate AQL sub-query to fetch children of a KB or RecordGroup with permission filtering.
 
         Simplified unified approach:
@@ -14757,7 +14956,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false
                 }}
         ) : []
 
@@ -14797,6 +14997,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0)
 
+                // Compute sharingStatus for KB recordGroups only
+                LET sharingStatus = node.connectorName == "KB" ? (
+                    LET user_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "USER"
+                            RETURN 1
+                    )
+                    LET team_perm_count = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == node._id
+                            FILTER perm.type == "TEAM"
+                            RETURN 1
+                    )
+                    LET has_multiple_access = (user_perm_count > 1 OR team_perm_count > 0)
+                    RETURN (has_multiple_access ? "shared" : "private")
+                )[0] : null
+
                 RETURN {{
                     id: node._key,
                     name: node.groupName,
@@ -14816,7 +15034,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     extension: null,
                     webUrl: node.webUrl,
                     hasChildren: has_child_rgs OR has_records,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    sharingStatus: sharingStatus,
+                    isInternal: node.isInternal ? true : false
                 }}
         )
 
@@ -14870,7 +15090,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false
                 }}
         )
 
@@ -14878,7 +15099,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         return sub_query, {"rg_doc_id": rg_doc_id, "user_key": user_key}
 
-    def _get_record_children_subquery(self, record_id: str, org_id: str, user_key: str) -> Tuple[str, Dict[str, Any]]:
+    def _get_record_children_subquery(self, record_id: str, org_id: str, user_key: str) -> tuple[str, dict[str, Any]]:
         """Generate AQL sub-query to fetch children of a Folder/Record.
 
         Simplified unified approach:
@@ -14960,7 +15181,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: normalized_role,
+                    isInternal: record.isInternal ? true : false
                 }}
         )
         """
@@ -14968,17 +15190,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     def _build_knowledge_hub_filter_conditions(
         self,
-        search_query: Optional[str] = None,
-        node_types: Optional[List[str]] = None,
-        record_types: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        created_at: Optional[Dict[str, Optional[int]]] = None,
-        updated_at: Optional[Dict[str, Optional[int]]] = None,
-        size: Optional[Dict[str, Optional[int]]] = None,
-        origins: Optional[List[str]] = None,
-        connector_ids: Optional[List[str]] = None,
+        search_query: str | None = None,
+        node_types: list[str] | None = None,
+        record_types: list[str] | None = None,
+        indexing_status: list[str] | None = None,
+        created_at: dict[str, int | None] | None = None,
+        updated_at: dict[str, int | None] | None = None,
+        size: dict[str, int | None] | None = None,
+        origins: list[str] | None = None,
+        connector_ids: list[str] | None = None,
+        *,
         only_containers: bool = False,
-    ) -> tuple[List[str], Dict[str, Any]]:
+        record_group_ids: list[str] | None = None,
+    ) -> tuple[list[str], dict[str, Any]]:
         """
         Build filter conditions and parameters for knowledge hub search queries.
         Translates Neo4j filter logic to AQL syntax.
@@ -15048,6 +15272,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if connector_ids:
             filter_params["connector_ids"] = connector_ids
             filter_conditions.append('((node.nodeType == "app" AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids))')
+
+        # Record group ID restriction: only allow COLLECTION-origin recordGroups
+        # whose IDs are in the provided list. CONNECTOR-origin recordGroups
+        # (Confluence spaces, Jira projects, etc.) pass through — they're
+        # already scoped by connector_ids. Non-recordGroup nodes also pass.
+        if record_group_ids:
+            filter_params["record_group_ids"] = record_group_ids
+            filter_conditions.append(
+                '(node.nodeType != "recordGroup" OR node.origin != "COLLECTION" OR node.id IN @record_group_ids)'
+            )
 
         # Add search condition to filter conditions if present
         if search_query:
@@ -15492,9 +15726,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     def _build_scope_filters(
         self,
-        parent_id: Optional[str],
-        parent_type: Optional[str],
-        parent_connector_id: Optional[str] = None
+        parent_id: str | None,
+        parent_type: str | None,
+        parent_connector_id: str | None = None,
+        record_group_ids: list[str] | None = None,
     ) -> tuple[str, str, str, str]:
         """
         Build scope filter clauses for recordGroups and records.
@@ -15504,26 +15739,75 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             The "inline" versions are boolean expressions (not FILTER statements)
             used inside FILTER conditions with OR logic.
+
+        Args:
+            parent_id: Optional parent node ID for scoped search
+            parent_type: Optional type of parent
+            parent_connector_id: Optional connector ID of parent (needed for record/folder types)
+            record_group_ids: Optional list of allowed record group IDs (agent security boundary).
+                When set, restricts both recordGroups AND their child records.
         """
+        # --- record_group_ids constraint (layered on top of parent scope) ---
+        rg_ids_filter = ""
+        rg_ids_inline = ""
+        record_ids_filter = ""
+        record_ids_inline = ""
+        if record_group_ids:
+            # Origin-aware: only restrict COLLECTION-origin recordGroups (KBs).
+            # CONNECTOR-origin recordGroups (spaces, drives) pass through —
+            # they are scoped by connector_ids instead.
+            rg_ids_filter = 'FILTER rg.origin != "COLLECTION" OR rg._key IN @record_group_ids'
+            rg_ids_inline = '(inherited_node.origin != "COLLECTION" OR inherited_node._key IN @record_group_ids)'
+            # Same for records: only restrict COLLECTION-origin records.
+            # CONNECTOR records are scoped by connector_ids.
+            record_ids_filter = """FILTER record.origin != "COLLECTION" OR LENGTH(
+                FOR ip IN inheritPermissions
+                    FILTER ip._from == record._id
+                    FILTER PARSE_IDENTIFIER(ip._to).key IN @record_group_ids
+                    LIMIT 1
+                    RETURN 1
+            ) > 0 OR LENGTH(
+                FOR bt IN belongsTo
+                    FILTER bt._from == record._id
+                    FILTER IS_SAME_COLLECTION('recordGroups', bt._to)
+                    FILTER PARSE_IDENTIFIER(bt._to).key IN @record_group_ids
+                    LIMIT 1
+                    RETURN 1
+            ) > 0"""
+            record_ids_inline = """(inherited_node.origin != "COLLECTION" OR LENGTH(
+                FOR ip IN inheritPermissions
+                    FILTER ip._from == inherited_node._id
+                    FILTER PARSE_IDENTIFIER(ip._to).key IN @record_group_ids
+                    LIMIT 1
+                    RETURN 1
+            ) > 0 OR LENGTH(
+                FOR bt IN belongsTo
+                    FILTER bt._from == inherited_node._id
+                    FILTER IS_SAME_COLLECTION('recordGroups', bt._to)
+                    FILTER PARSE_IDENTIFIER(bt._to).key IN @record_group_ids
+                    LIMIT 1
+                    RETURN 1
+            ) > 0)"""
+
         if not parent_id or not parent_type:
-            # Global search - no scope filter
+            # Global search
+            if record_group_ids:
+                return (rg_ids_filter, record_ids_filter, rg_ids_inline or "true", record_ids_inline or "true")
             return ("", "", "true", "true")
 
         if parent_type == "app":
-            # Filter by connectorId
-            return (
-                "FILTER rg.connectorId == @parent_id",
-                "FILTER record.connectorId == @parent_id",
-                "inherited_node.connectorId == @parent_id",
-                "inherited_node.connectorId == @parent_id"
+            scope_rg = f"FILTER rg.connectorId == @parent_id\n            {rg_ids_filter}".rstrip()
+            scope_record = f"FILTER record.connectorId == @parent_id\n            {record_ids_filter}".rstrip()
+            scope_rg_inline = "inherited_node.connectorId == @parent_id" + (
+                f" AND {rg_ids_inline}" if rg_ids_inline else ""
             )
+            scope_record_inline = "inherited_node.connectorId == @parent_id" + (
+                f" AND {record_ids_inline}" if record_ids_inline else ""
+            )
+            return (scope_rg, scope_record, scope_rg_inline, scope_record_inline)
         elif parent_type in ("kb", "recordGroup"):
-            # Filter by parent relationship
-            # RecordGroups: match if parent is this recordGroup
-            # Records: match if belong to this recordGroup OR nested within
-            return (
-                "FILTER (rg.parentId == @parent_id OR rg._key == @parent_id)",
-                """FILTER (
+            scope_rg = f"FILTER (rg.parentId == @parent_id OR rg._key == @parent_id)\n            {rg_ids_filter}".rstrip()
+            scope_record = f"""FILTER (
                 record.connectorId == @parent_id
                 OR LENGTH(
                     FOR ip IN inheritPermissions
@@ -15531,9 +15815,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER ip._to == CONCAT('recordGroups/', @parent_id)
                         RETURN 1
                 ) > 0
-            )""",
-                "(inherited_node.parentId == @parent_id OR inherited_node._key == @parent_id)",
-                """(
+            )
+            {record_ids_filter}""".rstrip()
+            scope_rg_inline = "(inherited_node.parentId == @parent_id OR inherited_node._key == @parent_id)" + (
+                f" AND {rg_ids_inline}" if rg_ids_inline else ""
+            )
+            scope_record_inline = """(
                 inherited_node.connectorId == @parent_id
                 OR LENGTH(
                     FOR ip IN inheritPermissions
@@ -15541,17 +15828,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER ip._to == CONCAT('recordGroups/', @parent_id)
                         RETURN 1
                 ) > 0
-            )"""
-            )
+            )""" + (f" AND {record_ids_inline}" if record_ids_inline else "")
+            return (scope_rg, scope_record, scope_rg_inline, scope_record_inline)
         elif parent_type in ("record", "folder"):
-            # For record parents, scope by same connector then filter in post-processing
-            return (
-                "FILTER rg.connectorId == @parent_connector_id",
-                "FILTER record.connectorId == @parent_connector_id",
-                "inherited_node.connectorId == @parent_connector_id",
-                "inherited_node.connectorId == @parent_connector_id"
+            scope_rg = f"FILTER rg.connectorId == @parent_connector_id\n            {rg_ids_filter}".rstrip()
+            scope_record = f"FILTER record.connectorId == @parent_connector_id\n            {record_ids_filter}".rstrip()
+            scope_rg_inline = "inherited_node.connectorId == @parent_connector_id" + (
+                f" AND {rg_ids_inline}" if rg_ids_inline else ""
             )
+            scope_record_inline = "inherited_node.connectorId == @parent_connector_id" + (
+                f" AND {record_ids_inline}" if record_ids_inline else ""
+            )
+            return (scope_rg, scope_record, scope_rg_inline, scope_record_inline)
         else:
+            if record_group_ids:
+                return (rg_ids_filter, record_ids_filter, rg_ids_inline or "true", record_ids_inline or "true")
             return ("", "", "true", "true")
 
     def _build_children_intersection_aql(
@@ -15641,7 +15932,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         ancestor_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """
         Check if potential_descendant_id is a descendant of ancestor_id.
@@ -15688,8 +15979,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_record_parent_info(
         self,
         record_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        transaction: str | None = None
+    ) -> dict[str, Any] | None:
         """
         Get the current parent information for a record.
 
@@ -15739,7 +16030,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def delete_parent_child_edge_to_record(
         self,
         record_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> int:
         """
         Delete all PARENT_CHILD edges pointing to a record.
@@ -15782,8 +16073,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         parent_id: str,
         child_id: str,
+        *,
         parent_is_kb: bool = False,
-        transaction: Optional[str] = None
+        transaction: str | None = None,
     ) -> bool:
         """
         Create a PARENT_CHILD edge from parent to child.
@@ -15838,7 +16130,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_id: str,
         new_parent_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """
         Update the externalParentId field of a record.
@@ -15883,7 +16175,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def is_record_folder(
         self,
         record_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """
         Check if a record is a folder (isFile=false in FILES collection).
@@ -15929,10 +16221,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         record_key: str,
         md5_checksum: str,
-        record_type: Optional[str] = None,
-        size_in_bytes: Optional[int] = None,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        record_type: str | None = None,
+        size_in_bytes: int | None = None,
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Find duplicate records based on MD5 checksum.
         This method queries the RECORDS collection and works for all record types.
@@ -16002,8 +16294,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def find_next_queued_duplicate(
         self,
         record_id: str,
-        transaction: Optional[str] = None,
-    ) -> Optional[dict]:
+        transaction: str | None = None,
+    ) -> dict | None:
         """
         Find the next QUEUED duplicate record with the same md5 hash.
         Works with all record types by querying the RECORDS collection directly.
@@ -16104,7 +16396,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         source_key: str,
         target_key: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> bool:
         """
         Copy all relationships (edges) from source document to target document.
@@ -16174,61 +16466,87 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return False
 
-    async def get_accessible_records(
+    async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
         org_id: str,
-        filters: Optional[Dict[str, List[str]]] = None,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        connector_id: str,
+        metadata_filters: dict[str, list[str]] | None = None
+    ) -> dict[str, str]:
         """
-        Get all records accessible to a user based on their permissions and apply filters.
+        Get a mapping of virtualRecordId -> recordId for a specific connector covering all permission paths.
 
         Args:
-            user_id (str): The userId field value in users collection
-            org_id (str): The org_id to filter anyone collection
-            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
-            transaction (Optional[str]): Optional transaction context
+            user_id: The userId field value
+            org_id: Organization ID
+            connector_id: Specific connector/app ID to query
+            metadata_filters: Optional metadata filters (departments, categories, etc.)
 
         Returns:
-            List[Dict]: List of accessible records
+            Dict mapping virtualRecordId -> recordId for accessible records in this connector
         """
-        self.logger.info(
-            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
-        )
-
         try:
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                self.logger.warning(f"User not found for userId: {user_id}")
-                return []
+            metadata_filter_lines = []
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                            FILTER dept.departmentName IN @departmentNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("categories"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER cat.name IN @categoryNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories1"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat1Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories2"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat2Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories3"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat3Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("languages"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                            FILTER lang.name IN @languageNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("topics"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                            FILTER topic.name IN @topicNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
 
-            # Get user's accessible app connector ids (function expects external userId, not user_key)
-            user_apps_ids = await self._get_user_app_ids(user_id)
+            metadata_filter_clause = "\n".join(metadata_filter_lines)
 
-            # Extract filters
-            filters = filters or {}
-            kb_ids = filters.get("kb") if filters else None
-            connector_ids = filters.get("apps") if filters else None
-
-            # Determine filter case
-            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
-            has_app_filter = connector_ids is not None and len(connector_ids) > 0
-
-            self.logger.info(
-                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
-                f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
-            )
-
-            # App filter condition - only filter connector records by user's accessible apps
-            app_filter_condition = '''
-                FILTER (
-                    record.origin == "UPLOAD" OR
-                    (record.origin == "CONNECTOR" AND record.connectorId IN @user_apps_ids)
-                )
-            '''
-
-            # Build base query with common parts
             query = f"""
             LET userDoc = FIRST(
                 FOR user IN @@users
@@ -16236,405 +16554,491 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN user
             )
 
-
-            // User -> Direct Records (via permission edges)
             LET directRecords = (
                 FOR record IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                    {app_filter_condition}
-                    RETURN DISTINCT record
+                    FILTER IS_SAME_COLLECTION("records", record)
+                    FILTER record.connectorId == @connectorId
+                    FILTER record.indexingStatus == @completedStatus
+                    {metadata_filter_clause}
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            // User -> Group -> Records (via belongs_to edges)
             LET groupRecords = (
-                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                    {app_filter_condition}
-                    RETURN DISTINCT record
+                FOR group IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        FILTER record.connectorId == @connectorId
+                        FILTER record.indexingStatus == @completedStatus
+                        {metadata_filter_clause}
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            // User -> Group -> Records (via permission edges)
             LET groupRecordsPermissionEdge = (
-                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                    {app_filter_condition}
-                    RETURN DISTINCT record
+                FOR group IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        FILTER record.connectorId == @connectorId
+                        FILTER record.indexingStatus == @completedStatus
+                        {metadata_filter_clause}
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            // User -> Organization -> Records (direct)
             LET orgRecords = (
-                FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                    {app_filter_condition}
-                    RETURN DISTINCT record
+                FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        FILTER record.connectorId == @connectorId
+                        FILTER record.indexingStatus == @completedStatus
+                        {metadata_filter_clause}
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            // User -> Organization -> RecordGroup -> Records (direct and inherited)
             LET orgRecordGroupRecords = (
-                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-
-                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                FOR org IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FOR recordGroup IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-
-                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                        FOR record IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                             FILTER IS_SAME_COLLECTION("records", record)
-                            {app_filter_condition}
-                            RETURN DISTINCT record
+                            FILTER record.connectorId == @connectorId
+                            FILTER record.indexingStatus == @completedStatus
+                            {metadata_filter_clause}
+                            RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            // User -> Group/Role -> RecordGroup -> Record
             LET recordGroupRecords = (
-
-                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-
-                FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-
-                // Support nested RecordGroups (0..5 levels)
-                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                FILTER IS_SAME_COLLECTION("records", record)
-                {app_filter_condition}
-                RETURN DISTINCT record
+                FOR group IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                    FOR recordGroup IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                        FOR record IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                            FILTER IS_SAME_COLLECTION("records", record)
+                            FILTER record.connectorId == @connectorId
+                            FILTER record.indexingStatus == @completedStatus
+                            {metadata_filter_clause}
+                            RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
-            // User -> Group/Role -> RecordGroup -> Records (inherited)
             LET inheritedRecordGroupRecords = (
-                FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-
-                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                FILTER IS_SAME_COLLECTION("records", record)
-                {app_filter_condition}
-                RETURN DISTINCT record
-            )
-
-            LET directAndGroupRecords = UNION_DISTINCT(
-                directRecords,
-                groupRecords,
-                orgRecords,
-                groupRecordsPermissionEdge,
-                recordGroupRecords,
-                inheritedRecordGroupRecords,
-                orgRecordGroupRecords
+                FOR recordGroup IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+                    FOR record IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        FILTER record.connectorId == @connectorId
+                        FILTER record.indexingStatus == @completedStatus
+                        {metadata_filter_clause}
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
 
             LET anyoneRecords = (
-                FOR records IN @@anyone
-                    FILTER records.organization == @orgId
+                FOR anyone IN @@anyone
+                    FILTER anyone.organization == @orgId
                     FOR record IN @@records
-                        FILTER record != null AND record._key == records.file_key
-                        {app_filter_condition}
-                        RETURN record
+                        FILTER record._key == anyone.file_key
+                        FILTER record.connectorId == @connectorId
+                        FILTER record.indexingStatus == @completedStatus
+                        {metadata_filter_clause}
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
             )
+
+            LET allPairs = UNION(
+                directRecords, groupRecords, groupRecordsPermissionEdge,
+                orgRecords, orgRecordGroupRecords, recordGroupRecords,
+                inheritedRecordGroupRecords, anyoneRecords
+            )
+            FOR pair IN allPairs
+                FILTER pair != null AND pair.virtualRecordId != null AND pair.recordId != null
+                COLLECT virtualRecordId = pair.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).pair.recordId
+                FILTER recordId != null
+                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
             """
 
-            unions = []
-
-            # Case 1: Both KB and App filters applied
-            if has_kb_filter and has_app_filter:
-                self.logger.info("🔍 Case 1: Both KB and App filters applied")
-
-                # Get KB records with filter
-                query += f"""
-                // Direct user-KB permissions
-                LET directKbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER kb._key IN @kb_ids
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                // Team-based KB permissions: User -> Team -> KB -> Records
-                LET teamKbRecords = (
-                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("teams", team)
-                        FILTER userTeamEdge.type == "USER"
-                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER teamKbEdge.type == "TEAM"
-                        FILTER kb._key IN @kb_ids
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-                """
-                unions.append("kbRecords")
-
-                # Get app-filtered records from direct, group, org, and anyone
-                query += """
-                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
-                LET appFilteredRecords = (
-                    FOR record IN baseAccessible
-                        FILTER record.connectorId IN @connector_ids
-                        RETURN DISTINCT record
-                )
-                """
-                unions.append("appFilteredRecords")
-
-            # Case 2: Only KB filter applied
-            elif has_kb_filter and not has_app_filter:
-                self.logger.info("🔍 Case 2: Only KB filter applied")
-
-                # Get only filtered KB records
-                query += f"""
-                // Direct user-KB permissions with filter
-                LET directKbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER kb._key IN @kb_ids
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                // Team-based KB permissions with filter: User -> Team -> KB -> Records
-                LET teamKbRecords = (
-                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("teams", team)
-                        FILTER userTeamEdge.type == "USER"
-                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER teamKbEdge.type == "TEAM"
-                        FILTER kb._key IN @kb_ids
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-                """
-                unions.append("kbRecords")
-
-            # Case 3: Only App filter applied
-            elif not has_kb_filter and has_app_filter:
-                self.logger.info("🔍 Case 3: Only App filter applied")
-
-                # Get app-filtered records from direct, group, org, and anyone
-                query += """
-                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
-                LET appFilteredRecords = (
-                    FOR record IN baseAccessible
-                        FILTER record.connectorId IN @connector_ids
-                        RETURN DISTINCT record
-                )
-                """
-                unions.append("appFilteredRecords")
-
-            # Case 4: No KB or App filters - return all accessible records
-            else:
-                self.logger.info("🔍 Case 4: No KB or App filters - returning all accessible records")
-
-                # Get all KB records
-                query += f"""
-                // Direct user-KB permissions
-                LET directKbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                // Team-based KB permissions: User -> Team -> KB -> Records
-                LET teamKbRecords = (
-                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("teams", team)
-                        FILTER userTeamEdge.type == "USER"
-                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER teamKbEdge.type == "TEAM"
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-
-                """
-                unions.append("kbRecords")
-                unions.append("directAndGroupRecords")
-                unions.append("anyoneRecords")
-
-            # Combine all unions
-            if len(unions) == 1:
-                query += f"""
-                LET allAccessibleRecords = {unions[0]}
-                """
-            else:
-                query += f"""
-                LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
-                """
-
-            # Add additional filter conditions (departments, categories, etc.)
-            filter_conditions = []
-            if filters:
-                if filters.get("departments"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
-                        FILTER dept.departmentName IN @departmentNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("categories"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER cat.name IN @categoryNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("subcategories1"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER subcat.name IN @subcat1Names
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("subcategories2"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER subcat.name IN @subcat2Names
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("subcategories3"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER subcat.name IN @subcat3Names
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("languages"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
-                        FILTER lang.name IN @languageNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-                if filters.get("topics"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
-                        FILTER topic.name IN @topicNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-
-            # Apply additional filters if any
-            if filter_conditions:
-                query += (
-                    """
-                FOR record IN allAccessibleRecords
-                    FILTER """
-                    + " AND ".join(filter_conditions)
-                    + """
-                    RETURN DISTINCT record
-                """
-                )
-            else:
-                query += """
-                RETURN allAccessibleRecords
-                """
-
-            # Prepare bind variables
             bind_vars = {
                 "userId": user_id,
                 "orgId": org_id,
-                "user_apps_ids": user_apps_ids,
+                "connectorId": connector_id,
+                "completedStatus": ProgressStatus.COMPLETED.value,
                 "@users": CollectionNames.USERS.value,
                 "@records": CollectionNames.RECORDS.value,
                 "@anyone": CollectionNames.ANYONE.value,
             }
 
-            # Add conditional bind variables
-            if has_kb_filter:
-                bind_vars["kb_ids"] = kb_ids
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    bind_vars["departmentNames"] = metadata_filters["departments"]
+                if metadata_filters.get("categories"):
+                    bind_vars["categoryNames"] = metadata_filters["categories"]
+                if metadata_filters.get("subcategories1"):
+                    bind_vars["subcat1Names"] = metadata_filters["subcategories1"]
+                if metadata_filters.get("subcategories2"):
+                    bind_vars["subcat2Names"] = metadata_filters["subcategories2"]
+                if metadata_filters.get("subcategories3"):
+                    bind_vars["subcat3Names"] = metadata_filters["subcategories3"]
+                if metadata_filters.get("languages"):
+                    bind_vars["languageNames"] = metadata_filters["languages"]
+                if metadata_filters.get("topics"):
+                    bind_vars["topicNames"] = metadata_filters["topics"]
 
-            if has_app_filter:
-                bind_vars["connector_ids"] = connector_ids
+            query_start = time.time()
+            results = await self.execute_query(query, bind_vars=bind_vars)
+            elapsed = time.time() - query_start
+            virtual_id_to_record_id = {
+                r["virtualRecordId"]: r["recordId"]
+                for r in results
+                if r and r.get("virtualRecordId") and r.get("recordId")
+            } if results else {}
 
-            # Add filter bind variables
-            if filters:
-                if filters.get("departments"):
-                    bind_vars["departmentNames"] = filters["departments"]
-                if filters.get("categories"):
-                    bind_vars["categoryNames"] = filters["categories"]
-                if filters.get("subcategories1"):
-                    bind_vars["subcat1Names"] = filters["subcategories1"]
-                if filters.get("subcategories2"):
-                    bind_vars["subcat2Names"] = filters["subcategories2"]
-                if filters.get("subcategories3"):
-                    bind_vars["subcat3Names"] = filters["subcategories3"]
-                if filters.get("languages"):
-                    bind_vars["languageNames"] = filters["languages"]
-                if filters.get("topics"):
-                    bind_vars["topicNames"] = filters["topics"]
-
-            # Execute query
-            self.logger.debug(f"🔍 Executing query with bind_vars keys: {list(bind_vars.keys())}")
-            result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-
-            # Log results
-            record_count = 0
-            if result:
-                if isinstance(result[0], list):
-                    record_count = len(result[0])
-                    result = result[0]
-                else:
-                    record_count = len(result)
-
-            self.logger.info(f"✅ Query completed - found {record_count} accessible records")
-
-            if has_kb_filter:
-                self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
-            if has_app_filter:
-                self.logger.info(
-                    f"✅ App filtering applied for {len(connector_ids)} connector IDs"
-                )
-            if not has_kb_filter and not has_app_filter:
-                self.logger.info("✅ No KB/App filters - returned all accessible records")
-
-            return result if result else []
+            self.logger.info(
+                f"Connector {connector_id}: found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed:.3f}s"
+            )
+            return virtual_id_to_record_id
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get accessible records: {str(e)}")
-            raise
+            self.logger.error(
+                f"Failed to get virtual IDs for connector {connector_id}: {e}\n{traceback.format_exc()}"
+            )
+            return {}
+
+    async def _get_kb_virtual_ids(
+        self,
+        user_id: str,
+        org_id: str,
+        kb_ids: list[str] | None = None,
+        metadata_filters: dict[str, list[str]] | None = None
+    ) -> dict[str, str]:
+        """
+        Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
+
+        Args:
+            user_id: The userId field value
+            org_id: Organization ID
+            kb_ids: Optional list of KB IDs to filter by
+            metadata_filters: Optional metadata filters
+
+        Returns:
+            Dict mapping virtualRecordId -> recordId for accessible KB records
+        """
+        try:
+            kb_filter_clause = "FILTER kb._key IN @kb_ids" if kb_ids else ""
+            metadata_filter_lines = []
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                            FILTER dept.departmentName IN @departmentNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("categories"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER cat.name IN @categoryNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories1"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat1Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories2"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat2Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("subcategories3"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                            FILTER subcat.name IN @subcat3Names
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("languages"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                            FILTER lang.name IN @languageNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+                if metadata_filters.get("topics"):
+                    metadata_filter_lines.append(f"""
+                        FILTER LENGTH(
+                            FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                            FILTER topic.name IN @topicNames
+                            LIMIT 1
+                            RETURN 1
+                        ) > 0""")
+
+            metadata_filter_clause = "\n".join(metadata_filter_lines)
+
+            query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+
+            LET directKbRecords = (
+                FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    {kb_filter_clause}
+                FOR record IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("records", record)
+                    FILTER record.origin == "UPLOAD"
+                    FILTER record.indexingStatus == @completedStatus
+                    {metadata_filter_clause}
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
+            )
+
+            LET teamKbRecords = (
+                FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("teams", team)
+                    FILTER userTeamEdge.type == "USER"
+                FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    FILTER teamKbEdge.type == "TEAM"
+                    {kb_filter_clause}
+                FOR record IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION("records", record)
+                    FILTER record.origin == "UPLOAD"
+                    FILTER record.indexingStatus == @completedStatus
+                    {metadata_filter_clause}
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
+            )
+
+            LET allKbPairs = UNION(directKbRecords, teamKbRecords)
+            FOR pair IN allKbPairs
+                FILTER pair != null AND pair.virtualRecordId != null AND pair.recordId != null
+                COLLECT virtualRecordId = pair.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).pair.recordId
+                FILTER recordId != null
+                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
+            """
+
+            bind_vars = {
+                "userId": user_id,
+                "completedStatus": ProgressStatus.COMPLETED.value,
+                "@users": CollectionNames.USERS.value,
+            }
+
+            if kb_ids:
+                bind_vars["kb_ids"] = kb_ids
+
+            if metadata_filters:
+                if metadata_filters.get("departments"):
+                    bind_vars["departmentNames"] = metadata_filters["departments"]
+                if metadata_filters.get("categories"):
+                    bind_vars["categoryNames"] = metadata_filters["categories"]
+                if metadata_filters.get("subcategories1"):
+                    bind_vars["subcat1Names"] = metadata_filters["subcategories1"]
+                if metadata_filters.get("subcategories2"):
+                    bind_vars["subcat2Names"] = metadata_filters["subcategories2"]
+                if metadata_filters.get("subcategories3"):
+                    bind_vars["subcat3Names"] = metadata_filters["subcategories3"]
+                if metadata_filters.get("languages"):
+                    bind_vars["languageNames"] = metadata_filters["languages"]
+                if metadata_filters.get("topics"):
+                    bind_vars["topicNames"] = metadata_filters["topics"]
+
+            query_start = time.time()
+            results = await self.execute_query(query, bind_vars=bind_vars)
+            elapsed = time.time() - query_start
+            kb_filter_info = f"filtered: {len(kb_ids)} KBs" if kb_ids else "all KBs"
+            virtual_id_to_record_id = {
+                r["virtualRecordId"]: r["recordId"]
+                for r in results
+                if r and r.get("virtualRecordId") and r.get("recordId")
+            } if results else {}
+
+            self.logger.info(
+                f"KB query ({kb_filter_info}): found {len(virtual_id_to_record_id)} virtualRecordIds in {elapsed:.3f}s"
+            )
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(f"Failed to get KB virtual IDs: {e}", exc_info=True)
+            return {}
+
+    async def get_accessible_virtual_record_ids(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]] | None = None
+    ) -> dict[str, str]:
+        """
+        Get a mapping of virtualRecordId -> recordId for all records accessible to a user.
+
+        Each virtualRecordId maps to the specific recordId (the _key of the record document)
+        that the user has permission to access. This prevents cross-connector leakage where
+        multiple connectors share the same virtualRecordId but only one is accessible.
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
+                Format: {
+                    'departments': [dept_ids],
+                    'categories': [cat_ids],
+                    'subcategories1': [subcat1_ids],
+                    'subcategories2': [subcat2_ids],
+                    'subcategories3': [subcat3_ids],
+                    'languages': [language_ids],
+                    'topics': [topic_ids],
+                    'kb': [kb_ids],
+                    'apps': [connector_ids]
+                }
+
+        Returns:
+            Dict[str, str]: Mapping of virtualRecordId -> recordId
+        """
+        start_time = time.time()
+
+        try:
+            user_apps_ids = await self._get_user_app_ids(user_id)
+
+            if not user_apps_ids:
+                self.logger.warning(f"User {user_id} has no accessible apps")
+
+            filters = filters or {}
+            kb_ids = filters.get("kb")
+            connector_ids_filter = filters.get("apps")
+
+            # Extract metadata filters (everything except kb and apps)
+            metadata_filters = {
+                k: v for k, v in filters.items()
+                if k not in ["kb", "apps"] and v
+            }
+
+            has_kb_filter = bool(kb_ids)
+            has_app_filter = bool(connector_ids_filter)
+
+            tasks = []
+
+            if has_app_filter and has_kb_filter:
+                connectors_to_query = [
+                    cid for cid in user_apps_ids
+                    if cid in connector_ids_filter
+                ]
+                for connector_id in connectors_to_query:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(
+                        self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
+                    )
+                tasks.append(self._get_kb_virtual_ids(user_id, org_id, kb_ids, metadata_filters))
+
+            elif not has_app_filter and has_kb_filter:
+                tasks.append(self._get_kb_virtual_ids(user_id, org_id, kb_ids, metadata_filters))
+
+            elif not has_app_filter and not has_kb_filter:
+                for connector_id in user_apps_ids:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(
+                        self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
+                    )
+                tasks.append(self._get_kb_virtual_ids(user_id, org_id, None, metadata_filters))
+
+            else:  # has_app_filter and not has_kb_filter
+                connectors_to_query = [
+                    cid for cid in user_apps_ids
+                    if cid in connector_ids_filter
+                ]
+                for connector_id in connectors_to_query:
+                    if connector_id.startswith("knowledgeBase_"):
+                        continue
+                    tasks.append(
+                        self._get_virtual_ids_for_connector(user_id, org_id, connector_id, metadata_filters)
+                    )
+
+            if not tasks:
+                self.logger.warning(f"No queries to execute for user {user_id} with filters {filters}")
+                return []
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            virtual_id_to_record_id: dict[str, str] = {}
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    self.logger.error(f"Task {i} failed: {str(result)}")
+                    continue
+                if result:
+                    for vid, rid in result.items():
+                        if vid not in virtual_id_to_record_id:
+                            virtual_id_to_record_id[vid] = rid
+
+            total_time = time.time() - start_time
+            self.logger.info(
+                f"Found {len(virtual_id_to_record_id)} unique virtualRecordIds "
+                f"in {total_time:.3f}s"
+            )
+
+            return virtual_id_to_record_id
+
+        except Exception as e:
+            self.logger.error(f"Get accessible virtual record IDs failed: {e}", exc_info=True)
+            return {}
+
+    async def get_records_by_record_ids(
+        self,
+        record_ids: list[str],
+        org_id: str
+    ) -> list[dict[str, Any]]:
+        """
+        Batch fetch full record documents by their _key (record IDs).
+
+        This is used after Qdrant search to fetch the specific records that the user
+        has permission to access, using the permission-verified record IDs from the
+        accessible virtual ID map.
+
+        Args:
+            record_ids: List of record _key values to fetch
+            org_id: Organization ID for additional filtering
+
+        Returns:
+            List[Dict[str, Any]]: List of full record dictionaries
+        """
+        try:
+            if not record_ids:
+                return []
+
+            self.logger.debug(f"Fetching {len(record_ids)} records by record IDs")
+
+            query = """
+            FOR record IN @@records
+                FILTER record._key IN @record_ids
+                  AND record.orgId == @orgId
+                RETURN record
+            """
+
+            bind_vars = {
+                "@records": CollectionNames.RECORDS.value,
+                "record_ids": record_ids,
+                "orgId": org_id,
+            }
+
+            results = await self.execute_query(query, bind_vars=bind_vars)
+            return [r for r in results if r] if results else []
+
+        except Exception as e:
+            self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
+            return []
 
     async def get_records_by_virtual_record_id(
         self,
         virtual_record_id: str,
-        accessible_record_ids: Optional[List[str]] = None,
-        transaction: Optional[str] = None
-    ) -> List[str]:
+        accessible_record_ids: list[str] | None = None,
+        transaction: str | None = None
+    ) -> list[str]:
         """
         Get all record keys that have the given virtualRecordId.
         Optionally filter by a list of record IDs.
@@ -16698,11 +17102,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         org_id: str,
         user_key: str,
-        search: Optional[str] = None,
+        search: str | None = None,
         page: int = 1,
         limit: int = 10,
-        transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
+        transaction: str | None = None
+    ) -> tuple[list[dict], int]:
         """
         Get teams for an organization with pagination, search, members, and permissions.
         """
@@ -16796,8 +17200,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         team_id: str,
         user_key: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+        transaction: str | None = None
+    ) -> dict | None:
         """
         Get a single team with its members and permissions.
         """
@@ -16859,11 +17263,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_user_teams(
         self,
         user_key: str,
-        search: Optional[str] = None,
+        search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
+        transaction: str | None = None
+    ) -> tuple[list[dict], int]:
         """
         Get all teams that a user is a member of.
         """
@@ -16962,11 +17366,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         org_id: str,
         user_key: str,
-        search: Optional[str] = None,
+        search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
+        transaction: str | None = None
+    ) -> tuple[list[dict], int]:
         """
         Get all teams created by a user.
         """
@@ -17100,8 +17504,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         team_id: str,
         org_id: str,
         user_key: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+        transaction: str | None = None
+    ) -> dict | None:
         """
         Get all users in a specific team.
         """
@@ -17168,8 +17572,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         query: str,
         limit: int = 10,
         offset: int = 0,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Search teams by name or description.
         """
@@ -17238,9 +17642,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def delete_team_member_edges(
         self,
         team_id: str,
-        user_ids: List[str],
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        user_ids: list[str],
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Delete edges to remove team members.
         """
@@ -17270,10 +17674,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def batch_update_team_member_roles(
         self,
         team_id: str,
-        user_roles: List[Dict[str, str]],
+        user_roles: list[dict[str, str]],
         timestamp: int,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        transaction: str | None = None
+    ) -> list[dict]:
         """
         Batch update user roles in a team.
         """
@@ -17315,7 +17719,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def delete_all_team_permissions(
         self,
         team_id: str,
-        transaction: Optional[str] = None
+        transaction: str | None = None
     ) -> None:
         """
         Delete all permissions for a team.
@@ -17341,9 +17745,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_team_owner_removal_info(
         self,
         team_id: str,
-        user_ids: List[str],
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+        user_ids: list[str],
+        transaction: str | None = None
+    ) -> dict[str, Any]:
         """
         Get information about owners being removed and total owner count for a team.
         """
@@ -17393,9 +17797,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_team_permissions_and_owner_count(
         self,
         team_id: str,
-        user_ids: List[str],
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+        user_ids: list[str],
+        transaction: str | None = None
+    ) -> dict[str, Any]:
         """
         Get team info, current permissions for specific users, and total owner count.
         """
@@ -17454,11 +17858,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_organization_users(
         self,
         org_id: str,
-        search: Optional[str] = None,
+        search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
+        transaction: str | None = None
+    ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
         """
@@ -17531,7 +17935,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Error in get_organization_users: {str(e)}", exc_info=True)
             return [], 0
 
-    async def check_toolset_instance_in_use(self, instance_id: str, transaction: Optional[str] = None) -> List[str]:
+    async def check_toolset_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
         """
         Check if a toolset instance is currently in use by any active agents.
 
@@ -17583,7 +17987,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
-    async def get_agent(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
+    async def get_agent(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> dict | None:
         """
         Get an agent by ID with user permissions and linked graph data.
 
@@ -17626,27 +18030,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             )
 
-            // Check team permissions on the agent (only if no individual access)
-            LET team_access = LENGTH(individual_access) == 0 ? (
-                FOR perm IN {CollectionNames.PERMISSION.value}
-                    FILTER perm._from IN user_teams
-                    FILTER perm._to == agent_path
-                    FILTER perm.type == "TEAM"
-                    LET agent = DOCUMENT(agent_path)
-                    FILTER agent != null
-                    FILTER agent.isDeleted != true
-                    RETURN MERGE(agent, {{
-                        access_type: "TEAM",
-                        user_role: perm.role,
-                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                        can_delete: perm.role == "OWNER",
-                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
-                        can_view: true
-                    }})
-            ) : []
-
-            // Check org permissions on the agent (only if no individual or team access)
-            LET org_access = LENGTH(individual_access) == 0 && LENGTH(team_access) == 0 && org_key != null ? (
+            // Check org permissions on the agent (only if no individual access)
+            LET org_access = LENGTH(individual_access) == 0 && org_key != null ? (
                 FOR perm IN {CollectionNames.PERMISSION.value}
                     FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
                     FILTER perm._to == agent_path
@@ -17664,11 +18049,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             ) : []
 
-            // Get base agent with permissions
+            // Check team permissions on the agent (only if no individual or org access)
+            LET team_access = LENGTH(individual_access) == 0 && LENGTH(org_access) == 0 ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from IN user_teams
+                    FILTER perm._to == agent_path
+                    FILTER perm.type == "TEAM"
+                    LET agent = DOCUMENT(agent_path)
+                    FILTER agent != null
+                    FILTER agent.isDeleted != true
+                    RETURN MERGE(agent, {{
+                        access_type: "TEAM",
+                        user_role: perm.role,
+                        can_edit: perm.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: perm.role == "OWNER",
+                        can_share: perm.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true
+                    }})
+            ) : []
+
+            // Get base agent with permissions (first available access type)
             LET base_agent = LENGTH(individual_access) > 0 ?
                 FIRST(individual_access) :
-                (LENGTH(team_access) > 0 ? FIRST(team_access) :
-                (LENGTH(org_access) > 0 ? FIRST(org_access) : null))
+                (LENGTH(org_access) > 0 ? FIRST(org_access) :
+                (LENGTH(team_access) > 0 ? FIRST(team_access) : null))
 
             // Get linked toolsets with their tools
             LET linked_toolsets = base_agent != null ? (
@@ -17818,8 +18222,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get agent: {str(e)}")
             return None
 
-    async def get_all_agents(self, user_id: str, org_id: str, transaction: Optional[str] = None) -> List[Dict]:
-        """Get all agents accessible to a user via individual, team, or org access - flattened response with deduplication"""
+    async def get_all_agents(
+        self,
+        user_id: str,
+        org_id: str,
+        page: int | None = None,
+        limit: int | None = None,
+        search: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict] | dict[str, Any]:
+        """Get agents accessible to a user with optional pagination and search.
+
+        The AQL pipeline guarantees correct search-aware pagination:
+          base     = all deduplicated permission-visible agents
+          filtered = search ? FILTER(base, query) : base
+          sorted   = SORT(filtered, sort_field, direction)
+          totalItems = LENGTH(sorted)            ← count AFTER search, used for
+                                                    totalPages / hasNext on all pages
+          agents   = do_page ? SLICE(sorted, offset, limit) : sorted
+
+        This means requesting 'page 2 while searching for X' correctly returns
+        the second chunk of X-matching agents with totalItems = count(X-matches).
+
+        Returns:
+          - List[dict]       when page / limit are both None  (backward-compat)
+          - Dict[str, Any]   {'agents': [...], 'totalItems': int}  otherwise
+        """
         try:
             query = f"""
             LET user_key = @user_id
@@ -17902,39 +18332,119 @@ class ArangoHTTPProvider(IGraphDBProvider):
             // Combine all permissions and deduplicate by agent_id, keeping highest priority
             LET combined = APPEND(APPEND(all_permissions, team_permissions), org_permissions)
 
-            // Deduplicate: group by agent_id and keep entry with lowest priority number
-            FOR perm_entry IN combined
-                COLLECT agent_id = perm_entry.agent_id INTO groups
-                LET best_entry = (
-                    FOR entry IN groups[*].perm_entry
-                        SORT entry.priority ASC
-                        LIMIT 1
-                        RETURN entry
-                )[0]
-                RETURN MERGE(best_entry.agent, {{
-                    access_type: best_entry.access_type,
-                    user_role: best_entry.role,
-                    can_edit: best_entry.role IN ["OWNER", "WRITER", "ORGANIZER"],
-                    can_delete: best_entry.role == "OWNER",
-                    can_share: best_entry.role IN ["OWNER", "ORGANIZER"],
-                    can_view: true,
-                    shareWithOrg: best_entry.agent._id IN org_shared_agent_paths
-                }})
+            // Deduplicate into a base array
+            LET base = (
+                FOR perm_entry IN combined
+                    COLLECT agent_id = perm_entry.agent_id INTO groups
+                    LET best_entry = (
+                        FOR entry IN groups[*].perm_entry
+                            SORT entry.priority ASC
+                            LIMIT 1
+                            RETURN entry
+                    )[0]
+                    RETURN MERGE(best_entry.agent, {{
+                        access_type: best_entry.access_type,
+                        user_role: best_entry.role,
+                        can_edit: best_entry.role IN ["OWNER", "WRITER", "ORGANIZER"],
+                        can_delete: best_entry.role == "OWNER",
+                        can_share: best_entry.role IN ["OWNER", "ORGANIZER"],
+                        can_view: true,
+                        shareWithOrg: best_entry.agent._id IN org_shared_agent_paths
+                    }})
+            )
+
+            // Apply search filter if provided
+            LET filtered = (
+                @has_search
+                ? (
+                    FOR a IN base
+                        LET nameMatch = a.name != null && CONTAINS(LOWER(a.name), @q)
+                        LET descMatch = a.description != null && CONTAINS(LOWER(a.description), @q)
+                        LET tagsMatch = IS_ARRAY(a.tags) && LENGTH(
+                            FOR t IN a.tags
+                                FILTER t != null && CONTAINS(LOWER(t), @q)
+                                RETURN 1
+                        ) > 0
+                        FILTER nameMatch || descMatch || tagsMatch
+                        RETURN a
+                  )
+                : base
+            )
+
+            // Sort by requested field or sensible defaults
+            LET sorted = (
+                @sort_asc
+                ? (
+                    FOR a IN filtered
+                        LET sortValue = (
+                            HAS(a, @sort_by) && a[@sort_by] != null
+                            ? a[@sort_by]
+                            : (a.updatedAtTimestamp != null ? a.updatedAtTimestamp : a.createdAtTimestamp)
+                        )
+                        SORT sortValue ASC
+                        RETURN a
+                  )
+                : (
+                    FOR a IN filtered
+                        LET sortValue = (
+                            HAS(a, @sort_by) && a[@sort_by] != null
+                            ? a[@sort_by]
+                            : (a.updatedAtTimestamp != null ? a.updatedAtTimestamp : a.createdAtTimestamp)
+                        )
+                        SORT sortValue DESC
+                        RETURN a
+                  )
+            )
+
+            LET totalItems = LENGTH(sorted)
+
+            RETURN {{
+                agents: @do_page ? SLICE(sorted, @offset, @limit) : sorted,
+                totalItems: totalItems
+            }}
             """
+
+            # Normalise search term once so every downstream use is consistent.
+            q_norm: str = search.strip().lower() if search and search.strip() else ""
+            has_search: bool = bool(q_norm)
+
+            do_page: bool = page is not None and limit is not None
+            # offset / limit are only referenced by the AQL when do_page=True.
+            offset: int = max((page - 1) * limit, 0) if do_page else 0
+            page_limit: int = limit if do_page else 0  # 0 is safe; never used when do_page=False
 
             bind_vars = {
                 "user_id": user_id,
                 "org_id": org_id,
+                "has_search": has_search,
+                "q": q_norm,
+                "sort_by": (sort_by or "updatedAtTimestamp"),
+                "sort_asc": (sort_order or "desc").lower() == "asc",
+                "do_page": do_page,
+                "offset": offset,
+                "limit": page_limit,
             }
 
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-            return result if result else []
+            if not result:
+                return {"agents": [], "totalItems": 0} if do_page else []
+
+            # The AQL always returns a single envelope object.
+            payload = result[0] if isinstance(result, list) else result
+            if do_page:
+                return {
+                    "agents": payload.get("agents", []),
+                    # totalItems = count AFTER search filter (see docstring)
+                    "totalItems": payload.get("totalItems", 0),
+                }
+            # Backward-compat: no paging requested → flat list
+            return payload.get("agents", [])
 
         except Exception as e:
             self.logger.error(f"Failed to get all agents: {str(e)}")
             return []
 
-    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+    async def update_agent(self, agent_id: str, agent_updates: dict[str, Any], user_id: str, org_id: str, transaction: str | None = None) -> bool | None:
         """
         Update an agent.
 
@@ -18030,7 +18540,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to update agent: {str(e)}")
             return False
 
-    async def delete_agent(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+    async def delete_agent(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> bool | None:
         """Delete an agent (soft delete)"""
         try:
             # Check if agent exists
@@ -18076,7 +18586,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to delete agent: {str(e)}")
             return False
 
-    async def hard_delete_agent(self, agent_id: str, transaction: Optional[str] = None) -> Dict[str, int]:
+    async def hard_delete_agent(self, agent_id: str, transaction: str | None = None) -> dict[str, int]:
         """
         Hard delete a single agent and all its related edges/nodes.
 
@@ -18312,7 +18822,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "edges_deleted": 0,
             }
 
-    async def hard_delete_all_agents(self, transaction: Optional[str] = None) -> Dict[str, int]:
+    async def hard_delete_all_agents(self, transaction: str | None = None) -> dict[str, int]:
         """
         Hard delete ALL agents (including soft-deleted ones) and all their related edges/nodes.
 
@@ -18523,7 +19033,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "edges_deleted": 0,
             }
 
-    async def share_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[bool]:
+    async def share_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, transaction: str | None = None) -> bool | None:
         """Share an agent to users and teams"""
         try:
             # Check if agent exists and user has permission to share it
@@ -18586,7 +19096,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to share agent: %s", str(e), exc_info=True)
             return False
 
-    async def unshare_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[Dict]:
+    async def unshare_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, transaction: str | None = None) -> dict | None:
         """Unshare an agent from users and teams - direct deletion without validation"""
         try:
             # Check if user has permission to unshare the agent
@@ -18633,7 +19143,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("Failed to unshare agent: %s", str(e), exc_info=True)
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
-    async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str, transaction: Optional[str] = None) -> Optional[Dict]:
+    async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: list[str] | None, team_ids: list[str] | None, role: str, transaction: str | None = None) -> dict | None:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
             # Check if the requesting user is the OWNER of the agent
@@ -18708,7 +19218,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to update agent permission: {str(e)}")
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
-    async def get_agent_permissions(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[List[Dict]]:
+    async def get_agent_permissions(self, agent_id: str, user_id: str, org_id: str, transaction: str | None = None) -> list[dict] | None:
         """Get all permissions for an agent (only OWNER can view all permissions)"""
         try:
             # Check if user has access to the agent
@@ -18751,7 +19261,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get agent permissions: {str(e)}")
             return None
 
-    async def get_all_agent_templates(self, user_id: str, transaction: Optional[str] = None) -> List[Dict]:
+    async def get_all_agent_templates(self, user_id: str, transaction: str | None = None) -> list[dict]:
         """Get all agent templates accessible to a user via individual or team access"""
         try:
             query = f"""
@@ -18834,7 +19344,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to get all agent templates: %s", str(e))
             return []
 
-    async def get_template(self, template_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
+    async def get_template(self, template_id: str, user_id: str, transaction: str | None = None) -> dict | None:
         """Get a template by ID with user permissions"""
         try:
             query = f"""
@@ -18923,7 +19433,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to get template access: %s", str(e))
             return None
 
-    async def share_agent_template(self, template_id: str, user_id: str, user_ids: Optional[List[str]] = None, team_ids: Optional[List[str]] = None, transaction: Optional[str] = None) -> Optional[bool]:
+    async def share_agent_template(self, template_id: str, user_id: str, user_ids: list[str] | None = None, team_ids: list[str] | None = None, transaction: str | None = None) -> bool | None:
         """Share an agent template with users"""
         try:
             self.logger.info(f"Sharing agent template {template_id} with users {user_ids}")
@@ -18988,7 +19498,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to share agent template: %s", str(e))
             return False
 
-    async def clone_agent_template(self, template_id: str, transaction: Optional[str] = None) -> Optional[str]:
+    async def clone_agent_template(self, template_id: str, transaction: str | None = None) -> str | None:
         """Clone an agent template"""
         try:
             template = await self.get_document(template_id, CollectionNames.AGENT_TEMPLATES.value, transaction=transaction)
@@ -19015,7 +19525,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to clone agent template: %s", str(e))
             return None
 
-    async def delete_agent_template(self, template_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+    async def delete_agent_template(self, template_id: str, user_id: str, transaction: str | None = None) -> bool | None:
         """Delete an agent template"""
         try:
             template_document_id = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
@@ -19075,7 +19585,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to delete agent template: %s", str(e), exc_info=True)
             return False
 
-    async def update_agent_template(self, template_id: str, template_updates: Dict[str, Any], user_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+    async def update_agent_template(self, template_id: str, template_updates: dict[str, Any], user_id: str, transaction: str | None = None) -> bool | None:
         """Update an agent template"""
         try:
             # Check if user is the owner of the template

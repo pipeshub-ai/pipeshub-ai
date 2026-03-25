@@ -173,6 +173,7 @@ class Record(BaseModel):
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
+    reason: str | None = Field(default=None, description="Reason for the record status")
     # Epoch Timestamps
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
@@ -266,6 +267,7 @@ class Record(BaseModel):
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "indexingStatus": self.indexing_status,
             "extractionStatus": self.extraction_status,
+            "reason": self.reason,
             "isDeleted": False,
             "isArchived": False,
             "deletedByUserId": None,
@@ -326,6 +328,7 @@ class Record(BaseModel):
             is_internal=arango_base_record.get("isInternal", False),
             md5_hash=arango_base_record.get("md5Checksum"),
             size_in_bytes=arango_base_record.get("sizeInBytes"),
+            reason=arango_base_record.get("reason"),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -405,6 +408,7 @@ class FileRecord(Record):
             source_updated_at=arango_base_record["sourceLastModifiedTimestamp"],
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId"),
+            is_internal=arango_base_record.get("isInternal", False),
             is_file=arango_base_file_record.get("isFile", True),
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes"),
             extension=arango_base_file_record.get("extension"),

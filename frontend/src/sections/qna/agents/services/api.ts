@@ -86,9 +86,24 @@ class AgentApiService {
   static baseUrl = '/api/v1/agents';
 
   // Agent CRUD Operations
-  static async getAgents(): Promise<Agent[]> {
-    const response = await axios.get(`${this.baseUrl}`);
-    return response.data.agents;
+  static async getAgents(params?: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    sort?: string;
+    order?: 'asc' | 'desc';
+  }): Promise<{ agents: Agent[]; pagination: any }> {
+    const query: any = {};
+    if (params?.page) query.page = params.page;
+    if (params?.limit) query.limit = params.limit;
+    if (params?.search) query.search = params.search;
+    if (params?.sort) query.sort_by = params.sort;
+    if (params?.order) query.sort_order = params.order;
+    const response = await axios.get(`${this.baseUrl}`, { params: query });
+    return {
+      agents: response.data?.agents || [],
+      pagination: response.data?.pagination || {},
+    };
   }
 
   static async getAgent(agentKey: string): Promise<Agent> {

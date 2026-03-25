@@ -738,6 +738,107 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
         }
       }
 
+      // Handle app-group drops - populate selectedApps and appFilters from drag data
+      if (template.type === 'app-group') {
+        const selectedAppsStr = event.dataTransfer.getData('selectedApps');
+        const appDetailsStr = event.dataTransfer.getData('appDetails');
+        let selectedApps: string[] = template.defaultConfig?.selectedApps || [];
+        let apps = template.defaultConfig?.apps || [];
+
+        // Parse drag data if available (group drag from sidebar)
+        if (selectedAppsStr) {
+          try {
+            selectedApps = JSON.parse(selectedAppsStr);
+          } catch (e) {
+            console.error('Failed to parse selectedApps from drag data:', e);
+          }
+        }
+        if (appDetailsStr) {
+          try {
+            apps = JSON.parse(appDetailsStr);
+          } catch (e) {
+            console.error('Failed to parse appDetails from drag data:', e);
+          }
+        }
+
+        // Build appFilters with empty filters for each connector instance
+        const appFilters: Record<string, { recordGroups: string[]; records: string[] }> = {};
+        selectedApps.forEach((id: string) => {
+          appFilters[id] = { recordGroups: [], records: [] };
+        });
+
+        const newNode: Node<FlowNodeData> = {
+          id: `${type}-${Date.now()}`,
+          type: 'flowNode',
+          position,
+          data: {
+            id: `${type}-${Date.now()}`,
+            type: template.type,
+            label: normalizeDisplayName(template.label),
+            description: template.description,
+            icon: template.icon,
+            config: {
+              ...template.defaultConfig,
+              apps,
+              selectedApps,
+              appFilters,
+            },
+            inputs: template.inputs,
+            outputs: template.outputs,
+            isConfigured: true,
+          },
+        };
+        setNodes((nds) => [...nds, newNode]);
+        return;
+      }
+
+      // Handle kb-group drops - populate selectedKBs and kbConnectorIds from drag data
+      if (template.type === 'kb-group') {
+        const selectedKBsStr = event.dataTransfer.getData('selectedKBs');
+        const kbConnectorIdsStr = event.dataTransfer.getData('kbConnectorIds');
+        let selectedKBs: string[] = template.defaultConfig?.selectedKBs || [];
+        let kbConnectorIds: Record<string, string> = template.defaultConfig?.kbConnectorIds || {};
+
+        // Parse drag data if available (group drag from sidebar)
+        if (selectedKBsStr) {
+          try {
+            selectedKBs = JSON.parse(selectedKBsStr);
+          } catch (e) {
+            console.error('Failed to parse selectedKBs from drag data:', e);
+          }
+        }
+        if (kbConnectorIdsStr) {
+          try {
+            kbConnectorIds = JSON.parse(kbConnectorIdsStr);
+          } catch (e) {
+            console.error('Failed to parse kbConnectorIds from drag data:', e);
+          }
+        }
+
+        const newNode: Node<FlowNodeData> = {
+          id: `${type}-${Date.now()}`,
+          type: 'flowNode',
+          position,
+          data: {
+            id: `${type}-${Date.now()}`,
+            type: template.type,
+            label: normalizeDisplayName(template.label),
+            description: template.description,
+            icon: template.icon,
+            config: {
+              ...template.defaultConfig,
+              selectedKBs,
+              kbConnectorIds,
+            },
+            inputs: template.inputs,
+            outputs: template.outputs,
+            isConfigured: true,
+          },
+        };
+        setNodes((nds) => [...nds, newNode]);
+        return;
+      }
+
       // Handle regular node drops
       const newNode: Node<FlowNodeData> = {
         id: `${type}-${Date.now()}`,

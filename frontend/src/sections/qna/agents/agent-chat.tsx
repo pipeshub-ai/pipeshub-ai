@@ -229,8 +229,9 @@ class StreamingManager {
     return this.messageToConversationMap[messageId] || null;
   }
 
-  transferNewConversationData(newConversationId: string) {
-    const newKey = 'new';
+  transferNewConversationData(newConversationId: string, agentKey?: string) {
+    // Use agent-specific key for 'new' conversations
+    const newKey = agentKey ? `new-${agentKey}` : 'new';
     const actualKey = newConversationId;
     const newMessages = this.getConversationMessages(newKey);
     this.setConversationMessages(actualKey, [...newMessages]);
@@ -504,8 +505,9 @@ class StreamingManager {
     this.completedNavigations.clear();
   }
 
-  resetNewConversation() {
-    const draftKey = 'new';
+  resetNewConversation(agentKey?: string) {
+    // Use agent-specific key for 'new' conversations
+    const draftKey = agentKey ? `new-${agentKey}` : 'new';
     const state = this.conversationStates[draftKey];
     if (state?.controller && !state.controller.signal.aborted) {
       state.controller.abort();
@@ -799,14 +801,16 @@ const AgentChat = () => {
   const streamingManager = StreamingManager.getInstance();
   const theme = useTheme();
 
-  const getConversationKey = useCallback((convId: string | null) => {
-    const key = convId || 'new';
-    return key;
-  }, []);
+  const getConversationKey = useCallback((convId: string | null, agentKeyParam?: string) => {
+    if (convId) return convId;
+    // Make 'new' conversation key agent-specific to prevent cross-agent state leakage
+    const resolvedAgentKey = agentKeyParam || agentKey || 'default';
+    return `new-${resolvedAgentKey}`;
+  }, [agentKey]);
 
   const currentConversationKey = useMemo(
-    () => getConversationKey(currentConversationId),
-    [currentConversationId, getConversationKey]
+    () => getConversationKey(currentConversationId, agentKey),
+    [currentConversationId, getConversationKey, agentKey]
   );
 
   const currentMessages = useMemo(
@@ -878,13 +882,14 @@ const AgentChat = () => {
       // Navigate to the new agent's base URL (without conversation ID) to ensure clean state
       navigate(`/agents/${agentKey}`, { replace: true });
 
-      // Reset the 'new' conversation state for the new agent
-      streamingManager.resetNewConversation();
+      // Reset the 'new' conversation state for the new agent (this ensures clean state)
+      streamingManager.resetNewConversation(agentKey);
 
       // Force update to ensure UI reflects the cleared state
       forceUpdate();
     }
     previousAgentKeyRef.current = agentKey;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentKey, streamingManager, navigate, forceUpdate]);
 
   const handleCloseSnackbar = (): void => {
@@ -1016,7 +1021,9 @@ const AgentChat = () => {
   const handleStreamingResponse = useCallback(
     async (url: string, body: any, isNewConversation: boolean): Promise<string | null> => {
       const streamingBotMessageId = `streaming-${Date.now()}`;
-      const conversationKey = isNewConversation ? 'new' : getConversationKey(currentConversationId);
+      const conversationKey = isNewConversation 
+        ? getConversationKey(null, agentKey) 
+        : getConversationKey(currentConversationId);
       const currentConvId = currentConversationId; // Capture current conversation ID
 
       // Initialize streaming state
@@ -1087,8 +1094,10 @@ const AgentChat = () => {
 
             if (completedConversation?._id) {
               let finalKey = context.conversationKey;
-              if (context.isNewConversation && context.conversationKey === 'new') {
-                streamingManager.transferNewConversationData(completedConversation._id);
+              // Check if this is a 'new' conversation (agent-specific key pattern)
+              const isNewKey = context.conversationKey.startsWith('new-');
+              if (context.isNewConversation && isNewKey) {
+                streamingManager.transferNewConversationData(completedConversation._id, agentKey);
                 finalKey = completedConversation._id;
                 context.conversationIdRef.current = completedConversation._id;
               }
@@ -1096,7 +1105,8 @@ const AgentChat = () => {
 
               // Update selectedChat with fresh conversation data to reflect updated modelInfo
               // This ensures the model selection is updated when switching back to this conversation
-              const finalConvId = finalKey === 'new' ? context.conversationIdRef.current : finalKey;
+              // Check if finalKey is still a 'new' conversation key (shouldn't happen after transfer, but safety check)
+              const finalConvId = finalKey.startsWith('new-') ? context.conversationIdRef.current : finalKey;
               if (finalConvId === currentConvId || finalConvId === context.conversationIdRef.current) {
                 // Use setTimeout to ensure this runs after state updates
                 setTimeout(() => {
@@ -1208,7 +1218,7 @@ const AgentChat = () => {
         // timeout, network drop, or CancelledError on the backend), isActive is still
         // true and the loading indicator would spin forever.  Clear it here.
         const resolvedKey = conversationIdRef.current
-          ? getConversationKey(conversationIdRef.current)
+          ? getConversationKey(conversationIdRef.current, agentKey)
           : conversationKey;
         const endState = streamingManager.getConversationState(resolvedKey);
         if (endState?.isActive) {
@@ -1236,6 +1246,7 @@ const AgentChat = () => {
       parseSSELine,
       processStreamChunk,
       setModelFromConversation,
+      agentKey,
     ]
   );
 
@@ -1261,7 +1272,7 @@ const AgentChat = () => {
       const resolvedChatMode = inputChatMode || latestChatModeRef.current || AUTO_CHAT_MODE;
 
       const wasCreatingNewConversation = !currentConversationId;
-      const conversationKey = getConversationKey(currentConversationId);
+      const conversationKey = getConversationKey(currentConversationId, agentKey);
 
       const tempUserMessage: FormattedMessage = {
         type: 'user',
@@ -1392,7 +1403,7 @@ const AgentChat = () => {
   const handleNewChat = useCallback(() => {
     // Abort any active streaming in current conversation
     if (currentConversationId) {
-      const currentKey = getConversationKey(currentConversationId);
+      const currentKey = getConversationKey(currentConversationId, agentKey);
       const state = streamingManager.getConversationState(currentKey);
       if (state?.controller && !state.controller.signal.aborted) {
         state.controller.abort();
@@ -1402,7 +1413,7 @@ const AgentChat = () => {
     
     // Reset the 'new' conversation state (aborts any active stream there too)
     // This clears messages so start message can be shown again
-    streamingManager.resetNewConversation();
+    streamingManager.resetNewConversation(agentKey);
     streamingManager.resetNavigationTracking();
 
     // Reset all UI state (chatMode will be preserved via persistentChatModeRef in useEffect)
@@ -1419,7 +1430,7 @@ const AgentChat = () => {
     // Use setTimeout to ensure resetNewConversation has completed
     setTimeout(() => {
       if (agent?.startMessage) {
-        const conversationKey = getConversationKey(null);
+        const conversationKey = getConversationKey(null, agentKey);
         const existingMessages = streamingManager.getConversationMessages(conversationKey);
         // Only add if still empty (in case something else added messages)
         if (existingMessages.length === 0) {
@@ -1455,7 +1466,7 @@ const AgentChat = () => {
       if (isCurrentlyStreaming && currentConversationId) return;
 
       try {
-        const chatKey = getConversationKey(chat._id);
+        const chatKey = getConversationKey(chat._id, agentKey);
 
         // Check if this conversation is currently streaming
         const streamingState = streamingManager.getConversationState(chatKey);
@@ -1533,10 +1544,10 @@ const AgentChat = () => {
         }
       } catch (error) {
         console.error('❌ Error loading conversation:', error);
-        streamingManager.setConversationMessages(getConversationKey(chat._id), []);
+        streamingManager.setConversationMessages(getConversationKey(chat._id, agentKey), []);
       } finally {
         // Only clear loading if we set it
-        const chatKey = getConversationKey(chat._id);
+        const chatKey = getConversationKey(chat._id, agentKey);
         const streamingState = streamingManager.getConversationState(chatKey);
         const isStillStreaming =
           streamingState?.isActive ||
@@ -1577,7 +1588,7 @@ const AgentChat = () => {
     if (isCurrentlyStreaming && currentConversationId && urlConversationId !== currentConversationId) return;
 
     if (urlConversationId && urlConversationId !== currentConversationId) {
-      const chatKey = getConversationKey(urlConversationId);
+      const chatKey = getConversationKey(urlConversationId, agentKey);
       const existingMessages = streamingManager.getConversationMessages(chatKey);
       const streamingState = streamingManager.getConversationState(chatKey);
       const isUrlStreaming =
@@ -1636,10 +1647,10 @@ const AgentChat = () => {
     } else if (!urlConversationId && currentConversationId !== null) {
       // Only reset to new chat if we're not in the middle of creating a conversation
       const crtMessages = streamingManager.getConversationMessages(
-        getConversationKey(currentConversationId)
+        getConversationKey(currentConversationId, agentKey)
       );
       const crtStreamingState = streamingManager.getConversationState(
-        getConversationKey(currentConversationId)
+        getConversationKey(currentConversationId, agentKey)
       );
       const isCrtStreaming =
         crtStreamingState?.isActive || crtStreamingState?.isProcessingCompletion;
@@ -1663,8 +1674,8 @@ const AgentChat = () => {
 
   // Add effect to show start message when creating new conversation
   useEffect(() => {
-    if (!currentConversationId && agent?.startMessage) {
-      const conversationKey = getConversationKey(null);
+    if (!currentConversationId && agent?.startMessage && agentKey) {
+      const conversationKey = getConversationKey(null, agentKey);
       const existingMessages = streamingManager.getConversationMessages(conversationKey);
 
       // Only add start message if there are no messages at all
@@ -1693,6 +1704,7 @@ const AgentChat = () => {
     getConversationKey,
     streamingManager,
     agent?.name,
+    agentKey,
     updateTrigger, // Include updateTrigger to ensure it re-runs after resetNewConversation
   ]);
 
@@ -1852,7 +1864,7 @@ const AgentChat = () => {
     async (messageId: string): Promise<void> => {
       if (!currentConversationId || !messageId || isCurrentConversationLoading) return;
 
-      const conversationKey = getConversationKey(currentConversationId);
+      const conversationKey = getConversationKey(currentConversationId, agentKey);
       const streamingBotMessageId = `streaming-${Date.now()}-${agentKey}`;
 
       // Find the message to regenerate and get its index
