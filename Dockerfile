@@ -1,7 +1,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Build Base - Contains all build tools (NOT in final image)
 # -----------------------------------------------------------------------------
-FROM python:3.10-slim AS build-base
+FROM python:3.12-slim AS build-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -95,7 +95,7 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 # Stage 5: Runtime Base - Minimal runtime dependencies only
 # -----------------------------------------------------------------------------
-FROM python:3.10-slim AS runtime-base
+FROM python:3.12-slim AS runtime-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 # Install ONLY runtime dependencies (no build tools!)
@@ -155,7 +155,7 @@ FROM runtime-base AS runtime
 WORKDIR /app
 
 # Copy Python site-packages from build stage
-COPY --from=python-deps /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=python-deps /usr/local/bin /usr/local/bin
 
 # Copy ML model data
