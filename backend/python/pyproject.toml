@@ -234,7 +234,7 @@ dependencies = [
     "msgraph-sdk==1.16.0",
     "nats-py==2.1.0",
     "notion-client==2.2.1",
-    "nltk==3.9.1",
+    "nltk==3.9.4",
     "numpy==2.3.2",
     "ocrmypdf==16.8.0",
     "opencv-python-headless==4.11.0.86",
