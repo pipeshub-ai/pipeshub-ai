@@ -6,7 +6,7 @@ import react from '@vitejs/plugin-react-swc';
 // ----------------------------------------------------------------------
 
 const PORT = 3001;
-const isDocker = !!process.env.DOCKER_DEV;
+const isDocker = !!process.env.DOCKER_DEV
 
 export default defineConfig({
   plugins: [
