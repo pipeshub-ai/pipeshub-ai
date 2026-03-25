@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     libspatialindex-dev \
     libmariadb-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust with minimal profile (only needed for building certain pip packages)
