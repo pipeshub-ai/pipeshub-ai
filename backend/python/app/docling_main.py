@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         set_docling_service(app.state.docling_service)
     except Exception as e:
         if logger is not None:
-            logger.error(f"❌ Failed to initialize Docling service: {str(e)}")
+            logger.error("❌ Failed to initialize Docling service: %s", str(e))
         raise
 
     yield

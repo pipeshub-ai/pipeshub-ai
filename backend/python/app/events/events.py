@@ -258,7 +258,7 @@ class EventProcessor:
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {record_id} not found")
+                self.logger.error("❌ Record %s not found", record_id)
                 return
 
             if virtual_record_id is None:
@@ -407,7 +407,7 @@ class EventProcessor:
                 self.logger.info("🔍 Checking if PDF needs OCR processing")
                 try:
                     needs_ocr = await self._pdf_needs_ocr(file_content)
-                    self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser'}")
+                    self.logger.info("📊 OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
                 except Exception as e:
                     self.logger.warning(f"⚠️ Error checking OCR need: {str(e)}, defaulting to layout parser")
                     needs_ocr = False
