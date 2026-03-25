@@ -1,7 +1,8 @@
 import asyncio
 import base64
 import logging
-from typing import Any
+import os
+from typing import Any, Optional
 
 from docling_core.types.doc.document import DoclingDocument
 from fastapi import FastAPI, HTTPException

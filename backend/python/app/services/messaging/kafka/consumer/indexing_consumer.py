@@ -6,9 +6,9 @@ import threading
 from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
-from typing import Any
+from typing import Any, Optional
 
-from aiokafka import AIOKafkaConsumer  # type: ignore
+from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore
 from typing_extensions import override
 
@@ -58,6 +58,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.worker_executor: ThreadPoolExecutor | None = None
         self.worker_loop: asyncio.AbstractEventLoop | None = None
         self.worker_loop_ready = threading.Event()  # Signal when worker loop is ready
+        self.main_loop: Optional[asyncio.AbstractEventLoop] = None
         # Dual semaphores for parsing and indexing phases (created in worker thread)
         self.parsing_semaphore: asyncio.Semaphore | None = None
         self.indexing_semaphore: asyncio.Semaphore | None = None
@@ -363,7 +364,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
                             try:
                                 self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
-                                await self.__start_processing_task(message)
+                                await self.__start_processing_task(message, topic_partition)
                             except Exception as e:
                                 self.logger.error(f"Error processing individual message: {e}")
                                 continue
@@ -443,6 +444,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if not self.running:
             self.logger.warning("Consumer is stopping, skipping message processing")
             return
+
+        partition_key = (topic_partition.topic, topic_partition.partition)
+        self._next_commit_offset.setdefault(partition_key, message.offset)
+        self._completed_offsets.setdefault(partition_key, set())
 
         # Submit coroutine to worker thread's event loop and track the future
         future = asyncio.run_coroutine_threadsafe(

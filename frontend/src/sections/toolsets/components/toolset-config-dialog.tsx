@@ -2088,7 +2088,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                       '&:hover': { boxShadow: 'none' },
                     }}
                   >
-                    {saving ? 'Saving...' : 'Update Credentials'}
+                    {saving ? 'Saving...' : isAuthenticated ? 'Update Credentials' : 'Authenticate'}
                   </Button>
                 )}
               </>

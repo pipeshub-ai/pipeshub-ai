@@ -16799,6 +16799,8 @@ paths:
                 auth:
                   type: object
                   properties:
+                    email:
+                      type: string
                     apiToken:
                       type: string
                     username:

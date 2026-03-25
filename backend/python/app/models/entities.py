@@ -1,6 +1,7 @@
+import builtins
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Type, TypeVar, Union
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -154,21 +155,21 @@ class Record(BaseModel):
     record_name: str = Field(description="Human-readable name for the record")
     record_type: RecordType = Field(description="Type/category of the record")
     record_status: ProgressStatus = Field(default=ProgressStatus.NOT_STARTED)
-    parent_record_type: Optional[RecordType] = Field(default=None, description="Type of the parent record")
-    record_group_type: Optional[RecordGroupType] = Field(default=None, description="Type of the record group")
+    parent_record_type: RecordType | None = Field(default=None, description="Type of the parent record")
+    record_group_type: RecordGroupType | None = Field(default=None, description="Type of the record group")
     external_record_id: str = Field(description="Unique identifier for the record in the external system")
-    external_revision_id: Optional[str] = Field(default=None, description="Unique identifier for the revision of the record in the external system")
-    external_record_group_id: Optional[str] = Field(default=None, description="Unique identifier for the record group in the external system")
-    record_group_id: Optional[str] = Field(default=None, description="Internal identifier for the record group (UUID)")
-    parent_external_record_id: Optional[str] = Field(default=None, description="Unique identifier for the parent record in the external system")
+    external_revision_id: str | None = Field(default=None, description="Unique identifier for the revision of the record in the external system")
+    external_record_group_id: str | None = Field(default=None, description="Unique identifier for the record group in the external system")
+    record_group_id: str | None = Field(default=None, description="Internal identifier for the record group (UUID)")
+    parent_external_record_id: str | None = Field(default=None, description="Unique identifier for the parent record in the external system")
     version: int = Field(description="Version of the record")
     origin: OriginTypes = Field(description="Origin of the record")
     connector_name: Connectors = Field(description="Name of the connector used to create the record")
     connector_id: str = Field(description="Unique identifier for the connector configuration instance")
-    virtual_record_id: Optional[str] = Field(description="Virtual record identifier", default=None)
-    summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
-    md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record content")
-    size_in_bytes: Optional[int] = Field(default=None, description="Size of the record content in bytes")
+    virtual_record_id: str | None = Field(description="Virtual record identifier", default=None)
+    summary_document_id: str | None = Field(description="Summary document identifier", default=None)
+    md5_hash: str | None = Field(default=None, description="MD5 hash of the record content")
+    size_in_bytes: int | None = Field(default=None, description="Size of the record content in bytes")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
@@ -177,48 +178,48 @@ class Record(BaseModel):
     # Epoch Timestamps
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
 
     # Source information
-    weburl: Optional[str] = None
-    signed_url: Optional[str] = None
-    preview_renderable: Optional[bool] = True
-    is_shared: Optional[bool] = False
-    is_shared_with_me: Optional[bool] = False
-    shared_with_me_record_group_id: Optional[str] = None
+    weburl: str | None = None
+    signed_url: str | None = None
+    preview_renderable: bool | None = True
+    is_shared: bool | None = False
+    is_shared_with_me: bool | None = False
+    shared_with_me_record_group_id: str | None = None
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
 
     # Processing flags
-    is_vlm_ocr_processed: Optional[bool] = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
+    is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
 
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
-    semantic_metadata: Optional[SemanticMetadata] = None
+    semantic_metadata: SemanticMetadata | None = None
     # Relationships
-    parent_record_id: Optional[str] = None
-    child_record_ids: Optional[List[str]] = Field(default_factory=list)
-    related_record_ids: Optional[List[str]] = Field(default_factory=list)
+    parent_record_id: str | None = None
+    child_record_ids: list[str] | None = Field(default_factory=list)
+    related_record_ids: list[str] | None = Field(default_factory=list)
 
     # Related external records (for connectors to specify relations by external IDs)
-    related_external_records: Optional[List[RelatedExternalRecord]] = Field(default_factory=list, description="List of related external records to create LINKED_TO relations (not persisted)")
+    related_external_records: list[RelatedExternalRecord] | None = Field(default_factory=list, description="List of related external records to create LINKED_TO relations (not persisted)")
     # Hierarchy fields
     is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
-    parent_node_id: Optional[str] = Field(default=None, description="Internal record ID of the parent node")
+    parent_node_id: str | None = Field(default=None, description="Internal record ID of the parent node")
 
-    def _format_timestamp(self, epoch_ms: Optional[int]) -> str:
+    def _format_timestamp(self, epoch_ms: int | None) -> str:
         if epoch_ms is None:
             return "N/A"
         return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    def _format_person(self, name: Optional[str], email: Optional[str]) -> str:
+    def _format_person(self, name: str | None, email: str | None) -> str:
         """Helper to format a person with name and/or email"""
         if name and email:
             return f"{name} ({email})"
         return name or email or "N/A"
 
-    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None) -> str:
         lines = [
             f"Record ID       : {self.id}",
             f"Name            : {self.record_name}",
@@ -244,7 +245,7 @@ class Record(BaseModel):
 
         return "\n".join(lines)
 
-    def to_arango_base_record(self) -> Dict:
+    def to_arango_base_record(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
@@ -283,7 +284,7 @@ class Record(BaseModel):
         }
 
     @staticmethod
-    def from_arango_base_record(arango_base_record: Dict) -> "Record":
+    def from_arango_base_record(arango_base_record: dict) -> "Record":
         # Handle connectorName which might be missing for uploaded files
         conn_name_value = arango_base_record.get("connectorName")
         try:
@@ -331,21 +332,21 @@ class Record(BaseModel):
             reason=arango_base_record.get("reason"),
         )
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         raise NotImplementedError("Implement this method in the subclass")
 
 class FileRecord(Record):
     is_file: bool
-    extension: Optional[str] = None
-    path: Optional[str] = None
-    etag: Optional[str] = None
-    ctag: Optional[str] = None
-    quick_xor_hash: Optional[str] = None
-    crc32_hash: Optional[str] = None
-    sha1_hash: Optional[str] = None
-    sha256_hash: Optional[str] = None
+    extension: str | None = None
+    path: str | None = None
+    etag: str | None = None
+    ctag: str | None = None
+    quick_xor_hash: str | None = None
+    crc32_hash: str | None = None
+    sha1_hash: str | None = None
+    sha256_hash: str | None = None
 
-    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None) -> str:
         """Returns formatted file-specific metadata for LLM context"""
         base = super().to_llm_context(frontend_url=frontend_url)
         lines = [base]
@@ -360,7 +361,7 @@ class FileRecord(Record):
 
         return "\n".join(lines)
 
-    def to_arango_record(self) -> Dict:
+    def to_arango_record(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
@@ -378,7 +379,7 @@ class FileRecord(Record):
         }
 
     @staticmethod
-    def from_arango_record(arango_base_file_record: Dict, arango_base_record: Dict) -> "FileRecord":
+    def from_arango_record(arango_base_file_record: dict, arango_base_record: dict) -> "FileRecord":
         # Handle connectorName which might be missing for KB uploaded files
         conn_name_value = arango_base_record.get("connectorName")
         try:
@@ -421,7 +422,7 @@ class FileRecord(Record):
             sha256_hash=arango_base_file_record.get("sha256Hash"),
         )
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -448,9 +449,9 @@ class FileRecord(Record):
         }
 
 class MessageRecord(Record):
-    content: Optional[str] = None
+    content: str | None = None
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -465,18 +466,18 @@ class MessageRecord(Record):
         }
 
 class MailRecord(Record):
-    subject: Optional[str] = None
-    from_email: Optional[str] = None
-    to_emails: Optional[List[str]] = None
-    cc_emails: Optional[List[str]] = None
-    bcc_emails: Optional[List[str]] = None
-    thread_id: Optional[str] = None
+    subject: str | None = None
+    from_email: str | None = None
+    to_emails: list[str] | None = None
+    cc_emails: list[str] | None = None
+    bcc_emails: list[str] | None = None
+    thread_id: str | None = None
     is_parent: bool = False
-    internet_message_id: Optional[str] = None
-    conversation_index: Optional[str] = None
-    label_ids: Optional[List[str]] = None
+    internet_message_id: str | None = None
+    conversation_index: str | None = None
+    label_ids: list[str] | None = None
 
-    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None) -> str:
         """Returns formatted email-specific metadata for LLM context"""
         base = super().to_llm_context(frontend_url=frontend_url)
         lines = [base]
@@ -503,7 +504,7 @@ class MailRecord(Record):
 
         return "\n".join(lines)
 
-    def to_arango_record(self) -> Dict:
+    def to_arango_record(self) -> dict:
         return {
             "_key": self.id,
             "threadId": self.thread_id or "",
@@ -520,7 +521,7 @@ class MailRecord(Record):
         }
 
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -533,7 +534,7 @@ class MailRecord(Record):
         }
 
     @staticmethod
-    def from_arango_record(mail_doc: Dict, record_doc: Dict) -> "MailRecord":
+    def from_arango_record(mail_doc: dict, record_doc: dict) -> "MailRecord":
         """Create MailRecord from ArangoDB documents (records + mails collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
@@ -575,7 +576,7 @@ class MailRecord(Record):
         )
 
 class WebpageRecord(Record):
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -591,14 +592,14 @@ class WebpageRecord(Record):
             "signedUrl": self.signed_url,
         }
 
-    def to_arango_record(self) -> Dict:
+    def to_arango_record(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
         }
 
     @staticmethod
-    def from_arango_record(webpage_doc: Dict, record_doc: Dict) -> "WebpageRecord":
+    def from_arango_record(webpage_doc: dict, record_doc: dict) -> "WebpageRecord":
         """Create WebpageRecord from ArangoDB documents (records + webpages collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
@@ -640,11 +641,11 @@ class LinkRecord(Record):
     - linked_record_id: Internal record ID of a record that has the same weburl (optional)
     """
     url: str
-    title: Optional[str] = None
+    title: str | None = None
     is_public: LinkPublicStatus = Field(description="Link public accessibility status")
-    linked_record_id: Optional[str] = Field(default=None, description="Internal record ID of linked record with same weburl")
+    linked_record_id: str | None = Field(default=None, description="Internal record ID of linked record with same weburl")
 
-    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None) -> str:
         """Returns formatted link-specific metadata for LLM context"""
         base = super().to_llm_context(frontend_url=frontend_url)
         lines = [base]
@@ -669,7 +670,7 @@ class LinkRecord(Record):
 
         return "\n".join(lines)
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -686,7 +687,7 @@ class LinkRecord(Record):
             "webUrl": self.weburl,
         }
 
-    def to_arango_record(self) -> Dict:
+    def to_arango_record(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
@@ -697,7 +698,7 @@ class LinkRecord(Record):
         }
 
     @staticmethod
-    def from_arango_record(link_doc: Dict, record_doc: Dict) -> "LinkRecord":
+    def from_arango_record(link_doc: dict, record_doc: dict) -> "LinkRecord":
         """Create LinkRecord from ArangoDB documents (records + links collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
@@ -741,10 +742,10 @@ class CommentRecord(Record):
     - comment_selection: For inline comments, the original text selection (HTML)
     """
     author_source_id: str
-    resolution_status: Optional[str] = None
-    comment_selection: Optional[str] = None
+    resolution_status: str | None = None
+    comment_selection: str | None = None
 
-    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None) -> str:
         """Returns formatted comment-specific metadata for LLM context"""
         base = super().to_llm_context(frontend_url=frontend_url)
         lines = [base]
@@ -759,7 +760,7 @@ class CommentRecord(Record):
 
         return "\n".join(lines)
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -774,7 +775,7 @@ class CommentRecord(Record):
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
 
-    def to_arango_record(self) -> Dict:
+    def to_arango_record(self) -> dict:
         return {
             "_key": self.id,
             "authorSourceId": self.author_source_id,
@@ -783,7 +784,7 @@ class CommentRecord(Record):
         }
 
     @staticmethod
-    def from_arango_record(comment_doc: Dict, record_doc: Dict) -> "CommentRecord":
+    def from_arango_record(comment_doc: dict, record_doc: dict) -> "CommentRecord":
         """Create CommentRecord from ArangoDB documents (records + comments collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
@@ -821,26 +822,26 @@ class CommentRecord(Record):
         )
 
 class TicketRecord(Record):
-    status: Optional[Union[Status, str]] = None
-    priority: Optional[Union[Priority, str]] = None
-    type: Optional[Union[ItemType, str]] = None
-    delivery_status: Optional[Union[DeliveryStatus, str]] = None
-    assignee: Optional[str] = None
-    reporter_email: Optional[str] = None
-    assignee_email: Optional[str] = None
-    reporter_name: Optional[str] = None
-    creator_email: Optional[str] = None
-    creator_name: Optional[str] = None
+    status: Status | str | None = None
+    priority: Priority | str | None = None
+    type: ItemType | str | None = None
+    delivery_status: DeliveryStatus | str | None = None
+    assignee: str | None = None
+    reporter_email: str | None = None
+    assignee_email: str | None = None
+    reporter_name: str | None = None
+    creator_email: str | None = None
+    creator_name: str | None = None
     # Connector-provided timestamps for when relationships were established
-    assignee_source_timestamp: Optional[int] = None
-    creator_source_timestamp: Optional[int] = None
-    reporter_source_timestamp: Optional[int] = None
-    labels: Optional[List[str]] = Field(default_factory=list)
+    assignee_source_timestamp: int | None = None
+    creator_source_timestamp: int | None = None
+    reporter_source_timestamp: int | None = None
+    labels: list[str] | None = Field(default_factory=list)
     is_email_hidden: bool = False # this means reporters, assignees... emails are hidden and represents connector's native id
-    assignee_source_id: Optional[List[str]] = Field(default_factory=list) # this means reporters  source ids in the connector system
-    reporter_source_id:Optional[str]=None
+    assignee_source_id: list[str] | None = Field(default_factory=list) # this means reporters  source ids in the connector system
+    reporter_source_id:str | None=None
 
-    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None) -> str:
         """Returns formatted ticket-specific metadata for LLM context"""
         base = super().to_llm_context(frontend_url=frontend_url)
         lines = [base]
@@ -877,8 +878,8 @@ class TicketRecord(Record):
 
         return "\n".join(lines)
 
-    def to_arango_record(self) -> Dict:
-        def _get_value(field_value: Optional[Union[Enum, str]]) -> Optional[str]:
+    def to_arango_record(self) -> dict:
+        def _get_value(field_value: Enum | str | None) -> str | None:
             """Extract string value from enum or return original string"""
             if field_value is None:
                 return None
@@ -909,7 +910,7 @@ class TicketRecord(Record):
         }
 
     @staticmethod
-    def _safe_enum_parse(value: Optional[str], enum_class: Type[EnumType]) -> Optional[Union[EnumType, str]]:
+    def _safe_enum_parse(value: str | None, enum_class: builtins.type[EnumType]) -> EnumType | str | None:
         """Safely parse enum value, returning original string if invalid (preserves connector-specific values)"""
         if not value:
             return None
@@ -925,7 +926,7 @@ class TicketRecord(Record):
             return value
 
     @staticmethod
-    def from_arango_record(ticket_doc: Dict, record_doc: Dict) -> "TicketRecord":
+    def from_arango_record(ticket_doc: dict, record_doc: dict) -> "TicketRecord":
         """Create TicketRecord from ArangoDB documents (records + tickets collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
@@ -973,7 +974,7 @@ class TicketRecord(Record):
             labels=ticket_doc.get("labels"),
         )
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
 
         return {
             "recordId": self.id,
@@ -994,13 +995,13 @@ class TicketRecord(Record):
 
 class ProjectRecord(Record):
     """Record class for projects"""
-    status: Optional[str] = None
-    priority: Optional[str] = None
-    lead_id: Optional[str] = None
-    lead_name: Optional[str] = None
-    lead_email: Optional[str] = None
+    status: str | None = None
+    priority: str | None = None
+    lead_id: str | None = None
+    lead_name: str | None = None
+    lead_email: str | None = None
 
-    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+    def to_llm_context(self, frontend_url: str | None = None) -> str:
         """Returns formatted project-specific metadata for LLM context"""
         base = super().to_llm_context(frontend_url=frontend_url)
         lines = [base]
@@ -1021,7 +1022,7 @@ class ProjectRecord(Record):
 
         return "\n".join(lines)
 
-    def to_arango_record(self) -> Dict:
+    def to_arango_record(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
@@ -1033,7 +1034,7 @@ class ProjectRecord(Record):
         }
 
     @staticmethod
-    def from_arango_record(project_doc: Dict, record_doc: Dict) -> "ProjectRecord":
+    def from_arango_record(project_doc: dict, record_doc: dict) -> "ProjectRecord":
         """Create ProjectRecord from ArangoDB documents (records + projects collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
@@ -1071,7 +1072,7 @@ class ProjectRecord(Record):
             lead_email=project_doc.get("leadEmail"),
         )
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -1092,7 +1093,7 @@ class ProjectRecord(Record):
 class SharePointListRecord(Record):
     """Record class for SharePoint lists"""
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -1117,7 +1118,7 @@ class SharePointListRecord(Record):
 class SharePointListItemRecord(Record):
     """Record class for SharePoint list items"""
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -1142,7 +1143,7 @@ class SharePointListItemRecord(Record):
 class SharePointDocumentLibraryRecord(Record):
     """Record class for SharePoint document libraries"""
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -1167,13 +1168,13 @@ class SharePointDocumentLibraryRecord(Record):
 class SharePointPageRecord(Record):
     """Record class for SharePoint pages"""
 
-    def to_arango_record(self) -> Dict:
+    def to_arango_record(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
         }
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -1197,18 +1198,18 @@ class SharePointPageRecord(Record):
 
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
-    status: Optional[str] = None
-    assignee: List[str] = Field(default_factory=list)
-    assignee_email: List[str] = Field(default_factory=list)
-    creator_email: Optional[str] = None
-    creator_name: Optional[str] =None
-    review_email: List[str] = Field(default_factory=list)
-    review_name: List[str] = Field(default_factory=list)
-    mergeable:Optional[str]=None
-    merged_by:Optional[str]=None
-    labels:List[str] = Field(default_factory=list)
+    status: str | None = None
+    assignee: list[str] | None= Field(default_factory=list)
+    assignee_email: list[str] | None = Field(default_factory=list)
+    creator_email: str | None = None
+    creator_name: str | None =None
+    review_email:list[str] | None = Field(default_factory=list)
+    review_name: list[str] | None = Field(default_factory=list)
+    mergeable:str | None=None
+    merged_by:str | None=None
+    labels:list[str] | None = Field(default_factory=list)
 
-    def to_kafka_record(self) -> Dict:
+    def to_kafka_record(self) -> dict:
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -1219,14 +1220,12 @@ class PullRequestRecord(Record):
             "mimeType": self.mime_type,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
-            "signedUrl": self.signed_url,
-            "signedUrlRoute": self.fetch_signed_url,
             "origin": self.origin.value,
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
-    def to_arango_record(self) -> Dict:
+    def to_arango_record(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
@@ -1246,23 +1245,23 @@ class RecordGroup(BaseModel):
     id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
     org_id: str = Field(description="Unique identifier for the organization", default="")
     name: str = Field(description="Name of the record group")
-    short_name: Optional[str] = Field(default=None, description="Short name of the record group")
-    description: Optional[str] = Field(default=None, description="Description of the record group")
-    external_group_id: Optional[str] = Field(description="External identifier for the record group")
-    parent_external_group_id: Optional[str] = Field(default=None, description="External identifier for the parent record group")
-    parent_record_group_id: Optional[str] = Field(default=None, description="Internal identifier for the parent record group")
+    short_name: str | None = Field(default=None, description="Short name of the record group")
+    description: str | None = Field(default=None, description="Description of the record group")
+    external_group_id: str | None = Field(description="External identifier for the record group")
+    parent_external_group_id: str | None = Field(default=None, description="External identifier for the parent record group")
+    parent_record_group_id: str | None = Field(default=None, description="Internal identifier for the parent record group")
     connector_name: Connectors = Field(description="Name of the connector used to create the record group")
     connector_id: str = Field(description="Unique identifier for the connector configuration instance")
-    web_url: Optional[str] = Field(default=None, description="Web URL of the record group")
-    group_type: Optional[RecordGroupType] = Field(description="Type of the record group")
+    web_url: str | None = Field(default=None, description="Web URL of the record group")
+    group_type: RecordGroupType | None = Field(description="Type of the record group")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
-    inherit_permissions: Optional[bool] = Field(default=False, description="Permissions for the record group")
-    is_internal: Optional[bool] = Field(default=False, description="Flag indicating if the record group is for internal use")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record group creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
+    inherit_permissions: bool | None = Field(default=False, description="Permissions for the record group")
+    is_internal: bool | None = Field(default=False, description="Flag indicating if the record group is for internal use")
 
-    def to_arango_base_record_group(self) -> Dict:
+    def to_arango_base_record_group(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
@@ -1283,7 +1282,7 @@ class RecordGroup(BaseModel):
         }
 
     @staticmethod
-    def from_arango_base_record_group(arango_base_record_group: Dict) -> "RecordGroup":
+    def from_arango_base_record_group(arango_base_record_group: dict) -> "RecordGroup":
         return RecordGroup(
             id=arango_base_record_group.get("id", arango_base_record_group.get("_key")),
             org_id=arango_base_record_group.get("orgId", ""),
@@ -1308,8 +1307,8 @@ class Anyone(BaseModel):
     name: str = Field(description="Name of the anyone")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone update in the source system")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the anyone creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the anyone update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
 
 class AnyoneWithLink(BaseModel):
@@ -1317,8 +1316,8 @@ class AnyoneWithLink(BaseModel):
     name: str = Field(description="Name of the anyone with link")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone with link creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone with link update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link update in the source system")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
 
 class AnyoneSameOrg(BaseModel):
@@ -1326,8 +1325,8 @@ class AnyoneSameOrg(BaseModel):
     name: str = Field(description="Name of the anyone same org")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone same org creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone same org update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone same org creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone same org update in the source system")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the anyone same org creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the anyone same org update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
 
 class Org(BaseModel):
@@ -1335,8 +1334,8 @@ class Org(BaseModel):
     name: str = Field(description="Name of the organization")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the organization creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the organization update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the organization creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the organization update in the source system")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the organization creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the organization update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
 
 class Domain(BaseModel):
@@ -1344,8 +1343,8 @@ class Domain(BaseModel):
     name: str = Field(description="Name of the domain")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the domain creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the domain update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the domain creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the domain update in the source system")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the domain creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the domain update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
 
 class AnyOneWithLink(BaseModel):
@@ -1353,26 +1352,26 @@ class AnyOneWithLink(BaseModel):
     name: str = Field(description="Name of the anyone with link")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone with link creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone with link update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link update in the source system")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
 
 
 class User(BaseModel):
     id: str = Field(description="Unique identifier for the user", default_factory=lambda: str(uuid4()))
     email: str
-    source_user_id: Optional[str] = None
-    org_id: Optional[str] = None
-    user_id: Optional[str] = None
-    is_active: Optional[bool] = None
-    first_name: Optional[str] = None
-    middle_name: Optional[str] = None
-    last_name: Optional[str] = None
-    full_name: Optional[str] = None
-    title: Optional[str] = None
+    source_user_id: str | None = None
+    org_id: str | None = None
+    user_id: str | None = None
+    is_active: bool | None = None
+    first_name: str | None = None
+    middle_name: str | None = None
+    last_name: str | None = None
+    full_name: str | None = None
+    title: str | None = None
 
 
-    def to_arango_base_record(self) -> Dict[str, Any]:
+    def to_arango_base_record(self) -> dict[str, Any]:
         return {
             "email": self.email,
             "fullName": self.full_name,
@@ -1386,7 +1385,7 @@ class User(BaseModel):
         return self.email
 
     @staticmethod
-    def from_arango_user(data: Dict[str, Any]) -> 'User':
+    def from_arango_user(data: dict[str, Any]) -> 'User':
         return User(
             id=data.get("id", data.get("_key")),
             email=data.get("email", ""),
@@ -1404,16 +1403,16 @@ class User(BaseModel):
 class UserGroup(BaseModel):
     source_user_group_id: str
     name: str
-    mail: Optional[str] = None
-    id: Optional[str] = None
-    description: Optional[str] = None
-    created_at_timestamp: Optional[float] = None
-    updated_at_timestamp: Optional[float] = None
-    last_sync_timestamp: Optional[float] = None
-    source_created_at_timestamp: Optional[float] = None
-    source_last_modified_timestamp: Optional[float] = None
+    mail: str | None = None
+    id: str | None = None
+    description: str | None = None
+    created_at_timestamp: float | None = None
+    updated_at_timestamp: float | None = None
+    last_sync_timestamp: float | None = None
+    source_created_at_timestamp: float | None = None
+    source_last_modified_timestamp: float | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "description": self.description,
@@ -1438,7 +1437,7 @@ class Person(BaseModel):
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Creation timestamp")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Update timestamp")
 
-    def to_arango_person(self) -> Dict[str, Any]:
+    def to_arango_person(self) -> dict[str, Any]:
         return {
             "_key": self.id,
             "email": self.email,
@@ -1447,7 +1446,7 @@ class Person(BaseModel):
         }
 
     @staticmethod
-    def from_arango_person(data: Dict[str, Any]) -> 'Person':
+    def from_arango_person(data: dict[str, Any]) -> 'Person':
         return Person(
             id=data.get("_key"),
             email=data.get("email"),
@@ -1466,12 +1465,12 @@ class AppUser(BaseModel):
     full_name: str = Field(description="Name of the user")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user update in the source system")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the user creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the user update in the source system")
     is_active: bool = Field(default=False, description="Whether the user is active")
-    title: Optional[str] = Field(default=None, description="Title of the user")
+    title: str | None = Field(default=None, description="Title of the user")
 
-    def to_arango_base_user(self) -> Dict:
+    def to_arango_base_user(self) -> dict:
         return {
             "_key": self.id,
             "orgId": self.org_id,
@@ -1484,7 +1483,7 @@ class AppUser(BaseModel):
         }
 
     @staticmethod
-    def from_arango_user(data: Dict[str, Any]) -> 'AppUser':
+    def from_arango_user(data: dict[str, Any]) -> 'AppUser':
         return AppUser(
             id=data.get("id", data.get("_key")),
             email=data.get("email", ""),
@@ -1505,12 +1504,12 @@ class AppUserGroup(BaseModel):
     name: str = Field(description="Name of the user group")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user group creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user group update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user group creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user group update in the source system")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the user group creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the user group update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
-    description: Optional[str] = Field(default=None, description="Description of the user group")
+    description: str | None = Field(default=None, description="Description of the user group")
 
-    def to_arango_base_user_group(self) -> Dict[str, Any]:
+    def to_arango_base_user_group(self) -> dict[str, Any]:
         """
         Converts the AppUserGroup model to a dictionary that matches the ArangoDB schema.
         """
@@ -1530,7 +1529,7 @@ class AppUserGroup(BaseModel):
         }
 
     @staticmethod
-    def from_arango_base_user_group(arango_doc: Dict[str, Any]) -> "AppUserGroup":
+    def from_arango_base_user_group(arango_doc: dict[str, Any]) -> "AppUserGroup":
         return AppUserGroup(
             id=arango_doc.get("id", arango_doc.get("_key")),
             org_id=arango_doc.get("orgId", ""),
@@ -1552,11 +1551,11 @@ class AppRole(BaseModel):
     name: str = Field(description="Name of the role")
     created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the role creation")
     updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the role update")
-    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the role creation in the source system")
-    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the role update in the source system")
+    source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the role creation in the source system")
+    source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the role update in the source system")
     org_id: str = Field(default="", description="Unique identifier for the organization")
 
-    def to_arango_base_role(self) -> Dict[str, Any]:
+    def to_arango_base_role(self) -> dict[str, Any]:
         """
         Converts the AppRole model to a dictionary that matches the ArangoDB schema.
         """
@@ -1575,7 +1574,7 @@ class AppRole(BaseModel):
         }
 
     @staticmethod
-    def from_arango_base_role(arango_doc: Dict[str, Any]) -> "AppRole":
+    def from_arango_base_role(arango_doc: dict[str, Any]) -> "AppRole":
         return AppRole(
             id=arango_doc.get("id", arango_doc.get("_key")),
             org_id=arango_doc.get("orgId", ""),

@@ -734,10 +734,11 @@ class ExcelParser:
             if isinstance(cell, MergedCell):
                 # Look for the merged range that contains this cell.
                 merged_value = None
-                for merged_range in cell.parent.merged_cells.ranges:
+                worksheet = cast(Worksheet, cell.parent)
+                for merged_range in worksheet.merged_cells.ranges:
                     if cell.coordinate in merged_range:
                         # Get the top-left cell of the merged range
-                        top_left_cell = cell.parent.cell(
+                        top_left_cell = worksheet.cell(
                             row=merged_range.min_row, column=merged_range.min_col
                         )
                         merged_value = top_left_cell.value
@@ -1395,8 +1396,38 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 block_groups.append(table_group)
                 sheet_table_group_indices.append(table_group_index)
 
+                rows_for_blocks = rows
+                if len(rows) > EXCEL_ROW_BLOCK_CHUNK_THRESHOLD:
+                    rows_for_blocks = []
+                    for chunk_start in range(0, len(rows), EXCEL_ROW_BLOCK_CHUNK_SIZE):
+                        chunk_rows = rows[chunk_start:chunk_start + EXCEL_ROW_BLOCK_CHUNK_SIZE]
+                        if not chunk_rows:
+                            continue
+
+                        start_row_num = int(chunk_rows[0].get("row_num") or (chunk_start + 1))
+                        end_row_num = int(chunk_rows[-1].get("row_num") or (chunk_start + len(chunk_rows)))
+                        chunk_text = "\n".join(
+                            row.get("natural_language_text", "")
+                            for row in chunk_rows
+                            if row.get("natural_language_text")
+                        )
+
+                        rows_for_blocks.append(
+                            {
+                                "natural_language_text": chunk_text,
+                                "row_num": start_row_num,
+                                "row_end_num": end_row_num,
+                                "row_count": len(chunk_rows),
+                            }
+                        )
+
+                    self.logger.warning(
+                        f"Large Excel table detected with {len(rows)} rows. "
+                        f"Chunking row blocks into {len(rows_for_blocks)} blocks of up to {EXCEL_ROW_BLOCK_CHUNK_SIZE} rows each."
+                    )
+
                 # Create TABLE_ROW blocks under this table
-                for i, row in enumerate(rows):
+                for i, row in enumerate(rows_for_blocks):
                     block_index = len(blocks)
                     blocks.append(
                         Block(
@@ -1406,6 +1437,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             data={
                                 "row_natural_language_text": row.get("natural_language_text", ""),
                                 "row_number": int(row.get("row_num") or (i + 1)),
+                                "row_end_number": int(row.get("row_end_num") or row.get("row_num") or (i + 1)),
+                                "row_count": int(row.get("row_count") or 1),
                                 "sheet_number": sheet_idx,
                                 "sheet_name": sheet_name,
                             },

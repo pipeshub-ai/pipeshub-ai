@@ -87,7 +87,6 @@ jobs:
           subject: "Weekly Node.js Coverage — ${{ steps.run-tests.outcome == 'success' && 'passed' || 'failed' }} (${{ github.ref_name }})"
           to: ${{ secrets.PIPESHUB_ENG_GROUP_EMAIL }}
           from: PipesHub CI <${{ secrets.SMTP_FROM_EMAIL }}>
-          attachments: backend/nodejs/apps/coverage-report.zip
           html_body: |
             <h2>Weekly Node.js Coverage Report</h2>
             <p>Summary of the scheduled Node.js unit test and coverage run.</p>
