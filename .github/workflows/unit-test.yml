@@ -66,12 +66,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
       - name: Install dependencies
         run: |
           cd backend/python
-          python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio coverage
-          pip install -e .
+          uv pip install --system pytest pytest-asyncio coverage
+          uv pip install --system -e .
 
       - name: Run unit tests with coverage
         run: |

@@ -1133,6 +1133,7 @@ class TestRun:
             port=8091,
             log_level="info",
             reload=True,
+            workers=1,
         )
 
     def test_run_custom_args(self):
@@ -1148,6 +1149,7 @@ class TestRun:
             port=9000,
             log_level="info",
             reload=False,
+            workers=1,
         )
 
 

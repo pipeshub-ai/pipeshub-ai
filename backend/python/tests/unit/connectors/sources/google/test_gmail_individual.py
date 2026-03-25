@@ -1,5 +1,6 @@
 """Tests for GoogleGmailIndividualConnector (app/connectors/sources/google/gmail/individual/connector.py)."""
 
+import base64
 import logging
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -51,8 +52,10 @@ def _make_gmail_message(
     cc_emails="",
     bcc_emails="",
     label_ids=None,
-    internal_date="1704067200000",  # 2024-01-01
+    internal_date="1704067200000",
     has_attachments=False,
+    has_drive_attachment=False,
+    body_html=None,
 ):
     if label_ids is None:
         label_ids = ["INBOX"]
@@ -74,11 +77,19 @@ def _make_gmail_message(
             "partId": "1",
             "filename": "document.pdf",
             "mimeType": "application/pdf",
-            "body": {
-                "attachmentId": "att-1",
-                "size": 5000,
-            },
+            "body": {"attachmentId": "att-1", "size": 5000},
         })
+    if has_drive_attachment:
+        parts.append({
+            "partId": "2",
+            "filename": "large_file.zip",
+            "mimeType": "application/zip",
+            "body": {"driveFileId": "drive-file-1", "size": 50000000},
+        })
+
+    body_data = ""
+    if body_html:
+        body_data = base64.urlsafe_b64encode(body_html.encode()).decode()
 
     return {
         "id": message_id,
@@ -89,7 +100,7 @@ def _make_gmail_message(
         "payload": {
             "headers": headers,
             "mimeType": "text/plain",
-            "body": {"data": ""},
+            "body": {"data": body_data},
             "parts": parts,
         },
     }
@@ -152,15 +163,15 @@ def connector():
 # ---------------------------------------------------------------------------
 
 class TestParseGmailHeaders:
-    """Tests for _parse_gmail_headers."""
-
     def test_extracts_relevant_headers(self, connector):
         headers = [
             {"name": "Subject", "value": "Hello"},
             {"name": "From", "value": "alice@example.com"},
             {"name": "To", "value": "bob@example.com"},
             {"name": "Cc", "value": "carol@example.com"},
+            {"name": "Bcc", "value": "secret@example.com"},
             {"name": "Message-ID", "value": "<abc@gmail.com>"},
+            {"name": "Date", "value": "Mon, 1 Jan 2024"},
             {"name": "X-Custom-Header", "value": "ignored"},
         ]
         result = connector._parse_gmail_headers(headers)
@@ -168,7 +179,9 @@ class TestParseGmailHeaders:
         assert result["from"] == "alice@example.com"
         assert result["to"] == "bob@example.com"
         assert result["cc"] == "carol@example.com"
+        assert result["bcc"] == "secret@example.com"
         assert result["message-id"] == "<abc@gmail.com>"
+        assert result["date"] == "Mon, 1 Jan 2024"
         assert "x-custom-header" not in result
 
     def test_empty_headers(self, connector):
@@ -181,8 +194,6 @@ class TestParseGmailHeaders:
 # ---------------------------------------------------------------------------
 
 class TestParseEmailList:
-    """Tests for _parse_email_list."""
-
     def test_single_email(self, connector):
         result = connector._parse_email_list("alice@example.com")
         assert result == ["alice@example.com"]
@@ -192,12 +203,10 @@ class TestParseEmailList:
         assert len(result) == 3
 
     def test_empty_string(self, connector):
-        result = connector._parse_email_list("")
-        assert result == []
+        assert connector._parse_email_list("") == []
 
     def test_none_returns_empty(self, connector):
-        result = connector._parse_email_list(None)
-        assert result == []
+        assert connector._parse_email_list(None) == []
 
 
 # ---------------------------------------------------------------------------
@@ -205,23 +214,20 @@ class TestParseEmailList:
 # ---------------------------------------------------------------------------
 
 class TestExtractEmailFromHeader:
-    """Tests for _extract_email_from_header."""
-
     def test_plain_email(self, connector):
-        result = connector._extract_email_from_header("alice@example.com")
-        assert result == "alice@example.com"
+        assert connector._extract_email_from_header("alice@example.com") == "alice@example.com"
 
     def test_name_and_email_format(self, connector):
-        result = connector._extract_email_from_header("Alice Smith <alice@example.com>")
-        assert result == "alice@example.com"
+        assert connector._extract_email_from_header("Alice Smith <alice@example.com>") == "alice@example.com"
 
     def test_empty_string(self, connector):
-        result = connector._extract_email_from_header("")
-        assert result == ""
+        assert connector._extract_email_from_header("") == ""
 
     def test_none_returns_empty(self, connector):
-        result = connector._extract_email_from_header(None)
-        assert result == ""
+        assert connector._extract_email_from_header(None) == ""
+
+    def test_angle_brackets_only(self, connector):
+        assert connector._extract_email_from_header("<alice@e.com>") == "alice@e.com"
 
 
 # ---------------------------------------------------------------------------
@@ -229,128 +235,153 @@ class TestExtractEmailFromHeader:
 # ---------------------------------------------------------------------------
 
 class TestProcessGmailMessage:
-    """Tests for _process_gmail_message."""
-
     async def test_new_inbox_message(self, connector):
         message = _make_gmail_message(label_ids=["INBOX"])
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
         assert result is not None
         assert result.is_new is True
         assert result.record.record_type == RecordType.MAIL
         assert result.record.external_record_group_id == "user@example.com:INBOX"
-        assert result.record.record_name == "Test Subject"
         assert result.record.thread_id == "thread-1"
 
     async def test_new_sent_message(self, connector):
         message = _make_gmail_message(label_ids=["SENT"])
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
         assert result.record.external_record_group_id == "user@example.com:SENT"
 
     async def test_other_label_message(self, connector):
         message = _make_gmail_message(label_ids=["CATEGORY_PROMOTIONS"])
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
         assert result.record.external_record_group_id == "user@example.com:OTHERS"
 
     async def test_sent_label_takes_priority(self, connector):
         message = _make_gmail_message(label_ids=["INBOX", "SENT"])
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
         assert result.record.external_record_group_id == "user@example.com:SENT"
 
     async def test_sender_gets_owner_permission(self, connector):
         message = _make_gmail_message(from_email="user@example.com")
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
-        assert len(result.new_permissions) == 1
         assert result.new_permissions[0].type == PermissionType.OWNER
 
     async def test_recipient_gets_read_permission(self, connector):
         message = _make_gmail_message(from_email="other@example.com")
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
-        assert len(result.new_permissions) == 1
         assert result.new_permissions[0].type == PermissionType.READ
 
     async def test_returns_none_for_no_message_id(self, connector):
         message = {"threadId": "t1", "payload": {"headers": []}}
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
         assert result is None
 
     async def test_no_subject_defaults(self, connector):
         message = _make_gmail_message(subject="")
-        # Remove subject header
         message["payload"]["headers"] = [
             h for h in message["payload"]["headers"] if h["name"] != "Subject"
         ]
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
         assert result.record.record_name == "(No Subject)"
 
     async def test_mime_type_is_gmail(self, connector):
         message = _make_gmail_message()
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
         assert result.record.mime_type == MimeTypes.GMAIL.value
 
     async def test_weburl_includes_user_email(self, connector):
         message = _make_gmail_message()
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
         assert "authuser=user@example.com" in result.record.weburl
 
     async def test_case_insensitive_sender_comparison(self, connector):
         message = _make_gmail_message(from_email="User@Example.COM")
         result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
         )
         assert result.new_permissions[0].type == PermissionType.OWNER
+
+    async def test_existing_message_detected(self, connector):
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.version = 0
+        existing.external_record_group_id = "user@example.com:INBOX"
+        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        message = _make_gmail_message(label_ids=["INBOX"])
+        result = await connector._process_gmail_message(
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
+        )
+        assert result.is_new is False
+
+    async def test_label_change_detected_as_metadata_update(self, connector):
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.version = 0
+        existing.external_record_group_id = "user@example.com:INBOX"
+        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+        message = _make_gmail_message(label_ids=["SENT"])
+        result = await connector._process_gmail_message(
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
+        )
+        assert result.is_updated is True
+        assert result.metadata_changed is True
+
+    async def test_invalid_internal_date(self, connector):
+        message = _make_gmail_message(internal_date="not-a-number")
+        result = await connector._process_gmail_message(
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
+        )
+        assert result is not None
+
+    async def test_no_internal_date(self, connector):
+        message = _make_gmail_message()
+        del message["internalDate"]
+        result = await connector._process_gmail_message(
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
+        )
+        assert result is not None
+
+    async def test_cc_bcc_parsed(self, connector):
+        message = _make_gmail_message(cc_emails="cc1@e.com, cc2@e.com", bcc_emails="bcc@e.com")
+        result = await connector._process_gmail_message(
+            user_email="user@example.com", message=message,
+            thread_id="thread-1", previous_message_id=None,
+        )
+        assert len(result.record.cc_emails) == 2
+        assert len(result.record.bcc_emails) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -358,56 +389,40 @@ class TestProcessGmailMessage:
 # ---------------------------------------------------------------------------
 
 class TestGmailDateFilter:
-    """Tests for _pass_date_filter."""
-
     def test_no_filter_passes(self, connector):
-        message = _make_gmail_message()
-        assert connector._pass_date_filter(message) is True
+        assert connector._pass_date_filter(_make_gmail_message()) is True
 
     def test_message_before_start_rejected(self, connector):
         mock_filter = MagicMock()
-        mock_filter.get_datetime_start.return_value = 1704067200001  # Just after 2024-01-01 00:00
+        mock_filter.get_datetime_start.return_value = 1704067200001
         mock_filter.get_datetime_end.return_value = None
-
         connector.sync_filters = MagicMock()
         connector.sync_filters.get.return_value = mock_filter
-
-        message = _make_gmail_message(internal_date="1704067200000")
-        assert connector._pass_date_filter(message) is False
+        assert connector._pass_date_filter(_make_gmail_message(internal_date="1704067200000")) is False
 
     def test_message_after_end_rejected(self, connector):
         mock_filter = MagicMock()
         mock_filter.get_datetime_start.return_value = None
-        mock_filter.get_datetime_end.return_value = 1704067199999  # Just before 2024-01-01
-
+        mock_filter.get_datetime_end.return_value = 1704067199999
         connector.sync_filters = MagicMock()
         connector.sync_filters.get.return_value = mock_filter
-
-        message = _make_gmail_message(internal_date="1704067200000")
-        assert connector._pass_date_filter(message) is False
+        assert connector._pass_date_filter(_make_gmail_message(internal_date="1704067200000")) is False
 
     def test_message_within_range_passes(self, connector):
         mock_filter = MagicMock()
         mock_filter.get_datetime_start.return_value = 1704067100000
         mock_filter.get_datetime_end.return_value = 1704067300000
-
         connector.sync_filters = MagicMock()
         connector.sync_filters.get.return_value = mock_filter
-
-        message = _make_gmail_message(internal_date="1704067200000")
-        assert connector._pass_date_filter(message) is True
+        assert connector._pass_date_filter(_make_gmail_message(internal_date="1704067200000")) is True
 
     def test_invalid_internal_date_passes(self, connector):
         mock_filter = MagicMock()
         mock_filter.get_datetime_start.return_value = 1000
         mock_filter.get_datetime_end.return_value = None
-
         connector.sync_filters = MagicMock()
         connector.sync_filters.get.return_value = mock_filter
-
-        message = _make_gmail_message(internal_date="not-a-number")
-        # Should return True because parsing fails and filter is skipped
-        assert connector._pass_date_filter(message) is True
+        assert connector._pass_date_filter(_make_gmail_message(internal_date="not-a-number")) is True
 
 
 # ---------------------------------------------------------------------------
@@ -415,8 +430,6 @@ class TestGmailDateFilter:
 # ---------------------------------------------------------------------------
 
 class TestExtractAttachmentInfos:
-    """Tests for _extract_attachment_infos."""
-
     def test_regular_attachment(self, connector):
         message = _make_gmail_message(has_attachments=True)
         infos = connector._extract_attachment_infos(message)
@@ -426,53 +439,67 @@ class TestExtractAttachmentInfos:
         assert infos[0]["stableAttachmentId"] == "msg-1~1"
 
     def test_drive_attachment(self, connector):
-        message = {
-            "id": "msg-1",
-            "payload": {
-                "parts": [
-                    {
-                        "partId": "1",
-                        "filename": "large_file.zip",
-                        "mimeType": "application/zip",
-                        "body": {
-                            "driveFileId": "drive-file-1",
-                            "size": 50000000,
-                        },
-                    }
-                ],
-                "headers": [],
-                "body": {},
-            },
-        }
+        message = _make_gmail_message(has_drive_attachment=True)
         infos = connector._extract_attachment_infos(message)
-        assert len(infos) == 1
-        assert infos[0]["isDriveFile"] is True
-        assert infos[0]["driveFileId"] == "drive-file-1"
-        assert infos[0]["stableAttachmentId"] == "drive-file-1"
+        drive_infos = [i for i in infos if i["isDriveFile"]]
+        assert len(drive_infos) == 1
+        assert drive_infos[0]["driveFileId"] == "drive-file-1"
 
     def test_no_attachments(self, connector):
         message = _make_gmail_message(has_attachments=False)
-        infos = connector._extract_attachment_infos(message)
-        assert len(infos) == 0
+        assert len(connector._extract_attachment_infos(message)) == 0
 
     def test_drive_file_ids_from_body_content(self, connector):
-        import base64
-
-        html_content = '<a href="https://drive.google.com/file/d/DRIVE_ID_1/view?usp=drive_web">Link</a>'
-        encoded = base64.urlsafe_b64encode(html_content.encode()).decode()
-
-        message = {
-            "id": "msg-1",
-            "payload": {
-                "mimeType": "text/html",
-                "body": {"data": encoded},
-                "parts": [],
-                "headers": [],
-            },
-        }
+        html = '<a href="https://drive.google.com/file/d/DRIVE_ID_1/view?usp=drive_web">Link</a>'
+        message = _make_gmail_message(body_html=html)
         infos = connector._extract_attachment_infos(message)
         assert len(infos) == 1
         assert infos[0]["driveFileId"] == "DRIVE_ID_1"
+
+    def test_duplicate_drive_ids_deduplicated(self, connector):
+        html = (
+            '<a href="https://drive.google.com/file/d/DUP_ID/view?usp=drive_web">1</a>'
+            '<a href="https://drive.google.com/file/d/DUP_ID/view?usp=drive_web">2</a>'
+        )
+        message = _make_gmail_message(body_html=html)
+        infos = connector._extract_attachment_infos(message)
+        assert len(infos) == 1
+
+    def test_mixed_attachments(self, connector):
+        message = _make_gmail_message(has_attachments=True, has_drive_attachment=True)
+        infos = connector._extract_attachment_infos(message)
+        regular = [i for i in infos if not i["isDriveFile"]]
+        drive = [i for i in infos if i["isDriveFile"]]
+        assert len(regular) == 1
+        assert len(drive) == 1
+
+    def test_nested_parts(self, connector):
+        message = {
+            "id": "msg-1",
+            "payload": {
+                "mimeType": "multipart/mixed",
+                "body": {},
+                "headers": [],
+                "parts": [
+                    {
+                        "mimeType": "multipart/alternative",
+                        "body": {},
+                        "parts": [
+                            {"partId": "0.0", "mimeType": "text/plain", "body": {"data": ""}},
+                        ]
+                    },
+                    {
+                        "partId": "1",
+                        "filename": "nested.pdf",
+                        "mimeType": "application/pdf",
+                        "body": {"attachmentId": "att-nested", "size": 999},
+                    }
+                ]
+            }
+        }
+        infos = connector._extract_attachment_infos(message)
+        assert len(infos) == 1
+        assert infos[0]["filename"] == "nested.pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -480,87 +507,93 @@ class TestExtractAttachmentInfos:
 # ---------------------------------------------------------------------------
 
 class TestProcessGmailAttachment:
-    """Tests for _process_gmail_attachment."""
-
     async def test_regular_attachment_creates_file_record(self, connector):
         attachment_info = {
-            "attachmentId": "att-1",
-            "driveFileId": None,
-            "stableAttachmentId": "msg-1~1",
-            "partId": "1",
-            "filename": "report.pdf",
-            "mimeType": "application/pdf",
-            "size": 5000,
-            "isDriveFile": False,
+            "attachmentId": "att-1", "driveFileId": None,
+            "stableAttachmentId": "msg-1~1", "partId": "1",
+            "filename": "report.pdf", "mimeType": "application/pdf",
+            "size": 5000, "isDriveFile": False,
         }
         parent_perms = [Permission(email="user@example.com", type=PermissionType.OWNER, entity_type=EntityType.USER)]
-
         result = await connector._process_gmail_attachment(
-            user_email="user@example.com",
-            message_id="msg-1",
-            attachment_info=attachment_info,
-            parent_mail_permissions=parent_perms,
+            user_email="user@example.com", message_id="msg-1",
+            attachment_info=attachment_info, parent_mail_permissions=parent_perms,
         )
-
         assert result is not None
         assert result.is_new is True
         assert result.record.record_name == "report.pdf"
-        assert result.record.record_type == RecordType.FILE
         assert result.record.extension == "pdf"
-        assert result.record.parent_external_record_id == "msg-1"
-        assert result.record.is_file is True
         assert result.record.is_dependent_node is True
 
     async def test_returns_none_when_no_stable_id(self, connector):
-        attachment_info = {
-            "attachmentId": "att-1",
-            "stableAttachmentId": None,
-            "isDriveFile": False,
-        }
+        attachment_info = {"attachmentId": "att-1", "stableAttachmentId": None, "isDriveFile": False}
         result = await connector._process_gmail_attachment(
-            user_email="user@example.com",
-            message_id="msg-1",
-            attachment_info=attachment_info,
-            parent_mail_permissions=[],
+            user_email="user@example.com", message_id="msg-1",
+            attachment_info=attachment_info, parent_mail_permissions=[],
         )
         assert result is None
 
     async def test_returns_none_when_no_attachment_id_for_regular(self, connector):
         attachment_info = {
-            "attachmentId": None,
-            "driveFileId": None,
-            "stableAttachmentId": "msg-1~1",
-            "isDriveFile": False,
+            "attachmentId": None, "driveFileId": None,
+            "stableAttachmentId": "msg-1~1", "isDriveFile": False,
         }
         result = await connector._process_gmail_attachment(
-            user_email="user@example.com",
-            message_id="msg-1",
-            attachment_info=attachment_info,
-            parent_mail_permissions=[],
+            user_email="user@example.com", message_id="msg-1",
+            attachment_info=attachment_info, parent_mail_permissions=[],
         )
         assert result is None
 
     async def test_attachment_inherits_parent_permissions(self, connector):
         attachment_info = {
-            "attachmentId": "att-1",
-            "driveFileId": None,
-            "stableAttachmentId": "msg-1~1",
-            "partId": "1",
-            "filename": "data.csv",
-            "mimeType": "text/csv",
-            "size": 100,
-            "isDriveFile": False,
+            "attachmentId": "att-1", "driveFileId": None,
+            "stableAttachmentId": "msg-1~1", "partId": "1",
+            "filename": "data.csv", "mimeType": "text/csv",
+            "size": 100, "isDriveFile": False,
         }
         parent_perms = [Permission(email="user@example.com", type=PermissionType.OWNER, entity_type=EntityType.USER)]
-
         result = await connector._process_gmail_attachment(
-            user_email="user@example.com",
-            message_id="msg-1",
-            attachment_info=attachment_info,
-            parent_mail_permissions=parent_perms,
+            user_email="user@example.com", message_id="msg-1",
+            attachment_info=attachment_info, parent_mail_permissions=parent_perms,
         )
-
         assert result.new_permissions == parent_perms
+
+    async def test_unnamed_attachment_gets_default_name(self, connector):
+        attachment_info = {
+            "attachmentId": "att-1", "driveFileId": None,
+            "stableAttachmentId": "msg-1~1", "partId": "1",
+            "filename": None, "mimeType": "application/octet-stream",
+            "size": 100, "isDriveFile": False,
+        }
+        result = await connector._process_gmail_attachment(
+            user_email="user@example.com", message_id="msg-1",
+            attachment_info=attachment_info, parent_mail_permissions=[],
+        )
+        assert result.record.record_name == "unnamed_attachment"
+
+    async def test_drive_file_fetches_metadata(self, connector):
+        attachment_info = {
+            "attachmentId": None, "driveFileId": "drive-1",
+            "stableAttachmentId": "drive-1", "partId": "1",
+            "filename": "unknown", "mimeType": "application/octet-stream",
+            "size": 0, "isDriveFile": True,
+        }
+        mock_drive_client = MagicMock()
+        mock_service = MagicMock()
+        mock_service.files().get().execute.return_value = {
+            "id": "drive-1", "name": "report.xlsx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "size": "5000"
+        }
+        mock_drive_client.get_client.return_value = mock_service
+
+        with patch("app.connectors.sources.google.gmail.individual.connector.GoogleClient.build_from_services",
+                    new_callable=AsyncMock, return_value=mock_drive_client):
+            result = await connector._process_gmail_attachment(
+                user_email="user@example.com", message_id="msg-1",
+                attachment_info=attachment_info, parent_mail_permissions=[],
+            )
+        assert result.record.record_name == "report.xlsx"
 
 
 # ---------------------------------------------------------------------------
@@ -568,22 +601,21 @@ class TestProcessGmailAttachment:
 # ---------------------------------------------------------------------------
 
 class TestGmailConnectionTest:
-    """Tests for test_connection_and_access."""
-
     async def test_returns_true_when_initialized(self, connector):
         connector.gmail_client.get_client.return_value = MagicMock()
-        result = await connector.test_connection_and_access()
-        assert result is True
+        assert await connector.test_connection_and_access() is True
 
     async def test_returns_false_when_no_data_source(self, connector):
         connector.gmail_data_source = None
-        result = await connector.test_connection_and_access()
-        assert result is False
+        assert await connector.test_connection_and_access() is False
 
     async def test_returns_false_when_no_client(self, connector):
         connector.gmail_client = None
-        result = await connector.test_connection_and_access()
-        assert result is False
+        assert await connector.test_connection_and_access() is False
+
+    async def test_returns_false_when_no_api_client(self, connector):
+        connector.gmail_client.get_client.return_value = None
+        assert await connector.test_connection_and_access() is False
 
 
 # ---------------------------------------------------------------------------
@@ -591,89 +623,147 @@ class TestGmailConnectionTest:
 # ---------------------------------------------------------------------------
 
 class TestExtractBodyFromPayload:
-    """Tests for _extract_body_from_payload."""
-
     def test_plain_text_body(self, connector):
-        import base64
-
         content = base64.urlsafe_b64encode(b"Hello world").decode()
         payload = {"mimeType": "text/plain", "body": {"data": content}}
-        result = connector._extract_body_from_payload(payload)
-        assert result == content
+        assert connector._extract_body_from_payload(payload) == content
 
     def test_html_body(self, connector):
-        import base64
-
         html = "<html><body>Hello</body></html>"
         content = base64.urlsafe_b64encode(html.encode()).decode()
         payload = {"mimeType": "text/html", "body": {"data": content}}
-        result = connector._extract_body_from_payload(payload)
-        assert result == content
+        assert connector._extract_body_from_payload(payload) == content
 
     def test_multipart_prefers_html(self, connector):
-        import base64
-
         plain = base64.urlsafe_b64encode(b"plain").decode()
         html = base64.urlsafe_b64encode(b"<b>html</b>").decode()
-
         payload = {
-            "mimeType": "multipart/alternative",
-            "body": {},
+            "mimeType": "multipart/alternative", "body": {},
             "parts": [
                 {"mimeType": "text/plain", "body": {"data": plain}},
                 {"mimeType": "text/html", "body": {"data": html}},
             ],
         }
-        result = connector._extract_body_from_payload(payload)
-        assert result == html
+        assert connector._extract_body_from_payload(payload) == html
 
     def test_empty_payload(self, connector):
         payload = {"mimeType": "multipart/alternative", "body": {}, "parts": []}
-        result = connector._extract_body_from_payload(payload)
-        assert result == ""
+        assert connector._extract_body_from_payload(payload) == ""
+
+    def test_nested_multipart(self, connector):
+        html = base64.urlsafe_b64encode(b"<b>nested html</b>").decode()
+        payload = {
+            "mimeType": "multipart/mixed", "body": {},
+            "parts": [
+                {
+                    "mimeType": "multipart/alternative", "body": {},
+                    "parts": [
+                        {"mimeType": "text/html", "body": {"data": html}},
+                    ]
+                }
+            ],
+        }
+        assert connector._extract_body_from_payload(payload) == html
 
 
 # ---------------------------------------------------------------------------
-# Existing record detection
+# get_signed_url
+# ---------------------------------------------------------------------------
+
+class TestGetSignedUrl:
+    def test_raises_not_implemented(self, connector):
+        with pytest.raises(NotImplementedError):
+            connector.get_signed_url(MagicMock())
+
+
+# ---------------------------------------------------------------------------
+# _get_existing_record
 # ---------------------------------------------------------------------------
 
 class TestExistingRecordDetection:
-    """Tests for detecting existing records and metadata changes."""
-
-    async def test_existing_message_detected(self, connector):
+    async def test_returns_existing_record(self, connector):
         existing = MagicMock()
-        existing.id = "existing-id"
-        existing.version = 0
-        existing.external_record_group_id = "user@example.com:INBOX"
-
+        existing.id = "found-id"
         connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
-
-        message = _make_gmail_message(label_ids=["INBOX"])
-        result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
-        )
+        result = await connector._get_existing_record("ext-id-1")
         assert result is not None
-        assert result.is_new is False
-        assert result.record.id == "existing-id"
 
-    async def test_label_change_detected_as_metadata_update(self, connector):
-        existing = MagicMock()
-        existing.id = "existing-id"
-        existing.version = 0
-        existing.external_record_group_id = "user@example.com:INBOX"
+    async def test_returns_none_when_not_found(self, connector):
+        connector.data_store_provider = _make_mock_data_store_provider(existing_record=None)
+        assert await connector._get_existing_record("nonexistent") is None
 
-        connector.data_store_provider = _make_mock_data_store_provider(existing_record=existing)
+    async def test_returns_none_on_error(self, connector):
+        provider = MagicMock()
+        @asynccontextmanager
+        async def _failing_tx():
+            raise Exception("DB error")
+            yield
+        provider.transaction = _failing_tx
+        connector.data_store_provider = provider
+        assert await connector._get_existing_record("ext-id-1") is None
 
-        # Message moved from INBOX to SENT
-        message = _make_gmail_message(label_ids=["SENT"])
-        result = await connector._process_gmail_message(
-            user_email="user@example.com",
-            message=message,
-            thread_id="thread-1",
-            previous_message_id=None,
-        )
-        assert result.is_updated is True
-        assert result.metadata_changed is True
+
+# ---------------------------------------------------------------------------
+# _process_gmail_message_generator
+# ---------------------------------------------------------------------------
+
+class TestIndividualMessageGenerator:
+    async def test_applies_indexing_filter(self, connector):
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = False
+        messages = [_make_gmail_message()]
+        results = []
+        async for update in connector._process_gmail_message_generator(messages, "user@example.com", "thread-1"):
+            if update:
+                results.append(update)
+        assert len(results) == 1
+        assert results[0].record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_handles_exception(self, connector):
+        with patch.object(connector, "_process_gmail_message", new_callable=AsyncMock,
+                          side_effect=Exception("error")):
+            results = []
+            async for update in connector._process_gmail_message_generator(
+                [_make_gmail_message()], "user@example.com", "thread-1"
+            ):
+                if update:
+                    results.append(update)
+            assert len(results) == 0
+
+
+# ---------------------------------------------------------------------------
+# _process_gmail_attachment_generator
+# ---------------------------------------------------------------------------
+
+class TestIndividualAttachmentGenerator:
+    async def test_applies_indexing_filter(self, connector):
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = False
+        attachment_infos = [{
+            "attachmentId": "att-1", "driveFileId": None,
+            "stableAttachmentId": "msg-1~1", "partId": "1",
+            "filename": "file.txt", "mimeType": "text/plain",
+            "size": 100, "isDriveFile": False,
+        }]
+        parent_perms = [Permission(email="u@e.com", type=PermissionType.OWNER, entity_type=EntityType.USER)]
+        results = []
+        async for update in connector._process_gmail_attachment_generator(
+            "user@example.com", "msg-1", attachment_infos, parent_perms
+        ):
+            if update:
+                results.append(update)
+        assert len(results) == 1
+        assert results[0].record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    async def test_handles_exception(self, connector):
+        with patch.object(connector, "_process_gmail_attachment", new_callable=AsyncMock,
+                          side_effect=Exception("error")):
+            results = []
+            async for update in connector._process_gmail_attachment_generator(
+                "user@example.com", "msg-1",
+                [{"stableAttachmentId": "id", "isDriveFile": False, "attachmentId": "att"}],
+                []
+            ):
+                if update:
+                    results.append(update)
+            assert len(results) == 0

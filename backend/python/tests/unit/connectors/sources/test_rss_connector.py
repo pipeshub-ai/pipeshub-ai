@@ -78,7 +78,7 @@ def _make_feed_entry(title="Test Article", link="https://example.com/article-1",
 class TestRSSApp:
     def test_rss_app_creation(self):
         app = RSSApp("rss-1")
-        assert app.connector_name == Connectors.RSS
+        assert app.app_name == Connectors.RSS
 
 
 # ===================================================================

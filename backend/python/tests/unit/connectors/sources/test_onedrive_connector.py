@@ -575,7 +575,9 @@ class TestGroupHandling:
         group.id = "grp-1"
         group.display_name = "Test Group"
         group.description = "Test"
-        group.created_date_time = datetime.now(timezone.utc)
+        mock_dt = MagicMock()
+        mock_dt.timestamp = MagicMock(return_value=1700000000)
+        group.created_date_time = mock_dt
 
         result = await connector.handle_group_create(group)
         assert result is True
@@ -619,14 +621,15 @@ class TestCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_closes_credential(self):
         connector = _make_connector()
-        connector.credential = AsyncMock()
-        connector.credential.close = AsyncMock()
+        mock_credential = AsyncMock()
+        mock_credential.close = AsyncMock()
+        connector.credential = mock_credential
         connector.client = MagicMock()
         connector.msgraph_client = MagicMock()
 
         await connector.cleanup()
 
-        connector.credential.close.assert_awaited_once()
+        mock_credential.close.assert_awaited_once()
         assert connector.client is None
         assert connector.msgraph_client is None
 

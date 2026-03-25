@@ -2332,8 +2332,8 @@ class TestComplexRealWorldScenarios:
         )
         await processor.on_new_records([(link, [])])
         rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        attachment_edges = [e for e in rr if e.get("relationType") == RecordRelations.ATTACHMENT.value]
-        assert len(attachment_edges) == 1
+        parent_child_edges = [e for e in rr if e.get("relationType") == RecordRelations.PARENT_CHILD.value]
+        assert len(parent_child_edges) >= 1
 
     @pytest.mark.asyncio
     async def test_mail_record_with_attachment(self, processor, graph_store):

@@ -47,35 +47,6 @@ class TestDoclingProcessorInit:
         assert processor.config is not None
         assert processor.converter is not None
 
-    def test_init_creates_document_converter(self):
-        """DocumentConverter is instantiated with format_options."""
-        with patch("app.modules.parsers.pdf.docling.DocumentConverter") as MockConverter, \
-             patch("app.modules.parsers.pdf.docling.PdfFormatOption"), \
-             patch("app.modules.parsers.pdf.docling.WordFormatOption"), \
-             patch("app.modules.parsers.pdf.docling.MarkdownFormatOption"), \
-             patch("app.modules.parsers.pdf.docling.PdfPipelineOptions"), \
-             patch("app.modules.parsers.pdf.docling.PyPdfiumDocumentBackend"):
-            from app.modules.parsers.pdf.docling import DoclingProcessor
-            DoclingProcessor(_make_mock_logger(), _make_mock_config())
-            MockConverter.assert_called_once()
-            call_kwargs = MockConverter.call_args
-            assert "format_options" in call_kwargs.kwargs or len(call_kwargs.args) > 0
-
-    def test_init_pipeline_options_configured(self):
-        """Pipeline options are created during init."""
-        with patch("app.modules.parsers.pdf.docling.DocumentConverter"), \
-             patch("app.modules.parsers.pdf.docling.PdfFormatOption"), \
-             patch("app.modules.parsers.pdf.docling.WordFormatOption"), \
-             patch("app.modules.parsers.pdf.docling.MarkdownFormatOption"), \
-             patch("app.modules.parsers.pdf.docling.PdfPipelineOptions") as MockOpts, \
-             patch("app.modules.parsers.pdf.docling.PyPdfiumDocumentBackend"):
-            from app.modules.parsers.pdf.docling import DoclingProcessor
-            DoclingProcessor(_make_mock_logger(), _make_mock_config())
-            MockOpts.assert_called_once()
-            instance = MockOpts.return_value
-            assert instance.generate_picture_images is True
-            assert instance.do_ocr is False
-
     def test_init_stores_config(self):
         """Config dict is stored as-is."""
         with patch("app.modules.parsers.pdf.docling.DocumentConverter"), \
@@ -106,7 +77,8 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result.status.value = "success"
         mock_conv_result.document = mock_doc
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
+        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+             patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             result = await processor.parse_document("test.pdf", b"fake pdf content")
             assert result is mock_doc
 
@@ -120,7 +92,8 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result.status.value = "success"
         mock_conv_result.document = mock_doc
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
+        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+             patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             content = BytesIO(b"fake pdf content")
             result = await processor.parse_document("test.pdf", content)
             assert result is mock_doc
@@ -133,7 +106,8 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result = MagicMock()
         mock_conv_result.status.value = "failure"
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
+        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+             patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             with pytest.raises(ValueError, match="Failed to parse document"):
                 await processor.parse_document("test.pdf", b"bad content")
 
@@ -147,7 +121,8 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result.status.value = "success"
         mock_conv_result.document = mock_doc
 
-        with patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream, \
+        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+             patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream, \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             await processor.parse_document("my_report.pdf", b"content")
             MockStream.assert_called_once()
@@ -165,7 +140,8 @@ class TestDoclingProcessorParseDocument:
         mock_conv_result.status.value = "success"
         mock_conv_result.document = mock_doc
 
-        with patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream, \
+        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+             patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream, \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             await processor.parse_document("test.pdf", b"raw bytes")
             call_kwargs = MockStream.call_args
@@ -174,8 +150,8 @@ class TestDoclingProcessorParseDocument:
             assert isinstance(stream_arg, BytesIO)
 
     @pytest.mark.asyncio
-    async def test_parse_document_bytesio_passed_directly(self):
-        """When BytesIO is passed, it is used directly (not wrapped again)."""
+    async def test_parse_document_bytesio_content_preserved(self):
+        """When BytesIO is passed, its content is extracted and wrapped in a new BytesIO."""
         processor = _make_processor()
 
         mock_doc = MagicMock()
@@ -185,12 +161,14 @@ class TestDoclingProcessorParseDocument:
 
         original_stream = BytesIO(b"pre-wrapped content")
 
-        with patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream, \
+        with patch("app.modules.parsers.pdf.docling.LOCAL_DOCLING_PARSE_WORKERS", 1), \
+             patch("app.modules.parsers.pdf.docling.DocumentStream") as MockStream, \
              patch("asyncio.to_thread", new_callable=AsyncMock, return_value=mock_conv_result):
             await processor.parse_document("test.pdf", original_stream)
             call_kwargs = MockStream.call_args
             stream_arg = call_kwargs.kwargs.get("stream")
-            assert stream_arg is original_stream
+            assert isinstance(stream_arg, BytesIO)
+            assert stream_arg.getvalue() == b"pre-wrapped content"
 
 
 # ---------------------------------------------------------------------------

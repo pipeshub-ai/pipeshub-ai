@@ -374,6 +374,7 @@ class TestRun:
             port=9001,
             log_level="info",
             reload=True,
+            workers=1,
         )
 
     def test_run_defaults(self):
@@ -389,6 +390,7 @@ class TestRun:
             port=8081,
             log_level="info",
             reload=False,
+            workers=1,
         )
 
 

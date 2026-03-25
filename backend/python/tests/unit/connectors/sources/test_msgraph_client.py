@@ -120,7 +120,7 @@ class TestMSGraphClient:
     def _make_client(self):
         mock_graph = MagicMock()
         logger = logging.getLogger("test")
-        return MSGraphClient("OneDrive", "connector-123", mock_graph, logger, max_requests_per_second=100)
+        return MSGraphClient("ONEDRIVE", "connector-123", mock_graph, logger, max_requests_per_second=100)
 
     @pytest.mark.asyncio
     async def test_get_all_user_groups_empty(self):

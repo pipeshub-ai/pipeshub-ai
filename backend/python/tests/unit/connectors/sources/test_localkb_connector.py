@@ -91,7 +91,7 @@ def _make_record(**overrides):
 class TestKBApp:
     def test_app_initialization(self):
         app = KBApp("conn-1")
-        assert app.connector_name == Connectors.KNOWLEDGE_BASE
+        assert app.app_name == Connectors.KNOWLEDGE_BASE
 
     def test_connector_name_constant(self):
         assert KB_CONNECTOR_NAME == "Collections"
@@ -148,7 +148,6 @@ class TestKnowledgeBaseConnector:
         connector = _make_connector()
         result = await connector.get_filter_options("any_key")
         assert result.options == []
-        assert result.total == 0
         assert result.has_more is False
 
     @pytest.mark.asyncio

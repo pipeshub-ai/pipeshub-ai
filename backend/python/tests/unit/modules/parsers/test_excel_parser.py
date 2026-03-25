@@ -660,7 +660,11 @@ class TestFindTables:
         sheet.merged_cells = MagicMock()
         sheet.merged_cells.ranges = []
 
+        _cell_cache = {}
+
         def cell_fn(row, column):
+            if (row, column) in _cell_cache:
+                return _cell_cache[(row, column)]
             mock_cell = MagicMock()
             if row <= max_row and column <= max_col:
                 val = data[row - 1][column - 1] if column - 1 < len(data[row - 1]) else None
@@ -674,9 +678,18 @@ class TestFindTables:
             mock_cell.font = MagicMock(bold=False, italic=False, size=11, color=None)
             mock_cell.fill = MagicMock(start_color=None)
             mock_cell.alignment = MagicMock(horizontal=None, vertical=None)
+            _cell_cache[(row, column)] = mock_cell
             return mock_cell
 
         sheet.cell = cell_fn
+
+        # Build _cells dict for find_tables pre-scan optimization
+        _cells = {}
+        for r in range(1, max_row + 1):
+            for c in range(1, max_col + 1):
+                _cells[(r, c)] = cell_fn(r, c)
+        sheet._cells = _cells
+
         return sheet
 
     @pytest.mark.asyncio
@@ -1251,7 +1264,11 @@ class TestExcelProcessTableWithHeaderInfo:
         sheet.merged_cells = MagicMock()
         sheet.merged_cells.ranges = []
 
+        _cell_cache = {}
+
         def cell_fn(row, column):
+            if (row, column) in _cell_cache:
+                return _cell_cache[(row, column)]
             mock_cell = MagicMock()
             if row <= max_row and column <= max_col:
                 val = data[row - 1][column - 1] if column - 1 < len(data[row - 1]) else None
@@ -1265,9 +1282,17 @@ class TestExcelProcessTableWithHeaderInfo:
             mock_cell.font = MagicMock(bold=False, italic=False, size=11, color=None)
             mock_cell.fill = MagicMock(start_color=None)
             mock_cell.alignment = MagicMock(horizontal=None, vertical=None)
+            _cell_cache[(row, column)] = mock_cell
             return mock_cell
 
         sheet.cell = cell_fn
+
+        _cells = {}
+        for r in range(1, max_row + 1):
+            for c in range(1, max_col + 1):
+                _cells[(r, c)] = cell_fn(r, c)
+        sheet._cells = _cells
+
         return sheet
 
     @pytest.mark.asyncio
@@ -1562,7 +1587,11 @@ class TestFindTablesDeep:
         sheet.merged_cells = MagicMock()
         sheet.merged_cells.ranges = []
 
+        _cell_cache = {}
+
         def cell_fn(row, column):
+            if (row, column) in _cell_cache:
+                return _cell_cache[(row, column)]
             mock_cell = MagicMock()
             if row <= max_row and column <= max_col:
                 val = data[row - 1][column - 1] if column - 1 < len(data[row - 1]) else None
@@ -1576,9 +1605,17 @@ class TestFindTablesDeep:
             mock_cell.font = MagicMock(bold=False, italic=False, size=11, color=None)
             mock_cell.fill = MagicMock(start_color=None)
             mock_cell.alignment = MagicMock(horizontal=None, vertical=None)
+            _cell_cache[(row, column)] = mock_cell
             return mock_cell
 
         sheet.cell = cell_fn
+
+        _cells = {}
+        for r in range(1, max_row + 1):
+            for c in range(1, max_col + 1):
+                _cells[(r, c)] = cell_fn(r, c)
+        sheet._cells = _cells
+
         return sheet
 
     @pytest.mark.asyncio
@@ -1780,7 +1817,11 @@ class TestDetectMergedCells:
         sheet.merged_cells = MagicMock()
         sheet.merged_cells.ranges = merged_ranges or []
 
+        _cell_cache = {}
+
         def cell_fn(row, column):
+            if (row, column) in _cell_cache:
+                return _cell_cache[(row, column)]
             mock_cell = MagicMock()
             if row <= max_row and column <= max_col:
                 val = data[row - 1][column - 1] if column - 1 < len(data[row - 1]) else None
@@ -1794,9 +1835,17 @@ class TestDetectMergedCells:
             mock_cell.font = MagicMock(bold=False, italic=False, size=11, color=None)
             mock_cell.fill = MagicMock(start_color=None)
             mock_cell.alignment = MagicMock(horizontal=None, vertical=None)
+            _cell_cache[(row, column)] = mock_cell
             return mock_cell
 
         sheet.cell = cell_fn
+
+        _cells = {}
+        for r in range(1, max_row + 1):
+            for c in range(1, max_col + 1):
+                _cells[(r, c)] = cell_fn(r, c)
+        sheet._cells = _cells
+
         return sheet
 
     @pytest.mark.asyncio
@@ -2332,7 +2381,11 @@ class TestFindTablesAdvanced:
         sheet.merged_cells = MagicMock()
         sheet.merged_cells.ranges = []
 
+        _cell_cache = {}
+
         def cell_fn(row, column):
+            if (row, column) in _cell_cache:
+                return _cell_cache[(row, column)]
             mock_cell = MagicMock()
             if row <= max_row and column <= max_col:
                 val = data[row - 1][column - 1] if column - 1 < len(data[row - 1]) else None
@@ -2346,9 +2399,17 @@ class TestFindTablesAdvanced:
             mock_cell.font = MagicMock(bold=False, italic=False, size=11, color=None)
             mock_cell.fill = MagicMock(start_color=None)
             mock_cell.alignment = MagicMock(horizontal=None, vertical=None)
+            _cell_cache[(row, column)] = mock_cell
             return mock_cell
 
         sheet.cell = cell_fn
+
+        _cells = {}
+        for r in range(1, max_row + 1):
+            for c in range(1, max_col + 1):
+                _cells[(r, c)] = cell_fn(r, c)
+        sheet._cells = _cells
+
         return sheet
 
     @pytest.mark.asyncio
