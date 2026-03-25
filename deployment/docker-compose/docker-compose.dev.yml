@@ -4,7 +4,7 @@ services:
     restart: always
     build:
       context: ../../
-      dockerfile: Dockerfile
+      dockerfile: deployment/docker-compose/Dockerfile.dev
       args:
         - BUILDKIT_INLINE_CACHE=1
       shm_size: 4gb
@@ -17,6 +17,7 @@ services:
       - "8081:8081"
       - "8088:8088"
       - "3000:3000"
+      - "3001:3001"
       - "3020:3020"
       - "8001:8000"
     deploy:
@@ -121,26 +122,46 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
-
       - ENABLE_PYMUPDF_PROCESSOR=${ENABLE_PYMUPDF_PROCESSOR:-false}
+
+      # Vite frontend dev server
+      - VITE_BACKEND_URL=http://localhost:3000
+      - VITE_AUTH_URL=http://localhost:3000
+      - VITE_IAM_URL=http://localhost:3000
     depends_on:
       qdrant:
         condition: service_healthy
       kafka-1:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       mongodb:
-        condition: service_started
+        condition: service_healthy
       etcd:
-        condition: service_started
+        condition: service_healthy
       arango:
         condition: service_healthy
+
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+      # ── Hot Reload: bind-mount source code so watchers pick up file saves ──
+      - ./scripts/dev_process_monitor.sh:/app/dev_process_monitor.sh
+      - ../../backend/python/app:/app/python/app
+      # Mount entire source directories — picks up all config file additions automatically
+      - ../../backend/nodejs/apps:/app/backend
+      - ../../frontend:/app/frontend
+      # Anonymous volumes protect container node_modules from being overwritten by host
+      - /app/backend/node_modules
+      - /app/frontend/node_modules
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/v1/health/services || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   mongodb:
     image: mongo:8.0.17
@@ -172,6 +193,11 @@ services:
       ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   arango:
     image: arangodb:3.12.4
@@ -205,6 +231,11 @@ services:
       --initial-cluster etcd-node=http://0.0.0.0:2380
     volumes:
       - etcd_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.9.0
@@ -214,12 +245,18 @@ services:
     environment:
       - ZOOKEEPER_CLIENT_PORT=2181
       - ZOOKEEPER_TICK_TIME=2000
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   kafka-1:
     image: confluentinc/cp-kafka:7.9.0
     restart: always
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
     environment:
@@ -237,6 +274,12 @@ services:
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   qdrant:
     image: qdrant/qdrant:v1.15
