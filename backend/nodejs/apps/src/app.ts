@@ -321,7 +321,7 @@ export class Application {
     // CORS - ensure this matches your frontend domain
     this.app.use(
       cors({
-        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'], // Be more specific than '*'
+        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
@@ -653,7 +653,7 @@ export class Application {
     try {
       const samlController = this.authServiceContainer.get<SamlController>('SamlController');
       samlController.updateSamlStrategiesWithCallback()
-      this.logger.info('SAML passport strategies updated successfully');
+      this.logger.info('SSO SAML passport strategies updated successfully')
     } catch (error) {
       this.logger.warn('Failed to update passport strategies', {
         error: error instanceof Error ? error.message : 'Unknown error',
