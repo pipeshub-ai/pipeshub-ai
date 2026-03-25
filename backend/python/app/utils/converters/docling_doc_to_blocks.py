@@ -1,5 +1,5 @@
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from docling.datamodel.document import DoclingDocument
 
@@ -146,7 +146,7 @@ class DoclingDocToBlocksConverter():
                 else:
                     block.citation_metadata.page_number = default_page_number
 
-        async def _handle_text_block(item: dict[str, Any], doc_dict: dict[str, Any], parent_index: int | None, ref_path: str,level: int,doc: DoclingDocument) -> Optional[Block]:
+        async def _handle_text_block(item: dict[str, Any], doc_dict: dict[str, Any], parent_index: int | None, ref_path: str,level: int,doc: DoclingDocument) -> Block | None:
             block = None
             if item.get("text") != "":
                 block = Block(

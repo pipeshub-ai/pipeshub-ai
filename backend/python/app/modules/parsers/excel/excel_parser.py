@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, cast
+from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage

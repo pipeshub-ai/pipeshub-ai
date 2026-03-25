@@ -1,10 +1,8 @@
 import asyncio
 import base64
 import logging
-import os
-from typing import Any, Optional
+from typing import Any
 
-import uvicorn
 from docling_core.types.doc.document import DoclingDocument
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -21,13 +19,13 @@ PDF_PARSING_TIMEOUT_SECONDS = 40 * 60
 class ProcessRequest(BaseModel):
     record_name: str
     pdf_binary: str  # base64 encoded PDF binary data
-    org_id: Optional[str] = None
+    org_id: str | None = None
 
 
 class ProcessResponse(BaseModel):
     success: bool
-    block_containers: Optional[dict[str, Any]] = None
-    error: Optional[str] = None
+    block_containers: dict[str, Any] | None = None
+    error: str | None = None
 
 
 class ParseRequest(BaseModel):
@@ -37,19 +35,19 @@ class ParseRequest(BaseModel):
 
 class ParseResponse(BaseModel):
     success: bool
-    parse_result: Optional[str] = None  # JSON-encoded document data
-    error: Optional[str] = None
+    parse_result: str | None = None  # JSON-encoded document data
+    error: str | None = None
 
 
 class CreateBlocksRequest(BaseModel):
     parse_result: str  # JSON-encoded document data
-    page_number: Optional[int] = None
+    page_number: int | None = None
 
 
 class CreateBlocksResponse(BaseModel):
     success: bool
-    block_containers: Optional[dict[str, Any]] = None
-    error: Optional[str] = None
+    block_containers: dict[str, Any] | None = None
+    error: str | None = None
 
 
 class DoclingService:
@@ -114,7 +112,7 @@ class DoclingService:
             raise
 
     async def create_blocks_from_parse_result(
-        self, doc: DoclingDocument, page_number: Optional[int] = None
+        self, doc: DoclingDocument, page_number: int | None = None
     ) -> BlocksContainer:
         """Create blocks from DoclingDocument (involves LLM calls for tables).
 
@@ -154,7 +152,7 @@ class DoclingService:
 
 
 # Global service instance (to be set by the application wiring)
-docling_service: Optional[DoclingService] = None
+docling_service: DoclingService | None = None
 
 def set_docling_service(service: DoclingService) -> None:
     """Wire an initialized DoclingService instance for the route handlers to use."""

@@ -1,5 +1,5 @@
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List
 
 import httpx
 import uvicorn
@@ -66,7 +66,7 @@ async def get_initialized_container() -> QueryAppContainer:
         get_initialized_container.initialized = True
     return container
 
-async def start_kafka_consumers(app_container: QueryAppContainer) -> List:
+async def start_kafka_consumers(app_container: QueryAppContainer) -> list:
     """Start all Kafka consumers at application level"""
     logger = app_container.logger()
     consumers = []
@@ -116,6 +116,7 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool:
             if hasattr(container, 'kafka_consumers'):
                 container.kafka_consumers = []
             return True
+    return None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -211,8 +212,7 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         # Apply authentication
         authenticated_request = await authMiddleware(request)
         # Continue with the request
-        response = await call_next(authenticated_request)
-        return response
+        return await call_next(authenticated_request)
 
     except HTTPException as exc:
         # Handle authentication errors
@@ -290,13 +290,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     This will log the detailed error and the body of the failed request.
     """
     # Log the full error details from the exception
-    print(f"Pydantic validation error for {request.method} {request.url}: {exc.errors()}")
 
     try:
         # Try to log the request body
         await request.json()
     except Exception:
-        print("Could not parse request body as JSON.")
+        pass
 
     # You can customize the response, but for now, we'll just re-raise
     # or return the default FastAPI response structure.

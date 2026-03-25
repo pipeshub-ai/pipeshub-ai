@@ -6,9 +6,9 @@ import threading
 from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from logging import Logger
-from typing import Any, Optional
+from typing import Any
 
-from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
+from aiokafka import AIOKafkaConsumer  # type: ignore
 from aiokafka.structs import ConsumerRecord  # type: ignore
 from typing_extensions import override
 
@@ -50,18 +50,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 logger: Logger,
                 kafka_config: KafkaConsumerConfig) -> None:
         self.logger = logger
-        self.consumer: Optional[AIOKafkaConsumer] = None
+        self.consumer: AIOKafkaConsumer | None = None
         self.running = False
         self.kafka_config = kafka_config
         self.consume_task = None
         # Worker thread infrastructure
-        self.worker_executor: Optional[ThreadPoolExecutor] = None
-        self.worker_loop: Optional[asyncio.AbstractEventLoop] = None
+        self.worker_executor: ThreadPoolExecutor | None = None
+        self.worker_loop: asyncio.AbstractEventLoop | None = None
         self.worker_loop_ready = threading.Event()  # Signal when worker loop is ready
         # Dual semaphores for parsing and indexing phases (created in worker thread)
-        self.parsing_semaphore: Optional[asyncio.Semaphore] = None
-        self.indexing_semaphore: Optional[asyncio.Semaphore] = None
-        self.message_handler: Optional[Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]]] = None
+        self.parsing_semaphore: asyncio.Semaphore | None = None
+        self.indexing_semaphore: asyncio.Semaphore | None = None
+        self.message_handler: Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]] | None = None
         # Track active futures for proper cleanup
         self._active_futures: set[Future[Any]] = set()
         self._futures_lock = threading.Lock()
@@ -271,7 +271,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             raise
 
     @override
-    async def stop(self, message_handler: Optional[Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]]] = None) -> None:  # type: ignore[override]
+    async def stop(self, message_handler: Callable[[dict[str, Any]], AsyncGenerator[dict[str, Any], None]] | None = None) -> None:  # type: ignore[override]
         """Stop consuming messages gracefully.
 
         Order of operations:
@@ -347,14 +347,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             while self.running:
                 try:
                     self.__apply_backpressure()
-                    
+
 
                     message_batch = await self.consumer.getmany(timeout_ms=1000, max_records=1)  # type: ignore
 
                     if not message_batch:
                         continue
 
-                    for _, messages in message_batch.items():
+                    for messages in message_batch.values():
                         for message in messages:
                             # Check if we should stop before processing
                             if not self.running:
