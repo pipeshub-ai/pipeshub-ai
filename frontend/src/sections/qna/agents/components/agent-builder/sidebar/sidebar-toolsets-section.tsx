@@ -20,6 +20,7 @@ import {
 import { RegistryToolset, RegistryTool } from 'src/types/agent';
 import ToolsetApiService from 'src/services/toolset-api';
 import { useAdmin } from 'src/context/AdminContext';
+import ToolsetConfigDialog from 'src/sections/toolsets/components/toolset-config-dialog';
 
 import { SidebarCategory } from './sidebar-category';
 import { SidebarNodeItem } from './sidebar-node-item';
@@ -78,10 +79,12 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
   const theme = useTheme();
   const { isAdmin } = useAdmin();
   const [searchQuery, setSearchQuery] = useState('');
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string }>({
+  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'warning' | 'info' }>({
     open: false,
     message: '',
+    severity: 'warning',
   });
+  const [configDialogToolset, setConfigDialogToolset] = useState<ToolsetWithStatus | null>(null);
 
   const buildUIState = (toolset: ToolsetWithStatus) => {
     const isFromRegistry = toolset.isFromRegistry === true || !toolset.instanceId;
@@ -127,6 +130,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
         setSnackbar({
           open: true,
           message: 'Authentication successful! Toolset is now ready to use.',
+          severity: 'success',
         });
       }
     };
@@ -201,6 +205,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
       setSnackbar({
         open: true,
         message: `${toolset.displayName} is not configured yet. Please contact your administrator to configure it.`,
+        severity: 'warning',
       });
       return;
     }
@@ -213,6 +218,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
           setSnackbar({
             open: true,
             message: 'Failed to start OAuth authentication. Please try again.',
+            severity: 'error',
           });
           return;
         }
@@ -232,6 +238,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
           setSnackbar({
             open: true,
             message: 'Popup blocked. Please allow popups for this site and try again.',
+            severity: 'error',
           });
           return;
         }
@@ -271,14 +278,23 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
         setSnackbar({
           open: true,
           message: 'Failed to start OAuth authentication. Please try again.',
+          severity: 'error',
         });
       }
-    } else if (isBusiness) {
-      // For other auth types: Navigate to toolsets page to configure
-      window.location.href = '/account/company-settings/settings/toolsets';
     } else {
-      window.location.href = '/account/individual/settings/toolsets';
+      // For other auth types (API Token, etc.): Open config dialog
+      setConfigDialogToolset(toolset);
     }
+  };
+
+  const handleConfigDialogSuccess = async () => {
+    setConfigDialogToolset(null);
+    await refreshToolsets();
+    setSnackbar({
+      open: true,
+      message: 'Authentication successful! Toolset is now ready to use.',
+      severity: 'success',
+    });
   };
 
   return (
@@ -334,6 +350,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
               setSnackbar({
                 open: true,
                 message: `${toolset.displayName} is not configured yet. Please contact your administrator to configure it.`,
+                severity: 'warning',
               });
               return;
             }
@@ -341,6 +358,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
             setSnackbar({
               open: true,
               message: `${toolset.displayName} is ${reason}. Please configure it before using.`,
+              severity: 'warning',
             });
           };
 
@@ -348,6 +366,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
             setSnackbar({
               open: true,
               message: `Only one ${formatToolsetTypeLabel((toolset as any).toolsetType || toolset.name)} instance can be added to the flow at a time.`,
+              severity: 'warning',
             });
           };
 
@@ -500,6 +519,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                       setSnackbar({
                         open: true,
                         message: `${instanceName} is not configured yet. Please contact your administrator to configure it.`,
+                        severity: 'warning',
                       });
                       return;
                     }
@@ -507,6 +527,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                     setSnackbar({
                       open: true,
                       message: `${instanceName} is ${reason}. Please configure it before using.`,
+                      severity: 'warning',
                     });
                   };
 
@@ -514,6 +535,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                     setSnackbar({
                       open: true,
                       message: `Only one ${formatToolsetTypeLabel((toolset as any).toolsetType || toolset.name)} instance can be added to the flow at a time.`,
+                      severity: 'warning',
                     });
                   };
 
@@ -655,13 +677,27 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
         >
           <Alert
             onClose={() => setSnackbar({ ...snackbar, open: false })}
-            severity="warning"
+            severity={snackbar.severity}
             sx={{ width: '100%' }}
           >
-            {snackbar.message}
-          </Alert>
-        </Snackbar>
-      </Portal>
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
+    </Portal>
+
+      {/* Toolset Configuration Dialog */}
+      {configDialogToolset && (
+        <ToolsetConfigDialog
+          toolset={configDialogToolset}
+          toolsetId={configDialogToolset.instanceId}
+          isAdmin={isAdmin}
+          onClose={() => setConfigDialogToolset(null)}
+          onSuccess={handleConfigDialogSuccess}
+          onShowToast={(message) => {
+            setSnackbar({ open: true, message, severity: 'success' });
+          }}
+        />
+      )}
     </Box>
   );
 };

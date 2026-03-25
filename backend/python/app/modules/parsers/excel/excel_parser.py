@@ -734,6 +734,7 @@ class ExcelParser:
             if isinstance(cell, MergedCell):
                 # Look for the merged range that contains this cell.
                 merged_value = None
+                
                 for merged_range in cell.parent.merged_cells.ranges:
                     if cell.coordinate in merged_range:
                         # Get the top-left cell of the merged range
@@ -1395,6 +1396,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 block_groups.append(table_group)
                 sheet_table_group_indices.append(table_group_index)
 
+
                 # Create TABLE_ROW blocks under this table
                 for i, row in enumerate(rows):
                     block_index = len(blocks)
@@ -1406,6 +1408,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             data={
                                 "row_natural_language_text": row.get("natural_language_text", ""),
                                 "row_number": int(row.get("row_num") or (i + 1)),
+                                "row_end_number": int(row.get("row_end_num") or row.get("row_num") or (i + 1)),
+                                "row_count": int(row.get("row_count") or 1),
                                 "sheet_number": sheet_idx,
                                 "sheet_name": sheet_name,
                             },
