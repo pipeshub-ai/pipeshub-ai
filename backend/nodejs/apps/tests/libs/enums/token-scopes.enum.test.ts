@@ -29,9 +29,12 @@ describe('TokenScopes', () => {
   it('should have CONVERSATION_CREATE as "conversation:create"', () => {
     expect(TokenScopes.CONVERSATION_CREATE).to.equal('conversation:create');
   });
+  it('should have VALIDATE_EMAIL as "email:validate"', () => {
+    expect(TokenScopes.VALIDATE_EMAIL).to.equal('email:validate');
+  });
 
-  it('should have exactly 7 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(7);
+  it('should have exactly 8 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(8);
   });
 
   it('should contain only the expected keys', () => {
@@ -43,6 +46,7 @@ describe('TokenScopes', () => {
       'TOKEN_REFRESH',
       'STORAGE_TOKEN',
       'CONVERSATION_CREATE',
+      'VALIDATE_EMAIL',
     ];
     expect(Object.keys(TokenScopes)).to.have.members(expectedKeys);
   });

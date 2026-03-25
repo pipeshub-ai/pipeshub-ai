@@ -1634,4 +1634,36 @@ export class UserAccountController {
       next(error);
     }
   }
+
+  async validateEmailChange(req: AuthenticatedServiceRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+
+      const userId = req?.tokenPayload?.userId;
+      const newEmail = req?.tokenPayload?.newEmail;
+      const orgId = req?.tokenPayload?.orgId;
+
+      const exists = await Users.findOne({ email: newEmail });
+      if (exists) {
+        throw new BadRequestError(`Email already in use: ${newEmail}`);
+      }
+      await Users.findByIdAndUpdate(userId, {
+        email: newEmail.toLowerCase().trim(),
+      });
+
+      await UserActivities.create({
+        orgId: orgId,
+        userId: userId,
+        activityType: PASSWORD_CHANGED,
+        ipAddress: req.ip || '',
+      });
+
+      res.status(200).json({ message: 'Email updated successfully' });
+
+
+    } catch (err) {
+
+      next(err);
+    }
+  }
+
 }
