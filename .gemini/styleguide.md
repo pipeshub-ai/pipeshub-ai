@@ -10,7 +10,7 @@
 
 ## Python
 
-- Follow PEP 8 conventions. Use Ruff for linting (line-length: 88, target: Python 3.10).
+- Follow PEP 8 conventions. Use Ruff for linting (line-length: 88, target: Python 3.12).
 - Use type hints for function signatures.
 - Use `async`/`await` consistently; do not mix sync and async patterns unnecessarily.
 - Prefer f-strings for string formatting over `.format()` or `%` style.
