@@ -320,15 +320,6 @@ class CountryToRegionMapper:
             option_source_type=OptionSourceType.DYNAMIC
         ))
         .add_filter_field(FilterField(
-            name="page_ids",
-            display_name="Page name",
-            description="Filter specific pages by name.",
-            filter_type=FilterType.LIST,
-            category=FilterCategory.SYNC,
-            default_value=[],
-            option_source_type=OptionSourceType.DYNAMIC
-        ))
-        .add_filter_field(FilterField(
             name="drive_ids",
             display_name="Document Library Names",
             description="Filter specific document libraries by name.",
@@ -1864,11 +1855,6 @@ class SharePointConnector(BaseConnector):
                         self.logger.debug(f"⏭️ Skipping page (date filter) '{page_id}' {page_name}")
                         continue
 
-                    page_key = f"{page_id}:{site_id}"
-                    if not self._pass_page_ids_filters(page_key):
-                        self.logger.debug(f"⏭️ Skipping page (ID filter) '{page_key}' {page_name}")
-                        continue
-
                     # Check the 'created_by' field to skip System Account created pages
                     is_system_page = False
                     created_by = getattr(page, 'created_by', None)
@@ -2133,56 +2119,6 @@ class SharePointConnector(BaseConnector):
 
         # Unknown operator, default to allowing the drive
         self.logger.warning(f"Unknown filter operator '{operator_str}' for DRIVE_IDS filter, allowing drive")
-        return True
-
-    def _pass_page_ids_filters(self, page_key: str) -> bool:
-        """
-        Checks if the page passes the configured page IDs filter.
-
-        For MULTISELECT filters:
-        - Operator IN: Only allow pages with IDs in the selected list (inclusion list)
-        - Operator NOT_IN: Allow pages with IDs NOT in the selected list (exclusion list)
-
-        Args:
-            page_key: The SharePoint page key to check
-
-        Returns:
-            True if the page should be synced, False if it should be skipped
-        """
-        # Get the page IDs filter
-        page_ids_filter = self.sync_filters.get(SyncFilterKey.PAGE_IDS)
-
-        # If no filter configured or filter is empty, allow all pages
-        if page_ids_filter is None or page_ids_filter.is_empty():
-            return True
-
-        # Get the list of page IDs from the filter value
-        filter_page_ids = page_ids_filter.value
-        if not isinstance(filter_page_ids, list):
-            return True  # Invalid filter value, allow the page
-
-        # Handle empty or None page_key
-        if not page_key:
-            self.logger.warning("Page key is empty or None, skipping")
-            return False
-
-        # Create set for O(1) lookup (case-sensitive for GUIDs)
-        filter_page_ids_set = {pid.strip() for pid in filter_page_ids if pid}
-        page_key_normalized = page_key.strip()
-
-        # Apply the filter based on operator
-        operator = page_ids_filter.get_operator()
-        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
-
-        if operator_str == FilterOperator.IN:
-            # Only allow pages with IDs in the inclusion list
-            return page_key_normalized in filter_page_ids_set
-        elif operator_str == FilterOperator.NOT_IN:
-            # Allow pages with IDs NOT in the exclusion list
-            return page_key_normalized not in filter_page_ids_set
-
-        # Unknown operator, default to allowing the page
-        self.logger.warning(f"Unknown filter operator '{operator_str}' for PAGE_IDS filter, allowing page")
         return True
 
     def _create_document_library_record_group(self, drive: dict, site_id: str, internal_site_record_group_id: str) -> Optional[RecordGroup]:
@@ -4298,9 +4234,7 @@ class SharePointConnector(BaseConnector):
 
         if filter_key == SyncFilterKey.SITE_IDS:
             return await self._get_site_options(page, limit, search)
-        elif filter_key == SyncFilterKey.PAGE_IDS:
-            return await self._get_page_options(page, limit, search)
-        elif filter_key == SyncFilterKey.DRIVE_IDS:  # Add this
+        elif filter_key == SyncFilterKey.DRIVE_IDS:
             return await self._get_document_library_options(page, limit, search)
         else:
             raise ValueError(f"Unsupported filter key: {filter_key}")
@@ -4361,103 +4295,6 @@ class SharePointConnector(BaseConnector):
                         options.append(FilterOption(
                             id=site_id or web_url,
                             label=label
-                        ))
-
-        has_more = (page * limit) < total
-
-        return FilterOptionsResponse(
-            success=True,
-            options=options,
-            page=page,
-            limit=limit,
-            has_more=has_more,
-            cursor=None
-        )
-
-    async def _get_page_options(
-        self,
-        page: int,
-        limit: int,
-        search: Optional[str]
-    ) -> FilterOptionsResponse:
-        """Get dynamic filter options for SharePoint pages."""
-
-        search_query = search.strip() if search else ""
-        full_query = f"{search_query}* filetype:aspx"
-
-        # 1. Get Raw Result
-        raw_result = await self.msgraph_client.search_query(
-            entity_types=["listItem"],
-            query=full_query,
-            page=page,
-            limit=limit,
-            region=self.tenant_region
-        )
-
-        options = []
-        total = 0
-
-        if raw_result:
-            additional_data = getattr(raw_result, 'additional_data', {}) or {}
-            value_list = additional_data.get('value', [])
-
-            for search_resp in value_list:
-                hits_containers = search_resp.get('hitsContainers', [])
-
-                for container in hits_containers:
-                    total = container.get('total', 0)
-
-                    for hit in container.get('hits', []):
-                        resource = hit.get('resource', {})
-
-                        item_id = resource.get('id')
-                        web_url = resource.get('webUrl')
-                        site_id = resource.get('parentReference', {}).get('siteId')
-
-                        # Skip System Account pages (templates)
-                        created_by = resource.get('createdBy', {})
-                        user = created_by.get('user', {})
-                        user.get('displayName', '').lower()
-
-                        if not site_id:
-                            continue
-
-
-                        if not item_id:
-                            continue
-
-                        # --- 1. Extract Page Name ---
-                        name = resource.get('name')
-                        if not name and web_url:
-                            try:
-                                # Get filename: .../SitePages/Home.aspx -> Home.aspx
-                                name = unquote(web_url.split('/')[-1])
-                            except Exception:
-                                name = "Unknown Page"
-
-                        page_label = name or resource.get('displayName') or "Unknown Page"
-
-                        # --- 2. Extract Site Name from URL ---
-                        # Structure is usually: https://tenant.sharepoint.com/sites/SiteName/...
-                        site_name = "Unknown Site"
-                        if web_url and "/sites/" in web_url:
-                            try:
-                                # Split at /sites/ and take the chunk immediately after
-                                after_sites = web_url.split("/sites/")[1]
-                                raw_site_name = after_sites.split("/")[0]
-                                site_name = unquote(raw_site_name)
-                            except Exception:
-                                pass
-                        elif web_url:
-                            site_name = "Root Site"
-
-                        # --- 3. Format Final Label ---
-                        final_label = f"{page_label} ({site_name})"
-                        page_key = f"{item_id}:{site_id}"
-
-                        options.append(FilterOption(
-                            id=page_key,
-                            label=final_label
                         ))
 
         has_more = (page * limit) < total
