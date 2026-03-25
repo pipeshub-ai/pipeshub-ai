@@ -7,7 +7,7 @@ import os
 from collections.abc import AsyncGenerator
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 import fitz
@@ -36,7 +36,6 @@ def _get_pdf_ocr_detection_worker_count() -> int:
 
     cpu_count = os.cpu_count() or 1
     return max(1, min(4, cpu_count))
-
 
 PDF_OCR_DETECTION_WORKERS = _get_pdf_ocr_detection_worker_count()
 
@@ -159,7 +158,7 @@ class EventProcessor:
             return False
 
         duplicate_records = await self.graph_provider.find_duplicate_records(
-            record_key=cast(str, doc.get('_key')),
+            record_key=doc.get('_key'),
             md5_checksum=md5_checksum,
             record_type=record_type,
             size_in_bytes=size_in_bytes
@@ -193,8 +192,8 @@ class EventProcessor:
             await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
             # Copy all relationships from the processed duplicate to this document
             await self.graph_provider.copy_document_relationships(
-                cast(str, processed_duplicate.get("_key")),
-                cast(str, doc.get("_key") or doc.get("id"))
+                processed_duplicate.get("_key"),
+                doc.get("_key") or doc.get("id")
             )
             return True  # Duplicate handled
 
@@ -259,7 +258,7 @@ class EventProcessor:
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {record_id} not found")
+                self.logger.error("❌ Record %s not found", record_id)
                 return
 
             if virtual_record_id is None:
@@ -281,7 +280,6 @@ class EventProcessor:
                 self.logger.error("❌ No file content (buffer) in event data")
                 return
 
-            file_content = cast(bytes, file_content)
             self.logger.debug(f"file_content type: {type(file_content)} length: {len(file_content)}")
 
             record_type = doc.get("recordType")
@@ -409,9 +407,9 @@ class EventProcessor:
                 self.logger.info("🔍 Checking if PDF needs OCR processing")
                 try:
                     needs_ocr = await self._pdf_needs_ocr(file_content)
-                    self.logger.info(f"📊 OCR requirement: {'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser'}")
+                    self.logger.info("📊 OCR requirement: %s", 'YES - Using OCR handler' if needs_ocr else 'NO - Using layout parser')
                 except Exception as e:
-                    self.logger.warning(f"⚠️ Error checking OCR need: {str(e)}, defaulting to layout parser")
+                    self.logger.warning("⚠️ Error checking OCR need: %s, defaulting to layout parser", str(e))
                     needs_ocr = False
 
                 if needs_ocr:
@@ -595,8 +593,8 @@ class EventProcessor:
                     recordId=record_id,
                     version=record_version,
                     source=connector,
-                    orgId=cast(str, org_id),
-                    mdx_content=cast(str, file_content),
+                    orgId=org_id,
+                    mdx_content=file_content,
                     virtual_record_id=virtual_record_id
                 ):
                     yield event

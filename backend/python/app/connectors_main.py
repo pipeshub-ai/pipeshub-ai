@@ -1,6 +1,6 @@
 import traceback
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, List
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
@@ -207,7 +207,7 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
         logger.error(f"❌ Error starting messaging producer: {str(e)}")
         raise
 
-async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_provider) -> List:
+async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_provider) -> list:
     """Start all Kafka consumers at application level"""
     logger = app_container.logger()
     consumers = []
@@ -578,6 +578,8 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 def run(host: str = "0.0.0.0", port: int = 8088, workers: int = 1, reload: bool = True) -> None:
     """Run the application"""
+    if reload and workers > 1:
+        workers = 1
     uvicorn.run(
         "app.connectors_main:app",
         host=host,
