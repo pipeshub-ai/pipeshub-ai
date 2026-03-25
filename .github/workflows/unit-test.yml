@@ -1,4 +1,4 @@
-name: unit-test-nodejs
+name: unit-test
 
 on:
   pull_request:
@@ -12,12 +12,17 @@ on:
       - 'backend/nodejs/apps/tsconfig*.json'
       - 'backend/nodejs/apps/.mocharc.yaml'
       - 'backend/nodejs/apps/.c8rc.json'
+      - 'backend/python/app/**'
+      - 'backend/python/tests/**'
+      - 'backend/python/pyproject.toml'
+      - 'backend/python/pytest.ini'
+      - 'backend/python/.coveragerc'
 
 permissions:
   contents: read
 
 jobs:
-  unit-tests:
+  nodejs-unit-tests:
     runs-on: ubuntu-latest
 
     strategy:
@@ -44,3 +49,32 @@ jobs:
         run: |
           cd backend/nodejs/apps
           npm run test:ci
+
+  python-unit-tests:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.12']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio coverage
+          pip install -e .
+
+      - name: Run unit tests with coverage
+        run: |
+          cd backend/python
+          coverage run -m pytest tests/unit -v
+          coverage report --fail-under=50

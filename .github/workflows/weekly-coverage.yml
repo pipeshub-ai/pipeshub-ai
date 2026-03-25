@@ -1,0 +1,189 @@
+name: weekly-coverage
+
+on:
+  schedule:
+    # Runs every Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  nodejs-coverage-check:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [20]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd backend/nodejs/apps
+          npm ci
+
+      - name: Run unit tests with 90% coverage threshold
+        id: run-tests
+        run: |
+          cd backend/nodejs/apps
+          npm run test:coverage-check
+
+      - name: Collect coverage summary for email
+        id: coverage-email
+        if: always()
+        working-directory: backend/nodejs/apps
+        run: |
+          SUMMARY="coverage/coverage-summary.json"
+          if [ -f "$SUMMARY" ]; then
+            LINES_PCT=$(jq -r 'if .total.lines.pct != null then "\(.total.lines.pct)%" else "N/A" end' "$SUMMARY")
+            STMT_PCT=$(jq -r 'if .total.statements.pct != null then "\(.total.statements.pct)%" else "N/A" end' "$SUMMARY")
+            FUNC_PCT=$(jq -r 'if .total.functions.pct != null then "\(.total.functions.pct)%" else "N/A" end' "$SUMMARY")
+            BRANCH_PCT=$(jq -r 'if .total.branches.pct != null then "\(.total.branches.pct)%" else "N/A" end' "$SUMMARY")
+            echo "LINES_PCT=$LINES_PCT" >> "$GITHUB_OUTPUT"
+            echo "STMT_PCT=$STMT_PCT" >> "$GITHUB_OUTPUT"
+            echo "FUNC_PCT=$FUNC_PCT" >> "$GITHUB_OUTPUT"
+            echo "BRANCH_PCT=$BRANCH_PCT" >> "$GITHUB_OUTPUT"
+            {
+              echo "SUMMARY_NOTE<<EOF"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "LINES_PCT=N/A" >> "$GITHUB_OUTPUT"
+            echo "STMT_PCT=N/A" >> "$GITHUB_OUTPUT"
+            echo "FUNC_PCT=N/A" >> "$GITHUB_OUTPUT"
+            echo "BRANCH_PCT=N/A" >> "$GITHUB_OUTPUT"
+            {
+              echo "SUMMARY_NOTE<<EOF"
+              echo '<p><strong>Note:</strong> Coverage summary (<code>coverage/coverage-summary.json</code>) was not found; see the workflow log and any attachment below.</p>'
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Zip coverage folder
+        if: always()
+        working-directory: backend/nodejs/apps
+        run: |
+          zip -r coverage-report.zip coverage/
+
+  python-coverage-check:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.10']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          cd backend/python
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio coverage
+          pip install -e .
+
+      - name: Run unit tests with coverage
+        id: run-python-tests
+        run: |
+          cd backend/python
+          coverage run -m pytest tests/unit -v
+          coverage report --fail-under=50
+          coverage json -o coverage/coverage-summary.json
+          coverage html -d coverage/htmlcov
+
+      - name: Collect Python coverage summary for email
+        id: python-coverage-email
+        if: always()
+        working-directory: backend/python
+        run: |
+          SUMMARY="coverage/coverage-summary.json"
+          if [ -f "$SUMMARY" ]; then
+            PY_STMT_PCT=$(jq -r 'if .totals.percent_covered != null then "\(.totals.percent_covered | . * 10 | round / 10)%" else "N/A" end' "$SUMMARY")
+            PY_MISSING=$(jq -r 'if .totals.missing_lines != null then .totals.missing_lines else "N/A" end' "$SUMMARY")
+            PY_BRANCHES_PCT=$(jq -r 'if .totals.percent_covered_display != null then "\(.totals.percent_covered_display)%" else "N/A" end' "$SUMMARY")
+            echo "PY_STMT_PCT=$PY_STMT_PCT" >> "$GITHUB_OUTPUT"
+            echo "PY_MISSING=$PY_MISSING" >> "$GITHUB_OUTPUT"
+            echo "PY_BRANCHES_PCT=$PY_BRANCHES_PCT" >> "$GITHUB_OUTPUT"
+            {
+              echo "PY_SUMMARY_NOTE<<EOF"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "PY_STMT_PCT=N/A" >> "$GITHUB_OUTPUT"
+            echo "PY_MISSING=N/A" >> "$GITHUB_OUTPUT"
+            echo "PY_BRANCHES_PCT=N/A" >> "$GITHUB_OUTPUT"
+            {
+              echo "PY_SUMMARY_NOTE<<EOF"
+              echo '<p><strong>Note:</strong> Python coverage summary was not found; see the workflow log below.</p>'
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Zip Python coverage folder
+        if: always()
+        working-directory: backend/python
+        run: |
+          if [ -d "coverage" ]; then
+            zip -r python-coverage-report.zip coverage/
+          fi
+
+  send-email-report:
+    runs-on: ubuntu-latest
+    needs: [nodejs-coverage-check, python-coverage-check]
+    if: always()
+
+    steps:
+      - name: Send email report
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_HOST }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "Weekly Coverage — Node.js ${{ needs.nodejs-coverage-check.result }} / Python ${{ needs.python-coverage-check.result }} (${{ github.ref_name }})"
+          to: ${{ secrets.PIPESHUB_ENG_GROUP_EMAIL }}
+          from: PipesHub CI <${{ secrets.SMTP_FROM_EMAIL }}>
+          html_body: |
+            <h2>Weekly Coverage Report</h2>
+            <p>Summary of the scheduled unit test and coverage run.</p>
+
+            <h3>Run details</h3>
+            <ul>
+              <li><strong>Trigger:</strong> ${{ github.event_name == 'schedule' && 'Weekly schedule (Monday 06:00 UTC)' || 'Manual workflow dispatch' }}</li>
+              <li><strong>Branch:</strong> ${{ github.ref_name }}</li>
+              <li><strong>Commit:</strong> <code>${{ github.sha }}</code></li>
+              <li><strong>Actor:</strong> <a href="https://github.com/${{ github.actor }}">@${{ github.actor }}</a></li>
+            </ul>
+
+            <h3>Node.js Coverage</h3>
+            <p><strong>Status:</strong> ${{ needs.nodejs-coverage-check.result }}</p>
+            <p>Thresholds (c8 <code>--check-coverage</code>): lines <strong>90%</strong>, statements <strong>90%</strong>, functions <strong>90%</strong>, branches <strong>80%</strong>.</p>
+            <p>${{ needs.nodejs-coverage-check.result == 'success' && '🎉 Node.js tests and coverage thresholds passed.' || '⚠️ Node.js tests failed or coverage fell below threshold. See the workflow log.' }}</p>
+
+            <h3>Python Coverage</h3>
+            <p><strong>Status:</strong> ${{ needs.python-coverage-check.result }}</p>
+            <p>Threshold: overall coverage <strong>50%</strong>.</p>
+            <p>${{ needs.python-coverage-check.result == 'success' && '🎉 Python tests and coverage threshold passed.' || '⚠️ Python tests failed or coverage fell below threshold. See the workflow log.' }}</p>
+
+            <p>
+              <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View workflow run on GitHub →</a>
+            </p>
+
+            <p style="color: #888; font-size: 12px;">This email was sent automatically by PipesHub CI.</p>
