@@ -1,3 +1,4 @@
+import base64
 import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
@@ -41,7 +42,6 @@ class JiraRESTClientViaApiKey(HTTPClient):
     """
 
     def __init__(self, base_url: str, email: str, api_key: str) -> None:
-        import base64
         credentials = base64.b64encode(f"{email}:{api_key}".encode()).decode()
         super().__init__(credentials, "Basic")
         self.base_url = base_url

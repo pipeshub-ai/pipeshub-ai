@@ -39,9 +39,9 @@ class CreateIssueInput(BaseModel):
     assignee_account_id: Optional[str] = Field(default=None, description="Assignee account ID")
     assignee_query: Optional[str] = Field(default=None, description="Name or email to resolve assignee")
     priority_name: Optional[str] = Field(default=None, description="Priority")
-    labels: Optional[list[str]] = Field(default=None, description="List of labels")
-    components: Optional[list[str]] = Field(default=None, description="List of component names")
-    parent_key: Optional[str] = Field(default=None, description="Parent issue key")
+    labels: list[str] | None = Field(default=None, description="List of labels")
+    components: list[str] | None = Field(default=None, description="List of component names")
+    parent_key: str | None = Field(default=None, description="Parent issue key")
 
     @model_validator(mode='before')
     @classmethod
@@ -175,9 +175,9 @@ class UpdateIssueInput(BaseModel):
     assignee_account_id: Optional[str] = Field(default=None, description="Assignee account ID")
     assignee_query: Optional[str] = Field(default=None, description="Name or email to resolve assignee")
     priority_name: Optional[str] = Field(default=None, description="Priority")
-    labels: Optional[list[str]] = Field(default=None, description="List of labels")
-    components: Optional[list[str]] = Field(default=None, description="List of component names")
-    status: Optional[str] = Field(default=None, description="Issue status (e.g., 'In Progress', 'Done')")
+    labels: list[str] | None = Field(default=None, description="List of labels")
+    components: list[str] | None = Field(default=None, description="List of component names")
+    status: str | None = Field(default=None, description="Issue status (e.g., 'In Progress', 'Done')")
 
     @model_validator(mode='before')
     @classmethod
@@ -981,7 +981,7 @@ class Jira:
                             add_url_to_issue_ref(item)
 
 
-    def _validate_and_fix_jql(self, jql: str) -> tuple[str, Optional[str]]:
+    def _validate_and_fix_jql(self, jql: str) -> tuple[str, str | None]:
         """Validate and fix common JQL syntax errors.
 
         Args:
@@ -1249,10 +1249,10 @@ class Jira:
         description: Optional[str] = None,
         assignee_account_id: Optional[str] = None,
         assignee_query: Optional[str] = None,
-        priority_name: Optional[str] = None,
-        labels: Optional[list[str]] = None,
-        components: Optional[list[str]] = None,
-        parent_key: Optional[str] = None
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        parent_key: str | None = None
     ) -> tuple[bool, str]:
         """Create a new JIRA issue"""
         try:
@@ -1387,10 +1387,10 @@ class Jira:
         description: Optional[str] = None,
         assignee_account_id: Optional[str] = None,
         assignee_query: Optional[str] = None,
-        priority_name: Optional[str] = None,
-        labels: Optional[list[str]] = None,
-        components: Optional[list[str]] = None,
-        status: Optional[str] = None
+        priority_name: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        status: str | None = None
     ) -> tuple[bool, str]:
         """Update an existing JIRA issue"""
         try:
