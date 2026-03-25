@@ -173,6 +173,7 @@ const handleOAuthCallbackSchema = z.object({
 const updateUserToolsetInstanceSchema = z.object({
   body: z.object({
     auth: z.object({
+      email: z.string().optional(),
       apiToken: z.string().optional(),
       username: z.string().optional(),
       password: z.string().optional(),
