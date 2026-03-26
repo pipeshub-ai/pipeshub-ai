@@ -123,11 +123,19 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
       - name: Install dependencies
         run: |
           cd backend/python
-          pip install pyright
-          pip install -e . 2>&1 || true
+          uv pip install --system pyright
+          uv pip install --system -e . 2>&1 || true
 
       - name: Run pyright on changed Python files
         run: |

@@ -299,8 +299,8 @@ class KnowledgeBaseConnector(BaseConnector):
             FilterOptionsResponse,
         )
         return FilterOptionsResponse(
+            success=True,
             options=[],
-            total=0,
             page=page,
             limit=limit,
             has_more=False
