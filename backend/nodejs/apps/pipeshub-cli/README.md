@@ -2,6 +2,10 @@
 
 Sync a local directory to Pipeshub with the personal **Folder Sync** connector. Log in, run **setup** to link a connector and folder, then **run** to queue a sync on the backend. The Python connector service must be running and able to read `sync_root_path`.
 
+Transport details:
+- `login` / `verify` use REST OAuth endpoints.
+- Operational commands (`setup`, `run`/`sync`, `indexing*`) use Socket.IO RPC on namespace `/cli-rpc`.
+
 **Filters** (dates, extensions, indexing toggles, subfolders beyond defaults, etc.) are configured in the **web app**, not in this CLI.
 
 ## Requirements
@@ -63,7 +67,7 @@ The root command only adds **`-h` / `--help`** and **`-V` / `--version`** (Comma
 
    If the connector already has a sync folder on the server (or **`daemon.json`** matches this connector), that path is **pre-filled**; press **Enter** to keep it or type another path.
 
-   This writes **`daemon.json`** (sync root + connector id) beside `auth.enc`, **PUTs** sync path and **`include_subfolders: true`**. The **manual indexing** question appears only when the connector is **inactive** (the API rejects filter changes while it is running). If the connector is **active**, setup still saves the path and tells you to change indexing in the app after you turn the connector off. If the path save fails with an HTTP error, set the path in the app (or turn the connector off and run setup again).
+   This writes **`daemon.json`** (sync root + connector id) beside `auth.enc`, updates sync path and **`include_subfolders: true`** through WebSocket RPC. The **manual indexing** question appears only when the connector is **inactive** (the API rejects filter changes while it is running). If the connector is **active**, setup still saves the path and tells you to change indexing in the app after you turn the connector off. If the path save fails, set the path in the app (or turn the connector off and run setup again).
 
 4. **Queue a sync** (full sync; confirms before proceeding):
 
@@ -114,6 +118,7 @@ Optional `.env` in the project directory or next to the CLI package (see `.env.e
 | Variable | Purpose |
 |----------|---------|
 | `PIPESHUB_BACKEND_URL` | Backend base URL. If unset at **login**, you are prompted. |
+| `PIPESHUB_WS_URL` | Optional Socket.IO base URL override (default derived from `PIPESHUB_BACKEND_URL`). |
 | `PIPESHUB_CONFIG_DIR` | Override directory for `auth.enc`, `daemon.json`, and related files (no CLI flag). |
 
 Client ID and secret are **not** read from the environment; enter them at **`pipeshub login`**.
