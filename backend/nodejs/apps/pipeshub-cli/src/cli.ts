@@ -1006,14 +1006,10 @@ indexingCmd
       const limit = 50;
       const allForConnector = await api.listKnowledgeBaseRecordsForConnectorInstance(
         cid,
-        { maxRecords: 2000 }
+        { maxRecords: limit }
       );
-      const totalCount = allForConnector.length;
-      const totalPages = Math.max(1, Math.ceil(totalCount / limit));
       const records = allForConnector.slice(0, limit);
-      console.log(
-        `Page ${page}/${totalPages} · ${records.length} of ${totalCount} records`
-      );
+      console.log(`Page ${page} · showing ${records.length} record(s)`);
       if (records.length === 0) {
         console.log("(no rows — run pipeshub run first)");
         process.exit(0);
