@@ -4,42 +4,49 @@ Agent-specific fetch-full-record tool.
 This is a dedicated tool for the QnA agent that mirrors exactly how the chatbot
 handles full-record retrieval.  The chatbot flow is:
 
-  1. LLM calls fetch_full_record with R-labels ("R1", "R2") or UUIDs.
+  1. LLM calls fetch_full_record with record IDs (from Block Web URLs) or UUIDs.
   2. stream_llm_response_with_tools → execute_tool_calls runs the tool.
   3. The tool returns {"ok": True, "records": [raw_record_dict, ...]}.
   4. execute_tool_calls calls record_to_message_content(record, final_results)
-     on each raw record — producing formatted R-block text.
+     on each raw record — producing formatted block text with web URLs.
   5. Formatted text is placed into a ToolMessage for the LLM.
 
 This agent tool follows the same contract so execute_tool_calls formats results
-identically to the chatbot, giving the LLM properly R-labelled block content.
+identically to the chatbot.
 
 Key differences from the raw fetch_full_record tool (fetch_full_record.py):
   - This file is agent-only — it never touches chatbot code.
   - It accepts an explicit final_results list for consistent record numbering.
-  - R-label resolution uses the same logic as the chatbot mapping.
+  - Supports record_id extraction from Block Web URLs, R-label fallback,
+    and direct virtual_record_id (UUID) lookups.
 """
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-# ── Shared regex for R-label detection ─────────────────────────────────────
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+# ── Shared regex for R-label detection (legacy fallback) ───────────────────
 _R_LABEL_RE = re.compile(r"^R(\d+)(?:-\d+)?$", re.IGNORECASE)
+# Extract record ID from a Block Web URL like /record/{record_id}/preview#blockIndex=N
+_RECORD_ID_FROM_URL_RE = re.compile(r"/record/([^/]+)/preview")
 
 
 class AgentFetchFullRecordArgs(BaseModel):
     """Arguments for the agent fetch_full_record tool."""
 
-    record_ids: List[str] = Field(
+    record_ids: list[str] = Field(
         ...,
         description=(
             "List of record references to fetch. Accepted formats:\n"
-            "  - R-labels like [\"R1\", \"R2\"] (preferred — use the record label "
-            "shown in the context)\n"
+            "  - Record IDs extracted from Block Web URLs (the part between "
+            "/record/ and /preview in the URL)\n"
+            "  - Full Block Web URLs (the record ID will be extracted automatically)\n"
             "  - Actual virtualRecordIds (UUIDs) if you have them\n"
             "Pass ALL record IDs you need in a SINGLE call."
         ),
@@ -52,58 +59,64 @@ class AgentFetchFullRecordArgs(BaseModel):
 
 
 def _resolve_record_ids(
-    record_ids: List[str],
-    virtual_record_id_to_result: Dict[str, Any],
-    label_to_virtual_record_id: Optional[Dict[str, str]],
+    record_ids: list[str],
+    virtual_record_id_to_result: dict[str, Any],
+    label_to_virtual_record_id: Optional[dict[str, str]],
 ) -> tuple[list, list]:
     """
-    Resolve a list of record references (R-labels or UUIDs) to raw record dicts.
+    Resolve a list of record references to raw record dicts.
+
+    Accepts record IDs from Block Web URLs, full web URLs, virtual_record_ids
+    (UUIDs), record["id"] (ArangoDB _key), and legacy R-labels as fallback.
 
     IMPORTANT: Each returned record dict has ``virtual_record_id`` injected so
-    that ``record_to_message_content()`` in streaming.py can determine the
-    correct R-number for the record (it looks up
-    ``record.get("virtual_record_id")`` against the ordered final_results list).
-    Without this field the function always falls back to record_number=1,
-    causing every fetched record to be labelled R1 regardless of which
-    document was actually fetched.
+    that ``record_to_message_content()`` in streaming.py can assign the
+    correct block web URLs for the record.
 
     Returns:
         (found_records, not_found_ids)
     """
     found_records: list = []
     not_found_ids: list = []
-    seen_vids: set = set()  # guard against duplicate records
+    seen_vids: set = set()
 
     for record_id in record_ids:
         resolved_vid: Optional[str] = None
+        effective_id = record_id.strip()
 
-        # Strategy 1 — R-label resolution ("R1", "R2", "R1-4" → base "R1")
-        match = _R_LABEL_RE.match(record_id.strip())
-        if match:
-            base_label = f"R{match.group(1)}"
-            if label_to_virtual_record_id and base_label in label_to_virtual_record_id:
-                resolved_vid = label_to_virtual_record_id[base_label]
-
-        # Strategy 2 — Direct virtual_record_id (UUID) lookup
-        if not resolved_vid and record_id in virtual_record_id_to_result:
-            resolved_vid = record_id
-
-        # Strategy 3 — Legacy: match by record["id"] (ArangoDB _key)
-        if not resolved_vid:
+        # Strategy 1 — Extract record ID from a Block Web URL
+        url_match = _RECORD_ID_FROM_URL_RE.search(effective_id)
+        if url_match:
+            extracted_id = url_match.group(1)
             for vid, rec in virtual_record_id_to_result.items():
-                if rec is not None and rec.get("id") == record_id:
+                if rec is not None and rec.get("id") == extracted_id:
                     resolved_vid = vid
                     break
 
+        # Strategy 2 — Direct virtual_record_id (UUID) lookup
+        if not resolved_vid and effective_id in virtual_record_id_to_result:
+            resolved_vid = effective_id
+
+        # Strategy 3 — Match by record["id"] (ArangoDB _key)
+        if not resolved_vid:
+            for vid, rec in virtual_record_id_to_result.items():
+                if rec is not None and rec.get("id") == effective_id:
+                    resolved_vid = vid
+                    break
+
+        # Strategy 4 — Legacy R-label fallback ("R1", "R2", "R1-4" → base "R1")
+        if not resolved_vid:
+            r_match = _R_LABEL_RE.match(effective_id)
+            if r_match:
+                base_label = f"R{r_match.group(1)}"
+                if label_to_virtual_record_id and base_label in label_to_virtual_record_id:
+                    resolved_vid = label_to_virtual_record_id[base_label]
+
         if resolved_vid:
             if resolved_vid in seen_vids:
-                # Already included this record — skip duplicates
                 continue
             record = virtual_record_id_to_result.get(resolved_vid)
             if record is not None:
-                # Inject virtual_record_id so record_to_message_content() can
-                # look up the correct record number from final_results.
-                # We make a shallow copy to avoid mutating the shared dict.
                 record_with_vid = dict(record)
                 record_with_vid["virtual_record_id"] = resolved_vid
                 found_records.append(record_with_vid)
@@ -117,8 +130,8 @@ def _resolve_record_ids(
 
 
 def create_agent_fetch_full_record_tool(
-    virtual_record_id_to_result: Dict[str, Any],
-    label_to_virtual_record_id: Optional[Dict[str, str]] = None,
+    virtual_record_id_to_result: dict[str, Any],
+    label_to_virtual_record_id: Optional[dict[str, str]] = None,
 ) -> Callable:
     """
     Factory that creates the agent-specific fetch_full_record tool.
@@ -133,16 +146,14 @@ def create_agent_fetch_full_record_tool(
             have been fetched with virtual_to_record_map + graph_provider so
             that context_metadata is present (same requirement as chatbot).
         label_to_virtual_record_id:
-            Optional mapping {"R1": "<uuid>", "R2": "<uuid>", …} built by
-            build_record_label_mapping() in response_prompt.py.  When supplied
-            the LLM can pass R-labels and they are resolved to UUIDs.
+            Optional mapping {"R1": "<uuid>", …} for legacy R-label fallback.
     """
 
     @tool("fetch_full_record", args_schema=AgentFetchFullRecordArgs)
     async def agent_fetch_full_record(
-        record_ids: List[str],
+        record_ids: list[str],
         reason: str = "Fetching full record content for a comprehensive answer",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Retrieve the complete content of one or more records (all blocks/groups).
 
@@ -150,8 +161,8 @@ def create_agent_fetch_full_record_tool(
         more detail to answer accurately.  Pass ALL record IDs in ONE call.
 
         Args:
-            record_ids: R-labels shown in context (e.g. ["R1", "R2"]) or
-                        actual virtualRecordIds (UUIDs).
+            record_ids: Record IDs from Block Web URLs, full Block Web URLs,
+                        or actual virtualRecordIds (UUIDs).
             reason:     Why the full records are needed.
 
         Returns:
@@ -174,12 +185,12 @@ def create_agent_fetch_full_record_tool(
                     ),
                 }
 
-            result: Dict[str, Any] = {
+            result: dict[str, Any] = {
                 "ok": True,
                 # stream_llm_response_with_tools → execute_tool_calls reads the
                 # "records" key and passes each dict through
                 # record_to_message_content(record, final_results) to produce
-                # R-labelled block text — identical to the chatbot pipeline.
+                # block text with web URLs — identical to the chatbot pipeline.
                 "records": found_records,
                 "record_count": len(found_records),
             }

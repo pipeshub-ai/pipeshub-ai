@@ -1,9 +1,10 @@
 import json
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Any, Optional
 
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
@@ -12,7 +13,6 @@ from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType
 from app.config.constants.service import OAuthScopes, config_node_constants
-from app.containers.query import QueryAppContainer
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
@@ -20,7 +20,6 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import get_flattened_results, get_message_content
-from app.utils.citations import process_citations
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
@@ -30,6 +29,9 @@ from app.utils.streaming import (
     stream_llm_response_with_tools,
 )
 
+if TYPE_CHECKING:
+    from app.containers.query import QueryAppContainer
+
 DEFAULT_CONTEXT_LENGTH = 128000
 
 router = APIRouter()
@@ -38,8 +40,8 @@ router = APIRouter()
 class ChatQuery(BaseModel):
     query: str
     limit: Optional[int] = 50
-    previousConversations: List[Dict] = []
-    filters: Optional[Dict[str, Any]] = None
+    previousConversations: list[dict] = []
+    filters: Optional[dict[str, Any]] = None
     retrievalMode: Optional[str] = "HYBRID"
     quickMode: Optional[bool] = False
     # New fields for multi-model support
@@ -52,8 +54,7 @@ class ChatQuery(BaseModel):
 # Dependency injection functions
 async def get_retrieval_service(request: Request) -> RetrievalService:
     container: QueryAppContainer = request.app.container
-    retrieval_service = await container.retrieval_service()
-    return retrieval_service
+    return await container.retrieval_service()
 
 
 async def get_graph_provider(request: Request) -> IGraphDBProvider:
@@ -66,17 +67,44 @@ async def get_graph_provider(request: Request) -> IGraphDBProvider:
 
 async def get_config_service(request: Request) -> ConfigurationService:
     container: QueryAppContainer = request.app.container
-    config_service = container.config_service()
-    return config_service
+    return container.config_service()
 
 
 async def get_reranker_service(request: Request) -> RerankerService:
     container: QueryAppContainer = request.app.container
-    reranker_service = container.reranker_service()
-    return reranker_service
+    return container.reranker_service()
 
 
-def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
+async def _build_llm_user_context_string(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    send_user_info: Any,
+) -> str:
+    """Build user/org context for the chat LLM user message when sendUserInfo is enabled."""
+    if not send_user_info:
+        return ""
+    user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
+    if org_info is not None and (
+        org_info.get("accountType") == AccountType.ENTERPRISE.value
+        or org_info.get("accountType") == AccountType.BUSINESS.value
+    ):
+        return (
+            "I am the user of the organization. "
+            f"My name is {user_info.get('fullName', 'a user')} "
+            f"({user_info.get('designation', '')}) "
+            f"from {org_info.get('name', 'the organization')}. "
+            "Please provide accurate and relevant information based on the available context."
+        )
+    return (
+        "I am the user. "
+        f"My name is {user_info.get('fullName', 'a user')} "
+        f"({user_info.get('designation', '')}) "
+        "Please provide accurate and relevant information based on the available context."
+    )
+
+
+def get_model_config_for_mode(chat_mode: str) -> dict[str, Any]:
     """Get model configuration based on chat mode and user selection"""
     mode_configs = {
         "quick": {
@@ -113,7 +141,37 @@ def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
     return mode_configs.get(chat_mode, mode_configs["standard"])
 
 
-async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _build_chat_llm_messages(
+    query_info: ChatQuery,
+    ai_models_config: dict[str, Any],
+    final_results: list[dict[str, Any]],
+    virtual_record_id_to_result: dict[str, Any],
+    user_data: str,
+    logger: Any,
+) -> list[dict[str, Any]]:
+    """System prompt (with optional custom override), prior turns, then user message with retrieval context."""
+    mode_config = get_model_config_for_mode(query_info.chatMode)
+    custom_system_prompt = ai_models_config.get("customSystemPrompt", "")
+    if custom_system_prompt:
+        logger.debug(f"Custom system prompt: {custom_system_prompt}")
+        mode_config["system_prompt"] = custom_system_prompt
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": mode_config["system_prompt"]}]
+
+    for conversation in query_info.previousConversations:
+        if conversation.get("role") == "user_query":
+            messages.append({"role": "user", "content": conversation.get("content")})
+        elif conversation.get("role") == "bot_response":
+            messages.append({"role": "assistant", "content": conversation.get("content")})
+
+    content = get_message_content(
+        final_results, virtual_record_id_to_result, user_data, query_info.query, logger, query_info.mode
+    )
+    messages.append({"role": "user", "content": content})
+    return messages
+
+
+async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: Optional[str] = None) -> tuple[dict[str, Any], dict[str, Any]]:
     """Get model configuration based on user selection or fallback to default
 
     Returns:
@@ -122,11 +180,11 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
         - ai_models_config: The full AI models configuration object
     """
 
-    def _find_config_by_default(configs: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+    def _find_config_by_default(configs: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Find config marked as default"""
         return next((config for config in configs if config.get("isDefault", False)), None)
 
-    def _find_config_by_model_name(configs: List[Dict[str, Any]], name: str) -> Dict[str, Any] | None:
+    def _find_config_by_model_name(configs: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
         """Find config by model name in configuration.model field"""
         for config in configs:
             model_string = config.get("configuration", {}).get("model", "")
@@ -135,7 +193,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
                 return config
         return None
 
-    def _find_config_by_key(configs: List[Dict[str, Any]], key: str) -> Dict[str, Any] | None:
+    def _find_config_by_key(configs: list[dict[str, Any]], key: str) -> dict[str, Any] | None:
         """Find config by modelKey"""
         return next((config for config in configs if config.get("modelKey") == key), None)
 
@@ -172,7 +230,7 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
 
     return llm_configs, ai_models
 
-async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> Tuple[BaseChatModel, dict, dict]:
+async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> tuple[BaseChatModel, dict, dict]:
     """Get LLM instance based on user selection or fallback to default
 
     Returns:
@@ -226,7 +284,7 @@ async def process_chat_query_with_status(
     config_service: ConfigurationService,
     logger,
     yield_status=None
-) -> Tuple[BaseChatModel, List[dict], List[dict], dict, dict, List[dict], List[dict], BlobStorage, bool]:
+) -> tuple[BaseChatModel, list[dict], list[dict], dict, dict, list[dict], list[dict], BlobStorage, bool]:
     """
     Process chat query with optional status updates.
     If yield_status is provided, it should be an async function that accepts (event_type, data).
@@ -381,7 +439,7 @@ async def process_chat_query(
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     logger
-) -> Tuple[BaseChatModel, List[dict], List[dict], dict, dict]:
+) -> tuple[BaseChatModel, list[dict], list[dict], dict, dict]:
     """Wrapper for non-streaming endpoint (without status updates)"""
     return await process_chat_query_with_status(
         query_info, request, retrieval_service, graph_provider,
@@ -473,14 +531,52 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
                 )
                 messages.append(HumanMessage(content=reflection_content))
                 # Retry without tools binding
-                ai = await llm.ainvoke(messages)
-                return ai
+                return await llm.ainvoke(messages)
             else:
                 raise
         hops += 1
 
     return ai
 
+
+async def _iter_prepare_chat_queries_for_retrieval(
+    llm: BaseChatModel,
+    query_info: ChatQuery,
+    logger: Any,
+) -> AsyncGenerator[tuple[str, Any], None]:
+    """Apply follow-up transformation from history and optional decomposition.
+
+    Mutates ``query_info.query``. Yields ``("status", payload)`` for SSE status
+    events, then a final ``("queries", list[str])``.
+    """
+    if len(query_info.previousConversations) > 0:
+        yield (
+            "status",
+            {"status": "transforming", "message": "Understanding conversation context..."},
+        )
+        followup_query_transformation = setup_followup_query_transformation(llm)
+        formatted_history = "\n".join(
+            f"{'User' if conv.get('role') == 'user_query' else 'Assistant'}: {conv.get('content')}"
+            for conv in query_info.previousConversations
+        )
+        followup_query = await followup_query_transformation.ainvoke(
+            {"query": query_info.query, "previous_conversations": formatted_history}
+        )
+        query_info.query = followup_query
+
+    decomposed_queries: list[Any] = []
+    if not query_info.quickMode and query_info.chatMode != "quick":
+        yield ("status", {"status": "analyzing", "message": "Analyzing your query..."})
+        decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
+        decomposition_result = await decomposition_service.transform_query(query_info.query)
+        decomposed_queries = decomposition_result["queries"]
+
+    all_queries = (
+        [query_info.query]
+        if not decomposed_queries
+        else [q.get("query") for q in decomposed_queries]
+    )
+    yield ("queries", all_queries)
 
 
 @router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
@@ -527,34 +623,17 @@ async def askAIStream(
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
 
-
-
                 if config.get("provider").lower() == "ollama":
                     query_info.mode = "simple"
 
-                # Handle conversation history and query transformation
-                if len(query_info.previousConversations) > 0:
-                    yield create_sse_event("status", {"status": "transforming", "message": "Understanding conversation context..."})
-                    followup_query_transformation = setup_followup_query_transformation(llm)
-                    formatted_history = "\n".join(
-                        f"{'User' if conv.get('role') == 'user_query' else 'Assistant'}: {conv.get('content')}"
-                        for conv in query_info.previousConversations
-                    )
-                    followup_query = await followup_query_transformation.ainvoke({
-                        "query": query_info.query,
-                        "previous_conversations": formatted_history
-                    })
-                    query_info.query = followup_query
-
-                # Query decomposition based on mode
-                decomposed_queries = []
-                if not query_info.quickMode and query_info.chatMode != "quick":
-                    yield create_sse_event("status", {"status": "analyzing", "message": "Analyzing your query..."})
-                    decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
-                    decomposition_result = await decomposition_service.transform_query(query_info.query)
-                    decomposed_queries = decomposition_result["queries"]
-
-                all_queries = [query_info.query] if not decomposed_queries else [query.get("query") for query in decomposed_queries]
+                all_queries: list[str] = []
+                async for kind, payload in _iter_prepare_chat_queries_for_retrieval(
+                    llm, query_info, logger
+                ):
+                    if kind == "status":
+                        yield create_sse_event("status", payload)
+                    else:
+                        all_queries = payload
 
                 # Execute search
                 org_id = request.state.user.get('orgId')
@@ -600,53 +679,19 @@ async def askAIStream(
 
                 final_results = sorted(final_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
-                # Prepare user context
                 send_user_info = request.query_params.get('sendUserInfo', True)
-                user_data = ""
+                user_data = await _build_llm_user_context_string(
+                    graph_provider, user_id, org_id, send_user_info
+                )
 
-                if send_user_info:
-                    from app.utils.cache_helpers import get_cached_user_info
-                    user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
-
-                    if (org_info is not None and (
-                        org_info.get("accountType") == AccountType.ENTERPRISE.value
-                        or org_info.get("accountType") == AccountType.BUSINESS.value
-                    )):
-                        user_data = (
-                            "I am the user of the organization. "
-                            f"My name is {user_info.get('fullName', 'a user')} "
-                            f"({user_info.get('designation', '')}) "
-                            f"from {org_info.get('name', 'the organization')}. "
-                            "Please provide accurate and relevant information based on the available context."
-                        )
-                    else:
-                        user_data = (
-                            "I am the user. "
-                            f"My name is {user_info.get('fullName', 'a user')} "
-                            f"({user_info.get('designation', '')}) "
-                            "Please provide accurate and relevant information based on the available context."
-                        )
-
-                # Prepare messages
-                mode_config = get_model_config_for_mode(query_info.chatMode)
-
-                custom_system_prompt = ai_models_config.get("customSystemPrompt", "")
-                if custom_system_prompt:
-                    logger.debug(f"Custom system prompt: {custom_system_prompt}")
-                    mode_config["system_prompt"] = custom_system_prompt
-
-                messages = [{"role": "system", "content": mode_config["system_prompt"]}]
-
-                # Add conversation history
-                for conversation in query_info.previousConversations:
-                    if conversation.get("role") == "user_query":
-                        messages.append({"role": "user", "content": conversation.get("content")})
-                    elif conversation.get("role") == "bot_response":
-                        messages.append({"role": "assistant", "content": conversation.get("content")})
-
-                # Always add the current query with retrieved context as the final user message
-                content = get_message_content(final_results, virtual_record_id_to_result, user_data, query_info.query, logger, query_info.mode)
-                messages.append({"role": "user", "content": content})
+                messages = _build_chat_llm_messages(
+                    query_info,
+                    ai_models_config,
+                    final_results,
+                    virtual_record_id_to_result,
+                    user_data,
+                    logger,
+                )
 
                 # Prepare tools
                 fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result)
@@ -722,40 +767,3 @@ async def askAIStream(
             "Access-Control-Allow-Headers": "Cache-Control"
         }
     )
-
-
-@router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
-@inject
-async def askAI(
-    request: Request,
-    query_info: ChatQuery,
-    retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    reranker_service: RerankerService = Depends(get_reranker_service),
-    config_service: ConfigurationService = Depends(get_config_service),
-) -> JSONResponse:
-    """Perform semantic search across documents"""
-    try:
-        container = request.app.container
-        logger = container.logger()
-
-        # Process query using shared logic
-        llm, messages, tools, tool_runtime_kwargs, final_results, all_queries, virtual_record_id_to_result, blob_store, is_multimodal_llm = await process_chat_query(
-            query_info, request, retrieval_service, graph_provider, reranker_service, config_service, logger
-        )
-
-        # Make async LLM call with tools
-        final_ai_msg = await resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4)
-
-        # Guard: ensure we have content
-        if not getattr(final_ai_msg, "content", None):
-            raise HTTPException(status_code=500, detail="Model returned no final content after tool calls")
-
-        return process_citations(final_ai_msg, final_results, records=[], from_agent=False)
-
-    except HTTPException as he:
-        # Re-raise HTTP exceptions with their original status codes
-        raise he
-    except Exception as e:
-        logger.error(f"Error in askAI: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))

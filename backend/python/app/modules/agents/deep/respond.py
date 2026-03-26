@@ -244,7 +244,7 @@ async def _deep_respond_impl(
     else:
         state["qna_message_content"] = None
 
-    # Build R-label → virtual_record_id mapping
+    # Build R-label → virtual_record_id mapping (legacy fallback for fetch_full_record)
     from app.modules.qna.response_prompt import build_record_label_mapping
     record_label_map: dict = build_record_label_mapping(final_results) if final_results else {}
     if record_label_map:
