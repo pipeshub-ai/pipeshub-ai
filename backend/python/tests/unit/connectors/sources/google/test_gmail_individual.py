@@ -767,3 +767,283 @@ class TestIndividualAttachmentGenerator:
                 if update:
                     results.append(update)
             assert len(results) == 0
+
+
+# ---------------------------------------------------------------------------
+# Deep sync: _sync_user_mailbox
+# ---------------------------------------------------------------------------
+
+class TestIndividualSyncUserMailbox:
+    async def test_routes_to_full_sync_when_no_history_id(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"emailAddress": "user@example.com"}
+        )
+        connector.gmail_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock), \
+             patch("app.connectors.sources.google.gmail.individual.connector.load_connector_filters",
+                   new_callable=AsyncMock,
+                   return_value=(MagicMock(), MagicMock())), \
+             patch.object(connector, "_run_full_sync", new_callable=AsyncMock) as mock_full:
+            await connector._sync_user_mailbox()
+            mock_full.assert_called_once()
+
+    async def test_routes_to_incremental_sync_when_history_id_exists(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"emailAddress": "user@example.com"}
+        )
+        connector.gmail_delta_sync_point.read_sync_point = AsyncMock(
+            return_value={"historyId": "hist-123"}
+        )
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock), \
+             patch("app.connectors.sources.google.gmail.individual.connector.load_connector_filters",
+                   new_callable=AsyncMock,
+                   return_value=(MagicMock(), MagicMock())), \
+             patch.object(connector, "_run_sync_with_history_id", new_callable=AsyncMock) as mock_inc:
+            await connector._sync_user_mailbox()
+            mock_inc.assert_called_once()
+
+    async def test_falls_back_to_full_on_incremental_failure(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"emailAddress": "user@example.com"}
+        )
+        connector.gmail_delta_sync_point.read_sync_point = AsyncMock(
+            return_value={"historyId": "hist-123"}
+        )
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock), \
+             patch("app.connectors.sources.google.gmail.individual.connector.load_connector_filters",
+                   new_callable=AsyncMock,
+                   return_value=(MagicMock(), MagicMock())), \
+             patch.object(connector, "_run_sync_with_history_id", new_callable=AsyncMock,
+                          side_effect=Exception("history expired")), \
+             patch.object(connector, "_run_full_sync", new_callable=AsyncMock) as mock_full:
+            await connector._sync_user_mailbox()
+            mock_full.assert_called_once()
+
+    async def test_returns_early_when_no_datasource(self, connector):
+        connector.gmail_data_source = None
+        await connector._sync_user_mailbox()
+        connector.data_entities_processor.on_new_records.assert_not_called()
+
+    async def test_returns_early_when_no_email(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(return_value={})
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock), \
+             patch("app.connectors.sources.google.gmail.individual.connector.load_connector_filters",
+                   new_callable=AsyncMock,
+                   return_value=(MagicMock(), MagicMock())):
+            await connector._sync_user_mailbox()
+        connector.data_entities_processor.on_new_records.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Deep sync: _run_full_sync (individual)
+# ---------------------------------------------------------------------------
+
+class TestIndividualRunFullSync:
+    async def test_full_sync_processes_threads(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"historyId": "hist-1"}
+        )
+        connector.gmail_data_source.users_threads_list = AsyncMock(return_value={
+            "threads": [{"id": "thread-1"}],
+        })
+        connector.gmail_data_source.users_threads_get = AsyncMock(return_value={
+            "messages": [_make_gmail_message()],
+        })
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock):
+            await connector._run_full_sync("user@example.com", "test-key")
+        connector.data_entities_processor.on_new_records.assert_called()
+
+    async def test_full_sync_handles_empty_threads(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"historyId": "hist-1"}
+        )
+        connector.gmail_data_source.users_threads_list = AsyncMock(return_value={"threads": []})
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock):
+            await connector._run_full_sync("user@example.com", "test-key")
+        connector.data_entities_processor.on_new_records.assert_not_called()
+
+    async def test_full_sync_paginates_threads(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"historyId": "hist-1"}
+        )
+        connector.gmail_data_source.users_threads_list = AsyncMock(side_effect=[
+            {"threads": [{"id": "t1"}], "nextPageToken": "page2"},
+            {"threads": [{"id": "t2"}]},
+        ])
+        connector.gmail_data_source.users_threads_get = AsyncMock(return_value={
+            "messages": [_make_gmail_message()],
+        })
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock):
+            await connector._run_full_sync("user@example.com", "test-key")
+        assert connector.gmail_data_source.users_threads_list.call_count == 2
+
+    async def test_full_sync_processes_attachments(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"historyId": "hist-1"}
+        )
+        msg = _make_gmail_message(has_attachments=True)
+        connector.gmail_data_source.users_threads_list = AsyncMock(return_value={
+            "threads": [{"id": "thread-1"}],
+        })
+        connector.gmail_data_source.users_threads_get = AsyncMock(return_value={
+            "messages": [msg],
+        })
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock):
+            await connector._run_full_sync("user@example.com", "test-key")
+        connector.data_entities_processor.on_new_records.assert_called()
+
+    async def test_full_sync_profile_error_continues(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(side_effect=Exception("Profile error"))
+        connector.gmail_data_source.users_threads_list = AsyncMock(return_value={"threads": []})
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock):
+            await connector._run_full_sync("user@example.com", "test-key")
+
+    async def test_full_sync_thread_error_continues(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"historyId": "hist-1"}
+        )
+        connector.gmail_data_source.users_threads_list = AsyncMock(return_value={
+            "threads": [{"id": "bad-thread"}, {"id": "good-thread"}],
+        })
+        connector.gmail_data_source.users_threads_get = AsyncMock(side_effect=[
+            Exception("thread error"),
+            {"messages": [_make_gmail_message()]},
+        ])
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock):
+            await connector._run_full_sync("user@example.com", "test-key")
+        connector.data_entities_processor.on_new_records.assert_called()
+
+    async def test_full_sync_multiple_messages_in_thread(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"historyId": "hist-1"}
+        )
+        connector.gmail_data_source.users_threads_list = AsyncMock(return_value={
+            "threads": [{"id": "thread-multi"}],
+        })
+        connector.gmail_data_source.users_threads_get = AsyncMock(return_value={
+            "messages": [
+                _make_gmail_message(message_id="msg-1"),
+                _make_gmail_message(message_id="msg-2"),
+            ],
+        })
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock):
+            await connector._run_full_sync("user@example.com", "test-key")
+        connector.data_entities_processor.on_new_records.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Deep sync: drive attachment fallback
+# ---------------------------------------------------------------------------
+
+class TestIndividualDriveAttachmentFallback:
+    async def test_drive_attachment_metadata_failure_uses_fallback(self, connector):
+        attachment_info = {
+            "attachmentId": None, "driveFileId": "drive-fail",
+            "stableAttachmentId": "drive-fail", "partId": "1",
+            "filename": "fallback.bin", "mimeType": "application/octet-stream",
+            "size": 100, "isDriveFile": True,
+        }
+        with patch("app.connectors.sources.google.gmail.individual.connector.GoogleClient.build_from_services",
+                    new_callable=AsyncMock, side_effect=Exception("Drive error")):
+            result = await connector._process_gmail_attachment(
+                user_email="user@example.com", message_id="msg-1",
+                attachment_info=attachment_info, parent_mail_permissions=[],
+            )
+        assert result is not None
+        assert result.record.record_name == "fallback.bin"
+
+    async def test_unnamed_attachment_default_name(self, connector):
+        attachment_info = {
+            "attachmentId": "att-1", "driveFileId": None,
+            "stableAttachmentId": "msg-1~1", "partId": "1",
+            "filename": None, "mimeType": "application/octet-stream",
+            "size": 100, "isDriveFile": False,
+        }
+        result = await connector._process_gmail_attachment(
+            user_email="user@example.com", message_id="msg-1",
+            attachment_info=attachment_info, parent_mail_permissions=[],
+        )
+        assert result.record.record_name == "unnamed_attachment"
+
+
+# ---------------------------------------------------------------------------
+# Deep sync: _extract_body_from_payload edge cases
+# ---------------------------------------------------------------------------
+
+class TestIndividualExtractBodyEdgeCases:
+    def test_multipart_no_html_returns_plain(self, connector):
+        import base64
+        plain = base64.urlsafe_b64encode(b"plain text").decode()
+        payload = {
+            "mimeType": "multipart/alternative", "body": {},
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": plain}},
+            ],
+        }
+        assert connector._extract_body_from_payload(payload) == plain
+
+    def test_deeply_nested_multipart(self, connector):
+        import base64
+        html = base64.urlsafe_b64encode(b"<b>deep</b>").decode()
+        payload = {
+            "mimeType": "multipart/mixed", "body": {},
+            "parts": [
+                {
+                    "mimeType": "multipart/related", "body": {},
+                    "parts": [
+                        {
+                            "mimeType": "multipart/alternative", "body": {},
+                            "parts": [
+                                {"mimeType": "text/html", "body": {"data": html}},
+                            ]
+                        }
+                    ]
+                }
+            ],
+        }
+        assert connector._extract_body_from_payload(payload) == html
+
+
+# ---------------------------------------------------------------------------
+# Deep sync: _run_sync_with_history_id (individual)
+# ---------------------------------------------------------------------------
+
+class TestIndividualRunSyncWithHistoryId:
+    async def test_incremental_sync_basic(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(return_value={"historyId": "hist-200"})
+        connector.gmail_data_source.users_history_list = AsyncMock(return_value={"history": []})
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock):
+            await connector._run_sync_with_history_id(
+                "user@example.com", "hist-100", "test-key"
+            )
+        connector.gmail_delta_sync_point.update_sync_point.assert_called()
+
+    async def test_incremental_sync_falls_back_on_error(self, connector):
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(
+            return_value={"emailAddress": "user@example.com"}
+        )
+        connector.gmail_delta_sync_point.read_sync_point = AsyncMock(
+            return_value={"historyId": "hist-123"}
+        )
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock), \
+             patch("app.connectors.sources.google.gmail.individual.connector.load_connector_filters",
+                   new_callable=AsyncMock,
+                   return_value=(MagicMock(), MagicMock())), \
+             patch.object(connector, "_run_sync_with_history_id", new_callable=AsyncMock,
+                          side_effect=Exception("history error")), \
+             patch.object(connector, "_run_full_sync", new_callable=AsyncMock) as mock_full:
+            await connector._sync_user_mailbox()
+            mock_full.assert_called_once()

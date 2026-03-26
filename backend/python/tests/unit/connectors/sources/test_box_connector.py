@@ -716,3 +716,491 @@ class TestBoxReconcileDeletedGroups:
 
         await box_connector._reconcile_deleted_groups({"active-1"})
         box_connector.data_entities_processor.on_user_group_deleted.assert_not_called()
+
+
+# ===========================================================================
+# DEEP SYNC LOOP TESTS — run_sync, _sync_folder_recursively,
+# _run_sync_for_user, _process_users_in_batches, _sync_users,
+# _sync_user_groups, _sync_record_groups
+# ===========================================================================
+
+
+class TestBoxRunSync:
+    """Tests for run_sync orchestration (full / incremental)."""
+
+    async def test_full_sync_no_cursor(self, box_connector):
+        box_connector.box_cursor_sync_point.read_sync_point = AsyncMock(return_value=None)
+
+        # Anchor the stream
+        box_connector.data_source.events_get_events = AsyncMock(
+            return_value=MagicMock(success=True, data={"next_stream_position": "pos123"})
+        )
+        box_connector._to_dict = MagicMock(
+            return_value={"next_stream_position": "pos123"}
+        )
+        box_connector.box_cursor_sync_point.update_sync_point = AsyncMock()
+
+        box_connector._sync_users = AsyncMock(return_value=[])
+        box_connector._ensure_virtual_groups = AsyncMock()
+        box_connector._sync_user_groups = AsyncMock()
+        box_connector._sync_record_groups = AsyncMock()
+        box_connector._process_users_in_batches = AsyncMock()
+        box_connector._get_date_filters = MagicMock(return_value=(None, None, None, None))
+
+        with patch(
+            "app.connectors.sources.box.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), MagicMock()),
+        ):
+            await box_connector.run_sync()
+
+        box_connector._sync_users.assert_awaited_once()
+        box_connector._ensure_virtual_groups.assert_awaited_once()
+        box_connector._sync_user_groups.assert_awaited_once()
+        box_connector._sync_record_groups.assert_awaited_once()
+        box_connector._process_users_in_batches.assert_awaited_once()
+
+    async def test_incremental_sync_path(self, box_connector):
+        import time
+        now_ms = int(time.time() * 1000)
+        box_connector.box_cursor_sync_point.read_sync_point = AsyncMock(
+            return_value={"cursor": "cursor-val", "cursor_updated_at": now_ms}
+        )
+        box_connector.run_incremental_sync = AsyncMock()
+        box_connector._get_date_filters = MagicMock(return_value=(None, None, None, None))
+
+        with patch(
+            "app.connectors.sources.box.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), MagicMock()),
+        ):
+            await box_connector.run_sync()
+
+        box_connector.run_incremental_sync.assert_awaited_once()
+
+    async def test_old_cursor_triggers_full_sync(self, box_connector):
+        # Cursor older than 14 days
+        old_ms = int((datetime.now(timezone.utc).timestamp() - 20 * 86400) * 1000)
+        box_connector.box_cursor_sync_point.read_sync_point = AsyncMock(
+            return_value={"cursor": "old-cursor", "cursor_updated_at": old_ms}
+        )
+        box_connector.data_source.events_get_events = AsyncMock(
+            return_value=MagicMock(success=True, data={"next_stream_position": "new-pos"})
+        )
+        box_connector._to_dict = MagicMock(
+            return_value={"next_stream_position": "new-pos"}
+        )
+        box_connector._sync_users = AsyncMock(return_value=[])
+        box_connector._ensure_virtual_groups = AsyncMock()
+        box_connector._sync_user_groups = AsyncMock()
+        box_connector._sync_record_groups = AsyncMock()
+        box_connector._process_users_in_batches = AsyncMock()
+        box_connector._get_date_filters = MagicMock(return_value=(None, None, None, None))
+
+        with patch(
+            "app.connectors.sources.box.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), MagicMock()),
+        ):
+            await box_connector.run_sync()
+
+        box_connector._sync_users.assert_awaited_once()
+
+    async def test_run_sync_raises_on_error(self, box_connector):
+        box_connector.box_cursor_sync_point.read_sync_point = AsyncMock(
+            side_effect=Exception("read fail")
+        )
+        box_connector._get_date_filters = MagicMock(return_value=(None, None, None, None))
+
+        with patch(
+            "app.connectors.sources.box.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), MagicMock()),
+        ):
+            # It should still proceed past read_sync_point failure
+            box_connector.data_source.events_get_events = AsyncMock(
+                return_value=MagicMock(success=False, data={})
+            )
+            box_connector._to_dict = MagicMock(return_value={})
+            box_connector._sync_users = AsyncMock(return_value=[])
+            box_connector._ensure_virtual_groups = AsyncMock()
+            box_connector._sync_user_groups = AsyncMock()
+            box_connector._sync_record_groups = AsyncMock()
+            box_connector._process_users_in_batches = AsyncMock()
+            await box_connector.run_sync()
+
+
+class TestBoxSyncFolderRecursively:
+    """Tests for _sync_folder_recursively deep recursion."""
+
+    async def test_empty_folder(self, box_connector):
+        box_connector.current_user_id = "admin-1"
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+        box_connector.data_source.folders_get_folder_items = AsyncMock(
+            return_value=MagicMock(success=True, data={"entries": [], "total_count": 0})
+        )
+        box_connector._to_dict = MagicMock(return_value={"entries": [], "total_count": 0})
+
+        user = MagicMock()
+        user.source_user_id = "admin-1"
+        user.email = "admin@test.com"
+        batch = []
+        await box_connector._sync_folder_recursively(user, "0", batch)
+        assert batch == []
+
+    async def test_file_items_added_to_batch(self, box_connector):
+        box_connector.current_user_id = "admin-1"
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+
+        file_entry = _make_box_entry(entry_type="file", entry_id="f1", name="report.pdf")
+        box_connector.data_source.folders_get_folder_items = AsyncMock(
+            return_value=MagicMock(success=True, data={"entries": [file_entry], "total_count": 1})
+        )
+        box_connector._to_dict = MagicMock(
+            return_value={"entries": [file_entry], "total_count": 1}
+        )
+
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        mock_record = MagicMock()
+        mock_record.mime_type = "application/pdf"
+        mock_update = RecordUpdate(
+            record=mock_record,
+            is_new=True,
+            is_updated=False,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            new_permissions=[],
+        )
+        box_connector._process_box_entry = AsyncMock(return_value=mock_update)
+
+        user = MagicMock()
+        user.source_user_id = "admin-1"
+        user.email = "admin@test.com"
+        batch = []
+        await box_connector._sync_folder_recursively(user, "0", batch)
+        assert len(batch) == 1
+
+    async def test_folder_items_trigger_recursion(self, box_connector):
+        from app.config.constants.arangodb import MimeTypes as MimeTypesConst
+        box_connector.current_user_id = "admin-1"
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+
+        folder_entry = _make_box_entry(entry_type="folder", entry_id="sub1", name="Sub")
+        empty_resp = {"entries": [], "total_count": 0}
+
+        call_count = [0]
+
+        def _to_dict_side(data):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return {"entries": [folder_entry], "total_count": 1}
+            return empty_resp
+
+        box_connector._to_dict = MagicMock(side_effect=_to_dict_side)
+        box_connector.data_source.folders_get_folder_items = AsyncMock(
+            return_value=MagicMock(success=True, data={})
+        )
+
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        mock_record = MagicMock()
+        mock_record.mime_type = MimeTypesConst.FOLDER.value
+        mock_record.external_record_id = "sub1"
+        mock_update = RecordUpdate(
+            record=mock_record,
+            is_new=True,
+            is_updated=False,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            new_permissions=[],
+        )
+        box_connector._process_box_entry = AsyncMock(return_value=mock_update)
+
+        user = MagicMock()
+        user.source_user_id = "admin-1"
+        user.email = "admin@test.com"
+        batch = []
+        await box_connector._sync_folder_recursively(user, "0", batch)
+        # Folder added + recursion triggered
+        assert len(batch) == 1
+
+    async def test_api_failure_breaks_loop(self, box_connector):
+        box_connector.current_user_id = "admin-1"
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+        box_connector.data_source.folders_get_folder_items = AsyncMock(
+            return_value=MagicMock(success=False, error="403 Forbidden")
+        )
+
+        user = MagicMock()
+        user.source_user_id = "admin-1"
+        user.email = "admin@test.com"
+        batch = []
+        await box_connector._sync_folder_recursively(user, "0", batch)
+        assert batch == []
+
+    async def test_updated_record_calls_handle_updates(self, box_connector):
+        box_connector.current_user_id = "admin-1"
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+
+        file_entry = _make_box_entry()
+        box_connector.data_source.folders_get_folder_items = AsyncMock(
+            return_value=MagicMock(success=True, data={"entries": [file_entry], "total_count": 1})
+        )
+        box_connector._to_dict = MagicMock(
+            return_value={"entries": [file_entry], "total_count": 1}
+        )
+
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        mock_record = MagicMock()
+        mock_update = RecordUpdate(
+            record=mock_record,
+            is_new=False,
+            is_updated=True,
+            is_deleted=False,
+            metadata_changed=True,
+            content_changed=True,
+            permissions_changed=False,
+            new_permissions=[],
+        )
+        box_connector._process_box_entry = AsyncMock(return_value=mock_update)
+        box_connector._handle_record_updates = AsyncMock()
+
+        user = MagicMock()
+        user.source_user_id = "admin-1"
+        user.email = "admin@test.com"
+        batch = []
+        await box_connector._sync_folder_recursively(user, "0", batch)
+        box_connector._handle_record_updates.assert_awaited_once()
+
+    async def test_sets_as_user_context_for_different_user(self, box_connector):
+        box_connector.current_user_id = "admin-1"
+        box_connector.data_source.set_as_user_context = AsyncMock()
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+        box_connector.data_source.folders_get_folder_items = AsyncMock(
+            return_value=MagicMock(success=True, data={"entries": [], "total_count": 0})
+        )
+        box_connector._to_dict = MagicMock(return_value={"entries": [], "total_count": 0})
+
+        user = MagicMock()
+        user.source_user_id = "user-2"
+        user.email = "user2@test.com"
+        batch = []
+        await box_connector._sync_folder_recursively(user, "0", batch)
+        box_connector.data_source.set_as_user_context.assert_awaited_once_with("user-2")
+
+
+class TestBoxRunSyncForUser:
+    """Tests for _run_sync_for_user."""
+
+    async def test_syncs_and_flushes(self, box_connector):
+        box_connector._sync_folder_recursively = AsyncMock()
+
+        user = MagicMock()
+        user.email = "test@test.com"
+        await box_connector._run_sync_for_user(user)
+        box_connector._sync_folder_recursively.assert_awaited_once()
+
+    async def test_flushes_remaining_batch(self, box_connector):
+        async def _mock_sync(user, folder_id, batch_records):
+            batch_records.append(("rec", []))
+
+        box_connector._sync_folder_recursively = _mock_sync
+
+        user = MagicMock()
+        user.email = "test@test.com"
+        await box_connector._run_sync_for_user(user)
+        box_connector.data_entities_processor.on_new_records.assert_awaited_once()
+
+    async def test_exception_handled(self, box_connector):
+        box_connector._sync_folder_recursively = AsyncMock(
+            side_effect=Exception("sync error")
+        )
+
+        user = MagicMock()
+        user.email = "test@test.com"
+        await box_connector._run_sync_for_user(user)  # Should not raise
+
+
+class TestBoxProcessUsersInBatches:
+    """Tests for _process_users_in_batches."""
+
+    async def test_filters_active_users(self, box_connector):
+        active_user = MagicMock()
+        active_user.email = "active@test.com"
+        inactive_user = MagicMock()
+        inactive_user.email = "inactive@test.com"
+
+        box_connector.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[active_user]
+        )
+        box_connector._run_sync_for_user = AsyncMock()
+
+        users = [
+            MagicMock(email="active@test.com"),
+            MagicMock(email="inactive@test.com"),
+        ]
+        await box_connector._process_users_in_batches(users)
+        box_connector._run_sync_for_user.assert_awaited_once()
+
+    async def test_continues_on_user_error(self, box_connector):
+        user1 = MagicMock(email="u1@test.com")
+        user2 = MagicMock(email="u2@test.com")
+
+        box_connector.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[user1, user2]
+        )
+        box_connector._run_sync_for_user = AsyncMock(
+            side_effect=[Exception("error"), None]
+        )
+
+        await box_connector._process_users_in_batches([user1, user2])
+        assert box_connector._run_sync_for_user.await_count == 2
+
+
+class TestBoxSyncUserGroups:
+    """Tests for _sync_user_groups."""
+
+    async def test_syncs_groups_and_reconciles(self, box_connector):
+        box_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+
+        group_data = {"id": "g1", "name": "Engineering", "description": "Eng team"}
+        box_connector.data_source.groups_get_groups = AsyncMock(
+            return_value=MagicMock(success=True, data={"entries": [group_data]})
+        )
+        box_connector._to_dict = MagicMock(
+            return_value={"entries": [group_data]}
+        )
+        box_connector.data_source.groups_get_group_memberships = AsyncMock(
+            return_value=MagicMock(success=True, data={"entries": []})
+        )
+        box_connector._reconcile_deleted_groups = AsyncMock()
+
+        await box_connector._sync_user_groups()
+        box_connector.data_entities_processor.on_new_user_groups.assert_awaited()
+        box_connector._reconcile_deleted_groups.assert_awaited_once()
+
+    async def test_api_failure(self, box_connector):
+        box_connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        box_connector.data_source.groups_get_groups = AsyncMock(
+            return_value=MagicMock(success=False, error="API error")
+        )
+
+        await box_connector._sync_user_groups()  # Should not raise
+
+
+class TestBoxSyncRecordGroups:
+    """Tests for _sync_record_groups."""
+
+    async def test_creates_record_groups_for_users(self, box_connector):
+        user = MagicMock()
+        user.source_user_id = "u1"
+        user.email = "user@test.com"
+        user.full_name = "Test User"
+
+        box_connector.data_source.set_as_user_context = AsyncMock()
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+        box_connector.data_source.folders_get_folder_by_id = AsyncMock(
+            return_value=MagicMock(success=True, data={"id": "0", "name": "All Files"})
+        )
+        box_connector._to_dict = MagicMock(
+            return_value={"id": "0", "name": "All Files"}
+        )
+
+        await box_connector._sync_record_groups([user])
+        box_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+
+    async def test_skips_user_context_error(self, box_connector):
+        user = MagicMock()
+        user.source_user_id = "u1"
+        user.email = "user@test.com"
+
+        box_connector.data_source.set_as_user_context = AsyncMock(
+            side_effect=Exception("context error")
+        )
+
+        await box_connector._sync_record_groups([user])
+        box_connector.data_entities_processor.on_new_record_groups.assert_not_called()
+
+    async def test_skips_root_folder_error(self, box_connector):
+        user = MagicMock()
+        user.source_user_id = "u1"
+        user.email = "user@test.com"
+
+        box_connector.data_source.set_as_user_context = AsyncMock()
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+        box_connector.data_source.folders_get_folder_by_id = AsyncMock(
+            return_value=MagicMock(success=False, error="403")
+        )
+
+        await box_connector._sync_record_groups([user])
+        box_connector.data_entities_processor.on_new_record_groups.assert_not_called()
+
+
+class TestBoxSyncUsersPagination:
+    """Tests for _sync_users pagination loop."""
+
+    async def test_single_page(self, box_connector):
+        user_data = {
+            "entries": [
+                {"id": "u1", "login": "user@test.com", "name": "User",
+                 "status": "active", "job_title": "Dev"},
+            ],
+            "total_count": 1,
+        }
+        box_connector.data_source.users_get_users = AsyncMock(
+            return_value=MagicMock(success=True, data=user_data)
+        )
+        box_connector._to_dict = MagicMock(return_value=user_data)
+
+        result = await box_connector._sync_users()
+        assert len(result) == 1
+        assert result[0].email == "user@test.com"
+
+    async def test_pagination(self, box_connector):
+        page1 = {
+            "entries": [
+                {"id": f"u{i}", "login": f"u{i}@t.com", "name": f"U{i}",
+                 "status": "active"} for i in range(1000)
+            ],
+        }
+        page2 = {
+            "entries": [
+                {"id": "u1001", "login": "last@t.com", "name": "Last",
+                 "status": "active"},
+            ],
+        }
+
+        call_count = [0]
+
+        def _to_dict_pages(data):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return page1
+            return page2
+
+        box_connector._to_dict = MagicMock(side_effect=_to_dict_pages)
+        box_connector.data_source.users_get_users = AsyncMock(
+            return_value=MagicMock(success=True, data={})
+        )
+
+        result = await box_connector._sync_users()
+        assert len(result) == 1001
+
+    async def test_api_failure(self, box_connector):
+        box_connector.data_source.users_get_users = AsyncMock(
+            return_value=MagicMock(success=False, error="Auth failed")
+        )
+
+        result = await box_connector._sync_users()
+        assert result == []
+
+    async def test_exception_returns_empty(self, box_connector):
+        box_connector.data_source.users_get_users = AsyncMock(
+            side_effect=Exception("network error")
+        )
+
+        result = await box_connector._sync_users()
+        assert result == []

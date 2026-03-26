@@ -1276,3 +1276,785 @@ class TestNotionFetchPageAttachmentsAndComments:
         file_records, comments_by_block = await connector._fetch_page_attachments_and_comments("page-1")
         assert file_records == []
         assert comments_by_block == {}
+
+
+# ===========================================================================
+# DEEP SYNC LOOP TESTS — run_sync, _sync_objects_by_type, _sync_users,
+# _fetch_attachment_blocks_and_block_ids_recursive, _fetch_comments_for_block,
+# _fetch_comments_for_blocks, _fetch_block_children_recursive
+# ===========================================================================
+
+
+class TestNotionRunSync:
+    """Tests for run_sync orchestration."""
+
+    @pytest.mark.asyncio
+    async def test_run_sync_calls_sync_users_and_objects(self):
+        connector = _make_connector()
+        connector._sync_users = AsyncMock()
+        connector._sync_objects_by_type = AsyncMock()
+        with patch(
+            "app.connectors.sources.notion.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), MagicMock()),
+        ):
+            await connector.run_sync()
+        connector._sync_users.assert_awaited_once()
+        assert connector._sync_objects_by_type.await_count == 2
+        calls = [c.args[0] for c in connector._sync_objects_by_type.await_args_list]
+        assert "data_source" in calls
+        assert "page" in calls
+
+    @pytest.mark.asyncio
+    async def test_run_sync_raises_on_error(self):
+        connector = _make_connector()
+        connector._sync_users = AsyncMock(side_effect=Exception("sync fail"))
+        with patch(
+            "app.connectors.sources.notion.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), MagicMock()),
+        ):
+            with pytest.raises(Exception, match="sync fail"):
+                await connector.run_sync()
+
+    @pytest.mark.asyncio
+    async def test_run_incremental_delegates_to_run_sync(self):
+        connector = _make_connector()
+        connector.run_sync = AsyncMock()
+        await connector.run_incremental_sync()
+        connector.run_sync.assert_awaited_once()
+
+
+class TestNotionSyncObjectsByType:
+    """Tests for _sync_objects_by_type (pages & data_sources)."""
+
+    @pytest.mark.asyncio
+    async def test_sync_pages_single_page(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        page_data = {
+            "id": "p1",
+            "last_edited_time": "2024-06-01T10:00:00Z",
+            "url": "https://notion.so/p1",
+            "parent": {"type": "workspace", "workspace": True},
+        }
+        search_resp = _make_api_response(
+            data={"results": [page_data], "has_more": False, "next_cursor": None}
+        )
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(search=AsyncMock(return_value=search_resp))
+        )
+        mock_record = MagicMock()
+        connector._transform_to_webpage_record = AsyncMock(return_value=mock_record)
+        connector._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {}))
+
+        await connector._sync_objects_by_type("page")
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_pages_empty_results(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        search_resp = _make_api_response(data={"results": [], "has_more": False})
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(search=AsyncMock(return_value=search_resp))
+        )
+
+        await connector._sync_objects_by_type("page")
+        connector.data_entities_processor.on_new_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_pages_skips_archived(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        page_data = {
+            "id": "p1",
+            "last_edited_time": "2024-06-01T10:00:00Z",
+            "archived": True,
+        }
+        search_resp = _make_api_response(
+            data={"results": [page_data], "has_more": False}
+        )
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(search=AsyncMock(return_value=search_resp))
+        )
+        connector._transform_to_webpage_record = AsyncMock()
+
+        await connector._sync_objects_by_type("page")
+        connector._transform_to_webpage_record.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_pages_delta_sync_stops_at_threshold(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_sync_time": "2024-06-01T00:00:00Z"}
+        )
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        old_page = {
+            "id": "p-old",
+            "last_edited_time": "2024-05-30T00:00:00Z",
+        }
+        search_resp = _make_api_response(
+            data={"results": [old_page], "has_more": True, "next_cursor": "c2"}
+        )
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(search=AsyncMock(return_value=search_resp))
+        )
+        connector._transform_to_webpage_record = AsyncMock()
+
+        await connector._sync_objects_by_type("page")
+        connector._transform_to_webpage_record.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_pages_pagination(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        page1_data = {
+            "id": "p1",
+            "last_edited_time": "2024-06-01T10:00:00Z",
+            "url": "https://notion.so/p1",
+            "parent": {"type": "workspace"},
+        }
+        page2_data = {
+            "id": "p2",
+            "last_edited_time": "2024-06-01T09:00:00Z",
+            "url": "https://notion.so/p2",
+            "parent": {"type": "workspace"},
+        }
+        resp1 = _make_api_response(
+            data={"results": [page1_data], "has_more": True, "next_cursor": "c2"}
+        )
+        resp2 = _make_api_response(
+            data={"results": [page2_data], "has_more": False, "next_cursor": None}
+        )
+
+        ds_mock = MagicMock()
+        ds_mock.search = AsyncMock(side_effect=[resp1, resp2])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds_mock)
+        connector._transform_to_webpage_record = AsyncMock(return_value=MagicMock())
+        connector._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {}))
+
+        await connector._sync_objects_by_type("page")
+        assert connector.data_entities_processor.on_new_records.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_sync_data_sources(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        ds_data = {
+            "id": "ds1",
+            "last_edited_time": "2024-06-01T10:00:00Z",
+            "parent": {"type": "workspace"},
+        }
+        search_resp = _make_api_response(
+            data={"results": [ds_data], "has_more": False}
+        )
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(search=AsyncMock(return_value=search_resp))
+        )
+        connector._transform_to_webpage_record = AsyncMock(return_value=MagicMock())
+
+        await connector._sync_objects_by_type("data_source")
+        connector.data_entities_processor.on_new_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_data_source_with_database_parent(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        ds_data = {
+            "id": "ds1",
+            "last_edited_time": "2024-06-01T10:00:00Z",
+            "parent": {"type": "database_id", "database_id": "db1"},
+        }
+        search_resp = _make_api_response(
+            data={"results": [ds_data], "has_more": False}
+        )
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(search=AsyncMock(return_value=search_resp))
+        )
+        connector._get_database_parent_page_id = AsyncMock(return_value="parent-page")
+        connector._transform_to_webpage_record = AsyncMock(return_value=MagicMock())
+
+        await connector._sync_objects_by_type("data_source")
+        connector._transform_to_webpage_record.assert_awaited_once()
+        call_kwargs = connector._transform_to_webpage_record.await_args
+        assert call_kwargs.kwargs.get("database_parent_id") == "parent-page"
+
+    @pytest.mark.asyncio
+    async def test_sync_pages_indexing_off(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.side_effect = lambda key, **kw: False
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        page_data = {
+            "id": "p1",
+            "last_edited_time": "2024-06-01T10:00:00Z",
+            "url": "https://notion.so/p1",
+            "parent": {"type": "workspace"},
+        }
+        search_resp = _make_api_response(
+            data={"results": [page_data], "has_more": False}
+        )
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(search=AsyncMock(return_value=search_resp))
+        )
+        mock_record = MagicMock()
+        connector._transform_to_webpage_record = AsyncMock(return_value=mock_record)
+        connector._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {}))
+
+        await connector._sync_objects_by_type("page")
+        assert mock_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_sync_pages_api_error_raises(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        error_resp = _make_api_response(success=False, error="Rate limited")
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(search=AsyncMock(return_value=error_resp))
+        )
+
+        with pytest.raises(Exception, match="Notion API error"):
+            await connector._sync_objects_by_type("page")
+
+    @pytest.mark.asyncio
+    async def test_sync_pages_first_sync_initializes_sync_point(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        search_resp = _make_api_response(data={"results": [], "has_more": False})
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(search=AsyncMock(return_value=search_resp))
+        )
+
+        await connector._sync_objects_by_type("page")
+        connector.pages_sync_point.update_sync_point.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_sync_pages_with_file_attachments(self):
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        page_data = {
+            "id": "p1",
+            "last_edited_time": "2024-06-01T10:00:00Z",
+            "url": "https://notion.so/p1",
+            "parent": {"type": "workspace"},
+        }
+        search_resp = _make_api_response(
+            data={"results": [page_data], "has_more": False}
+        )
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(search=AsyncMock(return_value=search_resp))
+        )
+        mock_record = MagicMock()
+        connector._transform_to_webpage_record = AsyncMock(return_value=mock_record)
+
+        file_record = MagicMock()
+        connector._fetch_page_attachments_and_comments = AsyncMock(
+            return_value=([file_record], {"p1": [({}, "p1")]})
+        )
+        connector._extract_comment_attachment_file_records = AsyncMock(return_value=[])
+
+        await connector._sync_objects_by_type("page")
+        call_args = connector.data_entities_processor.on_new_records.await_args[0][0]
+        assert len(call_args) == 2  # page + file
+
+
+class TestNotionSyncUsers:
+    """Tests for _sync_users deep loop."""
+
+    @pytest.mark.asyncio
+    async def test_single_page_with_person(self):
+        connector = _make_connector()
+        connector.workspace_id = None
+        connector.workspace_name = None
+
+        users_list_resp = _make_api_response(data={
+            "results": [
+                {"id": "u1", "type": "person", "name": "Alice"},
+            ],
+            "has_more": False,
+            "next_cursor": None,
+        })
+        user_detail_resp = _make_api_response(data={
+            "id": "u1",
+            "type": "person",
+            "name": "Alice",
+            "person": {"email": "alice@test.com"},
+        })
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=users_list_resp)
+        mock_ds.retrieve_user = AsyncMock(return_value=user_detail_resp)
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await connector._sync_users()
+        connector.data_entities_processor.on_new_app_users.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_skips_bot_users(self):
+        connector = _make_connector()
+        connector.workspace_id = None
+
+        users_list_resp = _make_api_response(data={
+            "results": [
+                {"id": "b1", "type": "bot", "bot": {"workspace_id": "ws1", "workspace_name": "My WS"}},
+            ],
+            "has_more": False,
+        })
+        empty_resp = _make_api_response(data={
+            "results": [],
+            "has_more": False,
+        })
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(side_effect=[users_list_resp, empty_resp])
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._create_workspace_record_group = AsyncMock()
+
+        await connector._sync_users()
+        connector.data_entities_processor.on_new_app_users.assert_not_called()
+        assert connector.workspace_id == "ws1"
+
+    @pytest.mark.asyncio
+    async def test_pagination(self):
+        connector = _make_connector()
+        connector.workspace_id = None
+
+        resp1 = _make_api_response(data={
+            "results": [{"id": "u1", "type": "person"}],
+            "has_more": True,
+            "next_cursor": "cursor-2",
+        })
+        user_detail = _make_api_response(data={
+            "id": "u1",
+            "type": "person",
+            "name": "Test User",
+            "person": {"email": "a@b.com"},
+        })
+        resp2 = _make_api_response(data={
+            "results": [],
+            "has_more": False,
+        })
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(side_effect=[resp1, resp2])
+        mock_ds.retrieve_user = AsyncMock(return_value=user_detail)
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await connector._sync_users()
+        connector.data_entities_processor.on_new_app_users.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_api_error_raises(self):
+        connector = _make_connector()
+        connector.workspace_id = None
+
+        error_resp = _make_api_response(success=False, error="Unauthorized")
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=error_resp)
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        with pytest.raises(Exception, match="Notion API error"):
+            await connector._sync_users()
+
+    @pytest.mark.asyncio
+    async def test_user_detail_exception_skipped(self):
+        connector = _make_connector()
+        connector.workspace_id = None
+
+        users_list_resp = _make_api_response(data={
+            "results": [{"id": "u1", "type": "person"}],
+            "has_more": False,
+        })
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=users_list_resp)
+        mock_ds.retrieve_user = AsyncMock(side_effect=Exception("timeout"))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await connector._sync_users()
+        connector.data_entities_processor.on_new_app_users.assert_not_called()
+
+
+class TestNotionFetchBlockChildrenRecursive:
+    """Tests for _fetch_block_children_recursive."""
+
+    @pytest.mark.asyncio
+    async def test_single_page_of_children(self):
+        connector = _make_connector()
+        children_resp = _make_api_response(data={
+            "results": [{"id": "b1", "type": "paragraph"}, {"id": "b2", "type": "heading_1"}],
+            "has_more": False,
+        })
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(retrieve_block_children=AsyncMock(return_value=children_resp))
+        )
+
+        blocks = await connector._fetch_block_children_recursive("page-1")
+        assert len(blocks) == 2
+
+    @pytest.mark.asyncio
+    async def test_paginated_children(self):
+        connector = _make_connector()
+        resp1 = _make_api_response(data={
+            "results": [{"id": "b1"}],
+            "has_more": True,
+            "next_cursor": "c2",
+        })
+        resp2 = _make_api_response(data={
+            "results": [{"id": "b2"}],
+            "has_more": False,
+        })
+        ds = MagicMock()
+        ds.retrieve_block_children = AsyncMock(side_effect=[resp1, resp2])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        blocks = await connector._fetch_block_children_recursive("page-1")
+        assert len(blocks) == 2
+
+    @pytest.mark.asyncio
+    async def test_api_failure_returns_empty(self):
+        connector = _make_connector()
+        fail_resp = _make_api_response(success=False, error="Not found")
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(retrieve_block_children=AsyncMock(return_value=fail_resp))
+        )
+
+        blocks = await connector._fetch_block_children_recursive("bad-id")
+        assert blocks == []
+
+    @pytest.mark.asyncio
+    async def test_non_dict_data_returns_empty(self):
+        connector = _make_connector()
+        resp = MagicMock()
+        resp.success = True
+        resp.data = MagicMock()
+        resp.data.json.return_value = "not a dict"
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(retrieve_block_children=AsyncMock(return_value=resp))
+        )
+
+        blocks = await connector._fetch_block_children_recursive("page-1")
+        assert blocks == []
+
+    @pytest.mark.asyncio
+    async def test_exception_breaks_loop(self):
+        connector = _make_connector()
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(
+                retrieve_block_children=AsyncMock(side_effect=Exception("network"))
+            )
+        )
+
+        blocks = await connector._fetch_block_children_recursive("page-1")
+        assert blocks == []
+
+
+class TestNotionFetchAttachmentBlocksRecursive:
+    """Tests for _fetch_attachment_blocks_and_block_ids_recursive."""
+
+    @pytest.mark.asyncio
+    async def test_collects_file_attachments(self):
+        connector = _make_connector()
+        children_resp = _make_api_response(data={
+            "results": [
+                {"id": "b1", "type": "file", "has_children": False},
+                {"id": "b2", "type": "paragraph", "has_children": False},
+            ],
+            "has_more": False,
+        })
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(retrieve_block_children=AsyncMock(return_value=children_resp))
+        )
+
+        attachments, block_ids = await connector._fetch_attachment_blocks_and_block_ids_recursive("page-1")
+        assert len(attachments) == 1
+        assert attachments[0]["type"] == "file"
+        assert "b1" in block_ids
+        assert "b2" in block_ids
+
+    @pytest.mark.asyncio
+    async def test_skips_child_page_and_database(self):
+        connector = _make_connector()
+        children_resp = _make_api_response(data={
+            "results": [
+                {"id": "cp1", "type": "child_page", "has_children": True},
+                {"id": "cd1", "type": "child_database", "has_children": True},
+            ],
+            "has_more": False,
+        })
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(retrieve_block_children=AsyncMock(return_value=children_resp))
+        )
+
+        attachments, block_ids = await connector._fetch_attachment_blocks_and_block_ids_recursive("page-1")
+        assert len(attachments) == 0
+        assert len(block_ids) == 0
+
+    @pytest.mark.asyncio
+    async def test_recurses_into_children(self):
+        connector = _make_connector()
+        parent_resp = _make_api_response(data={
+            "results": [
+                {"id": "b1", "type": "toggle", "has_children": True},
+            ],
+            "has_more": False,
+        })
+        child_resp = _make_api_response(data={
+            "results": [
+                {"id": "b2", "type": "video", "has_children": False},
+            ],
+            "has_more": False,
+        })
+        ds = MagicMock()
+        ds.retrieve_block_children = AsyncMock(side_effect=[parent_resp, child_resp])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        attachments, block_ids = await connector._fetch_attachment_blocks_and_block_ids_recursive("page-1")
+        assert len(attachments) == 1
+        assert attachments[0]["type"] == "video"
+        assert "b1" in block_ids
+        assert "b2" in block_ids
+
+    @pytest.mark.asyncio
+    async def test_image_block_skipped_as_file_but_recurses(self):
+        connector = _make_connector()
+        parent_resp = _make_api_response(data={
+            "results": [
+                {"id": "img1", "type": "image", "has_children": True},
+            ],
+            "has_more": False,
+        })
+        child_resp = _make_api_response(data={
+            "results": [
+                {"id": "b2", "type": "pdf", "has_children": False},
+            ],
+            "has_more": False,
+        })
+        ds = MagicMock()
+        ds.retrieve_block_children = AsyncMock(side_effect=[parent_resp, child_resp])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        attachments, block_ids = await connector._fetch_attachment_blocks_and_block_ids_recursive("page-1")
+        assert len(attachments) == 1
+        assert attachments[0]["type"] == "pdf"
+        assert "img1" in block_ids
+
+
+class TestNotionFetchCommentsForBlock:
+    """Tests for _fetch_comments_for_block."""
+
+    @pytest.mark.asyncio
+    async def test_empty_block_id_returns_empty(self):
+        connector = _make_connector()
+        result = await connector._fetch_comments_for_block("")
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_single_page_of_comments(self):
+        connector = _make_connector()
+        resp = _make_api_response(data={
+            "results": [{"id": "c1"}, {"id": "c2"}],
+            "has_more": False,
+        })
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(retrieve_comments=AsyncMock(return_value=resp))
+        )
+
+        comments = await connector._fetch_comments_for_block("block-1")
+        assert len(comments) == 2
+
+    @pytest.mark.asyncio
+    async def test_paginated_comments(self):
+        connector = _make_connector()
+        resp1 = _make_api_response(data={
+            "results": [{"id": "c1"}],
+            "has_more": True,
+            "next_cursor": "c2",
+        })
+        resp2 = _make_api_response(data={
+            "results": [{"id": "c2"}],
+            "has_more": False,
+        })
+        ds = MagicMock()
+        ds.retrieve_comments = AsyncMock(side_effect=[resp1, resp2])
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        comments = await connector._fetch_comments_for_block("block-1")
+        assert len(comments) == 2
+
+    @pytest.mark.asyncio
+    async def test_error_response_returns_empty(self):
+        connector = _make_connector()
+        resp = _make_api_response(data={
+            "object": "error",
+            "code": "object_not_found",
+            "message": "Not found",
+        })
+        resp.success = False
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(retrieve_comments=AsyncMock(return_value=resp))
+        )
+
+        comments = await connector._fetch_comments_for_block("block-1")
+        assert comments == []
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_empty(self):
+        connector = _make_connector()
+        connector._get_fresh_datasource = AsyncMock(
+            return_value=MagicMock(
+                retrieve_comments=AsyncMock(side_effect=Exception("network"))
+            )
+        )
+
+        comments = await connector._fetch_comments_for_block("block-1")
+        assert comments == []
+
+    @pytest.mark.asyncio
+    async def test_whitespace_block_id_returns_empty(self):
+        connector = _make_connector()
+        result = await connector._fetch_comments_for_block("   ")
+        assert result == []
+
+
+class TestNotionFetchCommentsForBlocks:
+    """Tests for _fetch_comments_for_blocks."""
+
+    @pytest.mark.asyncio
+    async def test_collects_page_and_block_comments(self):
+        connector = _make_connector()
+        connector._fetch_comments_for_block = AsyncMock(
+            side_effect=[
+                [{"id": "c-page"}],      # page comments
+                [{"id": "c-block"}],      # block-1 comments
+            ]
+        )
+
+        result = await connector._fetch_comments_for_blocks("page-1", ["block-1"])
+        assert len(result) == 2
+        page_comments = [c for c, bid in result if bid == "page-1"]
+        block_comments = [c for c, bid in result if bid == "block-1"]
+        assert len(page_comments) == 1
+        assert len(block_comments) == 1
+
+    @pytest.mark.asyncio
+    async def test_block_exception_continues(self):
+        connector = _make_connector()
+        connector._fetch_comments_for_block = AsyncMock(
+            side_effect=[
+                [{"id": "c-page"}],
+                Exception("timeout"),
+            ]
+        )
+
+        result = await connector._fetch_comments_for_blocks("page-1", ["block-1"])
+        assert len(result) == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_blocks_list(self):
+        connector = _make_connector()
+        connector._fetch_comments_for_block = AsyncMock(return_value=[])
+
+        result = await connector._fetch_comments_for_blocks("page-1", [])
+        assert result == []
+
+
+class TestNotionTransformToWebpageRecord:
+    """Tests for _transform_to_webpage_record."""
+
+    @pytest.mark.asyncio
+    async def test_page_type(self):
+        connector = _make_connector()
+        connector.workspace_id = "ws1"
+        connector._extract_page_title = MagicMock(return_value="My Page")
+        connector._parse_iso_timestamp = MagicMock(return_value=1717228800000)
+
+        obj_data = {
+            "id": "p1",
+            "url": "https://notion.so/p1",
+            "created_time": "2024-06-01T10:00:00Z",
+            "last_edited_time": "2024-06-01T12:00:00Z",
+            "parent": {"type": "workspace"},
+        }
+
+        result = await connector._transform_to_webpage_record(obj_data, "page")
+        assert result is not None
+        assert result.record_type == RecordType.WEBPAGE
+        assert result.record_name == "My Page"
+
+    @pytest.mark.asyncio
+    async def test_data_source_type(self):
+        connector = _make_connector()
+        connector.workspace_id = "ws1"
+        connector._parse_iso_timestamp = MagicMock(return_value=1717228800000)
+
+        obj_data = {
+            "id": "ds1",
+            "title": [{"plain_text": "My DB"}],
+            "created_time": "2024-06-01T10:00:00Z",
+            "last_edited_time": "2024-06-01T12:00:00Z",
+        }
+
+        result = await connector._transform_to_webpage_record(
+            obj_data, "data_source", database_parent_id="parent-page"
+        )
+        assert result is not None
+        assert result.record_type == RecordType.DATASOURCE
+        assert result.parent_external_record_id == "parent-page"
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_none(self):
+        connector = _make_connector()
+        connector._extract_page_title = MagicMock(side_effect=Exception("parse error"))
+
+        result = await connector._transform_to_webpage_record({"id": "p1"}, "page")
+        assert result is None

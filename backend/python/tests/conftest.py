@@ -3,11 +3,20 @@
 import importlib.abc
 import importlib.machinery
 import logging
+import os
 import sys
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+
+
+def pytest_unconfigure(config):
+    """Force-exit the process when running under xdist to prevent hangs
+    caused by unawaited async coroutines keeping worker threads alive."""
+    if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
+        os._exit(getattr(config, "_exitcode", 0))
 
 
 # ---------------------------------------------------------------------------

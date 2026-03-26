@@ -801,3 +801,513 @@ class TestZammadFetchTicketAttachments:
     async def test_fetch_ticket_attachments_no_ticket_id(self, zammad_connector):
         result = await zammad_connector._fetch_ticket_attachments({}, MagicMock())
         assert result == []
+
+
+# ===========================================================================
+# DEEP SYNC LOOP TESTS — run_sync, _sync_tickets_for_groups,
+# _fetch_tickets_for_group_batch, _fetch_users, _fetch_groups,
+# _sync_roles, _sync_knowledge_bases
+# ===========================================================================
+
+
+class TestZammadRunSync:
+    """Tests for run_sync orchestration."""
+
+    async def test_full_sync_flow(self, zammad_connector):
+        zammad_connector.external_client = MagicMock()
+        mock_ds = MagicMock()
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        users = [MagicMock(email="user@test.com")]
+        user_map = {"user@test.com": users[0]}
+        zammad_connector._fetch_users = AsyncMock(return_value=(users, user_map))
+
+        rg = MagicMock()
+        rg.external_group_id = "group_1"
+        rg.name = "Support"
+        group_rg = [(rg, [])]
+        ug = MagicMock()
+        group_ug = [(ug, users)]
+        zammad_connector._fetch_groups = AsyncMock(return_value=(group_rg, group_ug))
+        zammad_connector._sync_roles = AsyncMock()
+        zammad_connector._sync_tickets_for_groups = AsyncMock()
+        zammad_connector._sync_knowledge_bases = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.zammad.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), MagicMock()),
+        ):
+            await zammad_connector.run_sync()
+
+        zammad_connector.data_entities_processor.on_new_app_users.assert_awaited_once()
+        zammad_connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        zammad_connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
+        zammad_connector._sync_roles.assert_awaited_once()
+        zammad_connector._sync_tickets_for_groups.assert_awaited_once()
+        zammad_connector._sync_knowledge_bases.assert_awaited_once()
+
+    async def test_run_sync_initializes_if_no_client(self, zammad_connector):
+        zammad_connector.external_client = None
+        zammad_connector.init = AsyncMock(return_value=True)
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=MagicMock())
+        zammad_connector._fetch_users = AsyncMock(return_value=([], {}))
+        zammad_connector._fetch_groups = AsyncMock(return_value=([], []))
+        zammad_connector._sync_roles = AsyncMock()
+        zammad_connector._sync_tickets_for_groups = AsyncMock()
+        zammad_connector._sync_knowledge_bases = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.zammad.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), MagicMock()),
+        ):
+            await zammad_connector.run_sync()
+
+        zammad_connector.init.assert_awaited_once()
+
+    async def test_run_sync_raises_on_error(self, zammad_connector):
+        zammad_connector.external_client = MagicMock()
+        zammad_connector._get_fresh_datasource = AsyncMock(
+            side_effect=Exception("connection failed")
+        )
+
+        with patch(
+            "app.connectors.sources.zammad.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), MagicMock()),
+        ):
+            with pytest.raises(Exception, match="connection failed"):
+                await zammad_connector.run_sync()
+
+
+class TestZammadFetchUsers:
+    """Tests for _fetch_users pagination loop."""
+
+    async def test_single_page(self, zammad_connector):
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[
+                {"id": 1, "email": "alice@test.com", "firstname": "Alice",
+                 "lastname": "A", "active": True, "role_ids": [1]},
+            ]
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        users, user_map = await zammad_connector._fetch_users()
+        assert len(users) == 1
+        assert "alice@test.com" in user_map
+
+    async def test_skips_inactive_users(self, zammad_connector):
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[
+                {"id": 1, "email": "inactive@test.com", "active": False},
+            ]
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        users, _ = await zammad_connector._fetch_users()
+        assert len(users) == 0
+
+    async def test_skips_system_users(self, zammad_connector):
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[
+                {"id": 1, "email": "mailer-daemon@test.com", "active": True,
+                 "firstname": "", "lastname": ""},
+                {"id": 2, "email": "noreply@test.com", "active": True,
+                 "firstname": "", "lastname": ""},
+            ]
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        users, _ = await zammad_connector._fetch_users()
+        assert len(users) == 0
+
+    async def test_pagination(self, zammad_connector):
+        # IDs start at 1 to avoid falsy user_id=0 being skipped
+        page1 = _make_response(
+            success=True,
+            data=[{"id": i + 1, "email": f"u{i + 1}@t.com", "active": True,
+                   "firstname": f"U{i + 1}", "lastname": ""} for i in range(100)]
+        )
+        page2 = _make_response(
+            success=True,
+            data=[{"id": 101, "email": "last@t.com", "active": True,
+                   "firstname": "Last", "lastname": ""}]
+        )
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(side_effect=[page1, page2])
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        users, _ = await zammad_connector._fetch_users()
+        assert len(users) == 101
+
+    async def test_api_failure_returns_empty(self, zammad_connector):
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=_make_response(success=False))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        users, _ = await zammad_connector._fetch_users()
+        assert users == []
+
+
+class TestZammadSyncTicketsForGroups:
+    """Tests for _sync_tickets_for_groups loop."""
+
+    async def test_no_groups(self, zammad_connector):
+        await zammad_connector._sync_tickets_for_groups([])
+        zammad_connector.data_entities_processor.on_new_records.assert_not_called()
+
+    async def test_single_group_with_tickets(self, zammad_connector):
+        rg = MagicMock()
+        rg.external_group_id = "group_5"
+        rg.name = "Support"
+
+        ticket_record = MagicMock(spec=TicketRecord)
+        ticket_record.source_updated_at = 1700000000000
+
+        zammad_connector._get_group_sync_checkpoint = AsyncMock(return_value=None)
+        zammad_connector._update_group_sync_checkpoint = AsyncMock()
+
+        async def _batch_gen(group_id, group_name, last_sync_time):
+            yield [(ticket_record, [])]
+
+        zammad_connector._fetch_tickets_for_group_batch = _batch_gen
+
+        await zammad_connector._sync_tickets_for_groups([(rg, [])])
+        zammad_connector.data_entities_processor.on_new_records.assert_awaited_once()
+
+    async def test_group_error_continues_to_next(self, zammad_connector):
+        rg1 = MagicMock()
+        rg1.external_group_id = "group_1"
+        rg1.name = "Sales"
+        rg2 = MagicMock()
+        rg2.external_group_id = "group_2"
+        rg2.name = "Support"
+
+        zammad_connector._get_group_sync_checkpoint = AsyncMock(return_value=None)
+        zammad_connector._update_group_sync_checkpoint = AsyncMock()
+
+        call_count = 0
+
+        async def _batch_gen(group_id, group_name, last_sync_time):
+            nonlocal call_count
+            call_count += 1
+            if group_id == 1:
+                raise Exception("API error")
+            ticket = MagicMock(spec=TicketRecord)
+            ticket.source_updated_at = 1700000000000
+            yield [(ticket, [])]
+
+        zammad_connector._fetch_tickets_for_group_batch = _batch_gen
+
+        await zammad_connector._sync_tickets_for_groups([(rg1, []), (rg2, [])])
+        zammad_connector.data_entities_processor.on_new_records.assert_awaited_once()
+
+    async def test_group_missing_id_skipped(self, zammad_connector):
+        rg = MagicMock()
+        rg.external_group_id = None
+        rg.name = "BadGroup"
+
+        zammad_connector._get_group_sync_checkpoint = AsyncMock(return_value=None)
+
+        async def _batch_gen(group_id, group_name, last_sync_time):
+            yield []
+
+        zammad_connector._fetch_tickets_for_group_batch = _batch_gen
+
+        await zammad_connector._sync_tickets_for_groups([(rg, [])])
+        zammad_connector.data_entities_processor.on_new_records.assert_not_called()
+
+    async def test_incremental_sync_uses_checkpoint(self, zammad_connector):
+        rg = MagicMock()
+        rg.external_group_id = "group_3"
+        rg.name = "Dev"
+
+        zammad_connector._get_group_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        zammad_connector._update_group_sync_checkpoint = AsyncMock()
+
+        received_last_sync = None
+
+        async def _batch_gen(group_id, group_name, last_sync_time):
+            nonlocal received_last_sync
+            received_last_sync = last_sync_time
+            return
+            yield  # make it an async generator
+
+        zammad_connector._fetch_tickets_for_group_batch = _batch_gen
+
+        await zammad_connector._sync_tickets_for_groups([(rg, [])])
+        assert received_last_sync == 1700000000000
+
+
+class TestZammadFetchTicketsForGroupBatch:
+    """Tests for _fetch_tickets_for_group_batch pagination."""
+
+    async def test_single_page_of_tickets(self, zammad_connector):
+        zammad_connector.sync_filters = MagicMock()
+        zammad_connector.sync_filters.get.return_value = None
+        zammad_connector.indexing_filters = MagicMock()
+        zammad_connector.indexing_filters.is_enabled.return_value = True
+
+        ticket = MagicMock(spec=TicketRecord)
+        zammad_connector._transform_ticket_to_ticket_record = AsyncMock(return_value=ticket)
+        zammad_connector._fetch_ticket_attachments = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.search_tickets = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[{"id": 1, "title": "Bug", "group_id": 5}]
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        batches = []
+        async for batch in zammad_connector._fetch_tickets_for_group_batch(
+            group_id=5, group_name="Support", last_sync_time=None
+        ):
+            batches.append(batch)
+
+        assert len(batches) == 1
+        assert len(batches[0]) == 1
+
+    async def test_empty_response_stops(self, zammad_connector):
+        zammad_connector.sync_filters = MagicMock()
+        zammad_connector.sync_filters.get.return_value = None
+
+        mock_ds = MagicMock()
+        mock_ds.search_tickets = AsyncMock(return_value=_make_response(success=True, data=[]))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        batches = []
+        async for batch in zammad_connector._fetch_tickets_for_group_batch(
+            group_id=5, group_name="Support", last_sync_time=None
+        ):
+            batches.append(batch)
+
+        assert len(batches) == 0
+
+    async def test_api_failure_stops(self, zammad_connector):
+        zammad_connector.sync_filters = MagicMock()
+        zammad_connector.sync_filters.get.return_value = None
+
+        mock_ds = MagicMock()
+        mock_ds.search_tickets = AsyncMock(return_value=_make_response(success=False, error="err"))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        batches = []
+        async for batch in zammad_connector._fetch_tickets_for_group_batch(
+            group_id=5, group_name="Support", last_sync_time=None
+        ):
+            batches.append(batch)
+
+        assert len(batches) == 0
+
+    async def test_ticket_transform_error_continues(self, zammad_connector):
+        zammad_connector.sync_filters = MagicMock()
+        zammad_connector.sync_filters.get.return_value = None
+        zammad_connector.indexing_filters = MagicMock()
+        zammad_connector.indexing_filters.is_enabled.return_value = True
+
+        zammad_connector._transform_ticket_to_ticket_record = AsyncMock(
+            side_effect=Exception("transform error")
+        )
+
+        mock_ds = MagicMock()
+        mock_ds.search_tickets = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[{"id": 1, "title": "Bug"}]
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        batches = []
+        async for batch in zammad_connector._fetch_tickets_for_group_batch(
+            group_id=5, group_name="Support", last_sync_time=None
+        ):
+            batches.append(batch)
+
+        # Should yield empty batch (error skipped, but remaining records still yielded)
+        total = sum(len(b) for b in batches)
+        assert total == 0
+
+    async def test_indexing_disabled_sets_auto_index_off(self, zammad_connector):
+        zammad_connector.sync_filters = MagicMock()
+        zammad_connector.sync_filters.get.return_value = None
+        zammad_connector.indexing_filters = MagicMock()
+        zammad_connector.indexing_filters.is_enabled.return_value = False
+
+        ticket = MagicMock(spec=TicketRecord)
+        zammad_connector._transform_ticket_to_ticket_record = AsyncMock(return_value=ticket)
+        zammad_connector._fetch_ticket_attachments = AsyncMock(return_value=[])
+
+        mock_ds = MagicMock()
+        mock_ds.search_tickets = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[{"id": 1, "title": "Bug"}]
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        async for batch in zammad_connector._fetch_tickets_for_group_batch(
+            group_id=5, group_name="Support", last_sync_time=None
+        ):
+            pass
+
+        assert ticket.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+class TestZammadFetchGroups:
+    """Tests for _fetch_groups pagination and group creation."""
+
+    async def test_single_group(self, zammad_connector):
+        zammad_connector.sync_filters = MagicMock()
+        zammad_connector._is_group_allowed_by_filter = MagicMock(return_value=True)
+
+        mock_ds = MagicMock()
+        mock_ds.list_groups = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[{"id": 1, "name": "Support", "active": True,
+                   "created_at": "2024-01-01T00:00:00Z",
+                   "updated_at": "2024-06-01T00:00:00Z"}]
+        ))
+        mock_ds.get_group = AsyncMock(return_value=_make_response(
+            success=True,
+            data={"id": 1, "user_ids": []}
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        record_groups, user_groups = await zammad_connector._fetch_groups({})
+        assert len(record_groups) == 1
+        assert len(user_groups) == 1
+
+    async def test_skips_filtered_groups(self, zammad_connector):
+        zammad_connector.sync_filters = MagicMock()
+        zammad_connector._is_group_allowed_by_filter = MagicMock(return_value=False)
+
+        mock_ds = MagicMock()
+        mock_ds.list_groups = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[{"id": 1, "name": "Excluded", "active": True}]
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        record_groups, user_groups = await zammad_connector._fetch_groups({})
+        assert len(record_groups) == 0
+
+    async def test_skips_inactive_groups(self, zammad_connector):
+        zammad_connector.sync_filters = MagicMock()
+        zammad_connector._is_group_allowed_by_filter = MagicMock(return_value=True)
+
+        mock_ds = MagicMock()
+        mock_ds.list_groups = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[{"id": 1, "name": "Dead", "active": False}]
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        record_groups, _ = await zammad_connector._fetch_groups({})
+        assert len(record_groups) == 0
+
+    async def test_api_failure(self, zammad_connector):
+        zammad_connector.sync_filters = MagicMock()
+        mock_ds = MagicMock()
+        mock_ds.list_groups = AsyncMock(return_value=_make_response(success=False))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        record_groups, user_groups = await zammad_connector._fetch_groups({})
+        assert record_groups == []
+        assert user_groups == []
+
+    async def test_group_members_mapped(self, zammad_connector):
+        zammad_connector.sync_filters = MagicMock()
+        zammad_connector._is_group_allowed_by_filter = MagicMock(return_value=True)
+        zammad_connector._user_id_to_data = {
+            10: {"email": "bob@test.com", "role_ids": []}
+        }
+
+        mock_ds = MagicMock()
+        mock_ds.list_groups = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[{"id": 1, "name": "Support", "active": True}]
+        ))
+        mock_ds.get_group = AsyncMock(return_value=_make_response(
+            success=True,
+            data={"id": 1, "user_ids": [10]}
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        bob_user = MagicMock(email="bob@test.com")
+        user_map = {"bob@test.com": bob_user}
+
+        _, user_groups = await zammad_connector._fetch_groups(user_map)
+        assert len(user_groups) == 1
+        _, members = user_groups[0]
+        assert bob_user in members
+
+
+class TestZammadSyncRoles:
+    """Tests for _sync_roles loop."""
+
+    async def test_sync_roles_single_page(self, zammad_connector):
+        mock_ds = MagicMock()
+        mock_ds.list_roles = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[
+                {"id": 1, "name": "Admin", "active": True,
+                 "created_at": "2024-01-01T00:00:00Z",
+                 "updated_at": "2024-06-01T00:00:00Z"},
+            ]
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        zammad_connector._user_id_to_data = {}
+
+        await zammad_connector._sync_roles([], {})
+        zammad_connector.data_entities_processor.on_new_app_roles.assert_awaited_once()
+
+    async def test_sync_roles_skips_inactive(self, zammad_connector):
+        mock_ds = MagicMock()
+        mock_ds.list_roles = AsyncMock(return_value=_make_response(
+            success=True,
+            data=[{"id": 1, "name": "Old Role", "active": False}]
+        ))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        zammad_connector._user_id_to_data = {}
+
+        await zammad_connector._sync_roles([], {})
+        # Should still be called even if no active roles found
+        # (on_new_app_roles not called because no active roles)
+        zammad_connector.data_entities_processor.on_new_app_roles.assert_not_called()
+
+    async def test_sync_roles_api_failure_logs_warning(self, zammad_connector):
+        mock_ds = MagicMock()
+        mock_ds.list_roles = AsyncMock(return_value=_make_response(success=False))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await zammad_connector._sync_roles([], {})
+        # No roles found when API fails, no error raised
+        zammad_connector.data_entities_processor.on_new_app_roles.assert_not_called()
+
+
+class TestZammadSyncKnowledgeBases:
+    """Tests for _sync_knowledge_bases."""
+
+    async def test_no_kb_answers(self, zammad_connector):
+        zammad_connector._get_kb_sync_checkpoint = AsyncMock(return_value=None)
+        mock_ds = MagicMock()
+        mock_ds.search_kb_answers = AsyncMock(return_value=_make_response(success=True, data=None))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await zammad_connector._sync_knowledge_bases()
+
+    async def test_kb_incremental_builds_query(self, zammad_connector):
+        zammad_connector._get_kb_sync_checkpoint = AsyncMock(return_value=1700000000000)
+        mock_ds = MagicMock()
+        mock_ds.search_kb_answers = AsyncMock(return_value=_make_response(success=False))
+        zammad_connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await zammad_connector._sync_knowledge_bases()
+        call_kwargs = mock_ds.search_kb_answers.await_args
+        assert "updated_at" in call_kwargs.kwargs.get("query", "")

@@ -1016,3 +1016,531 @@ class TestDropboxIndividualConnectorInit:
         )
         assert conn.connector_id == "conn-ind-1"
         assert conn.data_source is None
+
+
+# ===========================================================================
+# DEEP SYNC LOOP TESTS — run_sync, _handle_record_updates,
+# _process_dropbox_items_generator, _process_dropbox_entry,
+# _convert_dropbox_permissions_to_permissions
+# ===========================================================================
+
+
+def _make_dropbox_connector(mock_logger, mock_data_entities_processor,
+                            mock_data_store_provider, mock_config_service):
+    """Build a DropboxConnector with all dependencies mocked."""
+    with patch("app.connectors.sources.dropbox.connector.DropboxApp"):
+        connector = DropboxConnector(
+            logger=mock_logger,
+            data_entities_processor=mock_data_entities_processor,
+            data_store_provider=mock_data_store_provider,
+            config_service=mock_config_service,
+            connector_id="dbx-conn-1",
+        )
+    connector.sync_filters = FilterCollection()
+    connector.indexing_filters = FilterCollection()
+    connector.data_source = AsyncMock()
+    connector.dropbox_cursor_sync_point = MagicMock()
+    connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
+    connector.dropbox_cursor_sync_point.update_sync_point = AsyncMock()
+    return connector
+
+
+@pytest.fixture()
+def dropbox_connector(mock_logger, mock_data_entities_processor,
+                      mock_data_store_provider, mock_config_service):
+    return _make_dropbox_connector(
+        mock_logger, mock_data_entities_processor,
+        mock_data_store_provider, mock_config_service
+    )
+
+
+class TestDropboxRunSync:
+    """Tests for run_sync orchestration."""
+
+    async def test_full_sync_flow(self, dropbox_connector):
+        users_resp = MagicMock()
+        users_resp.data = MagicMock()
+        users_resp.data.members = []
+        dropbox_connector.data_source.team_members_list = AsyncMock(return_value=users_resp)
+
+        dropbox_connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
+
+        dropbox_connector._initialize_event_cursor = AsyncMock()
+        dropbox_connector.sync_record_groups = AsyncMock()
+        dropbox_connector.sync_personal_record_groups = AsyncMock()
+        dropbox_connector._process_users_in_batches = AsyncMock()
+        dropbox_connector._sync_user_groups = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.dropbox.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(FilterCollection(), FilterCollection()),
+        ):
+            await dropbox_connector.run_sync()
+
+        dropbox_connector.data_entities_processor.on_new_app_users.assert_awaited()
+
+    async def test_run_sync_raises_on_error(self, dropbox_connector):
+        dropbox_connector.data_source.team_members_list = AsyncMock(
+            side_effect=Exception("auth failed")
+        )
+
+        with patch(
+            "app.connectors.sources.dropbox.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(FilterCollection(), FilterCollection()),
+        ):
+            with pytest.raises(Exception, match="auth failed"):
+                await dropbox_connector.run_sync()
+
+    async def test_incremental_member_sync_path(self, dropbox_connector):
+        users_resp = MagicMock()
+        users_resp.data = MagicMock()
+        users_resp.data.members = []
+        dropbox_connector.data_source.team_members_list = AsyncMock(return_value=users_resp)
+
+        # Return cursor for member events to trigger incremental path
+        call_count = [0]
+
+        async def _read_sync(key):
+            call_count[0] += 1
+            if "member_events" in key:
+                return {"cursor": "existing-cursor"}
+            return {}
+
+        dropbox_connector.dropbox_cursor_sync_point.read_sync_point = AsyncMock(side_effect=_read_sync)
+        dropbox_connector._sync_member_changes_with_cursor = AsyncMock()
+        dropbox_connector._initialize_event_cursor = AsyncMock()
+        dropbox_connector._sync_user_groups = AsyncMock()
+        dropbox_connector.sync_record_groups = AsyncMock()
+        dropbox_connector.sync_personal_record_groups = AsyncMock()
+        dropbox_connector._process_users_in_batches = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.dropbox.connector.load_connector_filters",
+            new_callable=AsyncMock,
+            return_value=(FilterCollection(), FilterCollection()),
+        ):
+            await dropbox_connector.run_sync()
+
+        dropbox_connector._sync_member_changes_with_cursor.assert_awaited_once()
+
+
+class TestDropboxHandleRecordUpdates:
+    """Tests for _handle_record_updates."""
+
+    async def test_deleted_record(self, dropbox_connector):
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        update = RecordUpdate(
+            record=None,
+            is_new=False,
+            is_updated=False,
+            is_deleted=True,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            external_record_id="ext-1",
+        )
+        await dropbox_connector._handle_record_updates(update)
+        dropbox_connector.data_entities_processor.on_record_deleted.assert_awaited_once()
+
+    async def test_metadata_changed(self, dropbox_connector):
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        mock_record = MagicMock()
+        mock_record.record_name = "file.pdf"
+        update = RecordUpdate(
+            record=mock_record,
+            is_new=False,
+            is_updated=True,
+            is_deleted=False,
+            metadata_changed=True,
+            content_changed=False,
+            permissions_changed=False,
+        )
+        dropbox_connector.data_entities_processor.on_record_metadata_update = AsyncMock()
+        await dropbox_connector._handle_record_updates(update)
+        dropbox_connector.data_entities_processor.on_record_metadata_update.assert_awaited_once()
+
+    async def test_content_changed(self, dropbox_connector):
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        mock_record = MagicMock()
+        mock_record.record_name = "file.pdf"
+        update = RecordUpdate(
+            record=mock_record,
+            is_new=False,
+            is_updated=True,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=True,
+            permissions_changed=False,
+        )
+        dropbox_connector.data_entities_processor.on_record_content_update = AsyncMock()
+        await dropbox_connector._handle_record_updates(update)
+        dropbox_connector.data_entities_processor.on_record_content_update.assert_awaited_once()
+
+    async def test_permissions_changed(self, dropbox_connector):
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        mock_record = MagicMock()
+        mock_record.record_name = "file.pdf"
+        new_perms = [MagicMock()]
+        update = RecordUpdate(
+            record=mock_record,
+            is_new=False,
+            is_updated=True,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=True,
+            new_permissions=new_perms,
+        )
+        dropbox_connector.data_entities_processor.on_updated_record_permissions = AsyncMock()
+        await dropbox_connector._handle_record_updates(update)
+        dropbox_connector.data_entities_processor.on_updated_record_permissions.assert_awaited_once()
+
+    async def test_exception_handled(self, dropbox_connector):
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        update = RecordUpdate(
+            record=None,
+            is_new=False,
+            is_updated=False,
+            is_deleted=True,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            external_record_id="ext-1",
+        )
+        dropbox_connector.data_entities_processor.on_record_deleted = AsyncMock(
+            side_effect=Exception("DB error")
+        )
+        await dropbox_connector._handle_record_updates(update)  # Should not raise
+
+    async def test_new_record_no_action(self, dropbox_connector):
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        mock_record = MagicMock()
+        mock_record.record_name = "new_file.pdf"
+        update = RecordUpdate(
+            record=mock_record,
+            is_new=True,
+            is_updated=False,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+        )
+        await dropbox_connector._handle_record_updates(update)
+        dropbox_connector.data_entities_processor.on_record_deleted.assert_not_called()
+
+
+class TestDropboxProcessDropboxItemsGenerator:
+    """Tests for _process_dropbox_items_generator."""
+
+    async def test_yields_new_records(self, dropbox_connector):
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        mock_record = MagicMock()
+        mock_record.is_shared = False
+        mock_update = RecordUpdate(
+            record=mock_record,
+            is_new=True,
+            is_updated=False,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            new_permissions=[MagicMock()],
+        )
+
+        dropbox_connector._process_dropbox_entry = AsyncMock(return_value=mock_update)
+
+        results = []
+        async for rec, perms, update in dropbox_connector._process_dropbox_items_generator(
+            [_make_file_entry()], "u1", "user@test.com", "rg1", True
+        ):
+            results.append(update)
+
+        assert len(results) == 1
+
+    async def test_skips_none_results(self, dropbox_connector):
+        dropbox_connector._process_dropbox_entry = AsyncMock(return_value=None)
+
+        results = []
+        async for rec, perms, update in dropbox_connector._process_dropbox_items_generator(
+            [_make_file_entry()], "u1", "user@test.com", "rg1", True
+        ):
+            results.append(update)
+
+        assert len(results) == 0
+
+    async def test_exception_continues(self, dropbox_connector):
+        dropbox_connector._process_dropbox_entry = AsyncMock(
+            side_effect=Exception("error")
+        )
+
+        results = []
+        async for rec, perms, update in dropbox_connector._process_dropbox_items_generator(
+            [_make_file_entry()], "u1", "user@test.com", "rg1", True
+        ):
+            results.append(update)
+
+        assert len(results) == 0
+
+    async def test_shared_filter_sets_auto_index_off(self, dropbox_connector):
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        mock_record = MagicMock()
+        mock_record.is_shared = True
+        mock_update = RecordUpdate(
+            record=mock_record,
+            is_new=True,
+            is_updated=False,
+            is_deleted=False,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+            new_permissions=[],
+        )
+
+        dropbox_connector._process_dropbox_entry = AsyncMock(return_value=mock_update)
+        dropbox_connector.indexing_filters = MagicMock()
+        dropbox_connector.indexing_filters.is_enabled.side_effect = lambda key, **kw: key != "shared"
+
+        results = []
+        async for rec, perms, update in dropbox_connector._process_dropbox_items_generator(
+            [_make_file_entry()], "u1", "user@test.com", "rg1", True
+        ):
+            results.append(update)
+
+        assert mock_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+class TestDropboxProcessDropboxEntry:
+    """Tests for _process_dropbox_entry deep logic."""
+
+    async def test_file_entry_new(self, dropbox_connector):
+        entry = _make_file_entry()
+        dropbox_connector.data_store_provider = _make_mock_data_store_provider()
+        dropbox_connector.data_source.files_get_temporary_link = AsyncMock(
+            return_value=MagicMock(success=True, data=MagicMock(link="https://dl.dropbox.com/tmp"))
+        )
+        dropbox_connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
+            return_value=MagicMock(success=True, data=MagicMock(url="https://dropbox.com/s/link"))
+        )
+        dropbox_connector.data_source.files_get_metadata = AsyncMock(
+            return_value=MagicMock(success=True, data=MagicMock(id="parent-id"))
+        )
+        dropbox_connector._convert_dropbox_permissions_to_permissions = AsyncMock(return_value=[])
+        dropbox_connector._pass_date_filters = MagicMock(return_value=True)
+        dropbox_connector._pass_extension_filter = MagicMock(return_value=True)
+
+        result = await dropbox_connector._process_dropbox_entry(
+            entry, "u1", "user@test.com", "rg1", True
+        )
+        assert result is not None
+        assert result.is_new is True
+        assert result.record.record_name == "doc.pdf"
+
+    async def test_folder_entry_new(self, dropbox_connector):
+        entry = _make_folder_entry()
+        dropbox_connector.data_store_provider = _make_mock_data_store_provider()
+        dropbox_connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
+            return_value=MagicMock(success=True, data=MagicMock(url="https://dropbox.com/s/link"))
+        )
+        dropbox_connector.data_source.files_get_metadata = AsyncMock(
+            return_value=MagicMock(success=False)
+        )
+        dropbox_connector._convert_dropbox_permissions_to_permissions = AsyncMock(return_value=[])
+        dropbox_connector._pass_date_filters = MagicMock(return_value=True)
+        dropbox_connector._pass_extension_filter = MagicMock(return_value=True)
+
+        result = await dropbox_connector._process_dropbox_entry(
+            entry, "u1", "user@test.com", "rg1", True
+        )
+        assert result is not None
+        assert result.record.is_file is False
+
+    async def test_date_filter_rejects(self, dropbox_connector):
+        entry = _make_file_entry()
+        dropbox_connector._pass_date_filters = MagicMock(return_value=False)
+
+        result = await dropbox_connector._process_dropbox_entry(
+            entry, "u1", "user@test.com", "rg1", True
+        )
+        assert result is None
+
+    async def test_extension_filter_rejects(self, dropbox_connector):
+        entry = _make_file_entry()
+        dropbox_connector._pass_date_filters = MagicMock(return_value=True)
+        dropbox_connector._pass_extension_filter = MagicMock(return_value=False)
+
+        result = await dropbox_connector._process_dropbox_entry(
+            entry, "u1", "user@test.com", "rg1", True
+        )
+        assert result is None
+
+    async def test_existing_record_detected_updated(self, dropbox_connector):
+        entry = _make_file_entry(rev="1234567890abcdef")
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.version = 1
+        existing.record_name = "doc.pdf"
+        existing.external_revision_id = "old-revision"
+        dropbox_connector.data_store_provider = _make_mock_data_store_provider(existing)
+        dropbox_connector.data_source.files_get_temporary_link = AsyncMock(
+            return_value=MagicMock(success=True, data=MagicMock(link="https://dl.dropbox.com/tmp"))
+        )
+        dropbox_connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
+            return_value=MagicMock(success=True, data=MagicMock(url="https://dropbox.com/s/link"))
+        )
+        dropbox_connector.data_source.files_get_metadata = AsyncMock(
+            return_value=MagicMock(success=False)
+        )
+        dropbox_connector._convert_dropbox_permissions_to_permissions = AsyncMock(return_value=[])
+        dropbox_connector._pass_date_filters = MagicMock(return_value=True)
+        dropbox_connector._pass_extension_filter = MagicMock(return_value=True)
+
+        result = await dropbox_connector._process_dropbox_entry(
+            entry, "u1", "user@test.com", "rg1", True
+        )
+        assert result is not None
+        assert result.is_updated is True
+        assert result.content_changed is True
+
+    async def test_exception_returns_none(self, dropbox_connector):
+        entry = _make_file_entry()
+        dropbox_connector._pass_date_filters = MagicMock(return_value=True)
+        dropbox_connector._pass_extension_filter = MagicMock(return_value=True)
+        dropbox_connector.data_store_provider = MagicMock()
+        dropbox_connector.data_store_provider.transaction.side_effect = Exception("DB error")
+
+        result = await dropbox_connector._process_dropbox_entry(
+            entry, "u1", "user@test.com", "rg1", True
+        )
+        assert result is None
+
+
+class TestDropboxConvertPermissions:
+    """Tests for _convert_dropbox_permissions_to_permissions."""
+
+    async def test_file_permissions_with_users(self, dropbox_connector):
+        user_membership = MagicMock()
+        user_membership.access_type._tag = "editor"
+        user_membership.user.account_id = "acct1"
+        user_membership.user.email = "user@test.com"
+
+        members_data = MagicMock()
+        members_data.users = [user_membership]
+        members_data.groups = []
+
+        dropbox_connector.data_source.sharing_list_file_members = AsyncMock(
+            return_value=MagicMock(success=True, data=members_data)
+        )
+
+        perms = await dropbox_connector._convert_dropbox_permissions_to_permissions(
+            "file-id", True, "team-member"
+        )
+        assert len(perms) == 1
+        assert perms[0].type == PermissionType.WRITE
+
+    async def test_folder_no_shared_id_returns_empty(self, dropbox_connector):
+        perms = await dropbox_connector._convert_dropbox_permissions_to_permissions(
+            "folder-id", False, "team-member", shared_folder_id=None
+        )
+        assert perms == []
+
+    async def test_api_failure_returns_empty(self, dropbox_connector):
+        dropbox_connector.data_source.sharing_list_file_members = AsyncMock(
+            return_value=MagicMock(success=False, error="403")
+        )
+
+        perms = await dropbox_connector._convert_dropbox_permissions_to_permissions(
+            "file-id", True, "team-member"
+        )
+        assert perms == []
+
+    async def test_skips_invalid_email(self, dropbox_connector):
+        user_membership = MagicMock()
+        user_membership.access_type._tag = "viewer"
+        user_membership.user.account_id = "acct1"
+        user_membership.user.email = "user@test.com#"
+
+        members_data = MagicMock()
+        members_data.users = [user_membership]
+        members_data.groups = []
+
+        dropbox_connector.data_source.sharing_list_file_members = AsyncMock(
+            return_value=MagicMock(success=True, data=members_data)
+        )
+
+        perms = await dropbox_connector._convert_dropbox_permissions_to_permissions(
+            "file-id", True, "team-member"
+        )
+        assert len(perms) == 0
+
+    async def test_group_permissions(self, dropbox_connector):
+        group_membership = MagicMock()
+        group_membership.access_type._tag = "viewer"
+        group_membership.group.group_id = "g1"
+
+        members_data = MagicMock()
+        members_data.users = []
+        members_data.groups = [group_membership]
+
+        dropbox_connector.data_source.sharing_list_file_members = AsyncMock(
+            return_value=MagicMock(success=True, data=members_data)
+        )
+
+        perms = await dropbox_connector._convert_dropbox_permissions_to_permissions(
+            "file-id", True, "team-member"
+        )
+        assert len(perms) == 1
+        assert perms[0].entity_type == EntityType.GROUP
+
+
+class TestDropboxDateFilters:
+    """Tests for _pass_date_filters."""
+
+    def test_folder_always_passes(self, dropbox_connector):
+        entry = _make_folder_entry()
+        assert dropbox_connector._pass_date_filters(
+            entry,
+            modified_after=datetime(2025, 1, 1, tzinfo=timezone.utc)
+        ) is True
+
+    def test_no_filters_passes(self, dropbox_connector):
+        entry = _make_file_entry()
+        assert dropbox_connector._pass_date_filters(entry) is True
+
+    def test_modified_after_rejects(self, dropbox_connector):
+        entry = _make_file_entry(
+            server_modified=datetime(2024, 1, 1, tzinfo=timezone.utc)
+        )
+        assert dropbox_connector._pass_date_filters(
+            entry,
+            modified_after=datetime(2024, 6, 1, tzinfo=timezone.utc)
+        ) is False
+
+    def test_modified_before_rejects(self, dropbox_connector):
+        entry = _make_file_entry(
+            server_modified=datetime(2024, 12, 1, tzinfo=timezone.utc)
+        )
+        assert dropbox_connector._pass_date_filters(
+            entry,
+            modified_before=datetime(2024, 6, 1, tzinfo=timezone.utc)
+        ) is False
+
+    def test_created_after_rejects(self, dropbox_connector):
+        entry = _make_file_entry(
+            client_modified=datetime(2024, 1, 1, tzinfo=timezone.utc)
+        )
+        assert dropbox_connector._pass_date_filters(
+            entry,
+            created_after=datetime(2024, 6, 1, tzinfo=timezone.utc)
+        ) is False
+
+    def test_within_range_passes(self, dropbox_connector):
+        entry = _make_file_entry(
+            server_modified=datetime(2024, 6, 15, tzinfo=timezone.utc)
+        )
+        assert dropbox_connector._pass_date_filters(
+            entry,
+            modified_after=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            modified_before=datetime(2024, 12, 31, tzinfo=timezone.utc)
+        ) is True

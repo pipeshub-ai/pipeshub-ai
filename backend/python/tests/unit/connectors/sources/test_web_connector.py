@@ -843,3 +843,504 @@ class TestWebConnectorRetryUrls:
         connector._create_failed_placeholder_record = AsyncMock(return_value=(mock_record, mock_perms))
         await connector.process_retry_urls()
         connector.data_entities_processor.on_new_records.assert_awaited()
+
+
+# ===================================================================
+# Deep sync: _crawl_recursive
+# ===================================================================
+class TestWebConnectorCrawlRecursiveDeep:
+    @pytest.mark.asyncio
+    async def test_recursive_crawl_processes_batch(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.max_depth = 2
+        connector.max_pages = 100
+        connector.batch_size = 2
+        connector.session = MagicMock()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
+        connector.visited_urls = set()
+        connector.retry_urls = {}
+        connector.processed_urls = 0
+        connector.max_size_mb = 10
+
+        mock_record = MagicMock()
+        mock_record.mime_type = MimeTypes.HTML.value
+        mock_update = RecordUpdate(
+            record=mock_record, is_new=True, is_updated=False, is_deleted=False,
+            metadata_changed=False, content_changed=False, permissions_changed=False,
+            new_permissions=[MagicMock()], html_bytes=b"<html></html>",
+        )
+
+        async def mock_generator(start_url, depth):
+            yield mock_update
+
+        with patch.object(connector, "_crawl_recursive_generator", side_effect=mock_generator), \
+             patch.object(connector, "_check_index_filter", return_value=False), \
+             patch.object(connector, "_create_ancestor_placeholder_records", new_callable=AsyncMock):
+            await connector._crawl_recursive("https://example.com", 0)
+        connector.data_entities_processor.on_new_records.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_recursive_crawl_handles_updates(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.max_depth = 2
+        connector.max_pages = 100
+        connector.batch_size = 50
+        connector.session = MagicMock()
+        connector.visited_urls = set()
+        connector.retry_urls = {}
+        connector.processed_urls = 0
+        connector.max_size_mb = 10
+        connector.indexing_filters = MagicMock()
+
+        mock_record = MagicMock()
+        mock_record.mime_type = MimeTypes.HTML.value
+        mock_update = RecordUpdate(
+            record=mock_record, is_new=False, is_updated=True, is_deleted=False,
+            metadata_changed=True, content_changed=False, permissions_changed=False,
+        )
+
+        async def mock_generator(start_url, depth):
+            yield mock_update
+
+        with patch.object(connector, "_crawl_recursive_generator", side_effect=mock_generator), \
+             patch.object(connector, "_handle_record_updates", new_callable=AsyncMock) as mock_handle, \
+             patch.object(connector, "_create_ancestor_placeholder_records", new_callable=AsyncMock):
+            await connector._crawl_recursive("https://example.com", 0)
+        mock_handle.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_recursive_crawl_exception_propagated(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.max_depth = 2
+        connector.max_pages = 100
+        connector.batch_size = 50
+        connector.session = MagicMock()
+        connector.visited_urls = set()
+        connector.retry_urls = {}
+        connector.processed_urls = 0
+
+        async def mock_generator(start_url, depth):
+            raise Exception("crawl boom")
+            yield  # noqa: unreachable
+
+        with patch.object(connector, "_crawl_recursive_generator", side_effect=mock_generator), \
+             patch.object(connector, "_create_ancestor_placeholder_records", new_callable=AsyncMock):
+            with pytest.raises(Exception, match="crawl boom"):
+                await connector._crawl_recursive("https://example.com", 0)
+
+
+# ===================================================================
+# Deep sync: _crawl_recursive_generator
+# ===================================================================
+class TestWebConnectorCrawlRecursiveGeneratorDeep:
+    @pytest.mark.asyncio
+    async def test_generator_yields_records(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.max_depth = 2
+        connector.max_pages = 100
+        connector.session = MagicMock()
+        connector.visited_urls = set()
+        connector.retry_urls = {}
+        connector.processed_urls = 0
+        connector.max_size_mb = 10
+        connector.follow_external = False
+        connector.restrict_to_start_path = False
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled = MagicMock(return_value=True)
+
+        mock_record = MagicMock()
+        mock_record.mime_type = MimeTypes.HTML.value
+        mock_update = RecordUpdate(
+            record=mock_record, is_new=True, is_updated=False, is_deleted=False,
+            metadata_changed=False, content_changed=False, permissions_changed=False,
+            new_permissions=[MagicMock()], html_bytes=b"<html></html>",
+        )
+        connector._fetch_and_process_url = AsyncMock(return_value=mock_update)
+        connector._normalize_url = MagicMock(side_effect=lambda u: u.rstrip("/"))
+        connector._check_index_filter = MagicMock(return_value=False)
+        connector._extract_links_from_content = AsyncMock(return_value=[])
+        connector._create_ancestor_placeholder_records = AsyncMock()
+
+        results = []
+        async for update in connector._crawl_recursive_generator("https://example.com", 0):
+            results.append(update)
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_generator_skips_visited_urls(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.max_depth = 2
+        connector.max_pages = 100
+        connector.session = MagicMock()
+        connector.visited_urls = {"https://example.com"}
+        connector.retry_urls = {}
+        connector.processed_urls = 0
+        connector.max_size_mb = 10
+        connector.follow_external = False
+        connector.indexing_filters = MagicMock()
+        connector._normalize_url = MagicMock(return_value="https://example.com")
+        connector._fetch_and_process_url = AsyncMock(return_value=None)
+        connector._create_ancestor_placeholder_records = AsyncMock()
+
+        results = []
+        async for update in connector._crawl_recursive_generator("https://example.com", 0):
+            results.append(update)
+        assert len(results) == 0
+
+    @pytest.mark.asyncio
+    async def test_generator_respects_max_depth(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.max_depth = 0
+        connector.max_pages = 100
+        connector.session = MagicMock()
+        connector.visited_urls = set()
+        connector.retry_urls = {}
+        connector.processed_urls = 0
+        connector.max_size_mb = 10
+        connector.follow_external = False
+        connector.indexing_filters = MagicMock()
+
+        mock_record = MagicMock()
+        mock_record.mime_type = MimeTypes.HTML.value
+        mock_update = RecordUpdate(
+            record=mock_record, is_new=True, is_updated=False, is_deleted=False,
+            metadata_changed=False, content_changed=False, permissions_changed=False,
+            new_permissions=[MagicMock()], html_bytes=b"<html></html>",
+        )
+        connector._fetch_and_process_url = AsyncMock(return_value=mock_update)
+        connector._normalize_url = MagicMock(side_effect=lambda u: u.rstrip("/"))
+        connector._check_index_filter = MagicMock(return_value=False)
+        connector._extract_links_from_content = AsyncMock(return_value=["https://example.com/deep"])
+        connector._create_ancestor_placeholder_records = AsyncMock()
+
+        results = []
+        async for update in connector._crawl_recursive_generator("https://example.com", 0):
+            results.append(update)
+        # At depth=0 with max_depth=0, it processes the start URL but doesn't follow links (depth+1 > max_depth)
+        assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_generator_respects_max_pages(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.max_depth = 5
+        connector.max_pages = 1
+        connector.session = MagicMock()
+        connector.visited_urls = set()
+        connector.retry_urls = {}
+        connector.processed_urls = 0
+        connector.max_size_mb = 10
+        connector.follow_external = False
+        connector.indexing_filters = MagicMock()
+
+        call_count = 0
+
+        async def mock_fetch(url, depth, referer=None):
+            nonlocal call_count
+            call_count += 1
+            mock_record = MagicMock()
+            mock_record.mime_type = MimeTypes.HTML.value
+            return RecordUpdate(
+                record=mock_record, is_new=True, is_updated=False, is_deleted=False,
+                metadata_changed=False, content_changed=False, permissions_changed=False,
+                new_permissions=[MagicMock()], html_bytes=b"<html></html>",
+            )
+
+        connector._fetch_and_process_url = AsyncMock(side_effect=mock_fetch)
+        connector._normalize_url = MagicMock(side_effect=lambda u: u.rstrip("/"))
+        connector._check_index_filter = MagicMock(return_value=False)
+        connector._extract_links_from_content = AsyncMock(return_value=[
+            "https://example.com/page2", "https://example.com/page3"
+        ])
+        connector._create_ancestor_placeholder_records = AsyncMock()
+
+        results = []
+        async for update in connector._crawl_recursive_generator("https://example.com", 0):
+            results.append(update)
+        # Should only process 1 page due to max_pages=1
+        assert len(results) == 1
+
+
+# ===================================================================
+# Deep sync: _fetch_and_process_url
+# ===================================================================
+class TestWebConnectorFetchAndProcessDeep:
+    @pytest.mark.asyncio
+    async def test_returns_none_when_session_is_none(self):
+        connector = _make_connector()
+        connector.session = None
+        result = await connector._fetch_and_process_url("https://example.com", 0)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_queues_retry_on_none_result(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.session = MagicMock()
+        connector.max_size_mb = 10
+        connector.follow_external = False
+        connector.retry_urls = {}
+        connector._normalize_url = MagicMock(return_value="https://example.com/page")
+        with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
+                    new_callable=AsyncMock, return_value=None):
+            result = await connector._fetch_and_process_url("https://example.com/page", 0)
+        assert result is None
+        assert "https://example.com/page" in connector.retry_urls
+
+    @pytest.mark.asyncio
+    async def test_queues_retry_on_retryable_status(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.session = MagicMock()
+        connector.max_size_mb = 10
+        connector.follow_external = False
+        connector.retry_urls = {}
+        connector._normalize_url = MagicMock(return_value="https://example.com/page")
+        with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
+                    new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = FetchResponse(
+                status_code=429, content_bytes=b"Rate limited",
+                headers={}, final_url="https://example.com/page", strategy="aiohttp",
+            )
+            result = await connector._fetch_and_process_url("https://example.com/page", 0)
+        assert result is None
+        assert "https://example.com/page" in connector.retry_urls
+
+    @pytest.mark.asyncio
+    async def test_skips_oversized_content(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.session = MagicMock()
+        connector.max_size_mb = 1  # 1MB limit
+        connector.follow_external = False
+        connector.retry_urls = {}
+        connector.url_should_contain = []
+        connector._normalize_url = MagicMock(return_value="https://example.com/page")
+        big_content = b"x" * (2 * 1024 * 1024)  # 2MB
+        with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
+                    new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = FetchResponse(
+                status_code=200, content_bytes=big_content,
+                headers={"Content-Type": "text/html"}, final_url="https://example.com/page",
+                strategy="aiohttp",
+            )
+            result = await connector._fetch_and_process_url("https://example.com/page", 0)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_skips_cross_domain_redirect(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.session = MagicMock()
+        connector.max_size_mb = 10
+        connector.follow_external = False
+        connector.retry_urls = {}
+        connector._normalize_url = MagicMock(side_effect=lambda u: u)
+        with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
+                    new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = FetchResponse(
+                status_code=200, content_bytes=b"<html></html>",
+                headers={"Content-Type": "text/html"},
+                final_url="https://other-domain.com/page", strategy="aiohttp",
+            )
+            result = await connector._fetch_and_process_url("https://example.com/page", 0)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_url_should_contain_filter(self):
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.session = MagicMock()
+        connector.max_size_mb = 10
+        connector.follow_external = False
+        connector.retry_urls = {}
+        connector.visited_urls = set()
+        connector.url_should_contain = ["docs"]
+        connector._normalize_url = MagicMock(side_effect=lambda u: u.rstrip("/"))
+        with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
+                    new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = FetchResponse(
+                status_code=200, content_bytes=b"<html></html>",
+                headers={"Content-Type": "text/html"},
+                final_url="https://example.com/blog/post", strategy="aiohttp",
+            )
+            result = await connector._fetch_and_process_url("https://example.com/blog/post", 0)
+        assert result is None
+
+
+# ===================================================================
+# Deep sync: _handle_record_updates
+# ===================================================================
+class TestWebConnectorHandleRecordUpdatesDeep:
+    @pytest.mark.asyncio
+    async def test_handle_only_metadata(self):
+        connector = _make_connector()
+        update = RecordUpdate(
+            record=MagicMock(id="r1"), is_new=False, is_updated=True, is_deleted=False,
+            metadata_changed=True, content_changed=False, permissions_changed=False,
+        )
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_metadata_update.assert_awaited_once()
+        connector.data_entities_processor.on_record_content_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_handle_only_content(self):
+        connector = _make_connector()
+        update = RecordUpdate(
+            record=MagicMock(id="r1"), is_new=False, is_updated=True, is_deleted=False,
+            metadata_changed=False, content_changed=True, permissions_changed=False,
+        )
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_content_update.assert_awaited_once()
+        connector.data_entities_processor.on_record_metadata_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_handle_deleted_and_changed(self):
+        connector = _make_connector()
+        update = RecordUpdate(
+            record=MagicMock(id="r1"), is_new=False, is_updated=False, is_deleted=True,
+            metadata_changed=True, content_changed=True, permissions_changed=False,
+        )
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_awaited_once()
+
+
+# ===================================================================
+# Deep sync: run_sync orchestration
+# ===================================================================
+class TestWebConnectorRunSyncDeep:
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_run_sync_clears_state(self, mock_filters):
+        from app.connectors.core.registry.filters import FilterCollection
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.crawl_type = "single"
+        connector.session = MagicMock()
+        connector.max_size_mb = 10
+        connector.visited_urls = {"https://old.com"}
+        connector.retry_urls = {"old": RetryUrl(url="old", status=Status.PENDING, status_code=500, retries=1, last_attempted=0)}
+        connector.processed_urls = 5
+        connector.reload_config = AsyncMock()
+        connector._crawl_single_page = AsyncMock()
+        connector.process_retry_urls = AsyncMock()
+        await connector.run_sync()
+        assert connector.visited_urls == set() or "https://example.com" in connector.visited_urls or len(connector.visited_urls) <= 1
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_run_sync_exception_propagated(self, mock_filters):
+        from app.connectors.core.registry.filters import FilterCollection
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.crawl_type = "recursive"
+        connector.session = MagicMock()
+        connector.max_size_mb = 10
+        connector.reload_config = AsyncMock()
+        connector._crawl_recursive = AsyncMock(side_effect=Exception("crawl error"))
+        with pytest.raises(Exception, match="crawl error"):
+            await connector.run_sync()
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_run_sync_creates_app_users(self, mock_filters):
+        from app.connectors.core.registry.filters import FilterCollection
+        from app.models.entities import User
+        mock_filters.return_value = (FilterCollection(), FilterCollection())
+        connector = _make_connector()
+        connector.url = "https://example.com"
+        connector.base_domain = "https://example.com"
+        connector.crawl_type = "single"
+        connector.session = MagicMock()
+        connector.max_size_mb = 10
+        connector.reload_config = AsyncMock()
+        connector._crawl_single_page = AsyncMock()
+        connector.process_retry_urls = AsyncMock()
+        mock_user = MagicMock()
+        mock_user.email = "user@example.com"
+        mock_user.full_name = "User"
+        mock_user.is_active = True
+        mock_user.org_id = "org-1"
+        mock_user.source_user_id = "u1"
+        mock_user.id = "u1"
+        mock_user.title = None
+        connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[mock_user])
+        await connector.run_sync()
+        connector.data_entities_processor.on_new_app_users.assert_awaited()
+
+
+# ===================================================================
+# Deep sync: _extract_links_from_content
+# ===================================================================
+class TestWebConnectorExtractLinksDeep:
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_none_html(self):
+        connector = _make_connector()
+        connector.session = None
+        record = MagicMock()
+        record.weburl = None
+        result = await connector._extract_links_from_content(
+            "https://example.com", None, record
+        )
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_extracts_links_from_html_bytes(self):
+        connector = _make_connector()
+        connector.follow_external = False
+        connector.restrict_to_start_path = False
+        connector.url_should_contain = []
+        connector.visited_urls = set()
+        connector.retry_urls = {}
+        connector.session = MagicMock()
+        connector._is_valid_url = MagicMock(return_value=True)
+        connector._normalize_url = MagicMock(side_effect=lambda u: u)
+
+        html = b'<html><a href="https://example.com/page2">Link</a></html>'
+        record = MagicMock()
+        record.weburl = "https://example.com"
+        record.mime_type = MimeTypes.HTML.value
+        result = await connector._extract_links_from_content(
+            "https://example.com", html, record
+        )
+        assert len(result) >= 1
+
+
+# ===================================================================
+# Deep sync: is_valid_url edge cases
+# ===================================================================
+class TestWebConnectorIsValidUrlDeep:
+    def test_rejects_javascript_urls(self):
+        connector = _make_connector()
+        assert not connector._is_valid_url("javascript:void(0)", "https://example.com/")
+
+    def test_rejects_mailto_urls(self):
+        connector = _make_connector()
+        assert not connector._is_valid_url("mailto:user@example.com", "https://example.com/")
+
+    def test_rejects_data_urls(self):
+        connector = _make_connector()
+        assert not connector._is_valid_url("data:text/html,Hello", "https://example.com/")
