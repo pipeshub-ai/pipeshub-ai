@@ -18,7 +18,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Literal, Union
+from typing import Any, Dict, Literal, Union
 from uuid import UUID
 import pytz
 from datetime import datetime, timezone
@@ -2952,6 +2952,12 @@ Set `needs_clarification: true` ONLY if ALL of these are true:
 - "Create a Jira ticket" (missing: project, summary, description)
 - "Update the page" (missing: which page, what content)
 - "Send an email" (missing: recipient, subject, body)
+
+**⛔ ABSOLUTE RULE — How to clarify — use the tool, NEVER plain text:**
+- You MUST NEVER set `needs_clarification: true` when `outlookplugintools.ask_user_question` is available.
+- You MUST NEVER write a question in your response text when clarification is needed.
+- You MUST ALWAYS plan `outlookplugintools.ask_user_question` as a tool call with structured questions and tappable options for every missing field.
+- Only fall back to `needs_clarification: true` if `outlookplugintools.ask_user_question` is literally NOT listed in your available tools.
 
 ## Reference Data & User Context (CRITICAL)
 
@@ -6205,6 +6211,7 @@ async def respond_node(
             "confidence": "Low",
             "answerMatchType": "Error"
         }
+        error_response.update(_tool_names_and_results_from_state(state))
         safe_stream_write(writer, {
             "event": "answer_chunk",
             "data": {"chunk": error_msg, "accumulated": error_msg, "citations": []}
@@ -6234,6 +6241,7 @@ async def respond_node(
             "confidence": "Medium",
             "answerMatchType": "Clarification Needed"
         }
+        clarify_response.update(_tool_names_and_results_from_state(state))
         safe_stream_write(writer, {
             "event": "answer_chunk",
             "data": {"chunk": clarifying_question, "accumulated": clarifying_question, "citations": []}
@@ -6272,6 +6280,7 @@ async def respond_node(
             "confidence": "Low",
             "answerMatchType": "Tool Execution Failed"
         }
+        error_response.update(_tool_names_and_results_from_state(state))
 
         safe_stream_write(writer, {
             "event": "answer_chunk",
@@ -6558,6 +6567,33 @@ async def respond_node(
         confidence = None
         reference_data = []
 
+        # Log every tool name + result payload from state (planner / prior execution)
+        _tw = _tool_names_and_results_from_state(state)
+        _tool_rows = _tw.get("tool_results") or []
+        log.info(
+            "respond_node tools before stream | succeeded=%s failed=%s n=%d",
+            _tw.get("succeeded_tool_names"),
+            _tw.get("failed_tool_names"),
+            len(_tool_rows),
+        )
+        _TOOL_LOG_DATA_MAX = 12000
+        for _r in _tool_rows:
+            _tname = _r.get("tool_name", "unknown")
+            _tdata = _r.get("result", _r)
+            try:
+                _data_str = json.dumps(_tdata, default=str, ensure_ascii=False)
+            except (TypeError, ValueError):
+                _data_str = str(_tdata)
+            if len(_data_str) > _TOOL_LOG_DATA_MAX:
+                _full_len = len(_data_str)
+                _data_str = _data_str[:_TOOL_LOG_DATA_MAX] + f"... [truncated, total_len={_full_len}]"
+            log.info(
+                "respond_node tool | name=%s status=%s toolData=%s",
+                _tname,
+                _r.get("status"),
+                _data_str,
+            )
+
         async for stream_event in stream_llm_response_with_tools(
             llm=llm,
             messages=messages,
@@ -6617,6 +6653,9 @@ async def respond_node(
                     event_data = {**event_data, "citations": _enriched}
             # ────────────────────────────────────────────────────────────────────
 
+            if event_type == "complete":
+                _emit_outlook_format_mail_tool_events_before_complete(writer, state, config)
+                _emit_ask_user_question_tool_event(writer, state, config)
             safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
 
             if event_type == "complete":
@@ -6636,11 +6675,14 @@ async def respond_node(
                 "confidence": "Low",
                 "answerMatchType": "Fallback Response"
             }
+            fallback_response.update(_tool_names_and_results_from_state(state))
 
             safe_stream_write(writer, {
                 "event": "answer_chunk",
                 "data": {"chunk": answer_text, "accumulated": answer_text, "citations": []}
             }, config)
+            _emit_outlook_format_mail_tool_events_before_complete(writer, state, config)
+            _emit_ask_user_question_tool_event(writer, state, config)
             safe_stream_write(writer, {"event": "complete", "data": fallback_response}, config)
 
             state["response"] = answer_text
@@ -6655,6 +6697,7 @@ async def respond_node(
             if reference_data:
                 completion_data["referenceData"] = reference_data
                 log.debug(f"📎 Stored {len(reference_data)} reference items")
+            completion_data.update(_tool_names_and_results_from_state(state))
 
             state["response"] = answer_text
             state["completion_data"] = completion_data
@@ -6670,10 +6713,13 @@ async def respond_node(
             "confidence": "Low",
             "answerMatchType": "Error"
         }
+        error_response.update(_tool_names_and_results_from_state(state))
         safe_stream_write(writer, {
             "event": "answer_chunk",
             "data": {"chunk": error_msg, "accumulated": error_msg, "citations": []}
         }, config)
+        _emit_outlook_format_mail_tool_events_before_complete(writer, state, config)
+        _emit_ask_user_question_tool_event(writer, state, config)
         safe_stream_write(writer, {"event": "complete", "data": error_response}, config)
         state["response"] = error_msg
         state["completion_data"] = error_response
@@ -6795,7 +6841,7 @@ async def _generate_direct_response(
         }, config)
         safe_stream_write(writer, {
             "event": "complete",
-            "data": {"answer": answer_text, "citations": [], "confidence": "Low"},
+"data": {"answer": answer_text, "citations": [], "confidence": "Low"},
         }, config)
 
     answer = answer_text.strip() or "I'm here to help! How can I assist you today?"
@@ -6806,6 +6852,7 @@ async def _generate_direct_response(
         "confidence": "High",
         "answerMatchType": "Direct Response",
     }
+    state["completion_data"].update(_tool_names_and_results_from_state(state))
 
 
 async def _generate_fast_api_response(
@@ -6962,7 +7009,10 @@ async def _generate_fast_api_response(
     }
     if reference_data:
         completion_data["referenceData"] = reference_data
+    completion_data.update(_tool_names_and_results_from_state(state))
 
+    _emit_outlook_format_mail_tool_events_before_complete(writer, state, config)
+    _emit_ask_user_question_tool_event(writer, state, config)
     safe_stream_write(writer, {"event": "complete", "data": completion_data}, config)
     state["response"] = answer_text
     state["completion_data"] = completion_data
@@ -6989,6 +7039,94 @@ def _extract_urls_for_reference_data(content: object, reference_data: list[dict]
     elif isinstance(content, list):
         for item in content[:20]:  # Safety limit
             _extract_urls_for_reference_data(item, reference_data)
+
+
+def _tool_names_and_results_from_state(state: ChatState) -> Dict[str, Any]:
+    """Derive succeeded/failed tool names and full tool results from state (no separate state fields)."""
+    results = state.get("all_tool_results") or state.get("tool_results") or []
+    succeeded = [r.get("tool_name") for r in results if r.get("tool_name") and r.get("status") == "success"]
+    failed = [r.get("tool_name") for r in results if r.get("tool_name") and r.get("status") == "error"]
+    return {
+        "succeeded_tool_names": succeeded,
+        "failed_tool_names": failed,
+        "tool_results": results,
+    }
+
+
+# _OUTLOOK_FORMAT_MAIL_TOOL_NAMES = frozenset(
+#     ("outlookplugintools_format_mail", "outlookplugintools.format_mail",)
+#     ("outlookplugintools_format_document_content", "outlookplugintools.format_document_content",)
+# )
+_OUTLOOK_FORMAT_MAIL_TOOL_NAMES = frozenset({
+    "outlookplugintools_format_mail",
+    "outlookplugintools.format_mail",
+    "outlookplugintools_format_document_content",
+    "outlookplugintools.format_document_content",
+})
+
+_ASK_USER_QUESTION_TOOL_NAMES = frozenset({
+    "outlookplugintools_ask_user_question",
+    "outlookplugintools.ask_user_question",
+})
+
+
+def _emit_outlook_format_mail_tool_events_before_complete(
+    writer: StreamWriter,
+    state: ChatState,
+    config: RunnableConfig,
+) -> None:
+    """
+    For Outlook format_mail tool, emit event name tool_call<toolname> with status
+    and toolData. Call immediately before the final ``complete`` event (after answer chunks).
+    """
+    for row in _tool_names_and_results_from_state(state).get("tool_results") or []:
+        tname = row.get("tool_name") or ""
+        if tname not in _OUTLOOK_FORMAT_MAIL_TOOL_NAMES:
+            continue
+        print("Emitting Outlook format_mail tool event for tool:", tname)
+        safe_stream_write(
+            writer,
+            {
+                "event": f"tool_call{tname}",
+                "data": {
+                    "status": row.get("status"),
+                    "toolData": row.get("result", row),
+                },
+            },
+            config,
+        )
+
+
+def _emit_ask_user_question_tool_event(
+    writer: StreamWriter,
+    state: ChatState,
+    config: RunnableConfig,
+) -> None:
+    """
+    Emit a dedicated ``ask_user_question`` SSE event carrying the full structured
+    payload (questions with UUIDs and option IDs) so the frontend can render
+    interactive option cards. Called immediately before the final ``complete`` event.
+    """
+    for row in _tool_names_and_results_from_state(state).get("tool_results") or []:
+        tname = row.get("tool_name") or ""
+        if tname not in _ASK_USER_QUESTION_TOOL_NAMES:
+            continue
+        raw_result = row.get("result", "")
+        try:
+            payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        except (json.JSONDecodeError, TypeError):
+            payload = raw_result
+        safe_stream_write(
+            writer,
+            {
+                "event": "ask_user_question",
+                "data": {
+                    "status": row.get("status"),
+                    "toolData": payload,
+                },
+            },
+            config,
+        )
 
 
 def _build_tool_results_context(
@@ -7802,6 +7940,23 @@ def _build_react_system_prompt(state: ChatState, log: logging.Logger) -> str:
 
     base_prompt = instructions_prefix + """You are an intelligent AI assistant that uses tools to help users accomplish tasks. You follow a structured reasoning process for every action to ensure correctness and reliability.
 
+## ⛔ ABSOLUTE RULE: NEVER Ask Questions in Plain Text
+
+You are **FORBIDDEN** from writing any question directed at the user in your response text.
+If you need ANY information from the user — for any reason — you **MUST** call the `outlookplugintools.ask_user_question` tool. This rule has NO exceptions.
+
+**Violations (NEVER do this):**
+- ❌ "Could you please tell me the recipient's email?"
+- ❌ "What time would you like the meeting?"
+- ❌ "Do you want to include a CC?"
+- ❌ Any sentence ending in "?" directed at the user
+
+**Correct behavior:**
+- ✅ Call `outlookplugintools.ask_user_question` with structured questions and 2–4 tappable options.
+- ✅ STOP the current action, call the tool, wait for the user's selection, then proceed.
+
+**Only exception:** If `outlookplugintools.ask_user_question` is NOT listed in your available tools, only then may you ask in plain text.
+
 ## Reasoning Protocol (MANDATORY)
 
 You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
@@ -7821,11 +7976,11 @@ You MUST follow this protocol for EVERY tool interaction. Think step-by-step.
      • **PRESENT**: Stated in user's message or conversation history → use it.
      • **INFERRABLE**: Computable from context ("tomorrow" → date, user timezone) → compute it.
      • **DEFAULT**: Has a system default (reminder=15min, sensitivity=normal) → use silently.
-     • **MISSING**: Only the user can decide (meeting time, recipients, content) → must ask.
+     • **MISSING**: Only the user can decide (meeting time, recipients, content) → must ask via tool.
    - If ANY user-provided field is MISSING:
      → Do NOT call the tool yet.
-     → Ask the user for ALL missing fields in ONE message.
-     → After they respond, execute immediately without further confirmation.
+     → Call `outlookplugintools.ask_user_question` with structured questions and 2–4 tappable options for each missing field. NEVER write a plain-text question.
+     → After the user selects their options, execute the write tool immediately without further confirmation.
    - If ALL fields are available/inferrable/defaulted:
      → Execute immediately. Do NOT ask "shall I proceed?"
    - **NEVER guess times, dates, or recipients. NEVER use arbitrary defaults for user-provided fields.**
@@ -7950,7 +8105,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 ### For WRITE operations (create, update, delete, send, reply, assign, post):
 - **BEFORE calling any write tool**, validate required fields using the Available Tools
   section AND the Write-Action Field Quick Reference above.
-- If ANY user-provided field is MISSING → ask for ALL missing fields in ONE message.
+- If ANY user-provided field is MISSING → call `outlookplugintools.ask_user_question` with tappable options for every missing field. NEVER write plain-text questions.
 - If ALL fields are present/inferrable/defaulted → execute immediately. No confirmation.
 - See the Reasoning Protocol above for the full validation process.
 

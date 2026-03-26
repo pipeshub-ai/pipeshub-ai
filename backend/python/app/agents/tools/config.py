@@ -96,6 +96,9 @@ class ToolDiscoveryConfig:
         "calculator": AppConfiguration(
             app_name="calculator",
         ),
+        "outlookplugintools": AppConfiguration(
+            app_name="outlookplugintools",
+        ),
         "utility": AppConfiguration(
             app_name="utility",
         ),

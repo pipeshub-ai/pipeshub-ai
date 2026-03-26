@@ -7,6 +7,7 @@ import contextlib
 import inspect
 import json
 from collections.abc import Callable
+from typing import Any
 
 from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
@@ -702,9 +703,14 @@ class RegistryToolWrapper(BaseTool):
         if logger:
             logger.error(error_msg)
 
+        def _default_serializer(obj: Any) -> Any:
+            if hasattr(obj, "model_dump"):
+                return obj.model_dump()
+            return str(obj)
+
         return json.dumps({
             "status": "error",
             "message": error_msg,
             "tool": f"{self.app_name}.{self.tool_name}",
             "args": arguments
-        }, indent=2)
+        }, indent=2, default=_default_serializer)

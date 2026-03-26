@@ -378,6 +378,7 @@ class ToolsetRegistry:
             'app.agents.actions.calculator.calculator',
             'app.agents.actions.calculator.date_calculator',
             'app.agents.actions.knowledge_hub.knowledge_hub',
+            'app.agents.actions.microsoft.plugins.outlook_plugin',
             # Google toolsets
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',

@@ -375,7 +375,7 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
     # Check app name (retrieval is NOT always internal - depends on knowledge config)
     if hasattr(registry_tool, 'app_name'):
         app_name = str(registry_tool.app_name).lower()
-        if app_name in ['calculator', 'datetime', 'utility']:
+        if app_name in ['calculator','outlookplugintools']:
             return True
 
     # Fallback patterns (retrieval excluded - handled separately based on knowledge)
