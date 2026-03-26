@@ -48,6 +48,8 @@ import {
   AppConfig,
 } from './modules/tokens_manager/config/config';
 import { NotificationService } from './modules/notification/service/notification.service';
+import { CliRpcSocketGateway } from './modules/cli_rpc/socket/cli_rpc_socket_gateway';
+import { CliRpcContainer } from './modules/cli_rpc/container/cli_rpc.container';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
@@ -88,10 +90,12 @@ export class Application {
   private configurationManagerContainer!: Container;
   private mailServiceContainer!: Container;
   private notificationContainer!: Container;
+  private cliRpcContainer!: Container;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
   private toolsetsContainer!: Container;
+  private cliRpcSocketGateway: CliRpcSocketGateway | null = null;
   private port: number;
 
   constructor() {
@@ -165,6 +169,7 @@ export class Application {
           configurationManagerConfig,
           appConfig,
         );
+      this.cliRpcContainer = await CliRpcContainer.initialize(appConfig);
 
       this.oauthProviderContainer = await OAuthProviderContainer.initialize(
         configurationManagerConfig,
@@ -251,6 +256,8 @@ export class Application {
       this.notificationContainer
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
+      this.cliRpcSocketGateway = this.cliRpcContainer.get(CliRpcSocketGateway);
+      this.cliRpcSocketGateway.initialize(this.server);
 
       // Serve static frontend files\
       this.app.use(express.static(path.join(__dirname, 'public')));
@@ -548,6 +555,8 @@ export class Application {
     try {
       this.logger.info('Shutting down application...');
       try {
+        this.cliRpcSocketGateway?.shutdown();
+        this.cliRpcSocketGateway = null;
         this.notificationContainer
           .get<NotificationService>(NotificationService)
           .shutdown();
@@ -565,6 +574,7 @@ export class Application {
       await ConfigurationManagerContainer.dispose();
       await MailServiceContainer.dispose();
       await CrawlingManagerContainer.dispose();
+      await CliRpcContainer.dispose();
       await ApiDocsContainer.dispose();
       await OAuthProviderContainer.dispose();
 
