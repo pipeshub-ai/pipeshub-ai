@@ -74,6 +74,7 @@ COPY backend/nodejs/apps/src ./src
 
 # -----------------------------------------------------------------------------
 # Stage 4: Frontend (DEV - no build, use npm run dev / Vite at runtime)
+# Memory optimization: NODE_OPTIONS for heap limit set via docker-compose env
 # -----------------------------------------------------------------------------
 FROM node:20-slim AS frontend-dev
 WORKDIR /app/frontend
