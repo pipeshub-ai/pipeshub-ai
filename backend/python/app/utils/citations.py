@@ -64,6 +64,24 @@ def fix_json_string(json_str) -> str:
 
 
 
+def _renumber_citation_links(
+    text: str,
+    md_matches: list,
+    url_to_citation_num: dict[str, int],
+) -> str:
+    """
+    Replace citation numbers in markdown links with their new sequential numbers.
+    Processes matches in reverse order to preserve string positions.
+    """
+    for match in reversed(md_matches):
+        url = match.group(2).strip()
+        new_num = url_to_citation_num.get(url)
+        if new_num is not None:
+            replacement = f"[{new_num}]({match.group(2)})"
+            text = text[:match.start()] + replacement + text[match.end():]
+    return text
+
+
 def _extract_block_index_from_url(url: str) -> Optional[int]:
     """Extract blockIndex value from a block web URL like /record/abc/preview#blockIndex=5"""
     m = re.search(r'blockIndex=(\d+)', url)
@@ -196,6 +214,8 @@ def _normalize_markdown_link_citations(
             })
             url_to_citation_num[url] = new_citation_num
             new_citation_num += 1
+
+    answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num)
 
     return answer_text, new_citations
 
@@ -385,5 +405,7 @@ def _normalize_markdown_link_citations_for_agent(
 
     if not new_citations and unique_urls:
         logger.error(f"FAILED to create citations for URLs: {unique_urls}")
+
+    answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num)
 
     return answer_text, new_citations
