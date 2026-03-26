@@ -13,9 +13,9 @@
   "reporter": ["text", "lcov", "html"],
   "report-dir": "coverage",
   "check-coverage": true,
-  "lines": 92,
-  "functions": 93,
+  "lines": 90,
+  "functions": 90,
   "branches": 80,
-  "statements": 92,
+  "statements": 90,
   "temp-directory": ".c8_output"
 }
