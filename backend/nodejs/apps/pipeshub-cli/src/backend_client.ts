@@ -6,6 +6,7 @@ const FOLDER_SYNC_CONNECTOR_TYPE = "Folder Sync";
 const FOLDER_SYNC_RECORD_CONNECTOR_NAME = "FOLDER_SYNC";
 
 const FETCH_TIMEOUT_MS = 90_000;
+const REINDEX_CONCURRENCY = 8;
 
 /** How many times to retry after HTTP 429 (waits `retryAfter` seconds each time). */
 const MAX_429_RETRIES = 8;
@@ -981,12 +982,15 @@ export class BackendClient {
    * files under a record group may not have it set).
    */
   async queueKnowledgeBaseReindexForRecordIds(recordIds: string[]): Promise<void> {
-    for (const id of recordIds) {
-      const rid = String(id ?? "").trim();
-      if (!rid) {
-        continue;
-      }
-      await this.reindexKnowledgeBaseRecord(rid);
+    const ids = recordIds
+      .map((id) => String(id ?? "").trim())
+      .filter(Boolean);
+    if (ids.length === 0) {
+      return;
+    }
+    for (let i = 0; i < ids.length; i += REINDEX_CONCURRENCY) {
+      const batch = ids.slice(i, i + REINDEX_CONCURRENCY);
+      await Promise.all(batch.map((rid) => this.reindexKnowledgeBaseRecord(rid)));
     }
   }
 
