@@ -6,7 +6,7 @@ import { CliRpcSocketGateway } from '../socket/cli_rpc_socket_gateway';
 export class CliRpcContainer {
   private static container: Container | null = null;
 
-  static async initialize(appConfig: AppConfig): Promise<Container> {
+  static initialize(appConfig: AppConfig): Container {
     const container = new Container();
     const authTokenService = new AuthTokenService(
       appConfig.jwtSecret,
@@ -17,14 +17,16 @@ export class CliRpcContainer {
       .bind(CliRpcSocketGateway)
       .toDynamicValue((ctx) => {
         const auth = ctx.container.get(AuthTokenService);
-        return new CliRpcSocketGateway(auth, () => Number(process.env.PORT || 3000));
+        return new CliRpcSocketGateway(auth, () =>
+          Number(process.env.PORT ?? '3000'),
+        );
       })
       .inSingletonScope();
     this.container = container;
     return container;
   }
 
-  static async dispose(): Promise<void> {
+  static dispose(): void {
     if (this.container) {
       this.container.unbindAll();
     }
