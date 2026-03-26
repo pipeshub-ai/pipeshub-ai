@@ -50,6 +50,10 @@ from app.utils.chat_helpers import (
 )
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.execute_query import create_execute_query_tool, has_sql_connector_configured
+from app.utils.fetch_slack_thread import (
+    create_fetch_slack_thread_tool,
+    has_slack_connector_configured,
+)
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.fetch_url_tool import create_fetch_url_tool
 from app.utils.streaming import (
@@ -477,6 +481,7 @@ async def _build_chat_llm_messages(
     has_sql_connector: bool=False,
     blob_store: Any = None,
     org_id: str = "",
+    has_slack_connector: bool=False,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """System prompt (with optional custom override), prior turns, then user message with retrieval context."""
     system_prompt = _build_system_prompt(
@@ -513,7 +518,7 @@ async def _build_chat_llm_messages(
     content, ref_mapper = get_message_content(
         final_results, virtual_record_id_to_result, user_data, query_info.query, query_info.mode,
         is_multimodal_llm=is_multimodal_llm, from_tool=False, has_sql_connector=has_sql_connector,
-        image_blocks=image_blocks or None,
+        image_blocks=image_blocks or None, has_slack_connector=has_slack_connector,
         ref_mapper=ref_mapper,
     )
 
@@ -819,6 +824,7 @@ async def _generate_internal_search_stream(
                     user_data,
                     logger,
                     is_multimodal_llm=is_multimodal_llm,
+                    
                     blob_store=blob_store,
                     org_id=org_id,
                     has_attachments=has_attachments,
@@ -842,7 +848,7 @@ async def _generate_internal_search_stream(
                 tools = [search_tool]
 
                 has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
-
+                has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
                 fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
                 deferred_tools = [fetch_tool]
                 if has_sql_connector:
@@ -853,7 +859,14 @@ async def _generate_internal_search_stream(
                         conversation_id=query_info.conversationId,
                         blob_store=blob_store,
                     ))
-
+                if has_slack_connector:
+                    deferred_tools.append(create_fetch_slack_thread_tool(
+                        virtual_record_id_to_result=virtual_record_id_to_result,
+                        org_id=org_id,
+                        graph_provider=graph_provider,
+                        blob_store=blob_store,
+                        config_service=config_service,
+                    ))
                 
 
                 tool_runtime_kwargs = {
@@ -861,6 +874,7 @@ async def _generate_internal_search_stream(
                     "graph_provider": graph_provider,
                     "org_id": org_id,
                     "has_sql_connector": has_sql_connector,
+                    "has_slack_connector": has_slack_connector,
                 }
 
             else:
@@ -896,6 +910,7 @@ async def _generate_internal_search_stream(
                 final_results = sorted(flattened_results, key=flattened_result_sort_key)
 
                 has_sql_connector = await has_sql_connector_configured(graph_provider, user_id, org_id)
+                has_slack_connector = await has_slack_connector_configured(graph_provider, user_id, org_id)
                 tools = []
                 if has_sql_connector:
                     tools.append(create_execute_query_tool(
@@ -905,7 +920,14 @@ async def _generate_internal_search_stream(
                         conversation_id=query_info.conversationId,
                         blob_store=blob_store,
                     ))
-
+                if has_slack_connector:
+                    tools.append(create_fetch_slack_thread_tool(
+                        virtual_record_id_to_result=virtual_record_id_to_result,
+                        org_id=org_id,
+                        graph_provider=graph_provider,
+                        blob_store=blob_store,
+                        config_service=config_service,
+                    ))
                 messages, ref_mapper = await _build_chat_llm_messages(
                     query_info,
                     ai_models_config,
@@ -917,6 +939,7 @@ async def _generate_internal_search_stream(
                     has_sql_connector=has_sql_connector,
                     blob_store=blob_store,
                     org_id=org_id,
+                    has_slack_connector=has_slack_connector,
                 )
 
                 fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result, org_id, graph_provider)
@@ -926,6 +949,7 @@ async def _generate_internal_search_stream(
                     "graph_provider": graph_provider,
                     "org_id": org_id,
                     "has_sql_connector": has_sql_connector,
+                    "has_slack_connector": has_slack_connector,
                 }
                 deferred_tools = []
 

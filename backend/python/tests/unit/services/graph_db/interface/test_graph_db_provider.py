@@ -192,6 +192,7 @@ class TestAbstractMethodInventory:
         "update_node",
         # Edge operations
         "batch_create_edges",
+        "batch_create_entity_relations",
         "batch_delete_edges",
         "get_edge",
         "delete_edge",
@@ -289,6 +290,7 @@ class TestAbstractMethodInventory:
         "get_departments",
         "get_org_apps",
         "find_duplicate_records",
+        "find_slack_burst_record_by_ts",
         "find_next_queued_duplicate",
         "update_queued_duplicates_status",
         "copy_document_relationships",

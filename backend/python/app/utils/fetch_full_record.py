@@ -135,14 +135,14 @@ async def _fetch_record_by_id(
             return None
 
         meta = (
-            graph_record.model_dump()
+            graph_record.model_dump(mode="json")
             if hasattr(graph_record, "model_dump")
             else graph_record
         )
 
         vrid = meta.get("virtual_record_id")
         if not vrid:
-            logger.debug("Record %s exists in graph but has no virtual_record_id", record_id)
+            logger.debug("Record %s exists in graph but has -no virtual_record_id", record_id)
             return None
 
         if vrid in virtual_record_id_to_result:

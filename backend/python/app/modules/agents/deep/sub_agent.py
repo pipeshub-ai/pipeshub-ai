@@ -1512,8 +1512,10 @@ async def _prewarm_clients(
     seen: dict[tuple, str] = {}  # (app_name, toolset_id) -> tool_full_name
     for task in tasks:
         for tool_name in task.get("tools", []):
+            toolset_id = tool_to_toolset_map.get(tool_name)
+            if not toolset_id:
+                continue
             app_name = tool_name.split(".")[0] if "." in tool_name else tool_name.split("_")[0]
-            toolset_id = tool_to_toolset_map.get(tool_name, "default")
             key = (app_name, toolset_id)
             if key not in seen:
                 seen[key] = tool_name

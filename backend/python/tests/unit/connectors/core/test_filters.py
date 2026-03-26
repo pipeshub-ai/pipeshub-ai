@@ -1064,3 +1064,34 @@ class TestLoadConnectorFilters:
         await load_connector_filters(config_service, "test", "t-1", logger=logger)
 
         logger.debug.assert_called()
+
+
+# ============================================================================
+# Slack diff: SyncFilterKey.CHANNEL_TYPES + IndexingFilterKey new values
+# ============================================================================
+
+class TestSyncFilterKeyChannelTypes:
+    def test_channel_types_exists(self):
+        assert hasattr(SyncFilterKey, "CHANNEL_TYPES")
+        assert SyncFilterKey.CHANNEL_TYPES == "channel_types"
+
+    def test_existing_channel_ids_still_present(self):
+        assert SyncFilterKey.CHANNEL_IDS == "channel_ids"
+
+
+class TestIndexingFilterKeySlackValues:
+    def test_threads_exists(self):
+        assert hasattr(IndexingFilterKey, "THREADS")
+        assert IndexingFilterKey.THREADS == "threads"
+
+    def test_bot_messages_exists(self):
+        assert hasattr(IndexingFilterKey, "BOT_MESSAGES")
+        assert IndexingFilterKey.BOT_MESSAGES == "bot_messages"
+
+    def test_links_exists(self):
+        assert hasattr(IndexingFilterKey, "LINKS")
+        assert IndexingFilterKey.LINKS == "links"
+
+    def test_pre_existing_values_intact(self):
+        assert IndexingFilterKey.COMMENTS == "comments"
+        assert IndexingFilterKey.ATTACHMENTS == "attachments"

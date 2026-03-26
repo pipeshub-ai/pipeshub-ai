@@ -874,7 +874,27 @@ def get_agent_tools_with_schemas(state: ChatState) -> list:
                 state_logger = state.get("logger")
                 if state_logger:
                     state_logger.warning(f"Failed to add execute_sql_query_tool: {e}")
-        # Add web tools when agent has web search configured in the builder
+
+        if config_service and state.get("has_slack_connector") and state.get("has_slack_knowledge"):
+            try:
+                from app.utils.fetch_slack_thread import create_fetch_slack_thread_tool
+                slack_thread_tool = create_fetch_slack_thread_tool(
+                    virtual_record_id_to_result=virtual_record_map,
+                    org_id=state.get("org_id", ""),
+                    graph_provider=state.get("graph_provider"),
+                    blob_store=state.get("blob_store"),
+                    config_service=config_service,
+                )
+                setattr(slack_thread_tool, "_original_name", "slack.fetch_slack_thread")
+                structured_tools.append(slack_thread_tool)
+                state_logger = state.get("logger")
+                if state_logger:
+                    state_logger.debug("✅ Added fetch_slack_thread tool for Slack thread expansion")
+            except Exception as e:
+                state_logger = state.get("logger")
+                if state_logger:
+                    state_logger.warning(f"Failed to add fetch_slack_thread tool: {e}")
+        # Add web tools (fetch_url always, web_search if agent has it configured)
         try:
             web_tools = _create_web_tools(state)
             structured_tools.extend(web_tools)

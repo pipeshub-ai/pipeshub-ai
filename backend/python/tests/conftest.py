@@ -145,6 +145,11 @@ _OPTIONAL_PACKAGES = [
     "msgraph_core",
     "slack_sdk",
     "langchain",
+    # PyMuPDF (``import fitz``) — heavy native dep; connector import chain pulls events.py
+    "fitz",
+    "html_to_markdown",
+    # python-jose (``from jose import JWTError``) — pulled by signed_url → connector container
+    "jose",
 ]
 
 for _pkg in _OPTIONAL_PACKAGES:
