@@ -1,4 +1,4 @@
-from typing import List, Literal
+from typing import Literal
 
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -10,7 +10,6 @@ class AnswerWithMetadataDict(TypedDict):
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
     answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
-    blockNumbers: List[str]
 
 class AnswerWithMetadataJSON(BaseModel):
     """Schema for the answer with metadata"""
@@ -18,7 +17,6 @@ class AnswerWithMetadataJSON(BaseModel):
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
     answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
-    blockNumbers: List[str]
 
 qna_prompt = """
 <task>
@@ -135,7 +133,7 @@ qna_prompt = """
   }
   {% else %}
   Output format:
-  Provide your answer directly in markdown format with citations like [R1-1][R2-3]. Do not wrap your response in JSON. Simply provide the answer text.
+  Provide your answer directly in markdown format with citations as markdown links like [N](Block Web URL) where N is a monotonically increasing number (1, 2, 3, ...). Do not wrap your response in JSON. Simply provide the answer text.
   If the answer is based only on user data, mention 'User Information' in your response.
   {% endif %}
 </output_format>
@@ -145,11 +143,10 @@ qna_prompt = """
   For context:
   Output JSON Format:
     {
-      "answer": "Security policies are regularly reviewed and updated. [R2-1][R1-2]",
-      "reason": "Derived from chunk index 2 and 5, which explicitly mention internal security review timelines.",
+      "answer": "Security policies are regularly reviewed [1](/record/abc/preview#blockIndex=3). Updates happen quarterly [2](/record/def/preview#blockIndex=7).",
+      "reason": "Derived from block at index 3 which mentions review frequency, and block at index 7 which specifies the update schedule.",
       "confidence": "High",
-      "answerMatchType": "Derived From Chunks",
-      "chunkIndexes": [2, 5]
+      "answerMatchType": "Derived From Blocks"
     }
 </example>
 ***Your entire response/output is going to consist of a single JSON, and you will NOT wrap it within JSON md markers***
@@ -157,19 +154,23 @@ qna_prompt = """
 """
 
 
-table_prompt = """* Block Group Number: R{{record_number}}-{{block_group_index}}
+table_prompt = """* Block Group Index: {{block_group_index}}
 * Block Group Type: table
+* Block Group Web URL: {{block_group_web_url}}
 * Table Summary: {{ table_summary }}
 * Table Rows/Blocks:{% for row in table_rows %}
-  - Block Number: R{{record_number}}-{{row.block_index}}
+  - Block Index: {{row.block_index}}
+  - Block Web URL: {{row.block_web_url}}
   - Block Content: {{row.content}}
 {% endfor %}
 """
 
-block_group_prompt = """* Block Group Number: R{{record_number}}-{{block_group_index}}
+block_group_prompt = """* Block Group Index: {{block_group_index}}
 * Block Group Type: {{label}}
+* Block Group Web URL: {{block_group_web_url}}
 * Block Group Content:{% for block in blocks %}
-  - Block Number: R{{record_number}}-{{block.index}}
+  - Block Index: {{block.index}}
+  - Block Web URL: {{block.block_web_url}}
   - Block Content: {{block.data}}
 {% endfor %}
 """
@@ -181,6 +182,12 @@ qna_prompt_instructions_1 = """
   Answer user queries based on the provided context (records), user information, and maintain a coherent conversational flow.
   Ensure that document records only influence the current query and not subsequent unrelated follow-up queries.
   Rephrased queries are AI-generated to provide more context to what the user might mean.
+
+  Every entity is a resource with its own web URL that can be cited:
+  - **Record**: A top-level entity (document, message, file, email, ticket, etc.) from a connector app. Has a "Web URL" in its metadata.
+  - **Block Group**: A logical grouping of blocks within a record (e.g., a table, a section). Has a "Block Group Web URL".
+  - **Block**: The smallest unit of content within a record or block group. Has a "Block Web URL".
+  When citing these entities, use monotonically increasing citation numbers [1], [2], [3], ... mapped to their corresponding web URLs.
 </task>
 
 <tools>
@@ -223,100 +230,64 @@ Record blocks (sorted):
 
 qna_prompt_instructions_2 = """
 <instructions>
-  NOTE:
-  - Context for Current query might not be relevant in some cases where current query is highly related to previous context
-  - For queries about user information (like "who am I?", "where do I work?"), refer to the User Information section above. These queries don't require block citations.
-  - You can integrate user information with the context to answer the query where user information is highly relevant to the query
-  - IMPORTANT:ENSURE THAT DOCUMENT RECORDS REFERENCED IN THE ANSWER ARE ACTUALLY RELEVANT TO THE QUERY AND ANSWER. FOR EXAMPLE, ORGANIZATION OF USER IS ACCOUNTED IN THE USER INFORMATION. HE MIGHT BE ASKING QUERIES ABOUT HIS ORGANIZATION DOCUMENTS BUT OTHER ORGANIZATION DOCUMENTS MIGHT BE RETRIEVED DURING SEARCH.
-  - **Balanced Tool Usage**: The provided blocks are optimized semantic search results. Use them when adequate, but don't hesitate to fetch full records when they would materially improve answer quality.
 
-  -Guidelines-
-  When answering queries, follow these guidelines:
-  1. Answer Comprehensiveness:
-  - Provide thoughtful, explanatory, and sufficiently detailed answers — not just short factual replies.
-  - For user-specific queries, prioritize information from the User Information section
-  - Provide detailed answers using all highly relevant information, ensuring the response is clear and self-contained.
-  - Include every key point that addresses the query directly
-  - Generate answer in fully valid markdown format with proper headings and formatting
-  - Generate rich markdown text for the answer including tables, lists, bold, italic, sub sections, etc.
-  - Do not summarize or omit important details
+Answer the query clearly and comprehensively using relevant context.
 
-  2. Citations (REQUIRED for all block-derived answers, including follow-ups):
-  - Every factual claim derived from blocks MUST be immediately followed by its citation in the SAME sentence
-  - Use square brackets with one citation per bracket: [R1-1], [R2-3]
-  - Place citations after the specific claim they support, not at the end of paragraphs
-  - Include only the top 4-5 most relevant block citations per answer
-  - Example - WRONG: "The system works well. [R1-1][R1-2][R2-3]"
-  - Example - CORRECT: "The system is secure [R1-1]. It processes data quickly [R1-2]. Users report high satisfaction [R2-3]."
-  - When a code block ends, put citations on the next line after ```, not on the same line
-  - Ensure cited block numbers appear in the `blockNumbers` field
+### Core Requirements
+- Provide a detailed, well-structured answer in markdown
+- Include reasoning implicitly in the answer (no need for verbose meta reasoning)
+- Ensure high accuracy — only use relevant information
+- Avoid unnecessary verbosity or repetition
 
-  3. Tool Usage Strategy (FOLLOW THIS DECISION TREE):
-  - **STEP 1 - Evaluate completeness:** Ask yourself: "Can I provide a COMPLETE and COMPREHENSIVE answer with just these blocks? Does query demand FULL CONTENT from the record?"
-  - **STEP 2 - Identify gaps:** Look for:
-    * Missing context or background information. Use block numbers to detect gaps.
-    * Incomplete explanations or partial information
-    * Queries asking for "full details", "complete overview", "comprehensive summary", or "all information"
-    * References to concepts or sections that aren't fully explained in blocks
-    * Blocks that appear to be excerpts or snippets from larger content
-  - **STEP 3 - Apply these TRIGGERS for tool use:**
-    * The record name/summary suggests more relevant content exists
-    * Multiple queries are asked but blocks only partially address them
-  - **STEP 4 - Default to calling the tool:** When in doubt between answering with blocks vs. fetching full record, ALWAYS choose to fetch the full record
-  - **Tool call format:** When using the tool, explain your reasoning clearly in the "reason" parameter
-  - **Integration:** After receiving tool results, seamlessly integrate the information with existing blocks
+### Citations (STRICT)
+- Every factual claim MUST include a citation
+- Use monotonically increasing numbers: [1], [2], [3], ...
+- Each citation must link to the entity’s VERBATIM web URL (block, block group, or record)
+- Prefer using block web URL over block group web URL over record web URL when appropriate
+- Place citations immediately after the claim (not at paragraph end)
+- Reuse the same number if citing the same entity again
+- Limit to top most relevant citations
 
-  4. Improvements Focus:
-  - When suggesting improvements, focus only on those that directly address the query
-  - If there are No 'SIGNIFICANT' improvements that can be done, return an empty improvements array. Do not hallucinate trivial improvements.
-  5. Quality Control:
-  - Double-check that each referenced block supports the answer
-  - Do not include irrelevant blocks
-  - If blocks are referenced in `blockNumbers`, their citation numbers MUST appear in the answer
+### Tool Usage Strategy
+- Fetch the full record when retrieved blocks are not sufficient enough to answer the query, have gaps (check block numbers for missing sections), or the query asks for full/comprehensive details
+- **When in doubt, always fetch the full record**
+- Explain your reasoning in the "reason" parameter
+- Seamlessly integrate fetched content with existing blocks
 
-  5. Source Prioritization:
-  - For user-specific queries (identity, role, workplace), use the User Information section
-  - If neither Current Query Context nor User Information contains the answer, use the fetch_full_record tool before stating "Information not found in your knowledge sources"
+### Relevance
+- Only cite entities directly relevant to the query
+- Ignore unrelated retrieved content
 
-  6. Multi-query handling:
-      i. Identify and number each distinct query in the user's query
-      ii. For any query that cannot be answered with current blocks, attempt to use fetch_full_record tool
-      iii. Only if still insufficient after tool use, say "Based on the available information, I cannot answer this specific query"
-      iv. Ensure all queries receive equal attention with proper citations
+### Output Quality
+- Be precise, structured, and easy to read
+- Use headings, bullet points, and formatting where helpful
+
 </instructions>
 
 <output_format>
   {% if mode == "json" %}
   Output format:
   {
-    "answer": "<Answer the query in rich markdown format with citations like [R1-1][R2-3] placed immediately after each relevant claim. If based only on user data, say 'User Information'>",
+    "answer": "<Answer the query in rich markdown format with citations like [1](Block Web URL) placed immediately after each relevant claim. If based only on user data, say 'User Information'>",
     "reason": "<Explain how the answer was derived using the blocks/user information/tool results and reasoning>",
     "confidence": "<Very High | High | Medium | Low>",
     "answerMatchType": "<Exact Match | Derived From Blocks | Derived From User Info | Enhanced With Full Record>",
-    "blockNumbers": [<verbatimBlockNumber>]
   }
   <example>
   ✅ Example Output:
     {
-      "answer": "Security policies are regularly reviewed [R1-2]. Updates are implemented quarterly [R2-5].",
-      "reason": "Derived from block number R1-2 which mentions review frequency, and R2-5 which specifies the update schedule.",
+      "answer": "Security policies are regularly reviewed [1](http:<base_url>/record/12345/preview#blockIndex=2). Updates are implemented quarterly [2](http:<base_url>/record/12345/preview#blockIndex=5).",
+      "reason": "....",
       "confidence": "High",
-      "answerMatchType": "Derived From Blocks",
-      "blockNumbers": ["R1-2", "R2-5"]
     }
   </example>
   {% else %}
-  Output format:
-  Provide your answer directly in rich markdown format with citations like [R1-1][R2-3] placed immediately after each relevant claim.
-  Do not wrap your response in JSON. Simply provide the answer text.
-  If the answer is based only on user data, mention 'User Information' in your response.
-
-  <example>
-  ✅ Example Output:
-  Security policies are regularly reviewed [R1-2]. Updates are implemented quarterly [R2-5].
-  </example>
+  Return:
+  - Answer (markdown with citations)
+  - Confidence: Very High | High | Medium | Low
   {% endif %}
 </output_format>
+
 """
 
 
