@@ -716,11 +716,11 @@ class DataSourceEntitiesProcessor:
                     to_collection=CollectionNames.RECORDS.value,
                     collection=CollectionNames.PERMISSION.value
                 )
-                self.logger.info(f"Deleted {deleted_count} old permission edge(s) for record: {record.id}")
+                self.logger.debug("Deleted %d old permission edge(s) for record: %s", deleted_count, record.id)
 
                 # Step 2: Add the new permissions by reusing the existing helper method.
                 if permissions:
-                    self.logger.info(f"Adding {len(permissions)} new permission edge(s) for record: {record.id}")
+                    self.logger.debug("Adding %d new permission edge(s) for record: %s", len(permissions), record.id)
                     await self._handle_record_permissions(record, permissions, tx_store)
                 # if record comes with inherit permissions true create inherit permissions edge else check if inherit permissions edge exists and delete it
                 if record.inherit_permissions:
@@ -763,7 +763,7 @@ class DataSourceEntitiesProcessor:
         record_group_id = await self._handle_record_group(record, tx_store)
 
         if existing_record is None:
-            self.logger.info("New record: %s", record)
+            self.logger.debug("New record: %s", record)
             await self._handle_new_record(record, tx_store)
         else:
             record.id = existing_record.id
@@ -1206,7 +1206,6 @@ class DataSourceEntitiesProcessor:
                     user_group.org_id = self.org_id
 
                     self.logger.info(f"Processing user group: {user_group.name} with id {user_group.id}")
-                    self.logger.debug(f"Processing user group permissions: {members}")
 
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(
@@ -1290,7 +1289,6 @@ class DataSourceEntitiesProcessor:
                     role.org_id = self.org_id
 
                     self.logger.info(f"Processing app role: {role.name}")
-                    self.logger.info(f"Processing role members: {members}")
 
                     # Check if the app role already exists in the DB
                     existing_app_role = await tx_store.get_app_role_by_external_id(
