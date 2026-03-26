@@ -142,17 +142,20 @@ class EventProcessor:
             False if no duplicate found (caller should proceed with processing)
         """
         # Calculate MD5 from content
-        md5_checksum = doc.get("md5Checksum")
+        existing_md5_checksum = doc.get("md5Checksum")
         size_in_bytes = doc.get("sizeInBytes")
         record_type = doc.get("recordType")
+        md5_checksum = None
 
-        if md5_checksum is None and content:
+        if content:
             if isinstance(content, str):
                 content = content.encode('utf-8')
             md5_checksum = hashlib.md5(content).hexdigest()
-            doc.update({"md5Checksum": md5_checksum})
+            if existing_md5_checksum != md5_checksum:
+                doc.update({"md5Checksum": md5_checksum})
+                await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            
             self.logger.info(f"🚀 Calculated md5_checksum: {md5_checksum} for record type: {record_type}")
-            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
 
         if not md5_checksum:
             return False
