@@ -154,7 +154,7 @@ class EventProcessor:
             if existing_md5_checksum != md5_checksum:
                 doc.update({"md5Checksum": md5_checksum})
                 await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-            
+
             self.logger.info("🚀 Calculated md5_checksum: %s for record type: %s", md5_checksum, record_type)
 
         if not md5_checksum:
