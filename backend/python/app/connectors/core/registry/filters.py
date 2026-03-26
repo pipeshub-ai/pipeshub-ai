@@ -226,6 +226,7 @@ class SyncFilterKey(str, Enum):
     SITE_IDS = "site_ids"
     SITE_NAMES = "site_names"
     CHANNEL_IDS = "channel_ids"
+    CHANNEL_TYPES = "channel_types"
     BOOK_IDS = "book_ids"
     GROUP_IDS = "group_ids"
 
@@ -281,6 +282,10 @@ class IndexingFilterKey(str, Enum):
     VIEWS = "index_stage_views"
     STAGE_FILES = "index_stage_files"
     MAX_ROWS_PER_TABLE = "max_rows_per_table"
+    THREADS = "threads"
+    BOT_MESSAGES = "bot_messages"
+    LINKS = "links"
+
     # Child content types (generic)
     COMMENTS = "comments"
     ATTACHMENTS = "attachments"
@@ -380,7 +385,6 @@ class FilterField:
     no_implicit_operator_default: bool = False
     options: list[str] = dataclass_field(default_factory=list)
     option_source_type: OptionSourceType = OptionSourceType.MANUAL
-
     def __post_init__(self) -> None:
         """Validate configuration"""
 

@@ -168,6 +168,30 @@ qna_prompt_instructions_1 = """
     - If required tables belong to different connector_id values or databases/connectors, do NOT attempt a cross-source JOIN in one SQL. Execute separate queries per source and aggregate results in the final answer.
   </tool>
 {% endif %}
+{% if has_slack_connector %}
+  <tool>
+    You also have access to a tool called "fetch_slack_thread" that returns every message and file inside a Slack thread.
+
+    **When to use fetch_slack_thread:**
+    - The retrieved context includes a Slack record whose metadata shows `recordGroupType: SLACK_THREAD` (a thread-burst record), AND the user is asking about the thread's discussion, decisions, conclusion, or any reply you cannot see in the provided blocks.
+    - The retrieved context includes a Slack channel message that is itself a thread parent (its metadata shows it has replies), AND the user is asking about what was discussed in that thread.
+    - Without expanding the thread you would only have a partial view of the conversation.
+
+    **When NOT to use:**
+    - The record is a regular Slack channel message (`recordGroupType: SLACK_CHANNEL`) that is not a thread parent — there is no thread to expand.
+    - The provided blocks already contain enough of the thread to answer the query.
+
+    **How to use:**
+    - record_id: The exact `Record ID :` value of a Slack thread record (or a thread-parent channel message) from the context. Do NOT invent or guess IDs.
+    - reason: Brief explanation of why the full thread is needed.
+
+    **CRITICAL RULES:**
+    - Pass the Record ID exactly as shown in the context.
+    - One call per thread. Do not call again for the same thread in the same turn.
+    - If the tool returns `ok: false`, the record is not a Slack thread — do not retry, just answer from the blocks you already have.
+    - Returned records share the same Record ID / Citation ID conventions as the records in the original context, so cite them the same way.
+  </tool>
+{% endif %}
 </tools>
 
 <context>

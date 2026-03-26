@@ -18,7 +18,7 @@ import unicodedata
 import uuid
 from collections import defaultdict
 from logging import Logger
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import Request
 from app.config.configuration_service import ConfigurationService
@@ -45,6 +45,7 @@ from app.models.entities import (
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    MessageRecord,
     Person,
     ProductRecord,
     ProjectRecord,
@@ -72,6 +73,7 @@ from app.schema.arango.documents import (
     link_record_schema,
     mail_record_schema,
     meeting_record_schema,
+    message_record_schema,
     orgs_schema,
     people_schema,
     product_record_schema,
@@ -128,6 +130,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.FILES.value, file_record_schema),
     (CollectionNames.LINKS.value, link_record_schema),
     (CollectionNames.MAILS.value, mail_record_schema),
+    (CollectionNames.MESSAGES.value, message_record_schema),
     (CollectionNames.WEBPAGES.value, webpage_record_schema),
     (CollectionNames.COMMENTS.value, comment_record_schema),
     (CollectionNames.PEOPLE.value, people_schema),
@@ -2786,6 +2789,55 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             return None
 
+    async def find_slack_burst_record_by_ts(
+        self,
+        connector_id: str,
+        channel_id: str,
+        ts: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[MessageRecord]:
+        """
+        Find the Slack burst MessageRecord whose startTs <= ts <= endTs.
+
+        Joins the MESSAGES collection (which holds startTs / endTs / slackSubtype)
+        with the RECORDS collection (which holds connectorId / externalGroupId) via
+        the shared document _key.
+
+        Returns the first matching MessageRecord, or None.
+        """
+        query = f"""
+            FOR m IN {CollectionNames.MESSAGES.value}
+                FILTER m.startTs != null
+                AND    m.endTs   != null
+                AND    m.startTs <= @ts
+                AND    m.endTs   >= @ts
+                AND    m.startTs != m.endTs
+                AND    m.slackSubtype == "burst"
+                LET r = DOCUMENT({CollectionNames.RECORDS.value}, m._key)
+                FILTER r != null
+                AND    r.connectorId     == @connector_id
+                AND    r.externalGroupId == @channel_id
+                LIMIT 1
+                RETURN {{message: m, record: r}}
+        """
+        try:
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "connector_id": connector_id,
+                    "channel_id": channel_id,
+                    "ts": ts,
+                },
+                txn_id=transaction,
+            )
+            if not results:
+                return None
+            row = results[0]
+            return MessageRecord.from_arango_record(row["message"], row["record"])
+        except Exception as exc:
+            self.logger.error(f"❌ find_slack_burst_record_by_ts({ts}) failed: {exc}")
+            return None
+
     async def get_record_path(
         self,
         record_id: str,
@@ -3698,6 +3750,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return FileRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.MAILS.value:
                 return MailRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.MESSAGES.value:
+                return MessageRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.WEBPAGES.value:
                 return WebpageRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.TICKETS.value:

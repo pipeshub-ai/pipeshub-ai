@@ -54,6 +54,7 @@ from app.models.entities import (
     MeetingRecord,
     Person,
     ProductRecord,
+    MessageRecord,
     ProjectRecord,
     PullRequestRecord,
     Record,
@@ -542,6 +543,22 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX mail_thread IF NOT EXISTS "
             "FOR (n:Mail) ON (n.threadId, n.conversationIndex)"
+        )
+
+        # ==================== MESSAGE INDEXES (Medium Priority) ====================
+
+        # SINGLE: threadId (for thread-based queries and conversation threading)
+        # Pattern: MATCH (r:Record)-[:IS_OF_TYPE]->(m:Message {threadId: $tid})
+        indexes.append(
+            "CREATE INDEX message_thread_id IF NOT EXISTS "
+            "FOR (n:Message) ON (n.threadId)"
+        )
+
+        # COMPOSITE: Record recordType + externalGroupId (for channel-based message queries)
+        # Pattern: MATCH (r:Record {recordType: "MESSAGE", externalGroupId: $channelId})
+        indexes.append(
+            "CREATE INDEX record_message_channel IF NOT EXISTS "
+            "FOR (n:Record) ON (n.recordType, n.externalGroupId)"
         )
 
         return indexes
@@ -1969,6 +1986,23 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             return None
 
+    async def find_slack_burst_record_by_ts(
+        self,
+        connector_id: str,
+        channel_id: str,
+        ts: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[Record]:
+        """
+        Find the Slack burst MessageRecord whose startTs <= ts <= endTs.
+
+        NOTE: Neo4j implementation is not yet supported. Returns None.
+        """
+        self.logger.warning(
+            "find_slack_burst_record_by_ts is not implemented for Neo4j provider"
+        )
+        return None
+
     async def get_record_key_by_external_id(
         self,
         external_id: str,
@@ -2203,6 +2237,8 @@ class Neo4jProvider(IGraphDBProvider):
                 return FileRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.MAILS.value:
                 return MailRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.MESSAGES.value:
+                return MessageRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.WEBPAGES.value:
                 return WebpageRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.TICKETS.value:
@@ -18735,14 +18771,15 @@ class Neo4jProvider(IGraphDBProvider):
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
             if not app:
                 return None
-            user_id = app.get("createdBy")
-            if user_id is None:
+            created_by = app.get("createdBy")
+            if not created_by:
                 return None
-            user_doc  =  await self.get_user_by_user_id(user_id)
-            if user_doc is None:
+            user_doc = await self.get_user_by_user_id(
+                user_id=created_by
+            )
+            if not user_doc:
                 return None
-            # NOTE: This conversion of type can be removed once get_user_by_user_id returns User object
-            return  User.from_arango_user(user_doc) if isinstance(user_doc, dict) else user_doc
+            return User.from_arango_user(user_doc)
         except Exception as e:
             self.logger.error("❌ Failed to get app creator user: %s", str(e))
             return None
