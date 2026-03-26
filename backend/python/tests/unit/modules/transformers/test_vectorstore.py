@@ -1004,17 +1004,11 @@ class TestCreateCustomTokenizer:
     def test_returns_language_instance(self):
         """_create_custom_tokenizer returns a Language instance."""
         vs = _make_vectorstore()
-        # Use the already-initialized nlp from the vectorstore
-        # _create_custom_tokenizer should add pipes if missing
-        nlp = vs.nlp
-        # The mock nlp doesn't have pipe_names, so let's just test with a real one
         import spacy
-        nlp = spacy.load("en_core_web_sm")
-        # Remove any previously added pipes to test the adding logic
-        if "sentencizer" in nlp.pipe_names:
-            nlp.remove_pipe("sentencizer")
-        if "custom_sentence_boundary" in nlp.pipe_names:
-            nlp.remove_pipe("custom_sentence_boundary")
+        # blank("en") has no "parser" pipe; add one so _create_custom_tokenizer
+        # can insert sentencizer before it (mirrors en_core_web_sm layout).
+        nlp = spacy.blank("en")
+        nlp.add_pipe("parser")
         result = vs._create_custom_tokenizer(nlp)
         assert result is not None
         assert "sentencizer" in result.pipe_names
@@ -1027,19 +1021,35 @@ class TestCreateCustomTokenizer:
 class TestGetSharedNlp:
     """Tests for the _get_shared_nlp module-level function."""
 
+    @staticmethod
+    def _blank_with_parser():
+        """Return a blank English model with a parser pipe (mimics en_core_web_sm)."""
+        import spacy
+        nlp = spacy.blank("en")
+        nlp.add_pipe("parser")
+        return nlp
+
     def test_returns_language_instance(self):
         """_get_shared_nlp returns a spaCy Language instance."""
-        from app.modules.transformers.vectorstore import _get_shared_nlp
-        nlp = _get_shared_nlp()
         from spacy.language import Language
-        assert isinstance(nlp, Language)
+        with patch("app.modules.transformers.vectorstore.spacy.load", return_value=self._blank_with_parser()):
+            from app.modules.transformers.vectorstore import _get_shared_nlp
+            # Clear cache so we exercise the creation path
+            if hasattr(_get_shared_nlp, "_cached_nlp"):
+                delattr(_get_shared_nlp, "_cached_nlp")
+            nlp = _get_shared_nlp()
+            assert isinstance(nlp, Language)
 
     def test_caching_returns_same_instance(self):
         """Subsequent calls return the same cached instance."""
-        from app.modules.transformers.vectorstore import _get_shared_nlp
-        nlp1 = _get_shared_nlp()
-        nlp2 = _get_shared_nlp()
-        assert nlp1 is nlp2
+        with patch("app.modules.transformers.vectorstore.spacy.load", return_value=self._blank_with_parser()):
+            from app.modules.transformers.vectorstore import _get_shared_nlp
+            # Clear cache to start fresh
+            if hasattr(_get_shared_nlp, "_cached_nlp"):
+                delattr(_get_shared_nlp, "_cached_nlp")
+            nlp1 = _get_shared_nlp()
+            nlp2 = _get_shared_nlp()
+            assert nlp1 is nlp2
 
 
 # ===================================================================
@@ -1112,26 +1122,26 @@ class TestCustomSentenceBoundary:
     def test_number_period_not_sentence_boundary(self):
         """Number followed by period should not be a sentence boundary."""
         import spacy
-        nlp = spacy.load("en_core_web_sm")
-        # Process text with number followed by period
+        nlp = spacy.blank("en")
+        nlp.add_pipe("sentencizer")
         doc = nlp("Section 1. The first item.")
         sents = list(doc.sents)
-        # The number period should not split
         assert len(sents) >= 1
 
     def test_abbreviation_not_sentence_boundary(self):
         """Common abbreviations should not cause sentence splits."""
         import spacy
-        nlp = spacy.load("en_core_web_sm")
+        nlp = spacy.blank("en")
+        nlp.add_pipe("sentencizer")
         doc = nlp("Dr. Smith went to the store.")
         sents = list(doc.sents)
-        # "Dr." should not split
         assert len(sents) <= 2
 
     def test_ellipsis_not_sentence_boundary(self):
         """Ellipsis (...) should not cause sentence splits."""
         import spacy
-        nlp = spacy.load("en_core_web_sm")
+        nlp = spacy.blank("en")
+        nlp.add_pipe("sentencizer")
         doc = nlp("Wait... I think so.")
         sents = list(doc.sents)
         assert len(sents) >= 1

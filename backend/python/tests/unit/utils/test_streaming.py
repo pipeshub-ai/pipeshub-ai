@@ -2942,11 +2942,11 @@ class TestStreamContent:
 
     @pytest.mark.asyncio
     async def test_coroutine_url_type_raises(self):
-        """Coroutine passed as signed_url raises TypeError."""
-        import asyncio
-        coro = asyncio.coroutine(lambda: None)
+        """Coroutine function passed as signed_url raises TypeError."""
+        async def _dummy():
+            return None
         with pytest.raises(TypeError):
-            async for _ in stream_content(coro):
+            async for _ in stream_content(_dummy):
                 pass
 
 

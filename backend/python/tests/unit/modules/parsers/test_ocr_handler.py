@@ -297,7 +297,7 @@ class TestOCRHandlerProcessDocument:
     async def test_process_document_success(self, logger):
         """process_document calls strategy.load_document and returns result."""
         mock_strategy = MagicMock()
-        mock_strategy.load_document = MagicMock(return_value=asyncio.coroutine(lambda: None)())
+        mock_strategy.load_document = AsyncMock(return_value=None)
         mock_strategy.document_analysis_result = {"pages": [{"text": "Hello"}]}
 
         # Bypass __init__ strategy creation

@@ -444,7 +444,9 @@ class TestSafeApiCall:
     @pytest.mark.asyncio
     async def test_safe_api_call_success(self):
         connector, *_ = _make_connector()
-        result = await connector._safe_api_call(asyncio.coroutine(lambda: "ok")())
+        async def _return_ok():
+            return "ok"
+        result = await connector._safe_api_call(_return_ok())
         assert result == "ok"
 
     @pytest.mark.asyncio

@@ -8,7 +8,7 @@ Covers:
 import base64
 import io
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -558,12 +558,7 @@ class TestExtractMetadata:
             "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
             return_value=fake_classification,
         ):
-            mock_graph.get_departments = MagicMock(return_value=[])
-            # Make get_departments a coroutine
-            import asyncio
-            mock_graph.get_departments = MagicMock(
-                side_effect=lambda *a, **k: asyncio.coroutine(lambda: ["Engineering"])()
-            )
+            mock_graph.get_departments = AsyncMock(return_value=["Engineering"])
 
             result = await ext.extract_metadata(blocks, "org-1")
 
