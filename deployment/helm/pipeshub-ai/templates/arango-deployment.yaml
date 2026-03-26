@@ -1,3 +1,4 @@
+{{- if .Values.arango.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -87,4 +88,5 @@ spec:
   {{- if .Values.arango.persistence.storageClass }}
   storageClassName: {{ .Values.arango.persistence.storageClass | quote }}
   {{- end }}
+{{- end }}
 {{- end }}

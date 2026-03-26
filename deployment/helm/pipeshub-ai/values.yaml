@@ -128,6 +128,7 @@ redis:
     storageClass: "" # Fill
 
 arango:
+  enabled: false
   image:
     repository: arangodb
     tag: 3.12.4
@@ -162,6 +163,7 @@ arango:
       - ALL
 
 etcd:
+  enabled: false
   image:
     repository: quay.io/coreos/etcd
     tag: v3.5.17
@@ -284,10 +286,10 @@ qdrant:
   affinity: {}
   apiKey: "api_key"
 
-# Neo4j (optional). When enabled, the app uses Neo4j as the graph database (DATA_STORE=neo4j).
+# Neo4j (enabled by default). When enabled, the app uses Neo4j as the graph database (DATA_STORE=neo4j).
 # Override neo4j.auth.password in production (e.g. --set neo4j.auth.password=... or values from secret manager).
 neo4j:
-  enabled: false
+  enabled: true
   image:
     repository: neo4j
     tag: "5.26.0"

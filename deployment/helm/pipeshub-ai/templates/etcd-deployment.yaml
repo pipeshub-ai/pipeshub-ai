@@ -1,3 +1,4 @@
+{{- if .Values.etcd.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -124,4 +125,5 @@ spec:
   {{- if .Values.etcd.persistence.storageClass }}
   storageClassName: {{ .Values.etcd.persistence.storageClass | quote }}
   {{- end }}
+{{- end }}
 {{- end }}
