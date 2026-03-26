@@ -103,7 +103,7 @@ jobs:
       - name: Install dependencies
         run: |
           cd backend/python
-          uv pip install --system pytest pytest-asyncio coverage
+          uv pip install --system pytest pytest-asyncio pytest-timeout coverage
           uv pip install --system -e .
 
       - name: Run unit tests with coverage
