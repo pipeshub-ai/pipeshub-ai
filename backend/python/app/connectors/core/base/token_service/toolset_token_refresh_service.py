@@ -892,6 +892,7 @@ class ToolsetTokenRefreshService:
         )
         await self.schedule_token_refresh(config_path, toolset_type, token)
 
+    # TODO: Migrate to 3.12
     async def _refresh_toolset_token(self, config_path: str, toolset_type: str) -> None:
         """
         Check token status and refresh if needed, then schedule next refresh.

@@ -1,6 +1,6 @@
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py312"
 src = ["."]
 
 [tool.ruff.lint]
@@ -164,7 +164,7 @@ authors = [
 description = "AI Pipeline Service"
 version = "0.1"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.12"
 dependencies = [
     "aioboto3>=12.0.0",
     "aiohttp==3.13.3",
@@ -235,8 +235,8 @@ dependencies = [
     "msgraph-sdk==1.16.0",
     "nats-py==2.1.0",
     "notion-client==2.2.1",
-    "nltk==3.9.1",
-    "numpy<2",
+    "nltk==3.9.4",
+    "numpy==2.3.2",
     "ocrmypdf==16.8.0",
     "opencv-python-headless==4.11.0.86",
     "openpyxl==3.1.5",
@@ -245,7 +245,7 @@ dependencies = [
     "Pillow<12.0.0",
     "pdf2image==1.17.0",
     "pillow-avif-plugin==1.5.5",
-    "protobuf==3.20.3",
+    "protobuf>=4.25.0,<6",
     "pydantic==2.12.5",
     "py-trello==0.20.1",
     "PyMuPDF==1.24.14",
@@ -260,11 +260,11 @@ dependencies = [
     "qdrant-client==1.13.1",
     "redis==5.2.1",
     "requests-toolbelt==1.0.0",
-    "requests==2.32.5",
+    "requests==2.33.0",
     "ruff==0.11.9",
     "sentence-transformers==3.4.1",
     "slack-sdk==3.27.0",
-    "spacy<=3.7.5",
+    "spacy==3.8.2",
     "tenacity==8.5.0",
     "thrift>=0.16.0",
     "uuid==1.30",
@@ -287,7 +287,7 @@ module = "app.indexing_main:run"
 dev = ["ruff", "pyright"]
 
 [tool.pyright]
-pythonVersion = "3.10"
+pythonVersion = "3.12"
 typeCheckingMode = "strict"
 include = ["app"]
 exclude = ["venv", ".venv", "**/__pycache__", "**/node_modules"]
@@ -338,3 +338,6 @@ reportMatchNotExhaustive = "warning"
 # Informational quality signals, not type-safety blockers
 reportImportCycles = "warning"
 reportDeprecated = "warning"
+
+[tool.uv.sources]
+etcd3 = { git = "https://github.com/kragniz/python-etcd3.git", rev = "e58a899579ba416449c4e225b61f039457c8072a" }

@@ -11,7 +11,9 @@
 	prod-docker-up prod-docker-down prod-docker-stop prod-docker-clean prod-docker-hard-clean \
 	check-and-kill-ports \
 	lint lint-python lint-python-ruff lint-python-pyright lint-nodejs \
-	test-nodejs test-nodejs-coverage
+	test-nodejs test-nodejs-coverage \
+	test-python test-python-coverage \
+	test test-coverage
 
 # ==============================================================================
 # Configuration
@@ -98,6 +100,10 @@ help: ## Show this help message
 	@echo "$(GREEN)Testing:$(NC)"
 	@echo "  make test-nodejs          - Run Node.js unit tests"
 	@echo "  make test-nodejs-coverage - Run Node.js unit tests with coverage"
+	@echo "  make test-python          - Run Python unit tests"
+	@echo "  make test-python-coverage - Run Python unit tests with coverage report"
+	@echo "  make test                 - Run all unit tests (Node.js + Python)"
+	@echo "  make test-coverage        - Run all unit tests with coverage reports"
 	@echo ""
 	@echo "$(GREEN)Linting (changed files only):$(NC)"
 	@echo "  make lint                 - Lint all changed files (Python + Node.js)"
@@ -137,7 +143,7 @@ install-deps-mac: ## Install system dependencies on macOS
 	@echo "$(BLUE)Installing macOS dependencies...$(NC)"
 	@echo "$(YELLOW)Installing Homebrew if not already installed...$(NC)"
 	@bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || echo "Homebrew already installed"
-	brew install python@3.10 || true
+	brew install python@3.12 || true
 	brew install libreoffice || true
 	brew install ocrmypdf ghostscript unpaper qpdf tesseract || true
 	@echo "$(BLUE)Installing uv package manager...$(NC)"
@@ -146,7 +152,7 @@ install-deps-mac: ## Install system dependencies on macOS
 
 install-deps-windows: ## Show Windows installation instructions
 	@echo "$(YELLOW)Windows Installation Instructions:$(NC)"
-	@echo "1. Install Python 3.10 from python.org"
+	@echo "1. Install Python 3.12 from python.org"
 	@echo "2. Install Tesseract OCR if you need to test OCR functionality"
 	@echo "3. Consider using WSL2 for a Linux-like environment"
 	@echo "4. Run: make install-deps-linux in WSL2"
@@ -412,7 +418,7 @@ setup-python: ## Setup Python backend (create venv and install dependencies)
 	fi
 	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
 		echo "$(BLUE)Creating Python virtual environment...$(NC)"; \
-		cd $(ROOT_DIR)/backend/python && uv venv venv --python 3.10; \
+		cd $(ROOT_DIR)/backend/python && uv venv venv --python 3.12; \
 	fi
 	@echo "$(BLUE)Installing Python dependencies...$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install "setuptools<75" && uv pip install -e . --no-build-isolation-package grpcio-tools
@@ -651,6 +657,23 @@ test-nodejs-coverage: ## Run Node.js unit tests with coverage
 	@cd $(ROOT_DIR)/backend/nodejs/apps && npm run test:coverage
 	@echo "$(GREEN)Node.js unit tests with coverage complete!$(NC)"
 	@echo "$(YELLOW)Coverage report available at: backend/nodejs/apps/coverage/$(NC)"
+
+test-python: ## Run Python unit tests (parallel)
+	@echo "$(BLUE)Running Python unit tests (parallel)...$(NC)"
+	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 -q
+	@echo "$(GREEN)Python unit tests complete!$(NC)"
+
+test-python-coverage: ## Run Python unit tests with coverage report (parallel)
+	@echo "$(BLUE)Running Python unit tests with coverage (parallel)...$(NC)"
+	@cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m pytest tests/unit -n auto --dist worksteal --timeout=30 --cov=app --cov-report=term-missing --cov-report=html:coverage_html -q
+	@echo "$(GREEN)Python unit tests with coverage complete!$(NC)"
+	@echo "$(YELLOW)Coverage report available at: backend/python/coverage_html/$(NC)"
+
+test: test-nodejs test-python ## Run all unit tests (Node.js + Python)
+	@echo "$(GREEN)All unit tests complete!$(NC)"
+
+test-coverage: test-nodejs-coverage test-python-coverage ## Run all unit tests with coverage reports
+	@echo "$(GREEN)All unit tests with coverage complete!$(NC)"
 
 # ==============================================================================
 # Linting (changed files only — same as CI)

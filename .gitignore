@@ -199,3 +199,4 @@ backend/python/requirements.txt
 
 # TypeScript build cache files
 *.tsbuildinfo
+backend/python/r.txt

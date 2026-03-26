@@ -5,6 +5,10 @@ import mongoose from 'mongoose';
 import { OrgController } from '../../../../src/modules/user_management/controller/org.controller';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { OrgLogos } from '../../../../src/modules/user_management/schema/orgLogo.schema';
+import { Users } from '../../../../src/modules/user_management/schema/users.schema';
+import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
+import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
+import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 
 describe('OrgController', () => {
   let controller: OrgController;
@@ -413,6 +417,20 @@ describe('OrgController', () => {
   });
 
   describe('createOrg', () => {
+    let mockPrometheusService: any;
+
+    beforeEach(() => {
+      mockPrometheusService = {
+        recordActivity: sinon.stub(),
+      };
+
+      const mockContainer = {
+        get: sinon.stub().returns(mockPrometheusService),
+      };
+
+      req.container = mockContainer;
+    });
+
     it('should throw NotFoundError when container is missing', async () => {
       req.container = undefined;
 
@@ -421,6 +439,239 @@ describe('OrgController', () => {
         expect.fail('Should have thrown');
       } catch (error: any) {
         expect(error.message).to.equal('Container not found');
+      }
+    });
+
+    it('should throw error for weak password (no uppercase, no special char)', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'abcdefgh1',
+      };
+
+      try {
+        await controller.createOrg(req, res);
+        expect.fail('Should have thrown');
+      } catch (error: any) {
+        expect(error.message).to.include(
+          'Password should have minimum 8 characters with at least one uppercase',
+        );
+      }
+    });
+
+    it('should throw error for password without digits', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'Abcdefgh!',
+      };
+
+      try {
+        await controller.createOrg(req, res);
+        expect.fail('Should have thrown');
+      } catch (error: any) {
+        expect(error.message).to.include('Password should have minimum 8 characters');
+      }
+    });
+
+    it('should throw error for password without special characters', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'Abcdefg12',
+      };
+
+      try {
+        await controller.createOrg(req, res);
+        expect.fail('Should have thrown');
+      } catch (error: any) {
+        expect(error.message).to.include('Password should have minimum 8 characters');
+      }
+    });
+
+    it('should throw error when org already exists', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+
+      sinon.stub(Org, 'countDocuments').resolves(1);
+
+      try {
+        await controller.createOrg(req, res);
+        expect.fail('Should have thrown');
+      } catch (error: any) {
+        expect(error.message).to.equal('There is already an organization');
+      }
+    });
+
+    it('should throw error for email without valid domain', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'invalid-email',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+
+      sinon.stub(Org, 'countDocuments').resolves(0);
+
+      try {
+        await controller.createOrg(req, res);
+        expect.fail('Should have thrown');
+      } catch (error: any) {
+        expect(error.message).to.include('Please specify a correct domain name');
+      }
+    });
+
+    it('should throw error for email with multiple @ signs', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'user@domain@extra.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+
+      sinon.stub(Org, 'countDocuments').resolves(0);
+
+      try {
+        await controller.createOrg(req, res);
+        expect.fail('Should have thrown');
+      } catch (error: any) {
+        expect(error.message).to.include('Please specify a correct domain name');
+      }
+    });
+
+    it('should successfully create org with valid individual data', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+
+      sinon.stub(Org, 'countDocuments').resolves(0);
+
+      const mockOrgId = new mongoose.Types.ObjectId();
+      const mockUserId = new mongoose.Types.ObjectId();
+
+      sinon.stub(Org.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups.prototype, 'save').resolves();
+      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+
+      try {
+        await controller.createOrg(req, res);
+        expect(res.status.calledWith(200)).to.be.true;
+        expect(res.json.calledOnce).to.be.true;
+      } catch (error: any) {
+        // The controller wraps all errors in InternalServerError,
+        // so if any mock is incomplete it may throw here.
+        // A successful test should not reach this catch.
+        expect.fail(`Unexpected error: ${error.message}`);
+      }
+    });
+
+    it('should successfully create org with valid business data', async () => {
+      req.body = {
+        accountType: 'business',
+        contactEmail: 'admin@acme.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+        registeredName: 'Acme Corp',
+      };
+
+      sinon.stub(Org, 'countDocuments').resolves(0);
+
+      sinon.stub(Org.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups.prototype, 'save').resolves();
+      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+
+      try {
+        await controller.createOrg(req, res);
+        expect(res.status.calledWith(200)).to.be.true;
+        expect(res.json.calledOnce).to.be.true;
+      } catch (error: any) {
+        expect.fail(`Unexpected error: ${error.message}`);
+      }
+    });
+
+    it('should send email when sendEmail is true', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+        sendEmail: true,
+      };
+
+      sinon.stub(Org, 'countDocuments').resolves(0);
+      sinon.stub(Org.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups.prototype, 'save').resolves();
+      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+
+      try {
+        await controller.createOrg(req, res);
+        expect(mockMailService.sendMail.calledOnce).to.be.true;
+      } catch (error: any) {
+        expect.fail(`Unexpected error: ${error.message}`);
+      }
+    });
+
+    it('should not send email when sendEmail is falsy', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+
+      sinon.stub(Org, 'countDocuments').resolves(0);
+      sinon.stub(Org.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups.prototype, 'save').resolves();
+      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+
+      try {
+        await controller.createOrg(req, res);
+        expect(mockMailService.sendMail.called).to.be.false;
+      } catch (error: any) {
+        expect.fail(`Unexpected error: ${error.message}`);
+      }
+    });
+
+    it('should publish OrgCreatedEvent and NewUserEvent on success', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+      };
+
+      sinon.stub(Org, 'countDocuments').resolves(0);
+      sinon.stub(Org.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups.prototype, 'save').resolves();
+      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+
+      try {
+        await controller.createOrg(req, res);
+        expect(mockEventService.start.calledOnce).to.be.true;
+        expect(mockEventService.publishEvent.calledTwice).to.be.true;
+        expect(mockEventService.stop.calledOnce).to.be.true;
+      } catch (error: any) {
+        expect.fail(`Unexpected error: ${error.message}`);
       }
     });
   });

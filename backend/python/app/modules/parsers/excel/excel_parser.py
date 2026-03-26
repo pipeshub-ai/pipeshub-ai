@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, cast
+from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -52,9 +52,7 @@ MAX_HEADER_DETECTION_ROWS = 4  # Check first 4 rows for multi-row headers
 MIN_ROWS_FOR_HEADER_ANALYSIS = 1  # Minimum number of rows required for header analysis
 MAX_HEADER_COUNT_RETRIES = 2  # Maximum retries when LLM returns wrong header count
 EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, int(os.getenv("EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT", "500")))
-EXCEL_MAX_TABLE_ROWS_TO_INDEX = max(1, int(os.getenv("EXCEL_MAX_TABLE_ROWS_TO_INDEX", "2000")))
-EXCEL_ROW_BLOCK_CHUNK_THRESHOLD = int(os.getenv("EXCEL_ROW_BLOCK_CHUNK_THRESHOLD", "2000"))
-EXCEL_ROW_BLOCK_CHUNK_SIZE = max(1, int(os.getenv("EXCEL_ROW_BLOCK_CHUNK_SIZE", "100")))
+EXCEL_MAX_TABLE_ROWS_TO_INDEX = max(1, int(os.getenv("EXCEL_MAX_TABLE_ROWS_TO_INDEX", "20000")))
 
 
 # Built-in Excel date format codes mapping
@@ -722,9 +720,6 @@ class ExcelParser:
                     row += 1
                     continue
 
-                if col == 1:
-                    continue
-
             self.logger.info(f"Found {len(tables)} tables in sheet: {sheet.title}")
             return tables
 
@@ -739,11 +734,11 @@ class ExcelParser:
             if isinstance(cell, MergedCell):
                 # Look for the merged range that contains this cell.
                 merged_value = None
-                worksheet = cast(Worksheet, cell.parent)
-                for merged_range in worksheet.merged_cells.ranges:
+
+                for merged_range in cell.parent.merged_cells.ranges:
                     if cell.coordinate in merged_range:
                         # Get the top-left cell of the merged range
-                        top_left_cell = worksheet.cell(
+                        top_left_cell = cell.parent.cell(
                             row=merged_range.min_row, column=merged_range.min_col
                         )
                         merged_value = top_left_cell.value
@@ -1401,38 +1396,9 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 block_groups.append(table_group)
                 sheet_table_group_indices.append(table_group_index)
 
-                rows_for_blocks = rows
-                if len(rows) > EXCEL_ROW_BLOCK_CHUNK_THRESHOLD:
-                    rows_for_blocks = []
-                    for chunk_start in range(0, len(rows), EXCEL_ROW_BLOCK_CHUNK_SIZE):
-                        chunk_rows = rows[chunk_start:chunk_start + EXCEL_ROW_BLOCK_CHUNK_SIZE]
-                        if not chunk_rows:
-                            continue
-
-                        start_row_num = int(chunk_rows[0].get("row_num") or (chunk_start + 1))
-                        end_row_num = int(chunk_rows[-1].get("row_num") or (chunk_start + len(chunk_rows)))
-                        chunk_text = "\n".join(
-                            row.get("natural_language_text", "")
-                            for row in chunk_rows
-                            if row.get("natural_language_text")
-                        )
-
-                        rows_for_blocks.append(
-                            {
-                                "natural_language_text": chunk_text,
-                                "row_num": start_row_num,
-                                "row_end_num": end_row_num,
-                                "row_count": len(chunk_rows),
-                            }
-                        )
-
-                    self.logger.warning(
-                        f"Large Excel table detected with {len(rows)} rows. "
-                        f"Chunking row blocks into {len(rows_for_blocks)} blocks of up to {EXCEL_ROW_BLOCK_CHUNK_SIZE} rows each."
-                    )
 
                 # Create TABLE_ROW blocks under this table
-                for i, row in enumerate(rows_for_blocks):
+                for i, row in enumerate(rows):
                     block_index = len(blocks)
                     blocks.append(
                         Block(

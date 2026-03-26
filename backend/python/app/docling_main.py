@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         set_docling_service(app.state.docling_service)
     except Exception as e:
         if logger is not None:
-            logger.error(f"❌ Failed to initialize Docling service: {str(e)}")
+            logger.error("❌ Failed to initialize Docling service: %s", str(e))
         raise
 
     yield
@@ -155,6 +155,8 @@ async def health_check() -> JSONResponse:
 def run(host: str = "0.0.0.0", port: int = 8081, *, reload: bool = False) -> None:
     """Run the Docling service"""
     workers = max(1, int(os.getenv("DOCLING_UVICORN_WORKERS", "1")))
+    if reload and workers > 1:
+        workers = 1
     uvicorn.run(
         "app.docling_main:app",
         host=host,

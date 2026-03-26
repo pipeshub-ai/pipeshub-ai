@@ -1450,18 +1450,32 @@ describe('UserController', () => {
         email: 'oldemail@test.com',
         fullName: 'Test User',
         save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ _id: '507f1f77bcf86cd799439011', email: 'newemail@test.com' }),
+        toObject: sinon.stub().returns({ _id: '507f1f77bcf86cd799439011', email: 'oldemail@test.com' }),
       };
 
       const findOneStub = sinon.stub(Users, 'findOne');
       findOneStub.onFirstCall().resolves(mockUser as any); // Find user
       findOneStub.onSecondCall().resolves(null); // No duplicate
+      const emailChangeStub = sinon
+        .stub(controller as any, 'emailChange')
+        .resolves({ statusCode: 200, data: {} });
 
       await controller.updateUser(req, res, next);
 
       if (!next.called) {
-        expect(mockUser.email).to.equal('newemail@test.com');
+        expect(emailChangeStub.calledOnce).to.be.true;
+        expect(emailChangeStub.firstCall.args[0]).to.equal('newemail@test.com');
+        expect(emailChangeStub.firstCall.args[1]).to.equal('newemail@test.com');
+        expect(mockUser.email).to.equal('oldemail@test.com');
         expect(mockUser.save.calledOnce).to.be.true;
+        expect(res.json.calledOnce).to.be.true;
+        expect(res.json.firstCall.args[0]).to.deep.equal({
+          _id: '507f1f77bcf86cd799439011',
+          email: 'oldemail@test.com',
+          meta: {
+            emailChangeMailStatus: 'sent',
+          },
+        });
       }
     });
 
