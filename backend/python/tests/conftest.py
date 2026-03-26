@@ -20,6 +20,14 @@ def pytest_unconfigure(config):
         os._exit(getattr(config, "_exitcode", 0))
 
 
+
+def pytest_unconfigure(config):
+    """Force-exit the process when running under xdist to prevent hangs
+    caused by unawaited async coroutines keeping worker threads alive."""
+    if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
+        os._exit(getattr(config, "_exitcode", 0))
+
+
 # ---------------------------------------------------------------------------
 # Auto-mock optional third-party modules that may not be installed in the
 # test environment.  This runs at *import time* — before any test module or
