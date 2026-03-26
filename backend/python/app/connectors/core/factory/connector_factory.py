@@ -31,6 +31,7 @@ from app.connectors.sources.dropbox.connector import DropboxConnector
 from app.connectors.sources.dropbox_individual.connector import (
     DropboxIndividualConnector,
 )
+from app.connectors.sources.folder_sync.connector import FolderSyncConnector
 from app.connectors.sources.github.connector import GithubConnector
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
@@ -90,6 +91,7 @@ class ConnectorFactory:
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
         "rss": RSSConnector,
+        "foldersync": FolderSyncConnector,
         "bookstack": BookStackConnector,
         "github": GithubConnector,
         "s3": S3Connector,
