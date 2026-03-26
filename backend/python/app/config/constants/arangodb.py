@@ -68,6 +68,7 @@ class Connectors(Enum):
     UNKNOWN = "UNKNOWN"
 
     RSS = "RSS"
+    FOLDER_SYNC = "FOLDER_SYNC"
 
 
 class AppGroups(Enum):
