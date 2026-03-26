@@ -35,8 +35,7 @@ def _get_local_parse_worker_count() -> int:
         except ValueError:
             return 1
 
-    cpu_count = os.cpu_count() or 1
-    return max(1, min(4, cpu_count))
+    return 1
 
 
 LOCAL_DOCLING_PARSE_WORKERS = _get_local_parse_worker_count()
