@@ -712,11 +712,11 @@ class DataSourceEntitiesProcessor:
                     to_collection=CollectionNames.RECORDS.value,
                     collection=CollectionNames.PERMISSION.value
                 )
-                self.logger.debug(f"Deleted {deleted_count} old permission edge(s) for record: {record.id}")
+                self.logger.debug("Deleted %d old permission edge(s) for record: %s", deleted_count, record.id)
 
                 # Step 2: Add the new permissions by reusing the existing helper method.
                 if permissions:
-                    self.logger.debug(f"Adding {len(permissions)} new permission edge(s) for record: {record.id}")
+                    self.logger.debug("Adding %d new permission edge(s) for record: %s", len(permissions), record.id)
                     await self._handle_record_permissions(record, permissions, tx_store)
                 # if record comes with inherit permissions true create inherit permissions edge else check if inherit permissions edge exists and delete it
                 if record.inherit_permissions:
