@@ -108,6 +108,19 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def find_slack_burst_record_by_ts(
+        self,
+        connector_id: str,
+        channel_id: str,
+        ts: str,
+    ) -> Optional[Record]:
+        """
+        Find the Slack burst MessageRecord whose startTs <= ts <= endTs
+        for the given connector and channel.
+        """
+        pass
+
+    @abstractmethod
     async def create_record_groups_relation(self, child_id: str, parent_id: str) -> None:
         pass
 

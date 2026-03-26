@@ -297,9 +297,20 @@ file_record_schema = {
             "sizeInBytes": {"type": ["number", "null"]}, # deprecated
             "webUrl": {"type": ["string", "null"]}, # deprecated
             "mimeType": {"type": ["string", "null"]}, # deprecated
+            # Slack-specific optional fields (flat, not nested)
+            "slackFileHash": {"type": ["string", "null"]},
+            "slackCapturedAt": {"type": ["number", "null"]},
+            "slackSharedInChannels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "slackInitialComment": {"type": ["string", "null"]},
+            "slackUserId": {"type": ["string", "null"]},
+            "slackSharedBy": {"type": ["string", "null"]},
         },
         "required": ["name"],
-        "additionalProperties": False,
+        "additionalProperties": True,
     },
     "level": "strict",
     "message": "Document does not match the file record schema.",
@@ -416,9 +427,16 @@ link_record_schema = {
                 "enum": ["true", "false", "unknown"]
             },
             "linkedRecordId": {"type": ["string", "null"]},
+            # Slack-specific optional fields (flat, not nested)
+            "slackIntegrationType": {"type": ["string", "null"]},
+            "slackIntegrationMetadata": {"type": ["string", "null"]},  # JSON string (object) for Neo4j compatibility
+            "slackUnfurlData": {"type": ["string", "null"]},  # JSON string (object) for Neo4j compatibility
+            "slackServiceName": {"type": ["string", "null"]},
+            "slackSharedBy": {"type": ["string", "null"]},
+            "slackSharedAt": {"type": ["number", "null"]},
         },
         "required": ["orgId", "url", "isPublic"],
-        "additionalProperties": False,
+        "additionalProperties": True,
     },
     "level": "strict",
     "message": "Document does not match the link record schema.",
@@ -491,6 +509,62 @@ meeting_record_schema = {
     "message": "Document does not match the meeting record schema.",
 }
 
+message_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "content": {"type": ["string", "null"]},
+            # Generic fields (common across Slack, Teams, Discord, WhatsApp, etc.)
+            "threadId": {"type": ["string", "null"]},
+            "isThreadParent": {"type": "boolean", "default": False},
+            "replyCount": {"type": "number", "default": 0},
+            "replyUserIds": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "latestReplyTimestamp": {"type": ["number", "null"]},
+            "reactions": {"type": ["string", "null"]},  # JSON string (array of objects) for Neo4j compatibility
+            "mentionedUserIds": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "mentionedGroupIds": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "extractedUrls": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
+            "isEdited": {"type": "boolean", "default": False},
+            "editedTimestamp": {"type": ["number", "null"]},
+            "originalText": {"type": ["string", "null"]},
+            "authorId": {"type": ["string", "null"]},
+            "botId": {"type": ["string", "null"]},
+            "appId": {"type": ["string", "null"]},
+            "attachments": {"type": ["string", "null"]},  # JSON string (array of objects) for Neo4j compatibility
+            "richContent": {"type": ["string", "null"]},  # JSON string (object) for Neo4j compatibility
+            "connectorMetadata": {"type": ["string", "null"]},  # JSON string (object) for Neo4j compatibility
+            # Slack-specific optional fields (flat, not nested)
+            "threadTs": {"type": ["string", "null"]},
+            "slackSubtype": {"type": ["string", "null"]},
+            "slackUserId": {"type": ["string", "null"]},
+            "slackBlocks": {"type": ["string", "null"]},  # JSON string (array of objects) for Neo4j compatibility
+            # Burst / thread range timestamps (Slack ts strings)
+            "startTs": {"type": ["string", "null"]},
+            "endTs": {"type": ["string", "null"]},
+        },
+        "required": ["orgId"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the message record schema.",
+}
 
 pull_request_record_schema = {
     "rule": {

@@ -52,6 +52,7 @@ class BlockSubType(str, Enum):
     EQUATION = "equation"
     DIVIDER = "divider"
     LINK = "link"
+    MESSAGE = "message"  # Slack / messaging platform individual message block
     COMMIT = "commit"
 
 class DataFormat(str, Enum):
@@ -235,6 +236,7 @@ class GroupType(str, Enum):
     ORDERED_LIST = "ordered_list"
     COLUMN = "column"
     COLUMN_LIST = "column_list"
+    CONVERSATION = "conversation"  # Slack / messaging platform conversation group
 
     VIEW = "view"
     # Do not use these types as currently not supported
@@ -257,6 +259,10 @@ class GroupSubType(str, Enum):
     QUOTE = "quote"
     SYNCED_BLOCK = "synced_block"
     NESTED_BLOCK = "nested_block"  # Generic wrapper for blocks with children
+    # Slack / messaging platform subtypes
+    BURST = "burst"              # A burst of consecutive messages from the same user
+    THREAD = "thread"            # A threaded conversation under a parent message
+    SINGLE_MESSAGE = "single_message"  # A standalone single message
     PR_FILE_CHANGE = "pr_file_change"
     SQL_TABLE = "sql_table" 
     SQL_VIEW = "sql_view"

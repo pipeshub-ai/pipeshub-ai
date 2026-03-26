@@ -154,6 +154,17 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return await self.graph_provider.get_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
 
+    async def find_slack_burst_record_by_ts(
+        self,
+        connector_id: str,
+        channel_id: str,
+        ts: str,
+    ) -> Optional[Record]:
+        """Find the Slack burst MessageRecord whose startTs <= ts <= endTs."""
+        return await self.graph_provider.find_slack_burst_record_by_ts(
+            connector_id, channel_id, ts, transaction=self.txn
+        )
+
     async def get_file_record_by_id(self, id: str) -> Optional[FileRecord]:
         return await self.graph_provider.get_file_record_by_id(id, transaction=self.txn)
 

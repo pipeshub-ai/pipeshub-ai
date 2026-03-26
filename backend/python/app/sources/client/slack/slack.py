@@ -61,11 +61,9 @@ class SlackRESTClientViaToken:
         token: The token to use for authentication
     """
     def __init__(self, token: str) -> None:
-        # Validate token format
         if not token:
             raise ValueError("Slack token cannot be empty")
 
-        # Check if it's a bot token (starts with xoxb-) or user token (starts with xoxp-)
         if not (token.startswith('xoxb-') or token.startswith('xoxp-')):
             raise ValueError(f"Invalid Slack token format. Token should start with 'xoxb-' (bot token) or 'xoxp-' (user token), got: {token[:10]}...")
 
@@ -73,6 +71,12 @@ class SlackRESTClientViaToken:
 
     def get_web_client(self) -> WebClient:
         return self.client
+
+    def get_token(self) -> Optional[str]:
+        return self.client.token
+
+    def set_token(self, token: str) -> None:
+        self.client = WebClient(token=token)
 
 @dataclass
 class SlackUsernamePasswordConfig:
@@ -184,6 +188,7 @@ class SlackClient(IClient):
             # Extract configuration values
             auth_config = config.get("auth",{}) or {}
             auth_type = auth_config.get("authType", "userOAuthAccessToken")  # token, username_password, api_key
+            credentials_config = config.get("credentials", {}) or {}
 
             # Create appropriate client based on auth type
             # to be implemented
@@ -202,11 +207,18 @@ class SlackClient(IClient):
                     raise ValueError("Email and API key required for api_key auth type")
                 client = SlackRESTClientViaApiKey(email, api_key)
 
-            elif auth_type == "API_TOKEN" or auth_type == "userOAuthAccessToken":  # Default to token auth
-                token = auth_config.get("userOAuthAccessToken", "")
+            elif auth_type == "API_TOKEN":  # Default to token auth
+                token = auth_config.get("apiToken", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
                 client = SlackRESTClientViaToken(token)
+            
+            elif auth_type == "OAUTH":
+                # For OAuth/token-based auth, use the OAuth access token
+                access_token = credentials_config.get("access_token", "")
+                if not access_token:
+                    raise ValueError("Access token required for OAuth auth type")
+                client = SlackRESTClientViaToken(access_token)
 
             else:
                 raise ValueError(f"Invalid auth type: {auth_type}")

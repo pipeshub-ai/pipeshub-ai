@@ -20,6 +20,7 @@ from app.models.entities import (
     LinkRecord,
     MailRecord,
     MeetingRecord,
+    MessageRecord,
     OriginTypes,
     ProjectRecord,
     Record,
@@ -47,6 +48,7 @@ valid_group_labels = [
         GroupType.INLINE.value,
         GroupType.KEY_VALUE_AREA.value,
         GroupType.TEXT_SECTION.value,
+        GroupType.CONVERSATION.value,
     ]
 
 def _safe_stringify_content(value: Any) -> str:
@@ -173,6 +175,7 @@ collection_map = {
                     RecordType.LINK.value: "links",
                     RecordType.MEETING.value: "meetings",
                     RecordType.DEAL.value: "deals",
+                    RecordType.MESSAGE.value: "messages",
                 }
 
 def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
@@ -311,6 +314,25 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
             }
             return DealRecord(**base_args, **specific_args)
 
+        elif record_type == RecordType.MESSAGE.value and graph_doc:
+            raw_att_meta = graph_doc.get("attachmentsMetadata", [])
+            if isinstance(raw_att_meta, str):
+                import json as _json
+                try:
+                    raw_att_meta = _json.loads(raw_att_meta)
+                except (ValueError, TypeError):
+                    raw_att_meta = []
+
+            specific_args = {
+                "record_type": RecordType.MESSAGE,
+                "content": graph_doc.get("content"),
+                "thread_id": graph_doc.get("threadId"),
+                "is_thread_parent": graph_doc.get("isThreadParent", False),
+                "author_name": graph_doc.get("authorName"),
+                "author_id": graph_doc.get("authorId"),
+                "attachments_metadata": raw_att_meta or [],
+            }
+            return MessageRecord(**base_args, **specific_args)
         else:
             return None
     except Exception as e:

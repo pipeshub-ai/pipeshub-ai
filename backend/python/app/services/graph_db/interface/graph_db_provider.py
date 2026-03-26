@@ -8,7 +8,7 @@ All methods support optional transaction parameter for atomic operations.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, List, Dict
 
 from app.models.entities import Person
 
@@ -852,6 +852,29 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[Dict]: Record data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def find_slack_burst_record_by_ts(
+        self,
+        connector_id: str,
+        channel_id: str,
+        ts: str,
+        transaction: Optional[str] = None,
+    ) -> Optional['Record']:
+        """
+        Find the Slack burst MessageRecord whose startTs <= ts <= endTs for the
+        given connector and channel.
+
+        Args:
+            connector_id: The connector instance ID.
+            channel_id: The Slack channel (externalGroupId) to scope the search.
+            ts: The message timestamp to look up.
+            transaction: Optional ArangoDB transaction ID.
+
+        Returns:
+            The matching MessageRecord, or None if not found.
         """
         pass
 
@@ -2628,6 +2651,22 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def batch_create_entity_relations(
+        self,
+        edges: List[Dict],
+        transaction: Optional[str] = None
+    ) -> int:
+        """
+        Batch create entity relation edges.
+
+        Args:
+            edges (List[Dict]): List of edge data
+            transaction (Optional[str]): Optional transaction context
+        Returns:
+            int: Number of edges created
+        """
+        pass
     # ==================== Entity ID Operations ====================
 
     @abstractmethod

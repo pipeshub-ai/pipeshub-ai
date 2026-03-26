@@ -217,10 +217,13 @@ class TokenRefreshService:
         Modifies oauth_flow_config in-place.
         """
         # Check if enrichment is needed
-        if (
-            OAuthConfigKeys.TOKEN_ACCESS_TYPE in oauth_flow_config
-            and OAuthConfigKeys.ADDITIONAL_PARAMS in oauth_flow_config
-        ):
+        needs_enrichment = (
+            OAuthConfigKeys.TOKEN_ACCESS_TYPE not in oauth_flow_config
+            or OAuthConfigKeys.ADDITIONAL_PARAMS not in oauth_flow_config
+            or OAuthConfigKeys.SCOPE_PARAMETER_NAME not in oauth_flow_config
+            or OAuthConfigKeys.TOKEN_RESPONSE_PATH not in oauth_flow_config
+        )
+        if not needs_enrichment:
             return
 
         try:
@@ -245,6 +248,12 @@ class TokenRefreshService:
                 and registry_oauth_config.additional_params
             ):
                 oauth_flow_config[OAuthConfigKeys.ADDITIONAL_PARAMS] = (registry_oauth_config.additional_params)
+
+            if OAuthConfigKeys.SCOPE_PARAMETER_NAME not in oauth_flow_config and registry_oauth_config.scope_parameter_name and registry_oauth_config.scope_parameter_name != "scope":
+                oauth_flow_config[OAuthConfigKeys.SCOPE_PARAMETER_NAME] = registry_oauth_config.scope_parameter_name
+
+            if OAuthConfigKeys.TOKEN_RESPONSE_PATH not in oauth_flow_config and registry_oauth_config.token_response_path:
+                oauth_flow_config[OAuthConfigKeys.TOKEN_RESPONSE_PATH] = registry_oauth_config.token_response_path
 
             self.logger.debug(f"Enriched OAuth config from registry for {connector_type}")
 

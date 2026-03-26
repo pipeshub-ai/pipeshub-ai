@@ -226,6 +226,7 @@ class SyncFilterKey(str, Enum):
     SITE_IDS = "site_ids"
     SITE_NAMES = "site_names"
     CHANNEL_IDS = "channel_ids"
+    CHANNEL_TYPES = "channel_types"
     BOOK_IDS = "book_ids"
     GROUP_IDS = "group_ids"
 
@@ -372,7 +373,6 @@ class FilterField:
     default_operator: str | None = None
     options: list[str] = dataclass_field(default_factory=list)
     option_source_type: OptionSourceType = OptionSourceType.MANUAL
-
     def __post_init__(self) -> None:
         """Validate configuration"""
 

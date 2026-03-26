@@ -13,7 +13,6 @@ from app.connectors.core.registry.connector import (
     DocsConnector,
     FormsConnector,
     MeetConnector,
-    SlackConnector,
     SlidesConnector,
     ZendeskConnector,
 )
@@ -61,6 +60,8 @@ from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
 from app.connectors.sources.salesforce.connector import SalesforceConnector
+from app.connectors.sources.slack.individual.connector import SlackIndividualConnector
+from app.connectors.sources.slack.team.connector import SlackConnector
 
 from app.connectors.sources.gitlab.connector import GitLabConnector
 
@@ -106,6 +107,8 @@ class ConnectorFactory:
         "salesforce": SalesforceConnector,
         "gitlab": GitLabConnector,
         "mariadb": MariaDBConnector,
+        "slackworkspace": SlackConnector,
+        # "slack": SlackIndividualConnector,
     }
 
     # Beta connector definitions - single source of truth

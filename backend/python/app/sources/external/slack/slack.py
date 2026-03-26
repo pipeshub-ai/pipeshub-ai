@@ -53,7 +53,12 @@ class SlackDataSource:
             return SlackResponse(success=False, error=str(e))
 
     async def _handle_slack_error(self, error: Exception) -> SlackResponse:
-        """Handle Slack API errors and convert to standardized format"""
+        """Handle Slack API errors and convert to standardized format.
+
+        ``error`` is always set to the raw Slack API error code so callers
+        can do reliable equality checks (e.g. ``resp.error == "not_in_channel"``).
+        ``message`` carries the human-readable explanation.
+        """
         error_msg = str(error)
         logger.error(f"Slack API error: {error_msg}")
 
@@ -61,37 +66,44 @@ class SlackDataSource:
         if "not_allowed_token_type" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Slack token type not allowed for this operation. Please ensure you're using a bot token (xoxb-) with the required scopes. For search operations, you need the 'search:read' scope."
+                error="not_allowed_token_type",
+                message="Slack token type not allowed for this operation. Please ensure you're using a bot token (xoxb-) with the required scopes. For search operations, you need the 'search:read' scope."
             )
         elif "invalid_auth" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Invalid Slack token. Please check your token configuration."
+                error="invalid_auth",
+                message="Invalid Slack token. Please check your token configuration."
             )
         elif "missing_scope" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Missing required Slack scope. Please add the necessary scopes to your bot token."
+                error="missing_scope",
+                message="Missing required Slack scope. Please add the necessary scopes to your bot token."
             )
         elif "account_inactive" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Slack account is inactive. Please check your workspace status."
+                error="account_inactive",
+                message="Slack account is inactive. Please check your workspace status."
             )
         elif "token_revoked" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Slack token has been revoked. Please generate a new token."
+                error="token_revoked",
+                message="Slack token has been revoked. Please generate a new token."
             )
         elif "channel_not_found" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Channel not found. The channel may not exist, be private, or the bot may not have access to it."
+                error="channel_not_found",
+                message="Channel not found. The channel may not exist, be private, or the bot may not have access to it."
             )
         elif "not_in_channel" in error_msg:
             return SlackResponse(
                 success=False,
-                error="Bot is not a member of this channel. Please invite the bot to the channel first."
+                error="not_in_channel",
+                message="Bot is not a member of this channel. Please invite the bot to the channel first."
             )
 
         return SlackResponse(success=False, error=error_msg)
