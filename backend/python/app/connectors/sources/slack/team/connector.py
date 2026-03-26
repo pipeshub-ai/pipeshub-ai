@@ -76,6 +76,7 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     FilterOperator,
     FilterType,
+    IndexingFilterKey,
     OptionSourceType,
     SyncFilterKey,
     load_connector_filters,
@@ -232,7 +233,7 @@ class RateLimiter:
         #     token_response_path="authed_user",
         # ),
         AuthBuilder.type(AuthType.API_TOKEN).fields([
-            CommonFields.api_token("User OAuth Access Token")
+            CommonFields.api_token("Bot Access Token")
         ]),
     ])\
     .configure(lambda b: b
@@ -362,6 +363,7 @@ class SlackConnector(BaseConnector):
         # Populated by channel cache refresh methods and used by get_filter_options().
         # Key: Slack channel_id  Value: {"id": str, "label": str}
         self.channel_filter_cache:         Dict[str, Dict[str, str]] = {}
+        self._cache_rebuild_event:         Optional[asyncio.Event]   = None
 
         # ── Filter state ─────────────────────────────────────────────────────
         self.sync_filters:     FilterCollection = FilterCollection()
@@ -823,7 +825,9 @@ class SlackConnector(BaseConnector):
             allowed_types = allowed_types - {"im", "mpim"}
         types_param = ",".join(allowed_types) if allowed_types else "public_channel,private_channel"
 
-        # Clear channel name cache
+        # Clear channel caches so stale entries from a previous sync (with different
+        # channel filters) never bleed into Phase 5 (thread-growth / change detection)
+        self.channel_groups_cache.clear()
         self.channel_id_to_name_cache.clear()
 
         cursor: Optional[str] = None
@@ -1089,9 +1093,9 @@ class SlackConnector(BaseConnector):
             rate_limiter=self.rate_limiter,
         )
 
-        msg_enabled  = self.indexing_filters.is_enabled("messages")
-        file_enabled = self.indexing_filters.is_enabled("files")
-        link_enabled = self.indexing_filters.is_enabled("links")
+        msg_enabled  = self.indexing_filters.is_enabled(IndexingFilterKey.MESSAGES)
+        file_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
+        link_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.LINKS)
 
         cursor:     Optional[str] = None
         newest_ts:  Optional[str] = None   # newest across ALL pages (Slack newest-first)
@@ -1802,9 +1806,9 @@ class SlackConnector(BaseConnector):
             burst_rec.involved_user_source_ids = burst_authors
 
         if burst_recs_batch:
-            thread_enabled = self.indexing_filters.is_enabled("threads")
-            file_enabled = self.indexing_filters.is_enabled("files")
-            link_enabled = self.indexing_filters.is_enabled("links")
+            thread_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.THREADS)
+            file_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
+            link_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.LINKS)
             for rec, _ in burst_recs_batch:
                 if rec.record_type == RecordType.MESSAGE and not thread_enabled:
                     rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -1920,9 +1924,9 @@ class SlackConnector(BaseConnector):
             burst_rec.involved_user_source_ids = burst_authors
 
         if burst_recs_batch:
-            thread_enabled = self.indexing_filters.is_enabled("threads")
-            file_enabled = self.indexing_filters.is_enabled("files")
-            link_enabled = self.indexing_filters.is_enabled("links")
+            thread_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.THREADS)
+            file_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
+            link_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.LINKS)
             for rec, _ in burst_recs_batch:
                 if rec.record_type == RecordType.MESSAGE and not thread_enabled:
                     rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -3384,41 +3388,57 @@ class SlackConnector(BaseConnector):
         return "invalid_cursor" in err or "no longer valid" in err
 
     async def _populate_channel_filter_cache(self) -> None:
-        """Fetch all channels from Slack and rebuild the in-memory filter cache."""
-        self.channel_filter_cache.clear()
-        cursor: Optional[str] = None
+        """Fetch all channels from Slack and rebuild the in-memory filter cache.
+        """
+        # Fast path: another coroutine is already rebuilding — wait for it.
+        if self._cache_rebuild_event is not None:
+            await self._cache_rebuild_event.wait()
+            return
 
-        while True:
-            await self.rate_limiter.acquire()
-            ds = await self._fresh_datasource()
-            resp = await ds.conversations_list(
-                exclude_archived=True,
-                types="public_channel,private_channel",
-                limit=PAGE_SIZE_CHANNELS,
-                cursor=cursor,
+        self._cache_rebuild_event = asyncio.Event()
+        try:
+            tmp: Dict[str, Dict[str, str]] = {}
+            cursor: Optional[str] = None
+
+            while True:
+                await self.rate_limiter.acquire()
+                ds = await self._fresh_datasource()
+                resp = await ds.conversations_list(
+                    exclude_archived=True,
+                    types="public_channel,private_channel",
+                    limit=PAGE_SIZE_CHANNELS,
+                    cursor=cursor,
+                )
+
+                if not resp or not resp.success:
+                    error = getattr(resp, "error", "no response") if resp else "no response"
+                    raise RuntimeError(f"conversations.list cache rebuild failed: {error}")
+
+                data = resp.data or {}
+                for ch in data.get("channels", []):
+                    cid = ch.get("id")
+                    if not cid:
+                        continue
+                    tmp[cid] = {
+                        "id": cid,
+                        "label": ch.get("name") or f"Channel: {cid}",
+                    }
+
+                cursor = data.get("response_metadata", {}).get("next_cursor") or None
+                if not cursor:
+                    break
+
+            # Atomic swap — readers never observe a partially-empty cache.
+            self.channel_filter_cache = tmp
+            self.logger.info(
+                "Channel filter cache rebuilt: %d channels", len(self.channel_filter_cache)
             )
-
-            if not resp or not resp.success:
-                error = getattr(resp, "error", "no response") if resp else "no response"
-                raise RuntimeError(f"conversations.list cache rebuild failed: {error}")
-
-            data = resp.data or {}
-            for ch in data.get("channels", []):
-                cid = ch.get("id")
-                if not cid:
-                    continue
-                self.channel_filter_cache[cid] = {
-                    "id": cid,
-                    "label": ch.get("name") or f"Channel: {cid}",
-                }
-
-            cursor = data.get("response_metadata", {}).get("next_cursor") or None
-            if not cursor:
-                break
-
-        self.logger.info(
-            "Channel filter cache rebuilt: %d channels", len(self.channel_filter_cache)
-        )
+        finally:
+            # Always signal waiters (even on error) and reset the sentinel so
+            # the next caller can trigger a fresh rebuild if needed.
+            ev = self._cache_rebuild_event
+            self._cache_rebuild_event = None
+            ev.set()
 
     # =========================================================================
     # 9.  Text extraction utilities
@@ -4017,7 +4037,7 @@ class SlackConnector(BaseConnector):
             page  = max(1, page)
             limit = max(1, min(limit, 100))
 
-            if not search or not search.strip():
+            if not self.channel_filter_cache or not search or not search.strip():
                 await self._populate_channel_filter_cache()
 
             channels = list(self.channel_filter_cache.values())
