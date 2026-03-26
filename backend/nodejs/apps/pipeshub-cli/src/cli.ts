@@ -273,6 +273,93 @@ async function setupAsync(
     instanceName: opts.instanceName,
   });
 
+  let connectorActive = true;
+  let connectorName = cid;
+  try {
+    const inst = await api.getConnectorInstance(cid);
+    connectorName = inst.name?.trim() || connectorName;
+  } catch {
+    /* keep fallback */
+  }
+  try {
+    const { isActive } = await api.getConnectorConfig(cid);
+    connectorActive = Boolean(isActive);
+  } catch {
+    /* If config cannot be read, avoid pushing indexing/filter changes (same as active). */
+    connectorActive = true;
+  }
+
+  if (connectorActive) {
+    const { activeAction } = await prompts({
+      type: "select",
+      name: "activeAction",
+      message: `Connector "${connectorName}" is ON. Choose action`,
+      choices: [
+        { title: "Keep ON and exit setup", value: "keep_on" },
+        { title: "Disable connector and exit setup", value: "turn_off" },
+        { title: "Rename connector", value: "rename" },
+        { title: "Delete connector", value: "delete" },
+      ],
+      initial: 0,
+    });
+
+    if (activeAction === "keep_on") {
+      console.log("Connector remains ON. No path changes attempted.");
+      console.log("Setup complete. Queue a sync with: pipeshub run");
+      return;
+    }
+    if (activeAction === "rename") {
+      const { newName } = await prompts({
+        type: "text",
+        name: "newName",
+        message: "New connector name",
+        initial: connectorName,
+      });
+      const nm = String(newName ?? "").trim();
+      if (!nm) throw new Error("Name required");
+      await api.renameConnectorInstance(cid, nm);
+      console.log(`Renamed to "${nm}".`);
+      console.log("Setup complete.");
+      return;
+    }
+    if (activeAction === "delete") {
+      const { ok } = await prompts({
+        type: "confirm",
+        name: "ok",
+        message: `Delete connector "${connectorName}"?`,
+        initial: false,
+      });
+      if (ok === true) {
+        await api.deleteConnectorInstance(cid);
+        console.log("Connector deleted.");
+      } else {
+        console.log("Delete cancelled.");
+      }
+      console.log("Setup complete.");
+      return;
+    }
+    if (activeAction === "turn_off") {
+      try {
+        await api.toggleConnectorSync(cid, { fullSync: false });
+        const { isActive } = await api.getConnectorConfig(cid);
+        connectorActive = Boolean(isActive);
+        console.log(
+          `Connector is now ${connectorActive ? "ENABLED" : "DISABLED"}.`
+        );
+        console.log("Setup complete.");
+        return;
+      } catch (e) {
+        if (e instanceof BackendClientError) {
+          console.log(`Could not disable connector (HTTP ${e.status ?? "?"}).`);
+          console.log("Setup complete.");
+          return;
+        } else {
+          throw e;
+        }
+      }
+    }
+  }
+
   let rootPath: string;
   if (opts.syncRoot) {
     rootPath = validateSyncRoot(opts.syncRoot);
@@ -303,15 +390,6 @@ async function setupAsync(
     ...emptyFolderSyncFilterCliState,
   };
 
-  let connectorActive = true;
-  try {
-    const { isActive } = await api.getConnectorConfig(cid);
-    connectorActive = Boolean(isActive);
-  } catch {
-    /* If config cannot be read, avoid pushing indexing/filter changes (same as active). */
-    connectorActive = true;
-  }
-
   if (!connectorActive) {
     const { manual } = await prompts({
       type: "confirm",
@@ -324,10 +402,7 @@ async function setupAsync(
       filterState = { ...filterState, manualIndexing: true };
     }
   } else {
-    console.log(
-      "Connector is active — only saving sync path to the server. " +
-        "To set manual indexing, turn the connector off in the app (or use the app), then run setup again."
-    );
+    console.log("Connector is ON. Manual indexing settings are skipped while it is active.");
   }
 
   try {
@@ -340,10 +415,11 @@ async function setupAsync(
     );
   } catch (e) {
     if (e instanceof BackendClientError) {
-      console.warn(
-        `Could not save folder path to the server (HTTP ${e.status ?? "?"}). ` +
-          `Set the path under this connector’s sync settings in the app, or turn the connector off and run setup again.`
-      );
+      if (connectorActive) {
+        console.log("Connector is ON. Path update is blocked while it is running.");
+      } else {
+        console.log(`Path update failed (HTTP ${e.status ?? "?"}).`);
+      }
     } else if (
       e instanceof Error &&
       e.message.includes("Connector is active")
@@ -823,6 +899,7 @@ program
         create: false,
         instanceName: undefined,
       });
+      process.exit(0);
     } catch (e) {
       console.error(String(e));
       process.exit(1);
@@ -893,6 +970,7 @@ indexingCmd
       await printConnectorIndexingSummary(api, cid);
       try {
         await runIndexingPickPrompt(api, cid, "Files waiting to index:");
+        process.exit(0);
       } catch (pickErr) {
         console.error(String(pickErr));
         process.exit(1);
@@ -938,7 +1016,7 @@ indexingCmd
       );
       if (records.length === 0) {
         console.log("(no rows — run pipeshub run first)");
-        return;
+        process.exit(0);
       }
       const wId = 38;
       const wName = 42;
@@ -953,6 +1031,7 @@ indexingCmd
         const st = String(r.indexingStatus ?? "").slice(0, wSt);
         console.log(`${key.padEnd(wId)} ${name.padEnd(wName)} ${st.padEnd(wSt)}`);
       }
+      process.exit(0);
     } catch (e) {
       if (e instanceof BackendClientError) {
         console.error(`${e.message}${kbCommandErrorHint(e)}`);
@@ -984,12 +1063,13 @@ indexingCmd
       if (rid) {
         await api.reindexKnowledgeBaseRecord(rid);
         console.log(`Queued indexing for record ${rid}.`);
-        return;
+        process.exit(0);
       }
       const cid = await pickFolderSyncConnectorForIndexing(api);
       try {
         await printConnectorIndexingSummary(api, cid);
         await runIndexingPickPrompt(api, cid, "Pick a file to index:");
+        process.exit(0);
       } catch (pickErr) {
         console.error(String(pickErr));
         process.exit(1);
@@ -1029,7 +1109,7 @@ indexingCmd
       });
       if (ok !== true) {
         console.log("Cancelled.");
-        return;
+        process.exit(0);
       }
       const pending = await api.listKnowledgeBaseRecordsForConnectorInstance(cid, {
         indexingStatus: ["AUTO_INDEX_OFF"],
@@ -1040,10 +1120,11 @@ indexingCmd
         .filter(Boolean);
       if (ids.length === 0) {
         console.log("No AUTO_INDEX_OFF records to queue.");
-        return;
+        process.exit(0);
       }
       await api.queueKnowledgeBaseReindexForRecordIds(ids);
       console.log(`Queued indexing for ${ids.length} pending file(s).`);
+      process.exit(0);
     } catch (e) {
       if (e instanceof BackendClientError) {
         console.error(`${e.message}${kbCommandErrorHint(e)}`);
@@ -1069,6 +1150,7 @@ indexingCmd.action(async () => {
     await printConnectorIndexingSummary(api, cid);
     try {
       await runIndexingPickPrompt(api, cid, "Files waiting to index:");
+      process.exit(0);
     } catch (pickErr) {
       console.error(String(pickErr));
       process.exit(1);
@@ -1101,6 +1183,7 @@ program
       await runSyncAsync(manager, {
         rootOverride: rootArg?.trim() || undefined,
       });
+      process.exit(0);
     } catch (e) {
       if (e instanceof BackendClientError) {
         let hint = "";

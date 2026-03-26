@@ -1,3 +1,5 @@
+import { SocketIoRpcClient } from "./transport/socketio_rpc_client";
+
 /** Web/registry name — Python `FOLDER_SYNC_CONNECTOR_NAME` in folder_sync/connector.py */
 const FOLDER_SYNC_CONNECTOR_TYPE = "Folder Sync";
 /** Stored on graph records (`connectorName`) — Python `Connectors.FOLDER_SYNC` value */
@@ -145,10 +147,12 @@ function knowledgeHubResponsePayload(data: unknown): Record<string, unknown> {
 export class BackendClient {
   private readonly base: string;
   private readonly token: string;
+  private readonly rpc: SocketIoRpcClient;
 
   constructor(baseUrl: string, accessToken: string) {
     this.base = baseUrl.replace(/\/$/, "");
     this.token = accessToken;
+    this.rpc = new SocketIoRpcClient(this.base, this.token);
   }
 
   get apiBase(): string {
@@ -166,10 +170,29 @@ export class BackendClient {
   /** Low-level fetch: headers, timeout, clear error if the gateway is down. */
   private async fetchOnce(url: string, init: RequestInit = {}): Promise<Response> {
     try {
-      return await fetch(url, {
-        ...init,
-        headers: { ...this.headers(), ...init.headers },
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      const parsed = new URL(url);
+      const query: Record<string, string> = {};
+      parsed.searchParams.forEach((value, key) => {
+        query[key] = value;
+      });
+      let body: unknown = undefined;
+      if (typeof init.body === "string" && init.body.trim()) {
+        body = JSON.parse(init.body);
+      } else if (init.body && typeof init.body !== "string") {
+        body = init.body;
+      }
+      const rpcResp = await this.rpc.request(
+        {
+          method: String(init.method || "GET").toUpperCase(),
+          path: parsed.pathname,
+          query,
+          body,
+        },
+        FETCH_TIMEOUT_MS
+      );
+      return new Response(JSON.stringify(rpcResp.body), {
+        status: rpcResp.status,
+        headers: { "content-type": "application/json" },
       });
     } catch (e) {
       const code = errnoFromUnknown(e);
@@ -462,6 +485,50 @@ export class BackendClient {
     if (resp.status >= 400) {
       throw new BackendClientError(
         `Toggle connector sync failed (${resp.status}): ${JSON.stringify(data)}`,
+        resp.status
+      );
+    }
+  }
+
+  async renameConnectorInstance(
+    connectorInstanceId: string,
+    newName: string
+  ): Promise<void> {
+    const url = `${this.base}/api/v1/connectors/${encodeURIComponent(
+      connectorInstanceId
+    )}/name`;
+    const resp = await this.request(url, {
+      method: "PATCH",
+      body: JSON.stringify({ name: newName }),
+    });
+    let data: unknown;
+    try {
+      data = await resp.json();
+    } catch {
+      data = null;
+    }
+    if (resp.status >= 400) {
+      throw new BackendClientError(
+        `Rename connector failed (${resp.status}): ${JSON.stringify(data)}`,
+        resp.status
+      );
+    }
+  }
+
+  async deleteConnectorInstance(connectorInstanceId: string): Promise<void> {
+    const url = `${this.base}/api/v1/connectors/${encodeURIComponent(
+      connectorInstanceId
+    )}`;
+    const resp = await this.request(url, { method: "DELETE" });
+    let data: unknown;
+    try {
+      data = await resp.json();
+    } catch {
+      data = null;
+    }
+    if (resp.status >= 400) {
+      throw new BackendClientError(
+        `Delete connector failed (${resp.status}): ${JSON.stringify(data)}`,
         resp.status
       );
     }
