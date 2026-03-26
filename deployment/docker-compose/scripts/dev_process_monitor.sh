@@ -53,7 +53,7 @@ log "All services started. Frontend PID: $FRONTEND_PID"
 # Monitor frontend memory usage every 30 seconds
 while true; do
     sleep 30
-    if ! kill -0 $FRONTEND_PID 2>/dev/null; then
+    if ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
         log "Frontend process (PID $FRONTEND_PID) exited. Restarting in 3s..."
         sleep 3
         cd /app/frontend
@@ -63,10 +63,10 @@ while true; do
     else
         # Check memory usage of frontend process
         if command -v ps &> /dev/null; then
-            MEM_USAGE=$(ps -p $FRONTEND_PID -o rss= 2>/dev/null || echo "0")
-            if [ "$MEM_USAGE" != "0" ]; then
+            MEM_USAGE=$(ps -p "$FRONTEND_PID" -o rss= 2>/dev/null || echo "0")
+            if (( MEM_USAGE > 0 )); then
                 MEM_MB=$((MEM_USAGE / 1024))
-                if [ $MEM_MB -gt 1800 ]; then
+                if (( MEM_MB > 1800 )); then
                     log "WARNING: Frontend memory usage high: ${MEM_MB}MB"
                 fi
             fi
