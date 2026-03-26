@@ -48,7 +48,9 @@ const NAMESPACE = '/cli-rpc';
 const SOCKET_PATH = '/socket.io-cli-rpc';
 
 export class CliRpcSocketGateway {
-  private readonly logger = Logger.getInstance({ service: 'CliRpcSocketGateway' });
+  private readonly logger = Logger.getInstance({
+    service: 'CliRpcSocketGateway',
+  });
   private io: Server | null = null;
   private namespace: Namespace | null = null;
 
@@ -58,39 +60,47 @@ export class CliRpcSocketGateway {
   ) {}
 
   initialize(server: HttpServer): void {
+    const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') ?? ['*'];
     this.io = new Server(server, {
       path: SOCKET_PATH,
       cors: {
-        origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+        origin: allowedOrigins,
         methods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS', 'DELETE'],
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
       },
     });
     this.namespace = this.io.of(NAMESPACE);
-    this.namespace.use(async (socket: CliRpcSocket, next) => {
-      const extractedToken = this.extractToken(socket.handshake.auth?.token as string);
+    this.namespace.use((socket: CliRpcSocket, next) => {
+      const extractedToken = this.extractToken(this.getHandshakeToken(socket));
       if (!extractedToken) {
-        return next(new BadRequestError('Authentication token missing'));
+        next(new BadRequestError('Authentication token missing'));
+        return;
       }
-      const decoded = await this.authTokenService.verifyToken(extractedToken);
-      if (!decoded) {
-        return next(new BadRequestError('Authentication token expired'));
-      }
-      socket.data.userId = decoded.userId;
-      socket.data.orgId = decoded.orgId;
-      next();
+      this.authTokenService
+        .verifyToken(extractedToken)
+        .then((decoded) => {
+          socket.data.userId = String(decoded.userId ?? '');
+          socket.data.orgId = String(decoded.orgId ?? '');
+          next();
+        })
+        .catch(() => {
+          next(new BadRequestError('Authentication token expired'));
+        });
     });
 
     this.namespace.on('connection', (socket: CliRpcSocket) => {
-      socket.on('rpc:request', async (req: RpcRequest, ack?: (res: RpcResponse) => void) => {
-        const response = await this.handleRequest(req, socket);
-        if (ack) {
-          ack(response);
-        } else {
-          socket.emit('rpc:response', response);
-        }
-      });
+      socket.on(
+        'rpc:request',
+        async (req: RpcRequest, ack?: (res: RpcResponse) => void) => {
+          const response = await this.handleRequest(req, socket);
+          if (ack) {
+            ack(response);
+          } else {
+            socket.emit('rpc:response', response);
+          }
+        },
+      );
     });
 
     this.logger.info('CLI RPC Socket.IO namespace initialized');
@@ -104,23 +114,27 @@ export class CliRpcSocketGateway {
   }
 
   private async handleRequest(req: RpcRequest, socket: CliRpcSocket): Promise<RpcResponse> {
-    if (!req || req.type !== 'request' || req.op !== 'restProxy' || !req.id) {
+    if (req.type !== 'request' || req.op !== 'restProxy' || req.id.trim() === '') {
       return {
         type: 'response',
-        id: req?.id ?? 'unknown',
+        id: req.id || 'unknown',
         ok: false,
         error: { code: 'BAD_REQUEST', message: 'Invalid RPC envelope' },
       };
     }
     const { id, payload } = req;
-    const method = String(payload.method || 'GET').toUpperCase();
-    const path = String(payload.path || '');
+    const methodRaw = payload.method.trim();
+    const path = payload.path.trim();
+    const method = methodRaw ? methodRaw.toUpperCase() : 'GET';
     if (!ALLOWED_METHODS.has(method)) {
       return {
         type: 'response',
         id,
         ok: false,
-        error: { code: 'METHOD_NOT_ALLOWED', message: `Method ${method} is not allowed` },
+        error: {
+          code: 'METHOD_NOT_ALLOWED',
+          message: `Method ${method} is not allowed`,
+        },
       };
     }
     if (!ALLOWED_PREFIXES.some((prefix) => path.startsWith(prefix))) {
@@ -128,13 +142,16 @@ export class CliRpcSocketGateway {
         type: 'response',
         id,
         ok: false,
-        error: { code: 'PATH_NOT_ALLOWED', message: 'Path is not allowed for CLI RPC' },
+        error: {
+          code: 'PATH_NOT_ALLOWED',
+          message: 'Path is not allowed for CLI RPC',
+        },
       };
     }
 
     const url = this.buildInternalUrl(path, payload.query);
     try {
-      const token = this.extractToken(socket.handshake.auth?.token as string) || '';
+      const token = this.extractToken(this.getHandshakeToken(socket)) ?? '';
       const response = await fetch(url, {
         method,
         headers: {
@@ -167,7 +184,9 @@ export class CliRpcSocketGateway {
 
   private buildInternalUrl(
     path: string,
-    query: Record<string, string | number | boolean | null | undefined> | undefined,
+    query:
+      | Record<string, string | number | boolean | null | undefined>
+      | undefined,
   ): string {
     const port = this.getPort() || 3000;
     const url = new URL(`http://127.0.0.1:${port}${path}`);
@@ -190,8 +209,16 @@ export class CliRpcSocketGateway {
   }
 
   private extractToken(token: string): string | null {
-    const authHeader = token || '';
+    const authHeader = token;
     const [bearer, tokenSanitized] = authHeader.split(' ');
     return bearer === 'Bearer' && tokenSanitized ? tokenSanitized : null;
+  }
+
+  private getHandshakeToken(socket: CliRpcSocket): string {
+    const auth = socket.handshake.auth as { token?: unknown } | undefined;
+    if (!auth || typeof auth.token !== 'string') {
+      return '';
+    }
+    return auth.token;
   }
 }
