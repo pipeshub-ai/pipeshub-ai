@@ -241,7 +241,7 @@ Answer the query clearly and comprehensively using relevant context.
 
 ### Citations (STRICT)
 - Every factual claim MUST include a citation
-- Use monotonically increasing numbers: [1], [2], [3], ...
+- Use monotonically increasing numbers: [1], [2], [3], ... Do not skip any numbers.
 - Each citation must link to the entity’s VERBATIM web URL (block, block group, or record)
 - Prefer using block web URL over block group web URL over record web URL when appropriate
 - Place citations immediately after the claim (not at paragraph end)
