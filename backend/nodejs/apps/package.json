@@ -82,7 +82,7 @@
     "express-session": "^1.18.2",
     "form-data": "^4.0.4",
     "google-auth-library": "^9.15.1",
-    "handlebars": "^4.7.8",
+    "handlebars": "^4.7.9",
     "helmet": "^8.0.0",
     "image-resize-compress": "^2.1.1",
     "inversify": "^6.2.1",
