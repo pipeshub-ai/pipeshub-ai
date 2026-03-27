@@ -278,13 +278,13 @@ class GitLabDataSource:
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
     
-    def list_merge_request_diffs(self,project_id:Union[int,str],mr_iid:int)->GitLabResponse:
-        """List merge request diffs. """
+    def list_merge_request_changes(self,project_id:Union[int,str],mr_iid:int)->GitLabResponse:
+        """List merge request changes. """
         try:
             p = self._sdk.projects.get(project_id,lazy=True)
             mr = p.mergerequests.get(id=mr_iid,lazy=True)
-            diffs = mr.diffs.list(get_all=True)
-            return GitLabResponse(success=True, data=diffs)
+            changes = mr.changes(get_all=True)
+            return GitLabResponse(success=True, data=changes)
         except Exception as e:
             return GitLabResponse(success=False, error=str(e))
     
