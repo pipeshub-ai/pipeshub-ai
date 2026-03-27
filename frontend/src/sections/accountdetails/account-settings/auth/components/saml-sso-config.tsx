@@ -44,7 +44,7 @@ const getAcsUrls = async () => {
 
   try {
     let baseUrl = window.location.origin;
-    const authBaseUrl = (import.meta.env.VITE_AUTH_URL as string | undefined)?.trim();
+    const authBaseUrl = (import.meta.env.VITE_BACKEND_URL as string | undefined)?.trim();
 
 
     if (authBaseUrl) {

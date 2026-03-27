@@ -131,8 +131,6 @@ services:
       # Vite frontend dev server
       - DOCKER_DEV=true
       - VITE_BACKEND_URL=http://localhost:3000
-      - VITE_AUTH_URL=http://localhost:3000
-      - VITE_IAM_URL=http://localhost:3000
       
       # Frontend memory optimization - limit Node.js heap to 2GB
       - NODE_OPTIONS=--max-old-space-size=2048
