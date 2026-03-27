@@ -2345,6 +2345,41 @@ class IGraphDBProvider(ABC):
         Ensure the org's "All" team has an edge to the app in userAppRelation.
         Idempotent: creates teams/all_{org_id} -> apps/{connector_id} if not present.
         Used by TEAM-scope connectors so all org members get app access via the team.
+
+        The All team and user PERMISSION edges are created by migration and user-added
+        events (see ensure_all_team_with_users); this method only creates the team->app edge.
+        """
+        pass
+
+    @abstractmethod
+    async def ensure_all_team_with_users(self, org_id: str) -> None:
+        """
+        Ensure the org's 'All' team exists and every active org user has a PERMISSION edge.
+
+        Creates team node with id=all_{org_id} if missing, fetches all active users,
+        and adds PERMISSION edges for users not already in the team.
+        Oldest user (by createdAtTimestamp) gets OWNER; subsequent users get READER.
+
+        Idempotent, runs without transaction, safe to call multiple times.
+
+        Args:
+            org_id: Organization ID
+        """
+        pass
+
+    @abstractmethod
+    async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
+        """
+        Add a specific user to the org's 'All' team with a PERMISSION edge.
+
+        Ensures All team exists, checks if user already has PERMISSION edge,
+        and adds it if missing. First user in team gets OWNER, subsequent get READER.
+
+        Idempotent, safe to call multiple times for same user.
+
+        Args:
+            org_id: Organization ID
+            user_key: User node ID (graph key)
         """
         pass
 

@@ -18,6 +18,7 @@ from app.connectors.core.base.data_store.data_store import (
 )
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
+    AppMetadata,
     AppRole,
     AppUser,
     AppUserGroup,
@@ -28,6 +29,7 @@ from app.models.entities import (
     MailRecord,
     Person,
     ProjectRecord,
+    PullRequestRecord,
     Record,
     RecordGroup,
     RecordType,
@@ -35,7 +37,6 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
-    PullRequestRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
@@ -1380,6 +1381,19 @@ class DataSourceEntitiesProcessor:
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_record_by_external_id(connector_id=connector_id, external_id=external_record_id)
+
+    async def get_app_by_id(self, connector_id: str) -> AppMetadata | None:
+        """
+        Get app metadata (scope, createdBy, etc.) from the database.
+        
+        Args:
+            connector_id: The connector/app ID
+            
+        Returns:
+            AppMetadata object or None if not found
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_app_by_id(connector_id)
 
     async def on_user_group_member_removed(
         self,

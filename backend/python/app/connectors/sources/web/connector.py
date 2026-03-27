@@ -4,8 +4,8 @@ import hashlib
 import random
 import re
 import uuid
-from enum import Enum
 from dataclasses import dataclass
+from enum import Enum
 from io import BytesIO
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
@@ -13,11 +13,6 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
 import pillow_avif  # noqa: F401  # pyright: ignore[reportUnusedImport]
-from bs4 import BeautifulSoup, Tag
-from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
-from PIL import Image
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
@@ -65,6 +60,10 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from bs4 import BeautifulSoup, Tag
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
+from PIL import Image
 
 
 async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
@@ -350,6 +349,11 @@ class WebConnector(BaseConnector):
         # Batch processing
         self.batch_size: int = 50
 
+        # Scope and creator (loaded from DB during init)
+        self.connector_scope: Optional[str] = None
+        self.created_by: Optional[str] = None
+        self.creator_email: Optional[str] = None
+
         # Filter collections
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -369,6 +373,24 @@ class WebConnector(BaseConnector):
             self.restrict_to_start_path = config_values["restrict_to_start_path"]
             self.start_path_prefix = config_values["start_path_prefix"]
             self.url_should_contain = config_values["url_should_contain"]
+
+            # Read scope and createdBy from database App node (source of truth)
+            app = await self.data_entities_processor.get_app_by_id(self.connector_id)
+            if not app:
+                raise ValueError(f"App document not found in database for connector {self.connector_id}")
+            self.connector_scope = app.scope
+            self.created_by = app.created_by or ""
+            self.logger.debug(f"Loaded from database: scope={self.connector_scope}, createdBy={self.created_by}")
+
+            # Cache creator email for personal scope (avoids DB query for each record)
+            if self.connector_scope == ConnectorScope.PERSONAL.value and self.created_by:
+                try:
+                    async with self.data_store_provider.transaction() as tx_store:
+                        user = await tx_store.get_user_by_user_id(self.created_by)
+                        if user and user.get("email"):
+                            self.creator_email = user.get("email")
+                except Exception as e:
+                    self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
 
             # Initialize aiohttp session with realistic browser headers
             # These headers mimic a real Chrome browser to avoid being blocked by websites
@@ -410,6 +432,50 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize web connector: {e}", exc_info=True)
             return False
+
+    def _create_web_permissions(self, url: str) -> list[Permission]:
+        """Create permissions for a web page based on connector scope."""
+        try:
+            permissions = []
+
+            if self.connector_scope == ConnectorScope.TEAM.value:
+                permissions.append(
+                    Permission(
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                        external_id=self.data_entities_processor.org_id
+                    )
+                )
+            else:
+                if self.creator_email:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                            email=self.creator_email,
+                            external_id=self.created_by
+                        )
+                    )
+
+                if not permissions:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.READ,
+                            entity_type=EntityType.ORG,
+                            external_id=self.data_entities_processor.org_id
+                        )
+                    )
+
+            return permissions
+        except Exception as e:
+            self.logger.warning(f"Error creating permissions for {url}: {e}")
+            return [
+                Permission(
+                    type=PermissionType.READ,
+                    entity_type=EntityType.ORG,
+                    external_id=self.data_entities_processor.org_id
+                )
+            ]
 
     async def _fetch_and_parse_config(self, use_cache: bool = True) -> Dict:
         """
@@ -867,13 +933,7 @@ class WebConnector(BaseConnector):
                     indexing_status=ProgressStatus.NOT_STARTED.value,
                 )
 
-                permissions = [
-                    Permission(
-                        external_id=self.data_entities_processor.org_id,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                    )
-                ]
+                permissions = self._create_web_permissions(ancestor_url)
 
                 placeholder_records.append((file_record, permissions))
                 self.logger.info(
@@ -1260,14 +1320,7 @@ class WebConnector(BaseConnector):
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
 
-            # Create permissions (org-level access for web pages)
-            permissions = [
-                Permission(
-                    external_id=self.data_entities_processor.org_id,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                )
-            ]
+            permissions = self._create_web_permissions(url)
 
             record_update = RecordUpdate(
                 record=file_record,
@@ -1426,13 +1479,7 @@ class WebConnector(BaseConnector):
             reason=f"Failed to process URL, status code: {status_code}",
         )
 
-        permissions = [
-            Permission(
-                external_id=self.data_entities_processor.org_id,
-                type=PermissionType.READ,
-                entity_type=EntityType.ORG,
-            )
-        ]
+        permissions = self._create_web_permissions(url)
 
         return placeholder_record, permissions
 
@@ -1874,13 +1921,7 @@ class WebConnector(BaseConnector):
                     indexing_status=ProgressStatus.NOT_STARTED.value,
                 )
 
-                permissions = [
-                    Permission(
-                        external_id=self.data_entities_processor.org_id,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                    )
-                ]
+                permissions = self._create_web_permissions(segment_url)
 
                 batch_parent_records.append((file_record, permissions))
                 self.logger.debug(f"📁 Queued missing ancestor placeholder: {record_name}")

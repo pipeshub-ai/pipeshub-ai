@@ -18,9 +18,6 @@ if TYPE_CHECKING:
     from azure.storage.blob import BlobProperties  # type: ignore[import-untyped]
 
 from aiolimiter import AsyncLimiter
-from fastapi import HTTPException
-from fastapi.responses import StreamingResponse
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     Connectors,
@@ -42,10 +39,7 @@ from app.connectors.core.base.sync_point.sync_point import (
     SyncPoint,
     generate_record_sync_point_key,
 )
-from app.connectors.core.registry.auth_builder import (
-    AuthBuilder,
-    AuthType,
-)
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -83,6 +77,8 @@ from app.sources.client.azure.azure_blob import AzureBlobClient
 from app.sources.external.azure.azure_blob import AzureBlobDataSource
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 
 # Default connector endpoint for signed URL generation
 DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
@@ -384,13 +380,13 @@ class AzureBlobConnector(BaseConnector):
         # Container name is no longer stored in config - it's determined at sync time
         self.container_name = None
 
-        # Get connector scope
-        self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("createdBy") or config.get("created_by")
-
-        scope_from_config = config.get("scope")
-        if scope_from_config:
-            self.connector_scope = scope_from_config
+        # Read scope and createdBy from database App node (source of truth)
+        app = await self.data_entities_processor.get_app_by_id(self.connector_id)
+        if not app:
+            raise ValueError(f"App document not found in database for connector {self.connector_id}")
+        self.connector_scope = app.scope
+        self.created_by = app.created_by or ""
+        self.logger.debug(f"Loaded from database: scope={self.connector_scope}, createdBy={self.created_by}")
 
         # Fetch creator email once to avoid repeated DB queries during sync
         if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:

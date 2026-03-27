@@ -341,13 +341,13 @@ class AzureFilesConnector(BaseConnector):
             connection_string
         )
 
-        # Get connector scope
-        self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("createdBy") or config.get("created_by")
-
-        scope_from_config = config.get("scope")
-        if scope_from_config:
-            self.connector_scope = scope_from_config
+        # Read scope and createdBy from database App node (source of truth)
+        app = await self.data_entities_processor.get_app_by_id(self.connector_id)
+        if not app:
+            raise ValueError(f"App document not found in database for connector {self.connector_id}")
+        self.connector_scope = app.scope
+        self.created_by = app.created_by or ""
+        self.logger.debug(f"Loaded from database: scope={self.connector_scope}, createdBy={self.created_by}")
 
         # Fetch creator email once to avoid repeated DB queries during sync
         if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:

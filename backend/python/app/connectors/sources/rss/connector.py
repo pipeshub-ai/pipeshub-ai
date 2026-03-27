@@ -147,6 +147,7 @@ class RSSConnector(BaseConnector):
         # Scope and creator (set from config in init())
         self.connector_scope: Optional[str] = None
         self.created_by: Optional[str] = None
+        self.creator_email: Optional[str] = None
 
     async def init(self) -> bool:
         """Initialize the RSS connector with configuration from etcd."""
@@ -183,9 +184,23 @@ class RSSConnector(BaseConnector):
             if isinstance(self.fetch_full_content, str):
                 self.fetch_full_content = self.fetch_full_content.lower() == "true"
 
-            scope_from_config = config.get("scope")
-            self.connector_scope = scope_from_config if scope_from_config else ConnectorScope.PERSONAL.value
-            self.created_by = config.get("createdBy") or config.get("created_by")
+            # Read scope and createdBy from database App node (source of truth)
+            app = await self.data_entities_processor.get_app_by_id(self.connector_id)
+            if not app:
+                raise ValueError(f"App document not found in database for connector {self.connector_id}")
+            self.connector_scope = app.scope
+            self.created_by = app.created_by or ""
+            self.logger.debug(f"Loaded from database: scope={self.connector_scope}, createdBy={self.created_by}")
+
+            # Cache creator email for personal scope (avoids DB query for each record)
+            if self.connector_scope == ConnectorScope.PERSONAL.value and self.created_by:
+                try:
+                    async with self.data_store_provider.transaction() as tx_store:
+                        user = await tx_store.get_user_by_user_id(self.created_by)
+                        if user and user.get("email"):
+                            self.creator_email = user.get("email")
+                except Exception as e:
+                    self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
 
             # Initialize aiohttp session with realistic browser headers
             timeout = aiohttp.ClientTimeout(total=30)
@@ -226,6 +241,50 @@ class RSSConnector(BaseConnector):
                 clean_urls.append(url)
 
         return list(dict.fromkeys(clean_urls))  # Deduplicate while preserving order
+
+    def _create_rss_permissions(self) -> list[Permission]:
+        """Create permissions for RSS feed articles based on connector scope."""
+        try:
+            permissions = []
+
+            if self.connector_scope == ConnectorScope.TEAM.value:
+                permissions.append(
+                    Permission(
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                        external_id=self.data_entities_processor.org_id
+                    )
+                )
+            else:
+                if self.creator_email:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                            email=self.creator_email,
+                            external_id=self.created_by
+                        )
+                    )
+
+                if not permissions:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.READ,
+                            entity_type=EntityType.ORG,
+                            external_id=self.data_entities_processor.org_id
+                        )
+                    )
+
+            return permissions
+        except Exception as e:
+            self.logger.warning(f"Error creating RSS permissions: {e}")
+            return [
+                Permission(
+                    type=PermissionType.READ,
+                    entity_type=EntityType.ORG,
+                    external_id=self.data_entities_processor.org_id
+                )
+            ]
 
     async def test_connection_and_access(self) -> bool:
         """Test if the configured feed URLs are accessible."""
@@ -291,14 +350,7 @@ class RSSConnector(BaseConnector):
                 updated_at=get_epoch_timestamp_in_ms(),
             )
 
-            # Org-level READ permission (RSS content is public within the org)
-            permissions = [
-                Permission(
-                    external_id=self.data_entities_processor.org_id,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                )
-            ]
+            permissions = self._create_rss_permissions()
 
             await self.data_entities_processor.on_new_record_groups(
                 [(record_group, permissions)]
@@ -552,14 +604,7 @@ class RSSConnector(BaseConnector):
             preview_renderable=False,
         )
 
-        # Org-level READ permissions (public content)
-        permissions = [
-            Permission(
-                external_id=self.data_entities_processor.org_id,
-                type=PermissionType.READ,
-                entity_type=EntityType.ORG,
-            )
-        ]
+        permissions = self._create_rss_permissions()
 
         return file_record, permissions
 
