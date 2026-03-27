@@ -188,7 +188,7 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 
 > Connect PipesHub to any MCP-compatible client. Refer to the [MCP Server repo](https://github.com/pipeshub-ai/mcp-server/) README for setup and usage.
 
-[![MCP Server](https://img.shields.io/badge/MCP_Server-pipeshub--ai-blue?style=for-the-badge&logo=github)](https://github.com/pipeshub-ai/mcp-server/)
+[![MCP Server](https://img.shields.io/badge/MCP%20Server-blue?style=for-the-badge&logo=github)](https://github.com/pipeshub-ai/mcp-server/)
 
 ### SDKs
 
