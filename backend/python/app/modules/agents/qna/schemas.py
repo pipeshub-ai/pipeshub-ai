@@ -28,7 +28,6 @@ class AgentAnswerWithMetadataJSON(BaseModel):
         "Enhanced With Full Record",
         "Derived From Tool Execution"
     ]] = None
-    blockNumbers: Optional[List[str]] = None
     referenceData: Optional[List[dict]] = None
 
 
@@ -43,5 +42,4 @@ class AgentAnswerWithMetadataDict(TypedDict, total=False):
         "Enhanced With Full Record",
         "Derived From Tool Execution"
     ]
-    blockNumbers: List[str]
     referenceData: Optional[List[ReferenceDataItem]]

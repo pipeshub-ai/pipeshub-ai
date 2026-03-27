@@ -42,6 +42,12 @@ def build_block_web_url(frontend_url: str, record_id: str, block_index: int) -> 
     base = frontend_url.rstrip("/") if frontend_url else ""
     return f"{base}/record/{record_id}/preview#blockIndex={block_index}"
 
+
+def build_block_group_web_url(frontend_url: str, record_id: str, block_group_index: int) -> str:
+    """Construct a block-level preview URL: {frontend_url}/record/{record_id}/preview#blockIndex={block_index}"""
+    base = frontend_url.rstrip("/") if frontend_url else ""
+    return f"{base}/record/{record_id}/preview#blockGroupIndex={block_group_index}"
+
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
@@ -1111,7 +1117,7 @@ Record blocks (sorted):\n\n"""
                                 })
 
                         if child_results:
-                            block_group_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_group_index)
+                            block_group_web_url = build_block_group_web_url(rec_frontend_url, rec_record_id, block_group_index)
                             template = Template(table_prompt)
                             rendered_form = template.render(
                                 block_group_index=block_group_index,
@@ -1137,7 +1143,7 @@ Record blocks (sorted):\n\n"""
                 if not group_blocks:
                     continue
                 seen_block_groups.add(block_group_id)
-                block_group_web_url = build_block_web_url(rec_frontend_url, rec_record_id, parent_index)
+                block_group_web_url = build_block_group_web_url(rec_frontend_url, rec_record_id, parent_index)
                 for gb in group_blocks:
                     gb["block_web_url"] = build_block_web_url(rec_frontend_url, rec_record_id, gb.get("index", 0))
                 rendered_form = template.render(
@@ -1156,56 +1162,8 @@ Record blocks (sorted):\n\n"""
 
 
 def get_message_content(flattened_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, Any], user_data: str, query: str, logger, mode: str = "json") -> str:
-    content = []
+        content = []
 
-    # Use simple prompt for quick mode
-    if mode == "simple":
-        # Build simple context - just blocks with numbers
-        chunks = []
-        seen_blocks = set()
-        for result in flattened_results:
-            virtual_record_id = result.get("virtual_record_id")
-            block_index = result.get("block_index")
-            result_id = f"{virtual_record_id}_{block_index}"
-
-            if result_id not in seen_blocks:
-                seen_blocks.add(result_id)
-                block_type = result.get("block_type")
-
-                # Skip images for simplicity
-                if block_type == BlockType.IMAGE.value:
-                    continue
-
-                # Get content text
-                if block_type == GroupType.TABLE.value:
-                    table_summary, child_results = result.get("content")
-                    content_text = f"Table: {table_summary}"
-                else:
-                    content_text = result.get("content", "")
-
-                chunks.append({
-                    "metadata": {
-                        "blockText": content_text,
-                        "recordName": result.get("record_name")
-                    }
-                })
-
-        # Render simple prompt
-        template = Template(qna_prompt_simple)
-        rendered_form = template.render(
-            query=query,
-            chunks=chunks
-        )
-
-        content.append({
-            "type": "text",
-            "text": rendered_form
-        })
-
-        return content
-
-    else:
-        # Standard/JSON mode - use detailed prompt
         template = Template(qna_prompt_instructions_1)
         rendered_form = template.render(
                     user_data=user_data,
@@ -1387,68 +1345,6 @@ Record blocks (sorted):\n\n"""
     all_record_strings.append(record_string)
 
     return all_record_strings
-
-def block_group_to_message_content(tool_result: dict[str, Any], final_results: list[dict[str, Any]] = None) -> list[dict[str, Any]]:
-    content = []
-    block_group = tool_result.get("block_group", {})
-    block_group_index = block_group.get("index", 0)
-    record_id = tool_result.get("record_id", "")
-    record_name = tool_result.get("record_name", "")
-    bg_frontend_url = tool_result.get("frontend_url", "")
-    content.append({
-            "type": "text",
-            "text": f"""<record>
-            * Record Id: {record_id}
-            * Record Name: {record_name}
-            * Block Group:
-            """
-        })
-
-    child_results = []
-    blocks = block_group.get("blocks",[])
-    table_summary = block_group.get("data",{}).get("table_summary","")
-    for block in blocks:
-        block_data = block.get("data", {})
-        if isinstance(block_data, dict):
-            row_text = block_data.get("row_natural_language_text", "")
-        else:
-            row_text = str(block_data)
-
-        b_idx = block.get("index", 0)
-        child_results.append({
-            "content": row_text,
-            "block_index": b_idx,
-            "block_web_url": build_block_web_url(bg_frontend_url, record_id, b_idx),
-        })
-
-    block_group_web_url = build_block_web_url(bg_frontend_url, record_id, block_group_index)
-    if child_results:
-        template = Template(table_prompt)
-        rendered_form = template.render(
-            block_group_index=block_group_index,
-            block_group_web_url=block_group_web_url,
-            table_summary=table_summary,
-            table_rows=child_results,
-        )
-        content.append({
-            "type": "text",
-            "text": rendered_form
-        })
-    else:
-        content.append({
-            "type": "text",
-            "text": f"* Block Group Index: {block_group_index}\n* Block Group Web URL: {block_group_web_url}\n* Block Type: table summary\n* Block Content: {table_summary}"
-        })
-    content.append({
-        "type": "text",
-        "text": """</record>
-        Now produce the final answer STRICTLY following the previously provided Output format.\n
-        CRITICAL REQUIREMENTS:\n
-        - Always include block citations as markdown links [block_index](Block Web URL) wherever the answer is derived from blocks.\n
-        - Use only one citation per link and ensure the URLs correspond to the block web URLs shown above.\n
-        - Return a single JSON object exactly as specified (answer, reason, confidence, answerMatchType, blockNumbers)."""
-    })
-    return content
 
 
 def count_tokens_in_messages(messages: list[Any],enc) -> int:

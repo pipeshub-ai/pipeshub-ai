@@ -4,32 +4,29 @@ Agent-specific fetch-full-record tool.
 This is a dedicated tool for the QnA agent that mirrors exactly how the chatbot
 handles full-record retrieval.  The chatbot flow is:
 
-  1. LLM calls fetch_full_record with record IDs (from Block Web URLs) or UUIDs.
+  1. LLM calls fetch_full_record with record IDs.
   2. stream_llm_response_with_tools → execute_tool_calls runs the tool.
   3. The tool returns {"ok": True, "records": [raw_record_dict, ...]}.
   4. execute_tool_calls calls record_to_message_content(record, final_results)
-     on each raw record — producing formatted block text with web URLs.
+     on each raw record — producing formatted block text with block web URLs.
   5. Formatted text is placed into a ToolMessage for the LLM.
 
 This agent tool follows the same contract so execute_tool_calls formats results
-identically to the chatbot.
+identically to the chatbot, giving the LLM the properly web URLs labeled block content.
 
 Key differences from the raw fetch_full_record tool (fetch_full_record.py):
   - This file is agent-only — it never touches chatbot code.
   - It accepts an explicit final_results list for consistent record numbering.
-  - Supports record_id extraction from Block Web URLs, R-label fallback,
-    and direct virtual_record_id (UUID) lookups.
 """
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Optional
+from typing import  Any, Optional
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from collections.abc import Callable
 
 # ── Shared regex for R-label detection (legacy fallback) ───────────────────
 _R_LABEL_RE = re.compile(r"^R(\d+)(?:-\d+)?$", re.IGNORECASE)
@@ -44,10 +41,7 @@ class AgentFetchFullRecordArgs(BaseModel):
         ...,
         description=(
             "List of record references to fetch. Accepted formats:\n"
-            "  - Record IDs extracted from Block Web URLs (the part between "
-            "/record/ and /preview in the URL)\n"
-            "  - Full Block Web URLs (the record ID will be extracted automatically)\n"
-            "  - Actual virtualRecordIds (UUIDs) if you have them\n"
+            "  - Actual recordIds (UUIDs)\n"
             "Pass ALL record IDs you need in a SINGLE call."
         ),
     )
@@ -84,18 +78,18 @@ def _resolve_record_ids(
         resolved_vid: Optional[str] = None
         effective_id = record_id.strip()
 
-        # Strategy 1 — Extract record ID from a Block Web URL
-        url_match = _RECORD_ID_FROM_URL_RE.search(effective_id)
-        if url_match:
-            extracted_id = url_match.group(1)
-            for vid, rec in virtual_record_id_to_result.items():
-                if rec is not None and rec.get("id") == extracted_id:
-                    resolved_vid = vid
-                    break
+        # # Strategy 1 — Extract record ID from a Block Web URL
+        # url_match = _RECORD_ID_FROM_URL_RE.search(effective_id)
+        # if url_match:
+        #     extracted_id = url_match.group(1)
+        #     for vid, rec in virtual_record_id_to_result.items():
+        #         if rec is not None and rec.get("id") == extracted_id:
+        #             resolved_vid = vid
+        #             break
 
         # Strategy 2 — Direct virtual_record_id (UUID) lookup
-        if not resolved_vid and effective_id in virtual_record_id_to_result:
-            resolved_vid = effective_id
+        # if not resolved_vid and effective_id in virtual_record_id_to_result:
+            # resolved_vid = effective_id
 
         # Strategy 3 — Match by record["id"] (ArangoDB _key)
         if not resolved_vid:
@@ -105,12 +99,12 @@ def _resolve_record_ids(
                     break
 
         # Strategy 4 — Legacy R-label fallback ("R1", "R2", "R1-4" → base "R1")
-        if not resolved_vid:
-            r_match = _R_LABEL_RE.match(effective_id)
-            if r_match:
-                base_label = f"R{r_match.group(1)}"
-                if label_to_virtual_record_id and base_label in label_to_virtual_record_id:
-                    resolved_vid = label_to_virtual_record_id[base_label]
+        # if not resolved_vid:
+        #     r_match = _R_LABEL_RE.match(effective_id)
+        #     if r_match:
+        #         base_label = f"R{r_match.group(1)}"
+        #         if label_to_virtual_record_id and base_label in label_to_virtual_record_id:
+        #             resolved_vid = label_to_virtual_record_id[base_label]
 
         if resolved_vid:
             if resolved_vid in seen_vids:
@@ -161,8 +155,7 @@ def create_agent_fetch_full_record_tool(
         more detail to answer accurately.  Pass ALL record IDs in ONE call.
 
         Args:
-            record_ids: Record IDs from Block Web URLs, full Block Web URLs,
-                        or actual virtualRecordIds (UUIDs).
+            record_ids: actual recordIds (UUIDs).
             reason:     Why the full records are needed.
 
         Returns:

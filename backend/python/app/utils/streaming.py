@@ -53,6 +53,10 @@ from app.utils.citations import (
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.logger import create_logger
 
+CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
+INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
+# CITE_BLOCK_RE = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
+# INCOMPLETE_CITE_RE =  re.compile(r'[\[【][^\]】]*$')
 logger = create_logger("streaming")
 
 opik_tracer = None
@@ -399,13 +403,17 @@ async def execute_tool_calls(
     if not tools:
         raise ValueError("Tools are required")
 
-    # Get appropriate schema based on is_agent flag
-    schema_for_structured = _get_schema_for_structured_output(is_agent)
-
     llm_to_pass = bind_tools_for_llm(llm, tools)
     if not llm_to_pass:
-        logger.warning("Failed to bind tools for LLM, so using structured output")
-        llm_to_pass = _apply_structured_output(llm, schema=schema_for_structured)
+        if is_agent:
+            # Agent path: fall back to structured output
+            schema_for_structured = _get_schema_for_structured_output(is_agent)
+            logger.warning("Failed to bind tools for LLM, so using structured output")
+            llm_to_pass = _apply_structured_output(llm, schema=schema_for_structured)
+        else:
+            # Chatbot path: use raw LLM (no structured output)
+            logger.warning("Failed to bind tools for LLM, using raw LLM")
+            llm_to_pass = llm
 
     hops = 0
     tools_executed = False
@@ -713,8 +721,6 @@ async def stream_llm_response(
         answer_done = False
         ANSWER_KEY_RE = re.compile(r'"answer"\s*:\s*"')
         # Match both regular and Chinese brackets for citations (with proper bracket pairing)
-        CITE_BLOCK_RE = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
-        INCOMPLETE_CITE_RE = re.compile(r'(?:\[[^\]]*|【[^】]*)$')
 
         WORD_ITER = re.compile(r'\S+').finditer
         prev_norm_len = 0  # length of the previous normalised answer
@@ -894,9 +900,7 @@ async def stream_llm_response(
         prev_norm_len = 0
         emit_upto = 0
         words_in_chunk = 0
-        # Match both regular and Chinese brackets for citations with R notation (e.g., [R1-2] or 【R1-2】)
-        CITE_BLOCK_RE = re.compile(r'(?:\s*(?:\[R?\d+-?\d+\]|【R?\d+-?\d+】))+')
-        INCOMPLETE_CITE_RE = re.compile(r'(?:\[R?\d*-?\d*|【R?\d*-?\d*)$')
+        # Match citation patterns: markdown links [text](url), bare [N]/[R1-2], or Chinese 【N】
 
         # Fast-path: if the last message is already an AI answer
         try:
@@ -1034,6 +1038,165 @@ def extract_json_from_string(input_string: str) -> "Dict[str, Any]":
         raise ValueError(f"Invalid JSON structure: {e}") from e
 
 
+CONFIDENCE_DELIMITER_RE = re.compile(
+    r'\n---\s*\nConfidence:\s*(Very High|High|Medium|Low)\s*$',
+    re.IGNORECASE
+)
+
+
+def parse_confidence_from_answer(answer: str) -> tuple[str, Optional[str]]:
+    """Strip trailing ---/Confidence block from answer, return (clean_answer, confidence)."""
+    match = CONFIDENCE_DELIMITER_RE.search(answer)
+    if match:
+        return answer[:match.start()].rstrip(), match.group(1)
+    return answer, None
+
+
+# async def handle_chatbot_mode(
+#     llm: BaseChatModel,
+#     messages: List[BaseMessage],
+#     final_results: List[Dict[str, Any]],
+#     records: List[Dict[str, Any]],
+#     logger: logging.Logger,
+#     target_words_per_chunk: int = 1,
+# ) -> AsyncGenerator[Dict[str, Any], None]:
+#     """
+#     Handle chatbot streaming without structured output.
+#     The LLM produces a natural markdown answer with confidence at the end:
+#         <answer text>
+#         ---
+#         Confidence: High
+#     """
+#     # Match citation patterns: markdown links [text](url), bare [N], or Chinese 【N】
+#     WORD_ITER = re.compile(r'\S+').finditer
+
+#     # Fast-path: if the last message is already an AI answer, stream it directly
+#     try:
+#         last_msg = messages[-1] if messages else None
+#         existing_ai_content: Optional[str] = None
+#         if isinstance(last_msg, AIMessage):
+#             existing_ai_content = getattr(last_msg, "content", None)
+#         elif isinstance(last_msg, BaseMessage) and getattr(last_msg, "type", None) == "ai":
+#             existing_ai_content = getattr(last_msg, "content", None)
+#         elif isinstance(last_msg, dict) and last_msg.get("role") == "assistant":
+#             existing_ai_content = last_msg.get("content")
+
+#         if existing_ai_content:
+#             logger.info("handle_chatbot_mode: detected existing AI message, streaming directly")
+#             # Try JSON parse first for backward compatibility
+#             try:
+#                 parsed = json.loads(existing_ai_content)
+#                 final_answer = parsed.get("answer", existing_ai_content)
+#                 confidence = parsed.get("confidence")
+#             except Exception:
+#                 final_answer, confidence = parse_confidence_from_answer(existing_ai_content)
+
+#             normalized, cites = normalize_citations_and_chunks(final_answer, final_results, records)
+
+#             words = re.findall(r'\S+', normalized)
+#             for i in range(0, len(words), target_words_per_chunk):
+#                 chunk_words = words[i:i + target_words_per_chunk]
+#                 chunk_text = ' '.join(chunk_words)
+#                 accumulated = ' '.join(words[:i + len(chunk_words)])
+#                 yield {
+#                     "event": "answer_chunk",
+#                     "data": {
+#                         "chunk": chunk_text,
+#                         "accumulated": accumulated,
+#                         "citations": cites,
+#                     },
+#                 }
+
+#             yield {
+#                 "event": "complete",
+#                 "data": {
+#                     "answer": normalized,
+#                     "citations": cites,
+#                     "reason": None,
+#                     "confidence": confidence,
+#                 },
+#             }
+#             return
+#     except Exception as e:
+#         logger.debug("handle_chatbot_mode: fast-path failed, falling back to LLM call: %s", str(e))
+
+#     # Stream directly from LLM (no structured output)
+#     try:
+#         logger.debug("handle_chatbot_mode: Starting LLM stream")
+#         content_buf: str = ""
+#         prev_norm_len = 0
+#         emit_upto = 0
+#         words_in_chunk = 0
+
+#         async for token in aiter_llm_stream(llm, messages):
+#             if isinstance(token, dict):
+#                 # Structured output dict from some providers — shouldn't happen without structured output,
+#                 # but handle gracefully
+#                 answer = token.get("answer", "")
+#                 if answer:
+#                     content_buf = answer
+#                 continue
+#             content_buf += token
+
+#             # Stream content in word-based chunks
+#             for match in WORD_ITER(content_buf[emit_upto:]):
+#                 words_in_chunk += 1
+#                 if words_in_chunk >= target_words_per_chunk:
+#                     char_end = emit_upto + match.end()
+
+#                     # Include any citation blocks that immediately follow
+#                     if m := CITE_BLOCK_RE.match(content_buf[char_end:]):
+#                         char_end += m.end()
+
+#                     current_raw = content_buf[:char_end]
+#                     # Skip if we have incomplete citations
+#                     if INCOMPLETE_CITE_RE.search(current_raw):
+#                         words_in_chunk = target_words_per_chunk - 1
+#                         break
+
+#                     emit_upto = char_end
+#                     words_in_chunk = 0
+
+#                     # Strip confidence delimiter for intermediate normalization
+#                     clean_answer, _ = parse_confidence_from_answer(current_raw)
+#                     normalized, cites = normalize_citations_and_chunks(
+#                         clean_answer, final_results, records
+#                     )
+
+#                     chunk_text = normalized[prev_norm_len:]
+#                     prev_norm_len = len(normalized)
+
+#                     if chunk_text:
+#                         yield {
+#                             "event": "answer_chunk",
+#                             "data": {
+#                                 "chunk": chunk_text,
+#                                 "accumulated": normalized,
+#                                 "citations": cites,
+#                             },
+#                         }
+#                     break
+
+#         # Final: parse confidence from the complete response
+#         clean_answer, confidence = parse_confidence_from_answer(content_buf)
+#         normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records)
+#         yield {
+#             "event": "complete",
+#             "data": {
+#                 "answer": normalized,
+#                 "citations": cites,
+#                 "reason": None,
+#                 "confidence": confidence,
+#             },
+#         }
+#     except Exception as exc:
+#         logger.error("Error in handle_chatbot_mode LLM streaming", exc_info=True)
+#         yield {
+#             "event": "error",
+#             "data": {"error": f"Error in LLM streaming: {exc}"},
+#         }
+
+
 async def handle_json_mode(
     llm: BaseChatModel,
     messages: List[BaseMessage],
@@ -1047,10 +1210,12 @@ async def handle_json_mode(
     Handle JSON mode streaming.
 
     Args:
-        is_agent: If True, use agent schemas (with referenceData support).
-                  If False, use chatbot schemas (default).
+        is_agent: If True, use agent schemas (with referenceData support) and structured output.
+                  If False, use chatbot mode (natural markdown + confidence delimiter, no structured output).
     """
-    # Get appropriate schemas based on is_agent flag
+   
+
+    # Agent path: use structured output (unchanged)
     schema_for_structured = _get_schema_for_structured_output(is_agent)
 
     # Fast-path: if the last message is already an AI answer (e.g., from invalid tool call conversion), stream it directly
@@ -1139,7 +1304,6 @@ async def handle_simple_mode(
     records: List[Dict[str, Any]],
     logger: logging.Logger,
     target_words_per_chunk: int = 1,
-    virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     # Simple mode: stream content directly without JSON parsing
         logger.debug("stream_llm_response_with_tools: simple mode - streaming raw content")
@@ -1148,9 +1312,6 @@ async def handle_simple_mode(
         prev_norm_len = 0
         emit_upto = 0
         words_in_chunk = 0
-        # Match both regular and Chinese brackets for citations (with proper bracket pairing)
-        CITE_BLOCK_RE = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
-        INCOMPLETE_CITE_RE = re.compile(r'(?:\[[^\]]*|【[^】]*)$')
 
         # Fast-path: if the last message is already an AI answer
         try:
@@ -1165,7 +1326,8 @@ async def handle_simple_mode(
 
             if existing_ai_content:
                 logger.info("stream_llm_response_with_tools: detected existing AI message (simple mode), streaming directly")
-                normalized, cites = normalize_citations_and_chunks(existing_ai_content, final_results, records)
+                clean_answer, confidence = parse_confidence_from_answer(existing_ai_content)
+                normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records)
 
                 words = re.findall(r'\S+', normalized)
                 for i in range(0, len(words), target_words_per_chunk):
@@ -1178,6 +1340,7 @@ async def handle_simple_mode(
                             "chunk": chunk_text,
                             "accumulated": accumulated,
                             "citations": cites,
+                            "confidence": confidence,
                         },
                     }
 
@@ -1187,7 +1350,7 @@ async def handle_simple_mode(
                         "answer": normalized,
                         "citations": cites,
                         "reason": None,
-                        "confidence": None,
+                        "confidence": confidence,
                     },
                 }
                 return
@@ -1218,9 +1381,8 @@ async def handle_simple_mode(
                         if INCOMPLETE_CITE_RE.search(current_raw):
                             continue
 
-                        normalized, cites = normalize_citations_and_chunks_for_agent(
-                            current_raw, final_results, virtual_record_id_to_result, records
-                        )
+                        clean_answer, confidence = parse_confidence_from_answer(current_raw)
+                        normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records)
 
                         chunk_text = normalized[prev_norm_len:]
                         prev_norm_len = len(normalized)
@@ -1231,18 +1393,20 @@ async def handle_simple_mode(
                                 "chunk": chunk_text,
                                 "accumulated": normalized,
                                 "citations": cites,
+                                "confidence": confidence,
                             },
                         }
 
             # Final normalization and emit complete
-            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, virtual_record_id_to_result, records)
+            clean_answer, confidence = parse_confidence_from_answer(content_buf)
+            normalized, cites = normalize_citations_and_chunks(clean_answer, final_results, records)
             yield {
                 "event": "complete",
                 "data": {
                     "answer": normalized,
                     "citations": cites,
                     "reason": "Not provided",
-                    "confidence": "Medium",
+                    "confidence": confidence,
                 },
             }
         except Exception as exc:
@@ -1251,7 +1415,6 @@ async def handle_simple_mode(
                 "event": "error",
                 "data": {"error": f"Error in LLM streaming: {exc}"},
             }
-
 
 def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
     """Append ::download_conversation_task[fileName](signedUrl) markers to the answer string."""
@@ -1309,14 +1472,8 @@ async def stream_llm_response_with_tools(
     )
     records = []
 
-    # Force tools to None in simple mode to avoid any tool-related issues
-    if mode != "json":
-        tools = None
-        tool_runtime_kwargs = None
-        logger.debug("stream_llm_response_with_tools: simple mode detected, ignoring tools")
-
     # Handle tool calls first if tools are provided (only in JSON mode)
-    if tools and tool_runtime_kwargs and mode == "json":
+    if tools and tool_runtime_kwargs:
         # Execute tools and get updated messages
         final_messages = messages.copy()
         tools_were_called = False
@@ -1437,7 +1594,7 @@ async def stream_llm_response_with_tools(
                     )
                 yield event
         else:
-            async for event in handle_simple_mode(llm, messages, final_results, records, logger, target_words_per_chunk, virtual_record_id_to_result):
+            async for event in handle_simple_mode(llm, messages, final_results, records, logger, target_words_per_chunk):
                 if event.get("event") == "complete" and task_results and event.get("data") is not None:
                     event["data"]["answer"] = _append_task_markers(
                         event["data"].get("answer", "") or "", task_results
@@ -1471,8 +1628,10 @@ class AnswerParserState:
 def _initialize_answer_parser_regex() -> Tuple[re.Pattern, re.Pattern, re.Pattern, Any]:
     """Initialize regex patterns for answer parsing."""
     answer_key_re = re.compile(r'"answer"\s*:\s*"')
-    cite_block_re = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
-    incomplete_cite_re = re.compile(r'[\[【][^\]】]*$')
+    # cite_block_re = re.compile(r'(?:\s*(?:\[\d+\]|【\d+】))+')
+    cite_block_re = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
+    incomplete_cite_re = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
+    # incomplete_cite_re = re.compile(r'[\[【][^\]】]*$')
     word_iter = re.compile(r'\S+').finditer
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
 
@@ -1634,7 +1793,40 @@ async def call_aiter_llm_stream(
             logger.info("tool_calls detected, returning")
             return
 
-    # Try to parse the full JSON buffer
+    # Chatbot path (is_agent=False): parse natural text with confidence delimiter
+    # if not is_agent:
+    #     try:
+    #         raw_answer = state.full_json_buf if isinstance(state.full_json_buf, str) else state.answer_buf or ""
+    #         # Try JSON parse first for backward compatibility (e.g., some models may still produce JSON)
+    #         try:
+    #             parsed_json = json.loads(cleanup_content(raw_answer)) if raw_answer.strip().startswith('{') else None
+    #             if parsed_json and "answer" in parsed_json:
+    #                 final_answer = parsed_json["answer"]
+    #                 confidence = parsed_json.get("confidence")
+    #             else:
+    #                 parsed_json = None
+    #         except Exception:
+    #             parsed_json = None
+
+    #         if not parsed_json:
+    #             final_answer, confidence = parse_confidence_from_answer(raw_answer)
+
+    #         normalized, c = normalize_citations_and_chunks(final_answer, final_results, records)
+    #         yield {
+    #             "event": "complete",
+    #             "data": {
+    #                 "answer": normalized,
+    #                 "citations": c,
+    #                 "reason": None,
+    #                 "confidence": confidence,
+    #             },
+    #         }
+    #     except Exception as e:
+    #         logger.error("Error in call_aiter_llm_stream (chatbot path)", exc_info=True)
+    #         yield {"event": "error", "data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
+    #     return
+
+    # Agent path (is_agent=True): parse structured JSON output
     try:
         response_text = state.full_json_buf
         if  isinstance(response_text, str):

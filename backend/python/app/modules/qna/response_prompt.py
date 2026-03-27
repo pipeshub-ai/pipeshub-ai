@@ -32,7 +32,7 @@ response_system_prompt = """You are an expert AI assistant within an enterprise 
 You are responsible for:
 - **Synthesizing** data from internal knowledge blocks and tool execution results into coherent, comprehensive answers
 - **Formatting** responses professionally with proper Markdown
-- **Citing** internal knowledge sources accurately with inline markdown link citations [N](Block Web URL) where N is a monotonically increasing number
+- **Citing** internal knowledge sources accurately with inline markdown link citations [source](Block Web URL)
 - **Presenting** information in a user-friendly, scannable format
 - **Answering directly** without describing your process or tools used
 </core_role>
@@ -95,18 +95,18 @@ You are responsible for:
 
 ### Citation Format Rules:
 
-1. **Use Block Web URLs as Markdown Links with Sequential Numbers**: Each knowledge block has a "Block Web URL".
-   Assign a monotonically increasing citation number (1, 2, 3, ...) and use it as the link text with the Block Web URL as the href.
-   - ✅ CORRECT: [1](/record/abc123/preview#blockIndex=0), [2](/record/def456/preview#blockIndex=3)
+1. **Use Block Web URLs as Markdown Links**: Each knowledge block has a "Block Web URL".
+   Embed the Block Web URL as a markdown link with [source] as the link text. Do NOT manually assign citation numbers — the system numbers them automatically.
+   - ✅ CORRECT: [source](/record/abc123/preview#blockIndex=0), [source](/record/def456/preview#blockIndex=3)
    - ❌ WRONG: [ceb988e7-c37c-4a5a-b8ef-59f37bbde594] (never use UUIDs)
    - ❌ WRONG: [R1-0] (don't use R-label format)
+   - ❌ WRONG: [1], [2] (don't use bare numbers without the URL)
 
-2. **Monotonically Increasing Numbers**: Start from 1 and increment for each NEW block cited.
-   If the same block is cited again later, reuse the citation number already assigned to it.
+2. **Reuse Links**: If the same block is cited again later, reuse the same [source](Block Web URL) link.
 
 3. **Inline After Each Claim**: Put the citation link IMMEDIATELY after the specific fact it supports
-   - ✅ "Revenue grew 29% [1](/record/abc/preview#blockIndex=0). The company has 500 employees [2](/record/def/preview#blockIndex=3)."
-   - ❌ "Revenue grew 29%. The company has 500 employees. [1](/record/abc/preview#blockIndex=0)[2](/record/def/preview#blockIndex=3)"
+   - ✅ "Revenue grew 29% [source](/record/abc/preview#blockIndex=0). The company has 500 employees [source](/record/def/preview#blockIndex=3)."
+   - ❌ "Revenue grew 29%. The company has 500 employees. [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3)"
 
 4. **One Citation Per Link**: Each citation is a separate markdown link
 
@@ -117,12 +117,8 @@ You are responsible for:
 
 7. **Code Block Citations**: Put citations on the NEXT line after ```, never on the same line
 
-8. **Include blockNumbers Array**: List ALL cited Block Web URLs as strings
-   - ✅ "blockNumbers": ["/record/abc123/preview#blockIndex=0", "/record/def456/preview#blockIndex=3"]
+8. **MANDATORY**: Every fact from internal knowledge MUST have a citation. No exceptions.
 
-9. **MANDATORY**: Every fact from internal knowledge MUST have a citation. No exceptions.
-
-10. **Gap Detection**: Use the block index numbers to detect missing blocks within a record (e.g., if you see blocks 0, 1, 3 but block 2 is missing — consider fetching the full record).
 </citation_rules>
 
 <output_format_rules>
@@ -134,11 +130,10 @@ You are responsible for:
 
 ```json
 {{
-  "answer": "Your answer in markdown with citations as [N](Block Web URL) where N is a monotonically increasing number (1, 2, 3, ...) after each fact.",
+  "answer": "Your answer in markdown with citations as [source](Block Web URL) after each fact. The system assigns citation numbers automatically.",
   "reason": "How you derived the answer from blocks",
   "confidence": "Very High | High | Medium | Low",
   "answerMatchType": "Exact Match | Derived From Blocks | Derived From User Info | Enhanced With Full Record",
-  "blockNumbers": ["/record/abc/preview#blockIndex=0", "/record/def/preview#blockIndex=3"]
 }}
 ```
 
@@ -165,10 +160,9 @@ You are responsible for:
 
 ```json
 {{
-  "answer": "Your comprehensive answer weaving both sources. Cite internal knowledge facts inline [1](/record/abc/preview#blockIndex=0)[2](/record/def/preview#blockIndex=3). Format API results with clickable links like [PA-123](url).",
+  "answer": "Your comprehensive answer weaving both sources. Cite internal knowledge facts inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3). Format API results with clickable links like [PA-123](url).",
   "confidence": "High",
   "answerMatchType": "Derived From Blocks",
-  "blockNumbers": ["/record/abc/preview#blockIndex=0", "/record/def/preview#blockIndex=3"],
   "referenceData": [
     {{"name": "PA-123: Fix login bug", "key": "PA-123", "type": "jira_issue", "url": "https://org.atlassian.net/browse/PA-123"}}
   ]
@@ -176,7 +170,6 @@ You are responsible for:
 ```
 
 **⚠️ CRITICAL — MODE 3 Rules:**
-- `blockNumbers` MUST contain every Block Web URL you cited in the answer
 - `referenceData` MUST contain every external-service item (Jira, Confluence, Drive, Gmail, Slack)
 - Do NOT omit knowledge citations just because API results are also present — cite BOTH
 - Synthesise both sources into ONE coherent answer; do not produce two separate sections
@@ -256,10 +249,10 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 <source_prioritization>
 ## Source Priority Rules
 1. **User-Specific Questions**: Use User Information, no citations needed
-2. **Company Knowledge Questions**: Use internal knowledge blocks, cite all relevant blocks with [N](Block Web URL) inline (N = monotonically increasing number)
+2. **Company Knowledge Questions**: Use internal knowledge blocks, cite all relevant blocks with [source](Block Web URL) inline
 3. **Tool/API Data Questions**: Use tool results only, format professionally, include referenceData, no block citations needed
 4. **Combined Sources (MANDATORY MODE 3)**: When BOTH internal knowledge AND API results are present:
-   - Cite ALL relevant internal knowledge facts with inline [N](Block Web URL) citations AND include `blockNumbers`
+   - Cite ALL relevant internal knowledge facts with inline [source](Block Web URL) citations
    - Format ALL API results with links AND include them in `referenceData`
    - Weave both into one unified, coherent answer — do NOT skip citations just because API results exist
 </source_prioritization>
@@ -268,7 +261,7 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 **MOST CRITICAL RULES:**
 
 1. **ANSWER DIRECTLY** — No "I searched for X" or "The tool returned Y"
-2. **CITE AFTER EACH CLAIM** — [N](Block Web URL) right after the fact it supports, with N incrementing from 1
+2. **CITE AFTER EACH CLAIM** — [source](Block Web URL) right after the fact it supports
 3. **DIFFERENT CITATIONS FOR DIFFERENT FACTS** — don't repeat same citation
 4. **BE COMPREHENSIVE** — thorough, complete answers
 5. **Format Professionally** — clean markdown hierarchy
@@ -282,198 +275,6 @@ When creating markdown tables from Jira issue data, use these **principles** to 
 # ============================================================================
 # CONTEXT BUILDERS
 # ============================================================================
-
-def build_internal_context_for_response(
-    final_results,
-    virtual_record_id_to_result=None,
-    include_full_content=True,
-) -> str:
-    """
-    Build internal knowledge context formatted for response synthesis.
-
-    This is the agent's clean context format — it does NOT embed the chatbot's
-    qna_prompt_instructions_1 / qna_prompt_instructions_2 instruction wrappers.
-    Those wrappers create duplicate / conflicting instructions when embedded
-    inside the agent's system prompt (which already has its own tool usage and
-    citation rules in response_system_prompt).
-
-    What this function provides:
-    - context_metadata per record (same rich format as get_message_content):
-        File: X | Type: Y | URL: Z  — lets the LLM distinguish documents
-    - Block Web URLs consistent with _sync_block_numbers_from_get_message_content
-    - Block content
-
-    Block numbers must be pre-assigned on each result dict via
-    _sync_block_numbers_from_get_message_content() before this function is
-    called.  That is done by build_response_prompt() below.
-    """
-    if not final_results:
-        return "No internal knowledge sources available.\n\nOutput Format: Use Clean Professional Markdown"
-
-    from app.models.blocks import BlockType, GroupType
-
-    # ── Pre-scan: identify records that have ONLY image blocks ──────────────────
-    # For such records (e.g. JPEG files) we will emit a synthetic summary block so
-    # the LLM has a citable block number instead of seeing an empty block section.
-    _vid_non_image_count: dict = {}  # virtual_record_id -> count of non-image blocks
-    _vid_first_block: dict = {}       # virtual_record_id -> first result dict (for block_number)
-    _vid_summary: dict = {}           # virtual_record_id -> summary text to use as fallback
-
-    for _r in final_results:
-        _vid = _r.get("virtual_record_id") or _r.get("metadata", {}).get("virtualRecordId")
-        if not _vid:
-            continue
-        if _vid not in _vid_non_image_count:
-            _vid_non_image_count[_vid] = 0
-            _vid_first_block[_vid] = _r
-        if _r.get("block_type") != BlockType.IMAGE.value:
-            _vid_non_image_count[_vid] += 1
-
-    # For image-only records, extract summary text from semantic_metadata
-    if virtual_record_id_to_result:
-        for _vid, _count in _vid_non_image_count.items():
-            if _count == 0:
-                _rec = virtual_record_id_to_result.get(_vid)
-                if _rec:
-                    _sm = _rec.get("semantic_metadata")
-                    # semantic_metadata can be a dict OR a SemanticMetadata dataclass object
-                    if hasattr(_sm, "summary"):
-                        _summary = getattr(_sm, "summary", "") or ""
-                    elif isinstance(_sm, dict):
-                        _summary = _sm.get("summary", "") or ""
-                    else:
-                        _summary = ""
-                    _vid_summary[_vid] = _summary or _rec.get("record_name", "")
-
-    # ────────────────────────────────────────────────────────────────────────────
-
-    context_parts = [
-        "<context>",
-        "## Internal Knowledge Sources Available",
-        "",
-        "⚠️ **CRITICAL**: You MUST respond in Structured JSON with citations.",
-        "Use the Block Web URLs shown below as markdown link citations: [N](Block Web URL) where N is a monotonically increasing number starting from 1.",
-        "",
-    ]
-
-    from app.utils.chat_helpers import build_block_web_url
-
-    seen_virtual_record_ids: set = set()
-    seen_blocks: set = set()
-    current_record_had_visible_block = False
-    current_record_virtual_id = None
-    current_frontend_url = ""
-    current_record_id = ""
-
-    for result in final_results:
-        virtual_record_id = result.get("virtual_record_id")
-        if not virtual_record_id:
-            metadata = result.get("metadata", {})
-            virtual_record_id = metadata.get("virtualRecordId")
-
-        if not virtual_record_id:
-            continue
-
-        if virtual_record_id not in seen_virtual_record_ids:
-            if seen_virtual_record_ids:
-                if not current_record_had_visible_block and current_record_virtual_id:
-                    _syn_url = build_block_web_url(current_frontend_url, current_record_id, 0)
-                    _syn_summary = _vid_summary.get(current_record_virtual_id, "")
-                    if _syn_summary:
-                        context_parts.append("* Block Index: 0")
-                        context_parts.append(f"* Block Web URL: {_syn_url}")
-                        context_parts.append("* Block Type: summary")
-                        context_parts.append(f"* Block Content: {_syn_summary}")
-                        context_parts.append("")
-                context_parts.append("</record>")
-
-            seen_virtual_record_ids.add(virtual_record_id)
-            current_record_virtual_id = virtual_record_id
-            current_record_had_visible_block = False
-
-            record = None
-            if virtual_record_id_to_result and virtual_record_id in virtual_record_id_to_result:
-                record = virtual_record_id_to_result[virtual_record_id]
-
-            current_frontend_url = (record.get("frontend_url", "") if record else "")
-            current_record_id = (record.get("id", "") if record else "")
-
-            metadata = result.get("metadata", {})
-
-            context_parts.append("<record>")
-
-            context_metadata = ""
-            if record:
-                context_metadata = record.get("context_metadata", "")
-            if context_metadata:
-                context_parts.append(context_metadata)
-            else:
-                record_name = (
-                    (record.get("record_name") if record else None)
-                    or metadata.get("recordName")
-                    or metadata.get("origin")
-                    or "Unknown"
-                )
-                context_parts.append(f"File: {record_name}")
-
-            context_parts.append("Record blocks (sorted):")
-
-        result_id = f"{virtual_record_id}_{result.get('block_index', 0)}"
-        if result_id in seen_blocks:
-            continue
-        seen_blocks.add(result_id)
-
-        block_type = result.get("block_type")
-        block_index = result.get("block_index", 0)
-        block_web_url = build_block_web_url(current_frontend_url, current_record_id, block_index)
-
-        result["block_web_url"] = block_web_url
-
-        content = result.get("content", "")
-
-        if block_type == BlockType.IMAGE.value:
-            continue
-
-        current_record_had_visible_block = True
-
-        if block_type == GroupType.TABLE.value:
-            table_summary, child_results = result.get("content", ("", []))
-            context_parts.append(f"* Block Group Index: {block_index}")
-            context_parts.append(f"* Block Group Web URL: {block_web_url}")
-            context_parts.append("* Block Group Type: table")
-            context_parts.append(f"* Table Summary: {table_summary}")
-            context_parts.append("* Table Rows/Blocks:")
-            if isinstance(child_results, list):
-                for child in child_results[:5]:
-                    child_block_index = child.get("block_index", 0)
-                    child_web_url = build_block_web_url(current_frontend_url, current_record_id, child_block_index)
-                    child["block_web_url"] = child_web_url
-                    context_parts.append(f"  - Block Index: {child_block_index}")
-                    context_parts.append(f"  - Block Web URL: {child_web_url}")
-                    context_parts.append(f"  - Block Content: {child.get('content', '')}")
-        else:
-            context_parts.append(f"* Block Index: {block_index}")
-            context_parts.append(f"* Block Web URL: {block_web_url}")
-            context_parts.append(f"* Block Type: {block_type}")
-            context_parts.append(f"* Block Content: {content}")
-
-        context_parts.append("")
-
-    if seen_virtual_record_ids:
-        if not current_record_had_visible_block and current_record_virtual_id:
-            _syn_url = build_block_web_url(current_frontend_url, current_record_id, 0)
-            _syn_summary = _vid_summary.get(current_record_virtual_id, "")
-            if _syn_summary:
-                context_parts.append("* Block Index: 0")
-                context_parts.append(f"* Block Web URL: {_syn_url}")
-                context_parts.append("* Block Type: summary")
-                context_parts.append(f"* Block Content: {_syn_summary}")
-                context_parts.append("")
-        context_parts.append("</record>")
-
-    context_parts.append("</context>")
-
-    return "\n".join(context_parts)
 
 
 def build_conversation_history_context(previous_conversations, max_history=5) -> str:
@@ -494,49 +295,6 @@ def build_conversation_history_context(previous_conversations, max_history=5) ->
     history_parts.append("\nUse this history to understand context and handle follow-up questions naturally.")
     return "\n".join(history_parts)
 
-
-def _sync_block_numbers_from_get_message_content(final_results: list[dict[str, Any]], virtual_record_id_to_result: dict[str, dict[str, Any]] = None) -> None:
-    """
-    Sync block_web_url on each result to match what get_message_content() assigned.
-
-    get_message_content() now assigns block web URLs (frontend_url/record/recordId/preview#blockIndex=N)
-    instead of R-labels. This function replicates that logic.
-    """
-    from app.utils.chat_helpers import build_block_web_url
-
-    if virtual_record_id_to_result is None:
-        virtual_record_id_to_result = {}
-
-    seen_virtual_record_ids = set()
-    current_frontend_url = ""
-    current_record_id = ""
-
-    for _i, result in enumerate(final_results):
-        virtual_record_id = result.get("virtual_record_id")
-        if not virtual_record_id:
-            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
-
-        if virtual_record_id and virtual_record_id not in seen_virtual_record_ids:
-            seen_virtual_record_ids.add(virtual_record_id)
-            record = virtual_record_id_to_result.get(virtual_record_id, {})
-            if record:
-                current_frontend_url = record.get("frontend_url", "")
-                current_record_id = record.get("id", "")
-
-        block_index = result.get("block_index", 0)
-        block_web_url = build_block_web_url(current_frontend_url, current_record_id, block_index)
-        result["block_web_url"] = block_web_url
-        BLOCK_GROUP_CONTENT_LENGTH = 2
-        from app.models.blocks import GroupType
-        block_type = result.get("block_type", "")
-        if block_type == GroupType.TABLE.value:
-            content = result.get("content", ("", []))
-            if isinstance(content, tuple) and len(content) == BLOCK_GROUP_CONTENT_LENGTH:
-                table_summary, child_results = content
-                if isinstance(child_results, list):
-                    for child in child_results:
-                        child_block_index = child.get("block_index", 0)
-                        child["block_web_url"] = build_block_web_url(current_frontend_url, current_record_id, child_block_index)
 
 
 def build_record_label_mapping(final_results: list[dict[str, Any]]) -> dict[str, str]:
@@ -610,12 +368,12 @@ def build_response_prompt(state, max_iterations=30) -> str:
         internal_context = (
             "Internal knowledge (records, block indexes, block web URLs, and content) has been "
             "retrieved and is provided in the user message. Each block has a Block Web URL. "
-            "Cite facts using markdown links [N](Block Web URL) with N as a monotonically increasing number starting from 1."
+            "Cite facts using markdown links: [source](Block Web URL). The system assigns citation numbers automatically."
         )
     elif final_results:
         internal_context = (
             f"{len(final_results)} knowledge blocks are available. "
-            "Cite each fact using its Block Web URL as a markdown link [N](Block Web URL) with N as a monotonically increasing number starting from 1."
+            "Cite each fact using its EXACT Block Web URL as a markdown link: [source](Block Web URL). The system assigns citation numbers automatically."
         )
     else:
         internal_context = (
@@ -744,9 +502,9 @@ def create_response_messages(state) -> list[Any]:
 
         if has_knowledge or has_knowledge_tool:
             query_with_context += (
-                "\n\n**⚠️ Respond in JSON format. Cite each fact using its Block Web URL as a markdown link "
-                "[N](Block Web URL) where N increments from 1. Use DIFFERENT block citations for "
-                "DIFFERENT facts. Include blockNumbers array with cited Block Web URLs.**"
+                "\n\n**⚠️ Respond in JSON format. Cite each fact using its Block Web URL as a markdown link: "
+                "[source](Block Web URL). The system assigns citation numbers automatically. Use DIFFERENT block URLs for "
+                "DIFFERENT facts.**"
             )
 
         messages.append(HumanMessage(content=query_with_context))
@@ -784,7 +542,7 @@ def _format_reference_data_for_response(all_reference_data: list[dict]) -> str:
 def detect_response_mode(response_content) -> tuple[str, Any]:
     """Detect if response is structured JSON or conversational"""
     if isinstance(response_content, dict):
-        if "answer" in response_content and ("chunkIndexes" in response_content or "citations" in response_content or "blockNumbers" in response_content):
+        if "answer" in response_content and ("chunkIndexes" in response_content or "citations" in response_content):
             return "structured", response_content
         return "conversational", response_content
 

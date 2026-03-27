@@ -110,7 +110,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: list[dict[st
         records = []
 
     # First try markdown link citation pattern: [citation_number](url_with_blockIndex)
-    md_link_pattern = r'\[([^\]]*?)\]\(([^)]*?/record/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?)\)'
+    md_link_pattern = r'\[([^\]]*?)\]\(([^)]*?/record/[^)]*?preview[^)]*?block(?:Group)?Index=\d+[^)]*?)\)'
     md_matches = list(re.finditer(md_link_pattern, answer_text))
 
     if md_matches:
@@ -134,26 +134,23 @@ def _normalize_markdown_link_citations(
     vrids = [record.get("virtual_record_id") for record in records]
 
     for doc in final_results:
-        virtual_record_id = doc.get("virtual_record_id")
-        if virtual_record_id in vrids:
-            continue
         block_type = doc.get("block_type")
         if block_type == GroupType.TABLE.value:
             _, child_results = doc.get("content", ("", []))
             if child_results:
                 for child in child_results:
                     flattened_final_results.append(child)
-                    child_url = child.get("block_web_url") or child.get("metadata", {}).get("blockWebUrl", "")
+                    child_url = child.get("block_web_url")
                     if child_url:
                         url_to_doc_index[child_url] = len(flattened_final_results) - 1
             else:
                 flattened_final_results.append(doc)
-                doc_url = doc.get("block_web_url") or doc.get("metadata", {}).get("blockWebUrl", "")
+                doc_url = doc.get("block_web_url")
                 if doc_url:
                     url_to_doc_index[doc_url] = len(flattened_final_results) - 1
         else:
             flattened_final_results.append(doc)
-            doc_url = doc.get("block_web_url") or doc.get("metadata", {}).get("blockWebUrl", "")
+            doc_url = doc.get("block_web_url")
             if doc_url:
                 url_to_doc_index[doc_url] = len(flattened_final_results) - 1
 
@@ -170,10 +167,18 @@ def _normalize_markdown_link_citations(
     new_citation_num = 1
 
     for url in unique_urls:
-        doc = None
         if url in url_to_doc_index:
             idx = url_to_doc_index[url]
             doc = flattened_final_results[idx]
+            content = doc.get("content", "")
+            new_citations.append({
+                "content": "Image" if content.startswith("data:image/") else content,
+                "chunkIndex": new_citation_num,  # Use new sequential number
+                "metadata": doc.get("metadata", {}),
+                "citationType": "vectordb|document",
+            })
+            url_to_citation_num[url] = new_citation_num
+            new_citation_num += 1
         else:
             # Try matching by record_id + block_index extracted from URL
             record_id = _extract_record_id_from_url(url)
@@ -201,19 +206,7 @@ def _normalize_markdown_link_citations(
                             url_to_citation_num[url] = new_citation_num
                             new_citation_num += 1
                         break
-                continue
 
-        if doc is not None:
-            content = doc.get("content", "")
-            metadata = doc.get("metadata", {}) or {}
-            new_citations.append({
-                "content": "Image" if isinstance(content, str) and content.startswith("data:image/") else content,
-                "chunkIndex": new_citation_num,
-                "metadata": metadata,
-                "citationType": "vectordb|document",
-            })
-            url_to_citation_num[url] = new_citation_num
-            new_citation_num += 1
 
     answer_text = _renumber_citation_links(answer_text, md_matches, url_to_citation_num)
 
@@ -240,7 +233,7 @@ def normalize_citations_and_chunks_for_agent(
         virtual_record_id_to_result = {}
 
     # First try markdown link citation pattern: [citation_number](url_with_blockIndex)
-    md_link_pattern = r'\[([^\]]*?)\]\(([^)]*?/record/[^)]*?preview[^)]*?blockIndex=\d+[^)]*?)\)'
+    md_link_pattern = r'\[([^\]]*?)\]\(([^)]*?/record/[^)]*?preview[^)]*?block(?:Group)?Index=\d+[^)]*?)\)'
     md_matches = list(re.finditer(md_link_pattern, answer_text))
 
     if md_matches:
@@ -264,29 +257,26 @@ def _normalize_markdown_link_citations_for_agent(
     """
     url_to_doc_index = {}
     flattened_final_results = []
-    vrids = [record.get("virtual_record_id") for record in records]
 
     for doc in final_results:
         virtual_record_id = doc.get("virtual_record_id")
-        if virtual_record_id in vrids:
-            continue
         block_type = doc.get("block_type")
         if block_type == GroupType.TABLE.value:
             _, child_results = doc.get("content", ("", []))
             if child_results:
                 for child in child_results:
                     flattened_final_results.append(child)
-                    child_url = child.get("block_web_url") or child.get("metadata", {}).get("blockWebUrl", "")
+                    child_url = child.get("block_web_url")
                     if child_url:
                         url_to_doc_index[child_url] = len(flattened_final_results) - 1
             else:
                 flattened_final_results.append(doc)
-                doc_url = doc.get("block_web_url") or doc.get("metadata", {}).get("blockWebUrl", "")
+                doc_url = doc.get("block_web_url")
                 if doc_url:
                     url_to_doc_index[doc_url] = len(flattened_final_results) - 1
         else:
             flattened_final_results.append(doc)
-            doc_url = doc.get("block_web_url") or doc.get("metadata", {}).get("blockWebUrl", "")
+            doc_url = doc.get("block_web_url")
             if doc_url:
                 url_to_doc_index[doc_url] = len(flattened_final_results) - 1
 
@@ -303,10 +293,40 @@ def _normalize_markdown_link_citations_for_agent(
     new_citation_num = 1
 
     for url in unique_urls:
-        doc = None
         if url in url_to_doc_index:
             idx = url_to_doc_index[url]
             doc = flattened_final_results[idx]
+            content = doc.get("content", "")
+            metadata = doc.get("metadata", {}) or {}
+
+            if virtual_record_id_to_result:
+                virtual_record_id = doc.get("virtual_record_id") or metadata.get("virtualRecordId")
+                if virtual_record_id and virtual_record_id in virtual_record_id_to_result:
+                    record = virtual_record_id_to_result[virtual_record_id]
+                    if not metadata.get("origin"):
+                        metadata["origin"] = record.get("origin", "")
+                    if not metadata.get("recordName"):
+                        metadata["recordName"] = record.get("record_name", "")
+                    if not metadata.get("recordId"):
+                        metadata["recordId"] = record.get("id", "")
+                    if not metadata.get("mimeType"):
+                        metadata["mimeType"] = record.get("mime_type", "")
+
+            # Ensure required fields
+            metadata["origin"] = metadata.get("origin") or ""
+            metadata["recordName"] = metadata.get("recordName") or ""
+            metadata["recordId"] = metadata.get("recordId") or ""
+            metadata["mimeType"] = metadata.get("mimeType") or ""
+            metadata["orgId"] = metadata.get("orgId") or ""
+
+            new_citations.append({
+                "content": "Image" if content.startswith("data:image/") else content,
+                "chunkIndex": new_citation_num,
+                "metadata": metadata,
+                "citationType": "vectordb|document",
+            })
+            url_to_citation_num[url] = new_citation_num
+            new_citation_num += 1
         else:
             record_id = _extract_record_id_from_url(url)
             block_index = _extract_block_index_from_url(url)
@@ -371,37 +391,7 @@ def _normalize_markdown_link_citations_for_agent(
                             break
                 continue
 
-        if doc is not None:
-            content = doc.get("content", "")
-            metadata = doc.get("metadata", {}) or {}
-
-            if virtual_record_id_to_result:
-                virtual_record_id = doc.get("virtual_record_id") or metadata.get("virtualRecordId")
-                if virtual_record_id and virtual_record_id in virtual_record_id_to_result:
-                    record = virtual_record_id_to_result[virtual_record_id]
-                    if not metadata.get("origin"):
-                        metadata["origin"] = record.get("origin", "")
-                    if not metadata.get("recordName"):
-                        metadata["recordName"] = record.get("record_name", "")
-                    if not metadata.get("recordId"):
-                        metadata["recordId"] = record.get("id", "")
-                    if not metadata.get("mimeType"):
-                        metadata["mimeType"] = record.get("mime_type", "")
-
-            metadata["origin"] = metadata.get("origin") or ""
-            metadata["recordName"] = metadata.get("recordName") or ""
-            metadata["recordId"] = metadata.get("recordId") or ""
-            metadata["mimeType"] = metadata.get("mimeType") or ""
-            metadata["orgId"] = metadata.get("orgId") or ""
-
-            new_citations.append({
-                "content": "Image" if isinstance(content, str) and content.startswith("data:image/") else content,
-                "chunkIndex": new_citation_num,
-                "metadata": metadata,
-                "citationType": "vectordb|document",
-            })
-            url_to_citation_num[url] = new_citation_num
-            new_citation_num += 1
+        
 
     if not new_citations and unique_urls:
         logger.error(f"FAILED to create citations for URLs: {unique_urls}")

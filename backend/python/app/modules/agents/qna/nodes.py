@@ -6584,8 +6584,7 @@ async def respond_node(
             # streaming.py's normalize_citations_and_chunks extracts citations from
             # inline citation markers (markdown links or legacy R-labels) in the LLM
             # answer text.  In combined (MODE 3) responses the LLM may skip inline
-            # markers and rely only on blockNumbers. streaming.py does not forward
-            # blockNumbers in the complete event, so we apply a second-pass extraction
+            # markers. streaming.py does not forward
             # here — before the event reaches the client.
             #
             # Pass 1: re-run inline marker extraction in case streaming.py received
@@ -7042,8 +7041,8 @@ def _build_tool_results_context(
                 "in the conversation above.\n"
             )
         parts.append(
-            "**MANDATORY**: Cite IMMEDIATELY after each fact from internal knowledge using markdown links: [N](Block Web URL) where N is a monotonically increasing number starting from 1.\n"
-            "Include ALL cited Block Web URLs in `blockNumbers`.\n\n"
+            "**MANDATORY**: Cite IMMEDIATELY after each fact from internal knowledge using markdown links: [source](Block Web URL). Use the EXACT Block Web URL from the context.\n"
+            "Do NOT manually number citations — the system assigns numbers automatically.\n"
         )
 
     if non_retrieval:
@@ -7087,15 +7086,13 @@ def _build_tool_results_context(
             "  2. Use retrieval results for historical context, background, and comprehensive coverage\n"
             "  3. Use API results for current state, real-time data, and exact IDs/keys\n"
             "  4. When sources conflict, prioritize API results for current state, but mention historical context from retrieval\n"
-            "  5. Cite every fact from internal knowledge using markdown links: [N](Block Web URL) with N incrementing from 1\n"
-            "  6. Include all cited Block Web URLs in `blockNumbers`\n"
-            "  7. Format all API items as clickable links and include them in `referenceData`\n"
-            "  8. Combine insights: \"Based on our indexed knowledge [1](/record/abc/preview#blockIndex=0), and current live data, here's the complete picture...\"\n\n"
+            "  5. Cite every fact from internal knowledge using markdown links: [source](Block Web URL). The system assigns citation numbers automatically.\n"
+            "  6. Format all API items as clickable links and include them in `referenceData`\n"
+            "  7. Combine insights: \"Based on our indexed knowledge [source](/record/abc/preview#blockIndex=0), and current live data, here's the complete picture...\"\n\n"
         )
     elif has_retrieval:
         parts.append(
-            "**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [N](Block Web URL) where N increments from 1.\n"
-            "Include all cited Block Web URLs in `blockNumbers`.\n"
+            "**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [source](Block Web URL). The system assigns citation numbers automatically.\n"
         )
     else:
         parts.append(
@@ -7126,19 +7123,17 @@ def _build_tool_results_context(
     if has_retrieval and non_retrieval:
         parts.append(
             "Return ONLY JSON matching MODE 3:\n"
-            "{\"answer\": \"...with inline [1](/record/abc/preview#blockIndex=0)[2](/record/def/preview#blockIndex=3) citations...\", "
+            "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
             "\"confidence\": \"High\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
-            "\"blockNumbers\": [\"/record/abc/preview#blockIndex=0\", \"/record/def/preview#blockIndex=3\"], "
             "\"referenceData\": [{\"name\": \"...\", \"key\": \"...\", \"type\": \"...\", \"url\": \"...\"}]}\n"
         )
     elif has_retrieval:
         parts.append(
             "Return ONLY JSON:\n"
-            "{\"answer\": \"...with inline [1](/record/abc/preview#blockIndex=0)[2](/record/def/preview#blockIndex=3) citations...\", "
+            "{\"answer\": \"...with inline [source](/record/abc/preview#blockIndex=0)[source](/record/def/preview#blockIndex=3) citations...\", "
             "\"confidence\": \"High\", "
             "\"answerMatchType\": \"Derived From Blocks\", "
-            "\"blockNumbers\": [\"/record/abc/preview#blockIndex=0\", \"/record/def/preview#blockIndex=3\"]}\n"
         )
     else:
         parts.append(
@@ -7938,7 +7933,7 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 
 7. **Response Format**:
    - For API tool results: Transform data into professional markdown (tables, lists, summaries).
-   - For retrieval/internal knowledge: Include inline citations as markdown links [N](Block Web URL) after each fact, where N increments from 1.
+   - For retrieval/internal knowledge: Include inline citations as markdown links [source](Block Web URL) after each fact. The system assigns citation numbers automatically.
    - Store technical IDs in referenceData for follow-up queries.
 
 ## Execution Policy (MANDATORY)
@@ -8021,12 +8016,11 @@ When a tool call returns an error, DO NOT give up immediately. Follow this proce
 ## Citation Rules (CRITICAL)
 
 When you have internal knowledge from retrieval tools:
-1. Put citation IMMEDIATELY after each fact: "Revenue grew 29% [1](/record/abc/preview#blockIndex=5)."
-2. Assign citation numbers starting from 1 and increment sequentially (1, 2, 3, ...) for each new block cited
-3. One citation per bracket: [1](/record/abc/preview#blockIndex=0)[2](/record/def/preview#blockIndex=3) NOT multiple in one bracket
+1. Put citation IMMEDIATELY after each fact: "Revenue grew 29% [source](/record/abc/preview#blockIndex=5)."
+2. Use the EXACT Block Web URL from the context as a markdown link: [source](Block Web URL). Do NOT manually number citations — the system assigns numbers automatically.
+3. One citation per markdown link. Do NOT club multiple URLs in one link.
 4. Include ALL cited blocks in your response
 5. Do NOT put citations at end of paragraph — inline after each fact
-6. Include all cited Block Web URLs in `blockNumbers`
 """
 
     # ── Hybrid search strategy ──────────────────────────────────────────────
@@ -8073,7 +8067,7 @@ Use this decision tree to choose the right approach:
 1. Call both tools (retrieval + service API).
 2. Analyze both results for overlapping and unique information.
 3. Present a unified answer that combines insights from both sources.
-4. Use citations as markdown links [N](Block Web URL) for retrieval-sourced facts, where N increments from 1.
+4. Use citations as markdown links [source](Block Web URL) for retrieval-sourced facts. The system assigns citation numbers automatically.
 5. Clearly attribute live API data (e.g., "According to your Outlook calendar..." or "From Confluence...").
 """
 
@@ -8214,361 +8208,6 @@ def _extract_final_response(messages: list, log: logging.Logger) -> str:
     return "I completed the task, but couldn't generate a response."
 
 
-def _extract_citations_and_metadata(
-    tool_results: list[dict],
-    final_results: list[dict],
-    has_retrieval: bool,
-    api_tools: list[dict],
-    response: str,
-    log: logging.Logger,
-    virtual_record_map: Optional[dict[str, dict[str, Any]]] = None
-) -> tuple[list[dict], list[str], list[dict], str]:
-    """
-    Extract citations, block numbers, reference data, and determine answerMatchType.
-
-    Returns:
-        Tuple of (citations, block_numbers, reference_data, answer_match_type)
-    """
-    citations = []
-    block_numbers = []
-    reference_data = []
-
-    import re
-
-    from app.utils.chat_helpers import build_block_web_url
-
-    # Extract block web URLs from markdown link citations in response
-    # Pattern: [citation_number](url_with_blockIndex)
-    md_link_pattern = re.compile(r'\[(\d+)\]\(([^)]*?/record/[^)]*?preview#blockIndex=\d+)\)')
-    md_matches = md_link_pattern.findall(response)
-
-    if md_matches:
-        for _label, url in md_matches:
-            if url not in block_numbers:
-                block_numbers.append(url)
-    else:
-        # Fallback: legacy R-label format
-        block_pattern = re.compile(r'\[R(\d+)-(\d+)\]')
-        matches = block_pattern.findall(response)
-        for match in matches:
-            block_num = f"R{match[0]}-{match[1]}"
-            if block_num not in block_numbers:
-                block_numbers.append(block_num)
-
-    if has_retrieval and final_results:
-        for result in final_results:
-            block_web_url = result.get("block_web_url", "")
-            if not block_web_url:
-                frontend_url = ""
-                record_id = ""
-                virtual_id = result.get("virtual_record_id", "")
-                if virtual_id and virtual_record_map:
-                    record_data = virtual_record_map.get(virtual_id, {})
-                    frontend_url = record_data.get("frontend_url", "")
-                    record_id = record_data.get("record_id", "")
-                block_index = result.get("block_index", 0)
-                if frontend_url and record_id:
-                    block_web_url = build_block_web_url(frontend_url, record_id, block_index)
-
-            citations.append({
-                "source": result.get("source", "internal_knowledge"),
-                "type": "retrieval",
-                "content": str(result.get("content", ""))[:200],
-                "virtual_id": result.get("virtual_record_id", ""),
-                "block_id": block_web_url or f"block-{result.get('block_index', 0)}"
-            })
-
-            if block_web_url and block_web_url not in block_numbers:
-                block_numbers.append(block_web_url)
-
-    # Extract reference data from API tool results
-    for tool_result in api_tools:
-        if tool_result.get("status") == "success":
-            result = tool_result.get("result", "")
-            ref_data = _extract_reference_data_from_result(result, tool_result.get("tool_name", ""))
-            if ref_data:
-                reference_data.extend(ref_data)
-
-    # Determine answerMatchType
-    if has_retrieval and api_tools:
-        answer_match_type = "Derived From Blocks"  # Mixed: retrieval + API
-    elif has_retrieval:
-        answer_match_type = "Derived From Blocks"  # Only retrieval
-    elif api_tools:
-        answer_match_type = "Derived From Tool Execution"  # Only API tools
-    else:
-        answer_match_type = "Direct Answer"  # No tools used
-
-    return citations, block_numbers, reference_data, answer_match_type
-
-
-def _extract_reference_data_from_result(result: object, tool_name: str) -> list[dict]:
-    """
-    Extract reference data (IDs, keys, timestamps) from tool results so they can
-    be surfaced to the planner for follow-up queries.
-
-    Each returned dict has at minimum: {"type": str, "name": str} and usually "id"
-    and/or "key" fields that the planner can reference directly.
-    """
-    reference_data = []
-    tn_lower = tool_name.lower()
-
-    try:
-        # ── Normalise result to a Python object ─────────────────────────────
-        if isinstance(result, str):
-            try:
-                result = json.loads(result)
-            except (json.JSONDecodeError, ValueError):
-                return reference_data
-
-        # Unwrap tuple format (success, data)
-        # Tools return (bool, str) tuple - extract the data part
-        if isinstance(result, tuple) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
-            result = result[1]
-            if isinstance(result, str):
-                try:
-                    result = json.loads(result)
-                except (json.JSONDecodeError, ValueError):
-                    return reference_data
-
-        # ── Confluence spaces ────────────────────────────────────────────────
-        # confluence.get_spaces → {"data": {"results": [{id, key, name, _links, ...}]}}
-        if "confluence" in tn_lower and "space" in tn_lower:
-            if isinstance(result, dict):
-                data = result.get("data", {})
-                spaces_list: list = []
-                # Extract base URL from the root _links (Confluence v2 API)
-                confluence_base_url = ""
-                if isinstance(data, dict):
-                    root_links = data.get("_links", {})
-                    if isinstance(root_links, dict):
-                        confluence_base_url = root_links.get("base", "")
-                    spaces_list = data.get("results", [])
-                elif isinstance(data, list):
-                    spaces_list = data
-                for space in spaces_list:
-                    if not isinstance(space, dict):
-                        continue
-                    # Confluence v2 API may return id as integer or string
-                    raw_id = space.get("id")
-                    space_id = str(raw_id).strip() if raw_id is not None else ""
-                    space_key = space.get("key", "")
-                    space_name = space.get("name", "")
-                    # Build web URL from _links.webui
-                    space_url = ""
-                    space_links = space.get("_links", {})
-                    if isinstance(space_links, dict):
-                        webui = space_links.get("webui", "")
-                        if webui and confluence_base_url:
-                            space_url = f"{confluence_base_url.rstrip('/')}{webui}"
-                        elif webui:
-                            space_url = webui
-                    if space_id or space_key:
-                        ref_entry: dict[str, Any] = {
-                            "name": space_name,
-                            "id": space_id,
-                            "key": space_key,
-                            "type": "confluence_space",
-                        }
-                        if space_url:
-                            ref_entry["url"] = space_url
-                        reference_data.append(ref_entry)
-            return reference_data
-
-        # ── Confluence pages ─────────────────────────────────────────────────
-        # confluence.get_pages_in_space / search_pages / get_page_content
-        if "confluence" in tn_lower and any(k in tn_lower for k in ("page", "search", "child")):
-            if isinstance(result, dict):
-                data = result.get("data", {})
-                pages_list: list = []
-                # Extract base URL from the root _links (Confluence v2 API)
-                confluence_base_url = ""
-                if isinstance(data, dict):
-                    root_links = data.get("_links", {})
-                    if isinstance(root_links, dict):
-                        confluence_base_url = root_links.get("base", "")
-                    pages_list = data.get("results", [])
-                    # Single-page result: get_page_content embeds metadata in data
-                    if not pages_list and "id" in data:
-                        pages_list = [data]
-                elif isinstance(data, list):
-                    pages_list = data
-                for page in pages_list:
-                    if not isinstance(page, dict):
-                        continue
-                    raw_id = page.get("id")
-                    page_id = str(raw_id).strip() if raw_id is not None else ""
-                    page_title = page.get("title", "") or page.get("name", "")
-                    space_key = ""
-                    if isinstance(page.get("space"), dict):
-                        space_key = page["space"].get("key", "")
-                    if page_id:
-                        reference_data.append({
-                            "name": page_title,
-                            "id": page_id,
-                            "key": space_key,
-                            "type": "confluence_page",
-                        })
-            return reference_data
-
-        # ── Slack channels ───────────────────────────────────────────────────
-        if "slack" in tn_lower and "channel" in tn_lower:
-            if isinstance(result, dict):
-                data = result.get("data", {})
-                channels_list: list = []
-                if isinstance(data, dict):
-                    channels_list = data.get("channels", data.get("results", []))
-                elif isinstance(data, list):
-                    channels_list = data
-                for ch in channels_list:
-                    if not isinstance(ch, dict):
-                        continue
-                    ch_id = ch.get("id", "")
-                    ch_name = ch.get("name", "")
-                    # Slack deep link for channels (workspace-agnostic)
-                    ch_url = ch.get("permalink") or ch.get("url", "")
-                    if ch_id:
-                        ref_entry = {
-                            "name": f"#{ch_name}" if ch_name else ch_id,
-                            "id": ch_id,
-                            "type": "slack_channel",
-                        }
-                        if ch_url:
-                            ref_entry["url"] = ch_url
-                        reference_data.append(ref_entry)
-            return reference_data
-
-        # ── Slack messages / threads ─────────────────────────────────────────
-        # send_message / reply_to_message return the message timestamp ("ts")
-        # which is needed for threading (reply_to_message thread_ts).
-        if "slack" in tn_lower and any(k in tn_lower for k in ("message", "reply", "send")):
-            if isinstance(result, dict):
-                data = result.get("data", {})
-                if not isinstance(data, dict):
-                    data = {}
-                ts = data.get("ts") or result.get("ts", "")
-                channel = data.get("channel") or result.get("channel", "")
-                permalink = data.get("permalink") or result.get("permalink", "")
-                if ts:
-                    msg_ref: dict[str, Any] = {
-                        "name": "Posted message timestamp",
-                        "id": str(ts),
-                        "type": "slack_message_ts",
-                    }
-                    if permalink:
-                        msg_ref["url"] = permalink
-                    reference_data.append(msg_ref)
-                if channel:
-                    reference_data.append({
-                        "name": channel,
-                        "id": channel,
-                        "type": "slack_channel",
-                    })
-            return reference_data
-
-        # ── Jira ─────────────────────────────────────────────────────────────
-        # Only process Jira data when the tool is actually a Jira tool.
-        # Without this guard, Confluence results that happen to contain a "key"
-        # field would be misclassified as Jira entities.
-        if "jira" in tn_lower and isinstance(result, dict):
-            data = result.get("data", {})
-
-            # Issues list: {"data": {"issues": [...]}}
-            if isinstance(data, dict):
-                issues = data.get("issues", [])
-                if isinstance(issues, list):
-                    for issue in issues:
-                        if not isinstance(issue, dict):
-                            continue
-                        issue_id = issue.get("id", "")
-                        issue_key = issue.get("key", "")
-                        issue_url = issue.get("url", "")
-                        if issue_key or issue_id:
-                            ref: dict[str, Any] = {
-                                "name": issue.get("summary", ""),
-                                "key": issue_key,
-                                "type": "jira_issue",
-                            }
-                            if issue_id:
-                                ref["id"] = str(issue_id)
-                            if issue_url:
-                                ref["url"] = issue_url
-                            reference_data.append(ref)
-
-            # Single issue at data level (get_issue / create_issue response)
-            if isinstance(data, dict) and "key" in data:
-                issue_key = data.get("key", "")
-                issue_id = data.get("id", "")
-                issue_url = data.get("url", "")
-                if issue_key or issue_id:
-                    ref = {
-                        "name": data.get("summary", ""),
-                        "key": issue_key,
-                        "type": "jira_issue",
-                    }
-                    if issue_id:
-                        ref["id"] = str(issue_id)
-                    if issue_url:
-                        ref["url"] = issue_url
-                    reference_data.append(ref)
-
-            # Projects list: {"data": [...]}
-            if isinstance(data, list):
-                for project in data:
-                    if not isinstance(project, dict):
-                        continue
-                    project_id = project.get("id", "")
-                    project_key = project.get("key", "")
-                    if project_key or project_id:
-                        ref = {
-                            "name": project.get("name", ""),
-                            "key": project_key,
-                            "type": "jira_project",
-                        }
-                        if project_id:
-                            ref["id"] = str(project_id)
-                        reference_data.append(ref)
-
-            # Direct issue / project at result top-level (e.g. create_issue response)
-            if "key" in result:
-                item_id = result.get("id", "")
-                item_key = result.get("key", "")
-                item_url = result.get("url", "")
-                if item_key or item_id:
-                    ref = {
-                        "name": result.get("summary") or result.get("name", ""),
-                        "key": item_key,
-                        "type": "jira_issue" if "summary" in result else "jira_project",
-                    }
-                    if item_id:
-                        ref["id"] = str(item_id)
-                    if item_url:
-                        ref["url"] = item_url
-                    reference_data.append(ref)
-
-        elif "jira" in tn_lower and isinstance(result, list):
-            for item in result:
-                if not isinstance(item, dict) or "key" not in item:
-                    continue
-                item_id = item.get("id", "")
-                item_key = item.get("key", "")
-                item_url = item.get("url", "")
-                if item_key or item_id:
-                    ref = {
-                        "name": item.get("summary") or item.get("name", ""),
-                        "key": item_key,
-                        "type": "jira_issue" if "summary" in item else "jira_project",
-                    }
-                    if item_id:
-                        ref["id"] = str(item_id)
-                    if item_url:
-                        ref["url"] = item_url
-                    reference_data.append(ref)
-
-    except Exception as e:
-        logger.debug(f"Error extracting reference data from {tool_name}: {e}")
-
-    return reference_data
 
 
 # ============================================================================
