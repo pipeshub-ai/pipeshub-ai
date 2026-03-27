@@ -182,6 +182,26 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 - **pandas** - Data analysis and manipulation
 - **etcd3** - Distributed key-value configuration store
 
+## MCP & SDKs
+
+### MCP Server
+
+> Connect PipesHub to any MCP-compatible client. Refer to the [MCP Server repo](https://github.com/pipeshub-ai/mcp-server/) README for setup and usage.
+
+[![MCP Server](https://img.shields.io/badge/MCP_Server-pipeshub--ai-blue?style=for-the-badge&logo=github)](https://github.com/pipeshub-ai/mcp-server/)
+
+### SDKs
+
+> For installation, usage, and API docs, refer to the README of each SDK repo.
+
+<table>
+<tr>
+<td align="center"><a href="https://github.com/pipeshub-ai/pipeshub-sdk-python"><img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python SDK"/></a></td>
+<td align="center"><a href="https://github.com/pipeshub-ai/pipeshub-sdk-typescript"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript SDK"/></a></td>
+<td align="center"><a href="https://github.com/pipeshub-ai/pipeshub-sdk-go"><img src="https://img.shields.io/badge/Go-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go SDK"/></a></td>
+</tr>
+</table>
+
 ## RoadMap
 
 - Code Search
