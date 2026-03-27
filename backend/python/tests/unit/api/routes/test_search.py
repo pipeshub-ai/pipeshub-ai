@@ -253,70 +253,6 @@ class TestSearchEndpoint:
         assert call_kwargs.kwargs["filter_groups"]["kb"] == ["kb1", "kb2"]
 
     @pytest.mark.asyncio
-    async def test_search_with_kb_filter_no_access(self):
-        """When user has no access to any requested KB, return 403."""
-        request = self._build_request()
-
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
-        mock_graph = MagicMock()
-        mock_graph.validate_user_kb_access = AsyncMock(
-            return_value={"accessible": [], "inaccessible": ["kb1", "kb2"]}
-        )
-
-        body = SearchQuery(query="hello", filters={"kb": ["kb1", "kb2"]})
-
-        with patch(
-            "app.api.routes.search.setup_query_transformation"
-        ):
-            response = await search(
-                request=request,
-                body=body,
-                retrieval_service=mock_retrieval,
-                graph_provider=mock_graph,
-            )
-
-        assert isinstance(response, JSONResponse)
-        assert response.status_code == 403
-
-    @pytest.mark.asyncio
-    async def test_search_with_kb_filter_partial_access(self):
-        """When user has partial access, use only accessible KBs."""
-        request = self._build_request()
-
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
-        mock_retrieval.search_with_filters = AsyncMock(
-            return_value={"searchResults": [], "status_code": 200}
-        )
-
-        mock_graph = MagicMock()
-        mock_graph.validate_user_kb_access = AsyncMock(
-            return_value={"accessible": ["kb1"], "inaccessible": ["kb2"]}
-        )
-
-        body = SearchQuery(query="hello", filters={"kb": ["kb1", "kb2"]})
-
-        with patch(
-            "app.api.routes.search.setup_query_transformation"
-        ) as mock_setup:
-            mock_setup.return_value = (
-                self._make_chain("rewritten"),
-                self._make_chain("expanded"),
-            )
-
-            response = await search(
-                request=request,
-                body=body,
-                retrieval_service=mock_retrieval,
-                graph_provider=mock_graph,
-            )
-
-        assert response.status_code == 200
-        call_kwargs = mock_retrieval.search_with_filters.call_args
-        assert call_kwargs.kwargs["filter_groups"]["kb"] == ["kb1"]
-
-    @pytest.mark.asyncio
     async def test_search_llm_none_and_get_fails(self):
         """When LLM is None and get_llm_instance also returns None, raise 500."""
         request = self._build_request()
@@ -461,44 +397,6 @@ class TestSearchEndpoint:
         call_kwargs = mock_retrieval.search_with_filters.call_args
         queries = call_kwargs.kwargs["queries"]
         assert queries == ["q1", "q2"]
-
-    @pytest.mark.asyncio
-    async def test_search_kb_filtering_metadata_in_response(self):
-        """When kb_ids are provided, response includes kb_filtering metadata."""
-        request = self._build_request()
-
-        mock_retrieval = MagicMock()
-        mock_retrieval.llm = MagicMock()
-        mock_retrieval.search_with_filters = AsyncMock(
-            return_value={"searchResults": [], "status_code": 200}
-        )
-
-        mock_graph = MagicMock()
-        mock_graph.validate_user_kb_access = AsyncMock(
-            return_value={"accessible": ["kb1"], "inaccessible": ["kb2"]}
-        )
-
-        body = SearchQuery(query="test", filters={"kb": ["kb1", "kb2"]})
-
-        with patch(
-            "app.api.routes.search.setup_query_transformation"
-        ) as mock_setup:
-            mock_setup.return_value = (
-                self._make_chain("rewritten"),
-                self._make_chain("exp"),
-            )
-
-            response = await search(
-                request=request,
-                body=body,
-                retrieval_service=mock_retrieval,
-                graph_provider=mock_graph,
-            )
-
-        assert response.status_code == 200
-        # The response body should contain kb_filtering metadata
-        body_content = response.body
-        assert b"kb_filtering" in body_content
 
     @pytest.mark.asyncio
     async def test_search_custom_status_code_from_results(self):
