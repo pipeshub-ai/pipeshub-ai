@@ -1,0 +1,169 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-zookeeper-headless
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: zookeeper
+spec:
+  clusterIP: None
+  ports:
+    - port: 2181
+      name: client
+    - port: 2888
+      name: follower
+    - port: 3888
+      name: election
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: zookeeper
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-zookeeper
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: zookeeper
+spec:
+  type: ClusterIP
+  ports:
+    - port: 2181
+      targetPort: client
+      protocol: TCP
+      name: client
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: zookeeper
+
+---
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-zookeeper
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: zookeeper
+spec:
+  serviceName: {{ include "pipeshub-ai.fullname" . }}-zookeeper-headless
+  replicas: {{ .Values.zookeeper.replicaCount }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: zookeeper
+  template:
+    metadata:
+      labels:
+        {{- include "pipeshub-ai.labels" . | nindent 8 }}
+        app.kubernetes.io/component: zookeeper
+    spec:
+      securityContext:
+        {{- toYaml .Values.zookeeper.podSecurityContext | nindent 8 }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "pipeshub-ai.selectorLabels" . | nindent 20 }}
+                    app.kubernetes.io/component: zookeeper
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: zookeeper
+          image: "{{ .Values.zookeeper.image.repository }}:{{ .Values.zookeeper.image.tag }}"
+          imagePullPolicy: {{ .Values.zookeeper.image.pullPolicy }}
+          ports:
+            - containerPort: 2181
+              name: client
+            - containerPort: 2888
+              name: follower
+            - containerPort: 3888
+              name: election
+          env:
+            - name: ZOOKEEPER_CLIENT_PORT
+              value: "2181"
+            - name: ZOOKEEPER_TICK_TIME
+              value: {{ .Values.zookeeper.config.tickTime | quote }}
+            - name: ZOOKEEPER_INIT_LIMIT
+              value: "10"
+            - name: ZOOKEEPER_SYNC_LIMIT
+              value: "5"
+            - name: ZOOKEEPER_MAX_CLIENT_CNXNS
+              value: "60"
+            - name: ZOOKEEPER_SERVER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          command:
+            - bash
+            - -ec
+            - |
+              # Extract server ID from pod name (e.g., zookeeper-0 -> 1)
+              [[ `hostname` =~ -([0-9]+)$ ]] || exit 1
+              export ZK_SERVER_ID=$((${BASH_REMATCH[1]} + 1))
+              echo "$ZK_SERVER_ID" > /var/lib/zookeeper/data/myid
+              
+              # Build server list for ensemble
+              export ZOO_SERVERS=""
+              for i in {0..{{ sub .Values.zookeeper.replicaCount 1 }}}; do
+                ZOO_SERVERS="$ZOO_SERVERS
+              server.$((i+1))={{ include "pipeshub-ai.fullname" . }}-zookeeper-$i.{{ include "pipeshub-ai.fullname" . }}-zookeeper-headless.{{ .Release.Namespace }}.svc.cluster.local:2888:3888;2181"
+              done
+              export ZOO_SERVERS
+              
+              exec /etc/confluent/docker/run
+          resources:
+            {{- toYaml .Values.zookeeper.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.zookeeper.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/zookeeper/data
+            - name: log
+              mountPath: /var/lib/zookeeper/log
+          readinessProbe:
+            tcpSocket:
+              port: 2181
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 2181
+            initialDelaySeconds: 30
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+    - metadata:
+        name: log
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+
+---
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-zookeeper-pdb
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: zookeeper
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: zookeeper
