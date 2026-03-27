@@ -1,10 +1,10 @@
-replicaCount: 1
+replicaCount: 3  # High Availability: 3 replicas for fault tolerance
 
 # If the startup fails due to permissions of "/app/process_monitor.log", build the image with LOG_FILE="/data/pipeshub/process_monitor.log"
 image:
   repository: pipeshubai/pipeshub-ai
-  pullPolicy: Always
-  tag: latest
+  pullPolicy: IfNotPresent
+  tag: "v0.3.0"  # Using stable git tag version
 
 imagePullSecrets: []
 nameOverride: ""
@@ -83,7 +83,9 @@ persistence:
 config:
   nodeEnv: "production"
   logLevel: "debug"
-  allowedOrigins: "*"
+  allowedOrigins: ""  # SECURITY: Set to specific origins (comma-separated) instead of "*"
+  # Example: "https://app.example.com,https://admin.example.com"
+  # For development: --set config.allowedOrigins="http://localhost:3000"
   connectorPublicBackend: "" # Fill
   # connectorPublicBackend: "https://pipeshub-connector.example.com"
   frontendPublicUrl: "" # Fill
@@ -92,7 +94,7 @@ config:
 secretKey: "" # Fill
 
 mongodb:
-  replicaCount: 1
+  replicaCount: 3  # MongoDB Replica Set: 3 nodes for quorum (2 out of 3)
   tls:
     enabled: false
     securityContext:
@@ -102,12 +104,16 @@ mongodb:
         drop:
         - ALL
   auth:
-    enabled: false
+    enabled: true
+    # rootPassword: ""  # Set via --set mongodb.auth.rootPassword=<password> or use external secret
+    # username: pipeshub
+    # password: ""  # Set via --set mongodb.auth.password=<password> or use external secret
+    # database: pipeshub
   persistence:
     enabled: true
     storageClass: "" # Fill
   arbiter:
-    enabled: false
+    enabled: true  # Enable arbiter for MongoDB replica set quorum
   podSecurityContext:
     enabled: true
     runAsNonRoot: true
@@ -121,8 +127,17 @@ mongodb:
       - ALL
 
 redis:
+  architecture: replication  # Redis HA: master-replica architecture
+  master:
+    count: 1  # 1 master
+  replica:
+    replicaCount: 2  # 2 read replicas for HA
+  sentinel:
+    enabled: true  # Enable Redis Sentinel for automatic failover
+    quorum: 2  # Quorum: 2 out of 3 sentinels must agree
   auth:
-    enabled: false
+    enabled: true
+    # password: ""  # Set via --set redis.auth.password=<password> or use external secret
   persistence:
     enabled: true
     storageClass: "" # Fill
@@ -194,6 +209,7 @@ etcd:
       - ALL
 
 zookeeper:
+  replicaCount: 3  # Zookeeper ensemble: 3 nodes for quorum (2 out of 3)
   image:
     repository: confluentinc/cp-zookeeper
     tag: 7.9.0
@@ -219,16 +235,16 @@ zookeeper:
       - ALL
 
 kafka:
-  replicaCount: 1
+  replicaCount: 3  # Kafka cluster: 3 brokers for HA and fault tolerance
   image:
     repository: confluentinc/cp-kafka
     tag: 7.9.0
     pullPolicy: IfNotPresent
   config:
     brokerId: "1"
-    offsetsTopicReplicationFactor: "1"
-    transactionStateLogMinIsr: "1"
-    transactionStateLogReplicationFactor: "1"
+    offsetsTopicReplicationFactor: "3"  # Replicate data across 3 brokers
+    transactionStateLogMinIsr: "2"  # Minimum in-sync replicas: 2 out of 3
+    transactionStateLogReplicationFactor: "3"  # Transaction log replicated to 3 brokers
     groupInitialRebalanceDelayMs: "0"
     logRetentionHours: "24"
     numNetworkThreads: "3"
@@ -252,6 +268,7 @@ kafka:
       - ALL
 
 qdrant:
+  replicaCount: 3  # Qdrant cluster: 3 nodes for distributed vector search
   image:
     repository: qdrant/qdrant
     tag: v1.15
@@ -290,6 +307,7 @@ qdrant:
 # Override neo4j.auth.password in production (e.g. --set neo4j.auth.password=... or values from secret manager).
 neo4j:
   enabled: true
+  replicaCount: 3  # Neo4j cluster: 3 core servers for HA (causal clustering)
   image:
     repository: neo4j
     tag: "5.26.0"
