@@ -324,7 +324,23 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
         config = {}
     try:
         if hasattr(llm, "astream"):
-            async for part in llm.astream(messages, config=config):
+            # Fix #1710: Manual iteration to catch per-chunk ValidationError
+            # when providers like LiteLLM send role=None on non-first chunks
+            astream_iter = llm.astream(messages, config=config).__aiter__()
+            while True:
+                try:
+                    part = await astream_iter.__anext__()
+                except StopAsyncIteration:
+                    break
+                except Exception as e:
+                    if "ValidationError" in type(e).__name__ or "role" in str(e).lower():
+                        logger.warning(
+                            f"Skipping chunk due to validation error "
+                            f"(likely role=None from provider): {e}"
+                        )
+                        continue
+                    raise
+
                 if not part:
                     continue
                 parts.append(part)
