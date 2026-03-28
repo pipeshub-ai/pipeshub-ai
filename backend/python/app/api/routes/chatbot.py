@@ -493,7 +493,15 @@ async def askAIStream(
     config_service: ConfigurationService = Depends(get_config_service),
 ) -> StreamingResponse:
     """Perform semantic search across documents with streaming events and tool support"""
-    query_info = ChatQuery(**(await request.json()))
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+    try:
+        query_info = ChatQuery(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
 
     async def generate_stream() -> AsyncGenerator[str, None]:
         try:
@@ -654,16 +662,21 @@ async def askAIStream(
 
             except HTTPException as e:
                 logger.error(f"HTTPException: {str(e)}", exc_info=True)
-                result = e.detail
-                yield create_sse_event("error", {
-                    "status": result.get("status", "error"),
-                    "message": result.get("message", "No results found")
-                })
+                detail = e.detail
+                if isinstance(detail, dict):
+                    yield create_sse_event("error", {
+                        "status": detail.get("status", "error"),
+                        "message": detail.get("message", "No results found")
+                    })
+                else:
+                    yield create_sse_event("error", {
+                        "status": "error",
+                        "message": str(detail) if detail else f"HTTP {e.status_code} error"
+                    })
                 return
             except Exception as e:
-                logger.error(f"Exception: {str(e)}", exc_info=True)
+                logger.error(f"Error processing chat query: {str(e)}", exc_info=True)
                 yield create_sse_event("error", {"error": str(e)})
-                logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
                 return
 
             # Stream response with enhanced tool support using your existing implementation

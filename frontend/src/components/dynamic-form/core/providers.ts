@@ -451,12 +451,12 @@ export const STORAGE_PROVIDERS: readonly ProviderConfig[] = [
     description: 'Configure Amazon S3 storage for your application data.',
     fields: ['s3AccessKeyId', 's3SecretAccessKey', 's3Region', 's3BucketName'],
   },
-  {
-    id: 'azureBlob',
-    label: 'Azure Blob Storage',
-    description: 'Configure Azure Blob Storage for your application data.',
-    fields: ['accountName', 'accountKey', 'containerName', 'endpointProtocol', 'endpointSuffix'],
-  },
+  // {
+ //   id: 'azureBlob',
+  //   label: 'Azure Blob Storage',
+  //   description: 'Configure Azure Blob Storage for your application data.',
+  //   fields: ['accountName', 'accountKey', 'containerName', 'endpointProtocol', 'endpointSuffix'],
+  // },
 ] as const;
 
 // SMTP PROVIDERS

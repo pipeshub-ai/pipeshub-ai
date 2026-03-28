@@ -3,10 +3,10 @@ services:
     image: pipeshub-ai:latest
     restart: always
     build:
-      context: ../../
-      dockerfile: Dockerfile
+      context: ../../../
+      dockerfile: deployment/docker-compose/hot-reload/Dockerfile.dev
       args:
-        BUILDKIT_INLINE_CACHE: "1"
+        - BUILDKIT_INLINE_CACHE=1
       shm_size: 4gb
       ulimits:
         memlock:
@@ -52,18 +52,20 @@ services:
       - INDEXING_BACKEND=http://localhost:8091
 
       # Key-Value Store Configuration
-      - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
 
-      # Graph Database config
-      - GRAPH_DB_TYPE=neo4j
-      - DATA_STORE=neo4j
+      # ETCD config
+      - ETCD_URL=http://etcd:2379
+      - ETCD_HOST=etcd
+      - ETCD_TIMEOUT=${ETCD_TIMEOUT:-5000}
 
-      # Neo4j config
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USERNAME=neo4j
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-your_password}
-      - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
-      
+      # ArangoDB config
+      - ARANGO_URL=http://arango:8529
+      - ARANGO_DB_NAME=es
+      - ARANGO_USERNAME=root
+      - ARANGO_PASSWORD=${ARANGO_PASSWORD:-your_password}
+      # Ensure we use the same password as configured for the ArangoDB service
+
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
       - KAFKA_SSL=${KAFKA_SSL:-false}
@@ -109,8 +111,8 @@ services:
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-40}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
-      - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
-      - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-4}
+      - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-4}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
@@ -128,6 +130,14 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
+      - ENABLE_PYMUPDF_PROCESSOR=${ENABLE_PYMUPDF_PROCESSOR:-false}
+
+      # Vite frontend dev server
+      - DOCKER_DEV=true
+      - VITE_BACKEND_URL=http://localhost:3000
+      
+      # Frontend memory optimization - limit Node.js heap to 2GB
+      - NODE_OPTIONS=--max-old-space-size=2048
     depends_on:
       qdrant:
         condition: service_healthy
@@ -137,12 +147,23 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_healthy
-      neo4j:
+      etcd:
+        condition: service_healthy
+      arango:
         condition: service_healthy
 
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
+      # ── Hot Reload: bind-mount source code so watchers pick up file saves ──
+      - ../scripts/dev_process_monitor.sh:/app/dev_process_monitor.sh
+      - ../../../backend/python/app:/app/python/app
+      # Mount entire source directories — picks up all config file additions automatically
+      - ../../../backend/nodejs/apps:/app/backend
+      - ../../../frontend:/app/frontend
+      # Anonymous volumes protect container node_modules from being overwritten by host
+      - /app/backend/node_modules
+      - /app/frontend/node_modules
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -188,36 +209,43 @@ services:
       timeout: 3s
       retries: 5
 
-  neo4j:
-    image: neo4j:5.26.0
+  arango:
+    image: arangodb:3.12.4
     restart: always
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "8529:8529"
     environment:
-      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
-      - NEO4J_PLUGINS=["apoc"]
-      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_dbms_memory_heap_initial__size=1G
-      - NEO4J_dbms_memory_heap_max__size=2G
-      - NEO4J_dbms_memory_pagecache_size=1G
+      - ARANGO_ROOT_PASSWORD=${ARANGO_PASSWORD:-your_password}
     volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 3G
-        reservations:
-          cpus: '2'
-          memory: 2G
+      - arango_data:/var/lib/arangodb3
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-your_password}' --javascript.execute-string 'db._version()' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    restart: always
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    command: >
+      etcd
+      --name etcd-node
+      --data-dir /etcd-data
+      --listen-client-urls http://0.0.0.0:2379
+      --advertise-client-urls http://0.0.0.0:2379
+      --listen-peer-urls http://0.0.0.0:2380
+      --initial-advertise-peer-urls http://0.0.0.0:2380
+      --initial-cluster etcd-node=http://0.0.0.0:2380
+    volumes:
+      - etcd_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 30s
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.9.0
@@ -308,9 +336,9 @@ volumes:
     driver: local
   redis_data:
     driver: local
-  neo4j_data:
+  arango_data:
     driver: local
-  neo4j_logs:
+  etcd_data:
     driver: local
   qdrant_storage:
     driver: local
