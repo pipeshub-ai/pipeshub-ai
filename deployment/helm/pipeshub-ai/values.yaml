@@ -79,6 +79,12 @@ autoscaling:
   maxReplicas: 10  # Scale up to 10 pods based on load
   targetCPUUtilizationPercentage: 70  # Scale when CPU > 70%
   targetMemoryUtilizationPercentage: 80  # Scale when Memory > 80%
+  # ⚠️  CRITICAL: Metrics Server is REQUIRED for autoscaling!
+  #     Without it, HPA will NOT work. Install it first:
+  #     ./deployment/helm/install-metrics-server.sh
+  #
+  #     Verify: kubectl get deployment metrics-server -n kube-system
+  #
   # behavior:  # Optional: Control scale-up/down speed
   #   scaleDown:
   #     stabilizationWindowSeconds: 300  # Wait 5 min before scaling down
