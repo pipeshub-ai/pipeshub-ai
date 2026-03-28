@@ -312,7 +312,45 @@ class GitLabConnector(BaseConnector):
             )
 
     #------------------Sync Points-----------------------------------#
+    async def _get_issues_sync_checkpoint(self,project_id:int) -> Optional[int]:
+        """
+        Get project issues sync checkpoint.
+        """
+        try:
+            sync_point_key = generate_record_sync_point_key("gitlab",project_id,"issues")
+            sync_point_data = await self.record_sync_point.read_sync_point(sync_point_key)
+            last_sync_time = sync_point_data.get("last_sync_time") if sync_point_data else None
+            return last_sync_time
+        except Exception:
+            return None
+
+    async def _update_issues_sync_checkpoint(self, project_id:int, last_sync_time:str) -> None:
+        """
+        Update project issues sync checkpoint.
+        """
+        sync_point_key = generate_record_sync_point_key("gitlab",project_id,"issues")
+        sync_point_data = {"last_sync_time": last_sync_time}
+        await self.record_sync_point.update_sync_point(sync_point_key, sync_point_data)
     
+    async def _get_mr_sync_checkpoint(self,project_id:int) -> Optional[int]:
+        """
+        Get project merge requests sync checkpoint.
+        """
+        try:
+            sync_point_key = generate_record_sync_point_key("gitlab",project_id,"merge_requests")
+            sync_point_data = await self.record_sync_point.read_sync_point(sync_point_key)
+            last_sync_time = sync_point_data.get("last_sync_time") if sync_point_data else None
+            return last_sync_time
+        except Exception:
+            return None
+
+    async def _update_mrs_sync_checkpoint(self, project_id:int, last_sync_time:str) -> None:
+        """
+        Update project merge requests sync checkpoint.
+        """
+        sync_point_key = generate_record_sync_point_key("gitlab",project_id,"merge_requests")
+        sync_point_data = {"last_sync_time": last_sync_time}
+        await self.record_sync_point.update_sync_point(sync_point_key, sync_point_data)
 
     async def run_sync(self) -> None:
         """syncing various entities """
@@ -322,14 +360,12 @@ class GitLabConnector(BaseConnector):
         # TODO: sync members from user groups of gitlab if needed
         # TODO: projects belonging to a specific group same as projects belonging to a user group
         # TODO: what to consider these groups then link projects to these groups ?
-        self.logger.info("sync projects")
-        await self._sync_all_project(full_sync=True)
+        self.logger.info("🕛🕛 Sync projects")
+        await self._sync_all_project()
         
     # ---------------------------Users Sync-----------------------------------#
     async def _sync_users(self) ->None:
-        """
-        Fetch all active Gitlab users project wise
-        """
+        """   Fetch all active Gitlab users project wise   """
         """get all owned groups/or such
              ->find projects of each group
                  ->sync members of each owned proj.
@@ -364,8 +400,8 @@ class GitLabConnector(BaseConnector):
             projects = projects_res.data
             for project in projects:
                 project_id = project.id
-                if project_id != int(TEST_GITLAB_PROJECT_ID):
-                    continue
+                # if project_id != int(TEST_GITLAB_PROJECT_ID):
+                #     continue
                 project_name = project.name
                 self.logger.info(f"syncing users for project {project_name}")
                 members_res = self.data_source.list_project_members_all(project_id)
@@ -417,7 +453,7 @@ class GitLabConnector(BaseConnector):
         self.logger.info("Users sync and migration of pseudo groups complete")
         
     # ---------------------------Project level Sync-----------------------------------#
-    async def _sync_all_project(self, full_sync: bool = False) -> None:
+    async def _sync_all_project(self) -> None:
         """
         Docstring for _sync_all_repo_issue
         
@@ -429,17 +465,18 @@ class GitLabConnector(BaseConnector):
         current_timestamp = self._get_iso_time()
         gitlab_record_group_sync_key = generate_record_sync_point_key("gitlab","record_group","global")
         gitlab_record_group_sync_point = await self.record_sync_point.read_sync_point(gitlab_record_group_sync_key)
-        if full_sync or not gitlab_record_group_sync_point.get("timestamp"):
-            await self._sync_projects()
-            await self.record_sync_point.update_sync_point(
-                gitlab_record_group_sync_key, {"timestamp": current_timestamp}
-            )
-        else:
-            last_sync_timestamp = gitlab_record_group_sync_point.get("timestamp")
-            await self._sync_projects(last_sync_timestamp)
-            await self.record_sync_point.update_sync_point(
-                gitlab_record_group_sync_key, {"timestamp": current_timestamp}
-            )
+        # if full_sync or not gitlab_record_group_sync_point.get("timestamp"):
+        #     await self._sync_projects()
+        #     await self.record_sync_point.update_sync_point(
+        #         gitlab_record_group_sync_key, {"timestamp": current_timestamp}
+        #     )
+        # else:
+        #     last_sync_timestamp = gitlab_record_group_sync_point.get("timestamp")
+        #     await self._sync_projects(last_sync_timestamp)
+        #     await self.record_sync_point.update_sync_point(
+        #         gitlab_record_group_sync_key, {"timestamp": current_timestamp}
+        #     )
+        await self._sync_projects()
         
     async def _sync_repo_main(self,project_id:int,project_path:str) -> None:
         """Syncs default branch files code.        
@@ -719,7 +756,8 @@ class GitLabConnector(BaseConnector):
                 detail=f"Error fetching code content for record {record.id}: {e}"
             )
     # ---------------------------Project Sync-----------------------------------#
-    async def _sync_projects(self,last_sync_time: Optional[str] = None) -> None:
+    
+    async def _sync_projects(self) -> None:
         """_summary_
         Args:
         """
@@ -735,12 +773,15 @@ class GitLabConnector(BaseConnector):
             await self._sync_project_members_as_pseudo(project)
             project_id:int = project.id
             project_path:str = project.path_with_namespace
-            if project_id == int(TEST_GITLAB_PROJECT_ID):
-                await self._fetch_issues_batched(project_id,last_sync_time)
-                await self._fetch_prs_batched(project_id,last_sync_time)
-                await self._sync_repo_main(project_id,project_path)
-            else:
-                self.logger.debug(f"⚠️ Project {project.name} has no ID, skipping syncing issues and repo code files")
+            # if project_id == int(TEST_GITLAB_PROJECT_ID):
+            #     await self._fetch_issues_batched(project_id)
+            #     await self._fetch_prs_batched(project_id)
+            #     await self._sync_repo_main(project_id,project_path)
+            # else:
+            #     self.logger.debug(f"⚠️ Project {project.name} has no ID, skipping syncing issues and repo code files")
+            await self._fetch_issues_batched(project_id)
+            await self._fetch_prs_batched(project_id)
+            await self._sync_repo_main(project_id,project_path)
             
     async def _sync_project_members_as_pseudo(self, project:Project) -> None:
         """_summary_
@@ -940,14 +981,14 @@ class GitLabConnector(BaseConnector):
             last_sync_time (str): _description_
         """
         # get issue permissions as of now inherit them from RECORD_GROUP PROJECT
-        if last_sync_time:
-            since_dt = datetime.strptime(last_sync_time, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc
-            )
+        last_sync_time:int|None = await self._get_issues_sync_checkpoint(project_id)
+        self.logger.debug(f"😂😂😂😂😂😂 LAST SYNC TIME  : {last_sync_time}")
+        if last_sync_time is not None:
+            since_dt = datetime.fromtimestamp(last_sync_time/1000, tz=timezone.utc)
         else:
             since_dt = None
-        
-        issues_res = self.data_source.list_issues(project_id,updated_after=since_dt)
+        self.logger.debug(f"😂😂😂😂😂😂 SINCE TIME  : {since_dt}")
+        issues_res = self.data_source.list_issues(project_id,updated_after=since_dt,order_by="updated_at",sort="asc")
         if not issues_res.success:
             raise Exception(f"❌❌ Error in fetching issues for project {project_id}")
         if not issues_res.data:
@@ -966,26 +1007,50 @@ class GitLabConnector(BaseConnector):
             self.logger.info(
                 f"📦 Processing batch {batch_number}: {len(issues_batch)} issues"
             )
-            batch_records = await self._build_issue_records(issues_batch, last_sync_time)
+            batch_records = await self._build_issue_records(issues_batch)
             # send batch results to process
             await self._process_new_records(batch_records)
           
-    async def _process_new_records(self, batch_records: List[RecordUpdate]) -> None:
+    async def _process_new_records(self, batch_records: list[RecordUpdate]) -> None:
+        """ Send new records in batches to process """
+        # NOTE: all functions calling this ensures only tickets+files or pull_requests+files are sent here
+        need_sync_update:bool=True
         for i in range(0, len(batch_records), self.batch_size):
             batch = batch_records[i : i + self.batch_size]
-            batch_sent: List[Tuple[Record, Permission]] = []
-            for record_update in batch:
-                batch_sent.append((record_update.record, record_update.new_permissions))
+            batch_sent: list[tuple[Record, list[Permission]]] = [
+                (record_update.record, record_update.new_permissions)
+                for record_update in batch
+            ]
             try:
                 await self.data_entities_processor.on_new_records(batch_sent)
+                if not need_sync_update:
+                    continue
+                last_sync_time = None
+                project_id:int|None = None
+                record_type:RecordType|None = None
+                for record_update in batch:
+                    if record_update.record.record_type == RecordType.TICKET :
+                        record_type = RecordType.TICKET
+                        last_sync_time=record_update.record.source_updated_at
+                        project_id  = record_update.record.external_record_group_id
+                    elif record_update.record.record_type == RecordType.PULL_REQUEST :
+                        record_type = RecordType.PULL_REQUEST
+                        last_sync_time=record_update.record.source_updated_at
+                        project_id = record_update.record.external_record_group_id
+                    else:
+                        continue
+                if project_id and last_sync_time:
+                    if record_type == RecordType.TICKET:
+                        await self._update_issues_sync_checkpoint(project_id,last_sync_time)
+                    elif record_type == RecordType.PULL_REQUEST:
+                        await self._update_mrs_sync_checkpoint(project_id,last_sync_time)
             except Exception as e:
                 self.logger.error(f"❌❌Error in processing set of records: {e}")
+                need_sync_update=False
                 
-        self.logger.info(f"✅Processed {len(batch_records)} records")
+        self.logger.info(f"✅✅ Processed {len(batch_records)} records")
 
-    async def _build_issue_records(
-        self, issue_batch: List[ProjectIssue], last_sync_time: Optional[str] = None
-    ) -> List[RecordUpdate]:
+    async def _build_issue_records(self, issue_batch: List[ProjectIssue]) -> List[RecordUpdate]:
         """        """
         record_updates_batch: List[RecordUpdate] = []
         for issue in issue_batch:
@@ -1472,16 +1537,14 @@ class GitLabConnector(BaseConnector):
         # make call to fetch a pull request details
         # getting issue number and details
     
-    async def _fetch_prs_batched(self,project_id:int,last_sync_time) ->None:
-        """ syncing prs in batched way """
-        if last_sync_time:
-            since_dt = datetime.strptime(last_sync_time, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc
-            )
+    async def _fetch_prs_batched(self,project_id:int) ->None:
+        """ Syncing merge requests in batches """
+        last_sync_time = await self._get_mr_sync_checkpoint(project_id)
+        if last_sync_time is not None:
+            since_dt = datetime.fromtimestamp(last_sync_time/1000, tz=timezone.utc)
         else:
             since_dt = None
-        
-        prs_res = self.data_source.list_merge_requests(project_id)
+        prs_res = self.data_source.list_merge_requests(project_id,updated_after=since_dt,order_by="updated_at",sort="asc")
         if not prs_res.success :
             self.logger.error(f"Error in fetching issues for projectId {project_id}")
             return
@@ -1501,11 +1564,11 @@ class GitLabConnector(BaseConnector):
             self.logger.info(
                 f"📦 Processing batch {batch_number}: {len(prs_batch)} merge requests"
             )
-            batch_records = await self._build_pr_records(prs_batch, last_sync_time)
+            batch_records = await self._build_pr_records(prs_batch)
             # send batch results to process
             await self._process_new_records(batch_records)
     
-    async def _build_pr_records(self,prs_batch:List[ProjectMergeRequest],last_sync_time:str)->List[RecordUpdate]:
+    async def _build_pr_records(self,prs_batch:List[ProjectMergeRequest])->List[RecordUpdate]:
         """Make merge requests of gitlab projects into PullRequestRecords"""
         record_updates_batch: List[RecordUpdate] = []
         for pr in prs_batch:
@@ -1668,10 +1731,8 @@ class GitLabConnector(BaseConnector):
         mr_commits_res = self.data_source.list_merge_requests_commits(project_id=project_id,mr_iid=mr_number)
         if not mr_commits_res.success :
             raise Exception(f"❌❌ Failed to fetch commits for merge request {mr_number}: {mr_commits_res.error}")
-            # return BlocksContainer(blocks=blocks, block_groups=block_groups)
         if not mr_commits_res.data:
             self.logger.info(f"No commits found for merge request {mr_number}")
-            # return BlocksContainer(blocks=blocks, block_groups=block_groups)
         mr_commits:list[ProjectCommit] = mr_commits_res.data
         for commit in mr_commits:
             commit_message = getattr(commit, "message","")
@@ -2019,147 +2080,8 @@ class GitLabConnector(BaseConnector):
         return None
 
     async def _log_rate_limit(self, label: str = "") -> None:
-        """Log GitHub rate limit: remaining, limit, and reset time."""
+        """Log GitLab rate limit: remaining, limit, and reset time."""
         return None
-
-    async def clean_github_content(self, text: str) -> Tuple[str, List[Dict[str, Any]]]:
-        """
-        Removes all attachments (images, files) from GitHub markdown/HTML content
-        and extracts their metadata.
-
-        Returns:
-            tuple: (cleaned_text, attachments_list)
-        """
-        attachments = []
-
-        def get_file_type(url, filename=None) -> str:
-            """Determine file type from URL or filename"""
-            # Try to get extension from filename first (more reliable)
-            if filename:
-                ext = os.path.splitext(filename)[1].lower()
-                if ext:
-                    return ext.replace(".", "")
-
-            # Parse URL path
-            path = urlparse(url).path
-            ext = os.path.splitext(path)[1].lower()
-
-            if ext:
-                return ext.replace(".", "")
-
-            # GitHub-specific patterns
-            if "user-attachments/assets" in url:
-                return "image"  # GitHub assets are typically images
-            elif "user-attachments/files" in url:
-                return "file"
-
-            return "unknown"
-
-        # --- 1. HTML IMG TAGS ---
-        # More robust pattern that handles various attribute orders
-        html_img_pattern = r'<img\s+[^>]*?src=["\'](.*?)["\'][^>]*?/?>'
-
-        def _is_allowed_github_image(url: str) -> bool:
-            try:
-                parsed = urlparse(url)
-                if parsed.scheme != "https":
-                    return False
-                host = (parsed.hostname or "").lower()
-                if host != "github.com":
-                    return False
-                return parsed.path.startswith("/user-attachments/assets/")
-            except Exception:
-                return False
-
-        def html_img_handler(match) -> str:
-            url = match.group(1)
-            if not _is_allowed_github_image(url):
-                return match.group(0)  # Keep original if not valid
-            # Try to extract alt text if present
-            alt_match = re.search(r'alt=["\'](.*?)["\']', match.group(0))
-            alt_text = alt_match.group(1) if alt_match else None
-
-            attachments.append(
-                {
-                    "type": get_file_type(url),
-                    "source": "html_img",
-                    "href": url,
-                    "alt": alt_text,
-                }
-            )
-            return ""
-
-        text = re.sub(
-            html_img_pattern, html_img_handler, text, flags=re.IGNORECASE | re.DOTALL
-        )
-
-        # --- 2. MARKDOWN IMAGES: ![alt](url) ---
-        md_image_pattern = r"!\[(.*?)\]\((.*?)\)"
-
-        def md_image_handler(match) -> str:
-            alt_text = match.group(1)
-            url = match.group(2)
-            if not _is_allowed_github_image(url):
-                return match.group(0)  # Keep original if not valid
-            attachments.append(
-                {
-                    "type": get_file_type(url, alt_text),
-                    "source": "markdown_image",
-                    "href": url,
-                    "alt": alt_text if alt_text else None,
-                }
-            )
-            return ""
-
-        text = re.sub(md_image_pattern, md_image_handler, text)
-
-        # --- 3. MARKDOWN FILE LINKS: [filename.ext](url) ---
-        # This pattern specifically looks for file attachments
-        # (links with extensions or GitHub file paths)
-        md_link_pattern = r"\[(.*?)\]\((.*?)\)"
-
-        def _is_allowed_github_attachment(url: str) -> bool:
-            try:
-                parsed = urlparse(url)
-                if parsed.scheme != "https":
-                    return False
-                host = (parsed.hostname or "").lower()
-                if host != "github.com":
-                    return False
-                return parsed.path.startswith("/user-attachments/")
-            except Exception:
-                return False
-
-        def md_link_handler(match) -> str:
-            link_text = match.group(1)
-            url = match.group(2)
-
-            # Check if this is a valid file attachment
-            is_github_file = _is_allowed_github_attachment(url)
-
-            # If it's a file attachment with github attachment base url match ONLY, extract it
-            if is_github_file:
-                attachments.append(
-                    {
-                        "type": get_file_type(url, link_text),
-                        "source": "file_attachment",
-                        "href": url,
-                        "filename": link_text,
-                    }
-                )
-                return ""
-
-            # Otherwise, keep the link (it's a regular hyperlink)
-            return match.group(0)
-
-        text = re.sub(md_link_pattern, md_link_handler, text)
-
-        # --- 4. CLEANUP ---
-        # Remove excessive blank lines created by deletions
-        text = re.sub(r"\n{3,}", "\n\n", text)
-        text = text.strip()
-
-        return text, attachments
 
     async def parse_gitlab_uploads_clean_test(self,text:str)-> Tuple[List[Dict[str, Any]], str]:
         """
@@ -2245,8 +2167,7 @@ class GitLabConnector(BaseConnector):
         """
         self.logger.info("Cleaning up GitLab connector resources.")
         self.data_source = None
-
-    
+   
     @classmethod
     async def create_connector(
         cls,

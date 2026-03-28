@@ -1,5 +1,6 @@
 # ruff: noqa
 from __future__ import annotations
+from turtle import up
 
 from gitlab import Gitlab
 from typing import Dict, List, Optional, Tuple, Union, cast
@@ -143,7 +144,9 @@ class GitLabDataSource:
         search: Optional[str] = None,
         author_id: Optional[int] = None,
         assignee_id: Optional[int] = None,
-        updated_after: Optional[str] = None,
+        updated_after: datetime|None = None,
+        order_by:str|None = None,
+        sort:str|None = None,
         get_all: bool = True,
     ) -> GitLabResponse:
         """List project issues with filters.  [issues]"""
@@ -156,7 +159,9 @@ class GitLabDataSource:
                 author_id=author_id,
                 assignee_id=assignee_id,
                 updated_after=updated_after,
-                  )
+                order_by=order_by,
+                sort=sort,
+                )
             items = p.issues.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=items)
         except Exception as e:
@@ -237,6 +242,9 @@ class GitLabDataSource:
         search: Optional[str] = None,
         author_id: Optional[int] = None,
         assignee_id: Optional[int] = None,
+        order_by:str|None = None,
+        sort:str|None = None,
+        updated_after:datetime|None = None,
         get_all: bool = True,
     ) -> GitLabResponse:
         """List merge requests with filters.  [mrs]"""
@@ -249,6 +257,9 @@ class GitLabDataSource:
                 search=search,
                 author_id=author_id,
                 assignee_id=assignee_id,
+                order_by=order_by,
+                sort=sort,
+                updated_after=updated_after,
             )
             mrs = p.mergerequests.list(get_all=get_all, **params)
             return GitLabResponse(success=True, data=mrs)

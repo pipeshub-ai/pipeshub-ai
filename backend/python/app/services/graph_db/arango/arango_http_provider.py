@@ -2515,7 +2515,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         path: List[str],
         record_group_name:str,
         transaction: Optional[str] = None
-    ) -> Optional[Dict]:
+    ) -> dict|None:
         """
         Get a record from the FILES collection using its path.
 
@@ -2561,7 +2561,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         #     )
         #     return None
         try:
-            self.logger.info("in returning record by traversing the graph path")
             # based on external id 
             # assumed full path from record group next level is as list in param
             query = """
@@ -2576,25 +2575,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             LET rg = FIRST(
-                FOR e IN belongsTo
-                    FILTER e._to == appId
-                    FOR g IN recordGroups
-                        FILTER g._id == e._from
-                        FILTER g.groupName == recordGroupName
-                        RETURN g
+                FOR g IN INBOUND appId belongsTo
+                FILTER g.groupName == recordGroupName
+                RETURN g
             )
-
+            FILTER rg != null
             LET rec0 = FIRST(
-                FOR e IN belongsTo
-                    FILTER e._to == rg._id
-                    FOR r IN records
-                        FILTER r._id == e._from
-                        FILTER LENGTH(parts) > 0
-                        FILTER r.recordName == parts[0]
-                        FILTER r.externalParentId == null
-                        RETURN r
+                FOR r IN INBOUND rg._id belongsTo
+                FILTER r.recordName == parts[0]
+                FILTER r.externalParentId == null
+                RETURN r
             )
-
+            FILTER rec0 != null
             LET depth = LENGTH(parts) <= 1 ? 0 :length(parts) - 1
 
             LET result_1  = depth == 0 ? rec0 : 
@@ -2624,7 +2616,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 txn_id=transaction
             )
             if result:
-                self.logger.info(f"result  :{result}")
                 return result[0]
         except Exception as e:
             self.logger.error(
