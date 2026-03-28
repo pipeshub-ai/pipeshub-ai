@@ -46,7 +46,7 @@ def mock_ds_provider():
     mock_tx = MagicMock()
     mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
     mock_tx.get_record_by_external_revision_id = AsyncMock(return_value=None)
-    mock_tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
     mock_tx.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
     mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
     mock_tx.__aexit__ = AsyncMock(return_value=None)

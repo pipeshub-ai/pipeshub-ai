@@ -97,7 +97,7 @@ def _make_deleted_entry(name="old.txt", path="/old.txt"):
 def _make_mock_tx_store(existing_record=None):
     tx = AsyncMock()
     tx.get_record_by_external_id = AsyncMock(return_value=existing_record)
-    tx.get_user_by_id = AsyncMock(return_value={"email": "user@test.com"})
+    tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
     return tx
 
 

@@ -196,7 +196,7 @@ class TestAzureFilesConnectorInit:
             "created_by": "user-1",
         })
         mock_tx = mock_data_store_provider.transaction.return_value
-        mock_tx.get_user_by_id = AsyncMock(side_effect=Exception("DB error"))
+        mock_tx.get_user_by_user_id = AsyncMock(side_effect=Exception("DB error"))
         mock_build.return_value = MagicMock()
         mock_ds_cls.return_value = MagicMock()
         mock_filters.return_value = (MagicMock(), MagicMock())
