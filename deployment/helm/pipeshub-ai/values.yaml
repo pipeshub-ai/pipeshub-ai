@@ -73,6 +73,29 @@ tolerations: []
 
 affinity: {}
 
+autoscaling:
+  enabled: true
+  minReplicas: 3  # Minimum 3 for High Availability
+  maxReplicas: 10  # Scale up to 10 pods based on load
+  targetCPUUtilizationPercentage: 70  # Scale when CPU > 70%
+  targetMemoryUtilizationPercentage: 80  # Scale when Memory > 80%
+  # behavior:  # Optional: Control scale-up/down speed
+  #   scaleDown:
+  #     stabilizationWindowSeconds: 300  # Wait 5 min before scaling down
+  #     policies:
+  #       - type: Percent
+  #         value: 50  # Scale down max 50% of current pods
+  #         periodSeconds: 60
+  #   scaleUp:
+  #     stabilizationWindowSeconds: 0  # Scale up immediately
+  #     policies:
+  #       - type: Percent
+  #         value: 100  # Scale up max 100% of current pods
+  #         periodSeconds: 60
+  #       - type: Pods
+  #         value: 2  # Or add max 2 pods at a time
+  #         periodSeconds: 60
+
 persistence:
   enabled: true
   storageClass: "" # Fill

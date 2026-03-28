@@ -5,7 +5,9 @@ metadata:
   labels:
     {{- include "pipeshub-ai.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
