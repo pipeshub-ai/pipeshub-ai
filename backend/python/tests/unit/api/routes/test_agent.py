@@ -3659,3 +3659,132 @@ class TestUpdateAgentToolsetDeletion:
 
             result = await update_agent(request, "a1")
             assert result.status_code == 200
+
+
+# ===========================================================================
+# Additional coverage - error paths, edge failures, rollbacks
+# ===========================================================================
+
+class TestToolsetEdgeCreationFailures:
+    @pytest.mark.asyncio
+    async def test_agent_toolset_edges_exception(self):
+        from app.api.routes.agent import _create_toolset_edges
+        gp = AsyncMock()
+        gp.batch_upsert_nodes = AsyncMock(return_value=True)
+        gp.batch_create_edges = AsyncMock(side_effect=Exception("edge fail"))
+        toolsets = {"jira": {"displayName": "J", "type": "app", "tools": [], "instanceId": None, "instanceName": None}}
+        with patch("app.agents.constants.toolset_constants.normalize_app_name", return_value="jira"):
+            created, _ = await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
+        assert len(created) == 1
+
+    @pytest.mark.asyncio
+    async def test_tool_nodes_upsert_none(self):
+        from app.api.routes.agent import _create_toolset_edges
+        gp = AsyncMock()
+        gp.batch_upsert_nodes = AsyncMock(side_effect=[True, None])
+        gp.batch_create_edges = AsyncMock(return_value=True)
+        toolsets = {"jira": {"displayName": "J", "type": "app", "tools": [{"name": "s", "fullName": "jira.s", "description": ""}], "instanceId": None, "instanceName": None}}
+        with patch("app.agents.constants.toolset_constants.normalize_app_name", return_value="jira"):
+            created, _ = await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
+        assert len(created) == 1
+
+    @pytest.mark.asyncio
+    async def test_tool_nodes_upsert_exception(self):
+        from app.api.routes.agent import _create_toolset_edges
+        gp = AsyncMock()
+        gp.batch_upsert_nodes = AsyncMock(side_effect=[True, Exception("fail")])
+        gp.batch_create_edges = AsyncMock(return_value=True)
+        toolsets = {"jira": {"displayName": "J", "type": "app", "tools": [{"name": "s", "fullName": "jira.s", "description": ""}], "instanceId": None, "instanceName": None}}
+        with patch("app.agents.constants.toolset_constants.normalize_app_name", return_value="jira"):
+            created, _ = await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
+        assert len(created) == 1
+
+    @pytest.mark.asyncio
+    async def test_toolset_tool_edges_exception(self):
+        from app.api.routes.agent import _create_toolset_edges
+        gp = AsyncMock()
+        gp.batch_upsert_nodes = AsyncMock(return_value=True)
+        gp.batch_create_edges = AsyncMock(side_effect=[True, Exception("fail")])
+        toolsets = {"jira": {"displayName": "J", "type": "app", "tools": [{"name": "s", "fullName": "jira.s", "description": ""}], "instanceId": None, "instanceName": None}}
+        with patch("app.agents.constants.toolset_constants.normalize_app_name", return_value="jira"):
+            created, _ = await _create_toolset_edges("a1", toolsets, {"userId": "u1"}, "uk1", gp, logging.getLogger("test"))
+        assert len(created) == 1
+
+class TestKnowledgeEdgeFailures2:
+    @pytest.mark.asyncio
+    async def test_batch_upsert_exception(self):
+        from app.api.routes.agent import _create_knowledge_edges
+        gp = AsyncMock()
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("fail"))
+        result = await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_batch_create_edges_exception(self):
+        from app.api.routes.agent import _create_knowledge_edges
+        gp = AsyncMock()
+        gp.batch_upsert_nodes = AsyncMock(return_value=True)
+        gp.batch_create_edges = AsyncMock(side_effect=Exception("fail"))
+        result = await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
+        assert len(result) == 1
+
+class TestAllErrorPaths:
+    @pytest.mark.asyncio
+    async def test_json_response_cache(self):
+        from fastapi.responses import JSONResponse as JR
+        from app.api.routes.agent import askAI, ChatQuery
+        services = {"retrieval_service": MagicMock(llm=MagicMock()), "graph_provider": AsyncMock(), "reranker_service": MagicMock(), "config_service": AsyncMock(), "logger": MagicMock(), "llm": MagicMock()}
+        jr = JR(content={"m": "c"})
+        fs = {"completion_data": jr}
+        req = MagicMock(); req.state.user = {"userId": "u1", "orgId": "o1"}; req.query_params = {}
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
+             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as ms, \
+             patch("app.api.routes.agent.get_cache_manager") as mc, \
+             patch("app.api.routes.agent.build_initial_state", return_value={}), \
+             patch("app.api.routes.agent.auto_optimize_state", return_value=fs), \
+             patch("app.api.routes.agent.check_memory_health", return_value={"status": "healthy"}):
+            mg = AsyncMock(); mg.ainvoke = AsyncMock(return_value=fs); ms.return_value = mg
+            c = MagicMock(); c.get_llm_response.return_value = None; mc.return_value = c
+            r = await askAI(req, ChatQuery(query="t"))
+            assert isinstance(r, JR)
+            c.set_llm_response.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_perf_tracker(self):
+        from app.api.routes.agent import askAI, ChatQuery
+        services = {"retrieval_service": MagicMock(llm=MagicMock()), "graph_provider": AsyncMock(), "reranker_service": MagicMock(), "config_service": AsyncMock(), "logger": MagicMock(), "llm": MagicMock()}
+        fs = {"completion_data": {"s": "ok"}, "_performance_tracker": True, "performance_summary": {"ms": 1}}
+        req = MagicMock(); req.state.user = {"userId": "u1", "orgId": "o1"}; req.query_params = {}
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}), \
+             patch("app.api.routes.agent._enrich_user_info", new_callable=AsyncMock, return_value={"userId": "u1"}), \
+             patch("app.api.routes.agent._get_org_info", new_callable=AsyncMock, return_value={"orgId": "o1", "accountType": "enterprise"}), \
+             patch("app.api.routes.agent._select_agent_graph_for_query", new_callable=AsyncMock) as ms, \
+             patch("app.api.routes.agent.get_cache_manager") as mc, \
+             patch("app.api.routes.agent.build_initial_state", return_value={}), \
+             patch("app.api.routes.agent.auto_optimize_state", return_value=fs), \
+             patch("app.api.routes.agent.check_memory_health", return_value={"status": "healthy"}):
+            mg = AsyncMock(); mg.ainvoke = AsyncMock(return_value=fs); ms.return_value = mg
+            c = MagicMock(); c.get_llm_response.return_value = None; mc.return_value = c
+            r = await askAI(req, ChatQuery(query="t"))
+            assert r["_performance"] == {"ms": 1}
+
+    @pytest.mark.asyncio
+    async def test_template_edge_fail(self):
+        from fastapi import HTTPException
+        from app.api.routes.agent import create_agent_template
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].batch_upsert_nodes = AsyncMock(return_value=True)
+        services["graph_provider"].batch_create_edges = AsyncMock(return_value=None)
+        req = MagicMock(); req.body = AsyncMock(return_value=b'{"name":"T","description":"D","systemPrompt":"SP"}')
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+            with pytest.raises(HTTPException) as exc:
+                await create_agent_template(req)
+            assert exc.value.status_code == 500

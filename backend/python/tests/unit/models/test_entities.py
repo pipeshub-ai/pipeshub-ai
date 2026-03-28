@@ -667,3 +667,992 @@ class TestLinkPublicStatus:
 
     def test_unknown_value(self):
         assert LinkPublicStatus.UNKNOWN.value == "unknown"
+
+
+# ============================================================================
+# FileRecord.from_arango_record tests (lines 384-390)
+# ============================================================================
+
+
+class TestFileRecordFromArango:
+    def _arango_base(self, **overrides):
+        defaults = {
+            "_key": "file-1",
+            "orgId": "org-1",
+            "recordName": "Test File",
+            "recordType": "FILE",
+            "externalRecordId": "ext-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "DRIVE",
+            "connectorId": "conn-1",
+            "mimeType": "application/pdf",
+            "webUrl": "https://example.com/file",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+            "sourceCreatedAtTimestamp": 1704067200000,
+            "sourceLastModifiedTimestamp": 1704153600000,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _arango_file(self, **overrides):
+        defaults = {
+            "isFile": True,
+            "sizeInBytes": 1024,
+            "extension": "pdf",
+            "path": "/docs/test.pdf",
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_from_arango_record_basic(self):
+        rec = FileRecord.from_arango_record(self._arango_file(), self._arango_base())
+        assert rec.id == "file-1"
+        assert rec.org_id == "org-1"
+        assert rec.is_file is True
+        assert rec.extension == "pdf"
+        assert rec.path == "/docs/test.pdf"
+        assert rec.connector_name == Connectors.GOOGLE_DRIVE
+
+    def test_from_arango_record_unknown_connector(self):
+        rec = FileRecord.from_arango_record(
+            self._arango_file(),
+            self._arango_base(connectorName="NONEXISTENT"),
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_missing_connector(self):
+        base = self._arango_base()
+        del base["connectorName"]
+        rec = FileRecord.from_arango_record(self._arango_file(), base)
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_with_hashes(self):
+        rec = FileRecord.from_arango_record(
+            self._arango_file(
+                etag="etag-val",
+                ctag="ctag-val",
+                quickXorHash="qxor",
+                crc32Hash="crc",
+                sha1Hash="sha1",
+                sha256Hash="sha256",
+            ),
+            self._arango_base(),
+        )
+        assert rec.etag == "etag-val"
+        assert rec.ctag == "ctag-val"
+        assert rec.quick_xor_hash == "qxor"
+        assert rec.crc32_hash == "crc"
+        assert rec.sha1_hash == "sha1"
+        assert rec.sha256_hash == "sha256"
+
+    def test_from_arango_record_size_from_base_record(self):
+        """sizeInBytes from base record should take precedence."""
+        rec = FileRecord.from_arango_record(
+            self._arango_file(sizeInBytes=500),
+            self._arango_base(sizeInBytes=2048),
+        )
+        assert rec.size_in_bytes == 2048
+
+
+# ============================================================================
+# MailRecord.from_arango_record tests (lines 539-545)
+# ============================================================================
+
+
+class TestMailRecordFromArango:
+    def _record_doc(self, **overrides):
+        defaults = {
+            "_key": "mail-1",
+            "orgId": "org-1",
+            "recordName": "Test Mail",
+            "recordType": "MAIL",
+            "externalRecordId": "ext-mail-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "GMAIL",
+            "connectorId": "conn-1",
+            "mimeType": "message/rfc822",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+            "sourceCreatedAtTimestamp": 1704067200000,
+            "sourceLastModifiedTimestamp": 1704153600000,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _mail_doc(self, **overrides):
+        defaults = {
+            "subject": "Test Subject",
+            "from": "sender@test.com",
+            "to": ["recip@test.com"],
+            "cc": ["cc@test.com"],
+            "bcc": [],
+            "threadId": "thread-1",
+            "isParent": True,
+            "messageIdHeader": "msg-id-1",
+            "labelIds": ["INBOX"],
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_from_arango_record_basic(self):
+        rec = MailRecord.from_arango_record(self._mail_doc(), self._record_doc())
+        assert rec.id == "mail-1"
+        assert rec.subject == "Test Subject"
+        assert rec.from_email == "sender@test.com"
+        assert rec.to_emails == ["recip@test.com"]
+        assert rec.cc_emails == ["cc@test.com"]
+        assert rec.thread_id == "thread-1"
+        assert rec.is_parent is True
+        assert rec.internet_message_id == "msg-id-1"
+        assert rec.label_ids == ["INBOX"]
+
+    def test_from_arango_record_unknown_connector(self):
+        rec = MailRecord.from_arango_record(
+            self._mail_doc(),
+            self._record_doc(connectorName="NONEXISTENT"),
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_missing_connector(self):
+        doc = self._record_doc()
+        del doc["connectorName"]
+        rec = MailRecord.from_arango_record(self._mail_doc(), doc)
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+
+# ============================================================================
+# WebpageRecord tests (lines 580, 596, 604-610)
+# ============================================================================
+
+
+class TestWebpageRecord:
+    def _record_doc(self, **overrides):
+        defaults = {
+            "_key": "web-1",
+            "orgId": "org-1",
+            "recordName": "Test Webpage",
+            "recordType": "WEBPAGE",
+            "externalRecordId": "ext-web-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "WEB",
+            "connectorId": "conn-1",
+            "mimeType": "text/html",
+            "webUrl": "https://example.com",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+            "sourceCreatedAtTimestamp": 1704067200000,
+            "sourceLastModifiedTimestamp": 1704153600000,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_to_kafka_record(self):
+        from app.models.entities import WebpageRecord
+        rec = WebpageRecord(**_record_kwargs(
+            id="web-1",
+            org_id="org-1",
+            record_type=RecordType.WEBPAGE,
+        ))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "web-1"
+        assert kafka["orgId"] == "org-1"
+        assert kafka["recordType"] == "WEBPAGE"
+        assert "signedUrl" in kafka
+
+    def test_to_arango_record(self):
+        from app.models.entities import WebpageRecord
+        rec = WebpageRecord(**_record_kwargs(
+            id="web-1",
+            org_id="org-1",
+            record_type=RecordType.WEBPAGE,
+        ))
+        arango = rec.to_arango_record()
+        assert arango["_key"] == "web-1"
+        assert arango["orgId"] == "org-1"
+
+    def test_from_arango_record(self):
+        from app.models.entities import WebpageRecord
+        rec = WebpageRecord.from_arango_record({}, self._record_doc())
+        assert rec.id == "web-1"
+        assert rec.record_type == RecordType.WEBPAGE
+
+    def test_from_arango_record_unknown_connector(self):
+        from app.models.entities import WebpageRecord
+        rec = WebpageRecord.from_arango_record(
+            {},
+            self._record_doc(connectorName="NONEXISTENT"),
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+
+# ============================================================================
+# LinkRecord.from_arango_record tests (lines 703-709)
+# ============================================================================
+
+
+class TestLinkRecordFromArango:
+    def _record_doc(self, **overrides):
+        defaults = {
+            "_key": "link-1",
+            "orgId": "org-1",
+            "recordName": "Test Link",
+            "recordType": "LINK",
+            "externalRecordId": "ext-link-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "CONFLUENCE",
+            "connectorId": "conn-1",
+            "mimeType": "text/html",
+            "webUrl": "https://example.com",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+            "sourceCreatedAtTimestamp": 1704067200000,
+            "sourceLastModifiedTimestamp": 1704153600000,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _link_doc(self, **overrides):
+        defaults = {
+            "url": "https://linked.example.com",
+            "title": "Linked Page",
+            "isPublic": "true",
+            "linkedRecordId": "linked-rec-1",
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_from_arango_record(self):
+        rec = LinkRecord.from_arango_record(self._link_doc(), self._record_doc())
+        assert rec.id == "link-1"
+        assert rec.url == "https://linked.example.com"
+        assert rec.title == "Linked Page"
+        assert rec.is_public == LinkPublicStatus.TRUE
+        assert rec.linked_record_id == "linked-rec-1"
+
+    def test_from_arango_record_unknown_connector(self):
+        rec = LinkRecord.from_arango_record(
+            self._link_doc(),
+            self._record_doc(connectorName="NONEXISTENT"),
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_default_public_status(self):
+        link_doc = self._link_doc()
+        del link_doc["isPublic"]
+        rec = LinkRecord.from_arango_record(link_doc, self._record_doc())
+        assert rec.is_public == LinkPublicStatus.UNKNOWN
+
+
+# ============================================================================
+# CommentRecord tests (lines 750-761, 764, 779, 789-795)
+# ============================================================================
+
+
+class TestCommentRecord:
+    def _record_doc(self, **overrides):
+        defaults = {
+            "_key": "comment-1",
+            "orgId": "org-1",
+            "recordName": "Test Comment",
+            "recordType": "COMMENT",
+            "externalRecordId": "ext-comment-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "CONFLUENCE",
+            "connectorId": "conn-1",
+            "mimeType": "text/html",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+            "sourceCreatedAtTimestamp": 1704067200000,
+            "sourceLastModifiedTimestamp": 1704153600000,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _comment_doc(self, **overrides):
+        defaults = {
+            "authorSourceId": "author-1",
+            "resolutionStatus": "resolved",
+            "commentSelection": "selected text",
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_creation(self):
+        from app.models.entities import CommentRecord
+        rec = CommentRecord(**_record_kwargs(
+            record_type=RecordType.COMMENT,
+            author_source_id="author-1",
+            resolution_status="resolved",
+        ))
+        assert rec.author_source_id == "author-1"
+        assert rec.resolution_status == "resolved"
+
+    def test_to_llm_context_with_resolution(self):
+        from app.models.entities import CommentRecord
+        rec = CommentRecord(**_record_kwargs(
+            record_type=RecordType.COMMENT,
+            author_source_id="author-1",
+            resolution_status="resolved",
+        ))
+        ctx = rec.to_llm_context()
+        assert "Resolution Status" in ctx
+        assert "resolved" in ctx
+
+    def test_to_llm_context_without_resolution(self):
+        from app.models.entities import CommentRecord
+        rec = CommentRecord(**_record_kwargs(
+            record_type=RecordType.COMMENT,
+            author_source_id="author-1",
+        ))
+        ctx = rec.to_llm_context()
+        assert "Comment Information" not in ctx
+
+    def test_to_kafka_record(self):
+        from app.models.entities import CommentRecord
+        rec = CommentRecord(**_record_kwargs(
+            id="comment-1",
+            org_id="org-1",
+            record_type=RecordType.COMMENT,
+            author_source_id="author-1",
+        ))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "comment-1"
+        assert kafka["recordType"] == "COMMENT"
+
+    def test_to_arango_record(self):
+        from app.models.entities import CommentRecord
+        rec = CommentRecord(**_record_kwargs(
+            id="comment-1",
+            record_type=RecordType.COMMENT,
+            author_source_id="author-1",
+            resolution_status="resolved",
+            comment_selection="some text",
+        ))
+        arango = rec.to_arango_record()
+        assert arango["_key"] == "comment-1"
+        assert arango["authorSourceId"] == "author-1"
+        assert arango["resolutionStatus"] == "resolved"
+        assert arango["commentSelection"] == "some text"
+
+    def test_from_arango_record(self):
+        from app.models.entities import CommentRecord
+        rec = CommentRecord.from_arango_record(self._comment_doc(), self._record_doc())
+        assert rec.id == "comment-1"
+        assert rec.author_source_id == "author-1"
+        assert rec.resolution_status == "resolved"
+        assert rec.comment_selection == "selected text"
+
+    def test_from_arango_record_unknown_connector(self):
+        from app.models.entities import CommentRecord
+        rec = CommentRecord.from_arango_record(
+            self._comment_doc(),
+            self._record_doc(connectorName="NONEXISTENT"),
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_fallback_author(self):
+        """When authorSourceId is missing, should fall back to authorId then 'unknown'."""
+        from app.models.entities import CommentRecord
+        comment = {"authorId": "fallback-author"}
+        rec = CommentRecord.from_arango_record(comment, self._record_doc())
+        assert rec.author_source_id == "fallback-author"
+
+
+# ============================================================================
+# TicketRecord.from_arango_record tests (lines 931-937)
+# ============================================================================
+
+
+class TestTicketRecordFromArango:
+    def _record_doc(self, **overrides):
+        defaults = {
+            "_key": "ticket-1",
+            "orgId": "org-1",
+            "recordName": "Test Ticket",
+            "recordType": "TICKET",
+            "externalRecordId": "ext-ticket-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "mimeType": "text/plain",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+            "sourceCreatedAtTimestamp": 1704067200000,
+            "sourceLastModifiedTimestamp": 1704153600000,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _ticket_doc(self, **overrides):
+        defaults = {
+            "status": "OPEN",
+            "priority": "HIGH",
+            "type": "BUG",
+            "deliveryStatus": "ON_TRACK",
+            "assignee": "John",
+            "reporterEmail": "jane@test.com",
+            "assigneeEmail": "john@test.com",
+            "reporterName": "Jane",
+            "creatorEmail": "admin@test.com",
+            "creatorName": "Admin",
+            "labels": ["critical"],
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_from_arango_record(self):
+        rec = TicketRecord.from_arango_record(self._ticket_doc(), self._record_doc())
+        assert rec.id == "ticket-1"
+        assert rec.assignee == "John"
+        assert rec.reporter_email == "jane@test.com"
+        assert rec.labels == ["critical"]
+
+    def test_from_arango_record_unknown_connector(self):
+        rec = TicketRecord.from_arango_record(
+            self._ticket_doc(),
+            self._record_doc(connectorName="NONEXISTENT"),
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+
+# ============================================================================
+# ProjectRecord.from_arango_record tests (lines 1039-1045)
+# ============================================================================
+
+
+class TestProjectRecordFromArango:
+    def _record_doc(self, **overrides):
+        defaults = {
+            "_key": "proj-1",
+            "orgId": "org-1",
+            "recordName": "Test Project",
+            "recordType": "PROJECT",
+            "externalRecordId": "ext-proj-1",
+            "version": 1,
+            "origin": "CONNECTOR",
+            "connectorName": "JIRA",
+            "connectorId": "conn-1",
+            "mimeType": "text/plain",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+            "sourceCreatedAtTimestamp": 1704067200000,
+            "sourceLastModifiedTimestamp": 1704153600000,
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def _project_doc(self, **overrides):
+        defaults = {
+            "status": "Active",
+            "priority": "High",
+            "leadId": "lead-1",
+            "leadName": "Jane",
+            "leadEmail": "jane@test.com",
+        }
+        defaults.update(overrides)
+        return defaults
+
+    def test_from_arango_record(self):
+        rec = ProjectRecord.from_arango_record(self._project_doc(), self._record_doc())
+        assert rec.id == "proj-1"
+        assert rec.status == "Active"
+        assert rec.lead_name == "Jane"
+        assert rec.lead_email == "jane@test.com"
+
+    def test_from_arango_record_unknown_connector(self):
+        rec = ProjectRecord.from_arango_record(
+            self._project_doc(),
+            self._record_doc(connectorName="NONEXISTENT"),
+        )
+        assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+
+# ============================================================================
+# SharePoint record tests (lines 1097, 1122, 1147, 1172, 1178)
+# ============================================================================
+
+
+class TestSharePointRecords:
+    def _base_kwargs(self, record_type, **overrides):
+        defaults = _record_kwargs(
+            id="sp-1",
+            org_id="org-1",
+            record_type=record_type,
+            connector_name=Connectors.SHAREPOINT_ONLINE,
+            external_revision_id="rev-1",
+            external_record_group_id="grp-1",
+            parent_external_record_id="parent-1",
+            weburl="https://sp.example.com",
+        )
+        defaults.update(overrides)
+        return defaults
+
+    def test_sharepoint_list_to_kafka_record(self):
+        from app.models.entities import SharePointListRecord
+        rec = SharePointListRecord(**self._base_kwargs(RecordType.SHAREPOINT_LIST))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "sp-1"
+        assert kafka["recordType"] == "SHAREPOINT_LIST"
+        assert kafka["externalRevisionId"] == "rev-1"
+
+    def test_sharepoint_list_item_to_kafka_record(self):
+        from app.models.entities import SharePointListItemRecord
+        rec = SharePointListItemRecord(**self._base_kwargs(RecordType.SHAREPOINT_LIST_ITEM))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "sp-1"
+        assert kafka["recordType"] == "SHAREPOINT_LIST_ITEM"
+
+    def test_sharepoint_document_library_to_kafka_record(self):
+        from app.models.entities import SharePointDocumentLibraryRecord
+        rec = SharePointDocumentLibraryRecord(**self._base_kwargs(RecordType.SHAREPOINT_DOCUMENT_LIBRARY))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "sp-1"
+        assert kafka["recordType"] == "SHAREPOINT_DOCUMENT_LIBRARY"
+
+    def test_sharepoint_page_to_arango_record(self):
+        from app.models.entities import SharePointPageRecord
+        rec = SharePointPageRecord(**self._base_kwargs(RecordType.SHAREPOINT_PAGE))
+        arango = rec.to_arango_record()
+        assert arango["_key"] == "sp-1"
+        assert arango["orgId"] == "org-1"
+
+    def test_sharepoint_page_to_kafka_record(self):
+        from app.models.entities import SharePointPageRecord
+        rec = SharePointPageRecord(**self._base_kwargs(RecordType.SHAREPOINT_PAGE))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "sp-1"
+        assert kafka["recordType"] == "SHAREPOINT_PAGE"
+
+
+# ============================================================================
+# PullRequestRecord tests (lines 1213, 1229, 1265, 1286)
+# ============================================================================
+
+
+class TestPullRequestRecord:
+    def test_creation(self):
+        from app.models.entities import PullRequestRecord
+        rec = PullRequestRecord(**_record_kwargs(
+            record_type=RecordType.PULL_REQUEST,
+            connector_name=Connectors.GITHUB,
+            status="open",
+            creator_email="dev@test.com",
+            creator_name="Dev",
+            labels=["enhancement"],
+        ))
+        assert rec.status == "open"
+        assert rec.creator_email == "dev@test.com"
+        assert rec.labels == ["enhancement"]
+
+    def test_to_kafka_record(self):
+        from app.models.entities import PullRequestRecord
+        rec = PullRequestRecord(**_record_kwargs(
+            id="pr-1",
+            org_id="org-1",
+            record_type=RecordType.PULL_REQUEST,
+            connector_name=Connectors.GITHUB,
+        ))
+        kafka = rec.to_kafka_record()
+        assert kafka["recordId"] == "pr-1"
+        assert kafka["recordType"] == "PULL_REQUEST"
+
+    def test_to_arango_record(self):
+        from app.models.entities import PullRequestRecord
+        rec = PullRequestRecord(**_record_kwargs(
+            id="pr-1",
+            org_id="org-1",
+            record_type=RecordType.PULL_REQUEST,
+            connector_name=Connectors.GITHUB,
+            status="open",
+            assignee=["dev1"],
+            labels=["bug"],
+            mergeable="true",
+            merged_by="admin",
+        ))
+        arango = rec.to_arango_record()
+        assert arango["_key"] == "pr-1"
+        assert arango["status"] == "open"
+        assert arango["assignee"] == ["dev1"]
+        assert arango["labels"] == ["bug"]
+        assert arango["mergeable"] == "true"
+        assert arango["mergedBy"] == "admin"
+
+
+# ============================================================================
+# RecordGroup tests (lines 1265, 1286)
+# ============================================================================
+
+
+class TestRecordGroup:
+    def test_creation(self):
+        from app.models.entities import RecordGroup, RecordGroupType
+        rg = RecordGroup(
+            name="Test Group",
+            external_group_id="ext-grp-1",
+            connector_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1",
+            group_type=RecordGroupType.DRIVE,
+        )
+        assert rg.name == "Test Group"
+        assert rg.group_type == RecordGroupType.DRIVE
+
+    def test_to_arango_base_record_group(self):
+        from app.models.entities import RecordGroup, RecordGroupType
+        rg = RecordGroup(
+            id="rg-1",
+            org_id="org-1",
+            name="Test Group",
+            external_group_id="ext-grp-1",
+            connector_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1",
+            group_type=RecordGroupType.DRIVE,
+            web_url="https://drive.example.com",
+        )
+        arango = rg.to_arango_base_record_group()
+        assert arango["_key"] == "rg-1"
+        assert arango["groupName"] == "Test Group"
+        assert arango["connectorName"] == "DRIVE"
+        assert arango["groupType"] == "DRIVE"
+
+    def test_from_arango_base_record_group(self):
+        from app.models.entities import RecordGroup, RecordGroupType
+        doc = {
+            "_key": "rg-1",
+            "orgId": "org-1",
+            "groupName": "Test Group",
+            "externalGroupId": "ext-1",
+            "connectorName": "DRIVE",
+            "connectorId": "conn-1",
+            "groupType": "DRIVE",
+            "webUrl": "https://drive.example.com",
+            "createdAtTimestamp": 1704067200000,
+            "updatedAtTimestamp": 1704153600000,
+        }
+        rg = RecordGroup.from_arango_base_record_group(doc)
+        assert rg.id == "rg-1"
+        assert rg.name == "Test Group"
+
+
+# ============================================================================
+# User tests (lines 1375, 1382, 1385, 1389)
+# ============================================================================
+
+
+class TestUser:
+    def test_to_arango_base_record(self):
+        from app.models.entities import User
+        user = User(email="test@test.com", full_name="Test User", is_active=True)
+        arango = user.to_arango_base_record()
+        assert arango["email"] == "test@test.com"
+        assert arango["fullName"] == "Test User"
+        assert arango["isActive"] is True
+
+    def test_validate_with_email(self):
+        from app.models.entities import User
+        user = User(email="test@test.com")
+        assert user.validate() is True
+
+    def test_validate_empty_email(self):
+        from app.models.entities import User
+        user = User(email="")
+        assert user.validate() is False
+
+    def test_key(self):
+        from app.models.entities import User
+        user = User(email="test@test.com")
+        assert user.key() == "test@test.com"
+
+    def test_from_arango_user(self):
+        from app.models.entities import User
+        data = {
+            "_key": "user-1",
+            "email": "test@test.com",
+            "orgId": "org-1",
+            "userId": "uid-1",
+            "isActive": True,
+            "firstName": "Test",
+            "lastName": "User",
+            "fullName": "Test User",
+        }
+        user = User.from_arango_user(data)
+        assert user.id == "user-1"
+        assert user.email == "test@test.com"
+        assert user.org_id == "org-1"
+        assert user.first_name == "Test"
+        assert user.full_name == "Test User"
+
+
+# ============================================================================
+# UserGroup tests (lines 1416, 1427, 1430)
+# ============================================================================
+
+
+class TestUserGroup:
+    def test_to_dict(self):
+        from app.models.entities import UserGroup
+        ug = UserGroup(
+            source_user_group_id="src-1",
+            name="Test Group",
+            description="A group",
+        )
+        d = ug.to_dict()
+        assert d["name"] == "Test Group"
+        assert d["description"] == "A group"
+
+    def test_validate(self):
+        from app.models.entities import UserGroup
+        ug = UserGroup(source_user_group_id="src-1", name="Test")
+        assert ug.validate() is True
+
+    def test_key(self):
+        from app.models.entities import UserGroup
+        ug = UserGroup(source_user_group_id="src-1", name="Test", id="ug-1")
+        assert ug.key() == "ug-1"
+
+
+# ============================================================================
+# Person tests (lines 1441, 1450)
+# ============================================================================
+
+
+class TestPerson:
+    def test_to_arango_person(self):
+        from app.models.entities import Person
+        p = Person(id="p-1", email="person@test.com", created_at=1000, updated_at=2000)
+        arango = p.to_arango_person()
+        assert arango["_key"] == "p-1"
+        assert arango["email"] == "person@test.com"
+        assert arango["createdAtTimestamp"] == 1000
+
+    def test_from_arango_person(self):
+        from app.models.entities import Person
+        data = {
+            "_key": "p-1",
+            "email": "person@test.com",
+            "createdAtTimestamp": 1000,
+            "updatedAtTimestamp": 2000,
+        }
+        p = Person.from_arango_person(data)
+        assert p.id == "p-1"
+        assert p.email == "person@test.com"
+        assert p.created_at == 1000
+
+
+# ============================================================================
+# AppUser tests (lines 1474, 1487)
+# ============================================================================
+
+
+class TestAppUser:
+    def test_to_arango_base_user(self):
+        from app.models.entities import AppUser
+        au = AppUser(
+            app_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1",
+            source_user_id="src-1",
+            email="user@test.com",
+            full_name="App User",
+        )
+        arango = au.to_arango_base_user()
+        assert arango["email"] == "user@test.com"
+        assert arango["fullName"] == "App User"
+        assert arango["userId"] == "src-1"
+
+    def test_from_arango_user(self):
+        from app.models.entities import AppUser
+        data = {
+            "_key": "au-1",
+            "email": "user@test.com",
+            "orgId": "org-1",
+            "isActive": True,
+            "fullName": "App User",
+            "sourceUserId": "src-1",
+            "appName": "DRIVE",
+            "connectorId": "conn-1",
+        }
+        au = AppUser.from_arango_user(data)
+        assert au.id == "au-1"
+        assert au.email == "user@test.com"
+        assert au.full_name == "App User"
+
+
+# ============================================================================
+# AppUserGroup tests (lines 1516, 1533)
+# ============================================================================
+
+
+class TestAppUserGroup:
+    def test_to_arango_base_user_group(self):
+        from app.models.entities import AppUserGroup
+        aug = AppUserGroup(
+            app_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1",
+            source_user_group_id="src-grp-1",
+            name="Test Group",
+        )
+        arango = aug.to_arango_base_user_group()
+        assert arango["name"] == "Test Group"
+        assert arango["externalGroupId"] == "src-grp-1"
+        assert arango["connectorName"] == "DRIVE"
+
+    def test_from_arango_base_user_group(self):
+        from app.models.entities import AppUserGroup
+        data = {
+            "_key": "aug-1",
+            "orgId": "org-1",
+            "name": "Test Group",
+            "externalGroupId": "src-grp-1",
+            "connectorName": "DRIVE",
+            "connectorId": "conn-1",
+            "createdAtTimestamp": 1000,
+            "updatedAtTimestamp": 2000,
+        }
+        aug = AppUserGroup.from_arango_base_user_group(data)
+        assert aug.id == "aug-1"
+        assert aug.name == "Test Group"
+        assert aug.source_user_group_id == "src-grp-1"
+
+
+# ============================================================================
+# AppRole tests (lines 1562, 1578)
+# ============================================================================
+
+
+class TestAppRole:
+    def test_to_arango_base_role(self):
+        from app.models.entities import AppRole
+        ar = AppRole(
+            app_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1",
+            source_role_id="role-1",
+            name="Admin",
+        )
+        arango = ar.to_arango_base_role()
+        assert arango["name"] == "Admin"
+        assert arango["externalRoleId"] == "role-1"
+        assert arango["connectorName"] == "DRIVE"
+
+    def test_from_arango_base_role(self):
+        from app.models.entities import AppRole
+        data = {
+            "_key": "ar-1",
+            "orgId": "org-1",
+            "name": "Admin",
+            "externalRoleId": "role-1",
+            "connectorName": "DRIVE",
+            "connectorId": "conn-1",
+            "createdAtTimestamp": 1000,
+            "updatedAtTimestamp": 2000,
+        }
+        ar = AppRole.from_arango_base_role(data)
+        assert ar.id == "ar-1"
+        assert ar.name == "Admin"
+        assert ar.source_role_id == "role-1"
+
+
+# ============================================================================
+# Record.to_llm_context edge cases (lines 232->235 branch, mime_type)
+# ============================================================================
+
+
+class TestRecordToLlmContextEdgeCases:
+    def test_to_llm_context_with_mime_type(self):
+        """When mime_type is set, should appear in context."""
+        rec = Record(**_record_kwargs(mime_type="application/pdf"))
+        ctx = rec.to_llm_context()
+        assert "MIME Type" in ctx
+        assert "application/pdf" in ctx
+
+    def test_to_llm_context_without_mime_type(self):
+        """When mime_type is default/unknown, should still render (not None)."""
+        rec = Record(**_record_kwargs())
+        ctx = rec.to_llm_context()
+        # Default mime_type is MimeTypes.UNKNOWN.value which is truthy
+        # The to_llm_context checks 'if self.mime_type' so unknown value will appear
+        assert "Record ID" in ctx
+
+    def test_to_llm_context_weburl_without_http(self):
+        """Weburl not starting with http should be prefixed by frontend_url."""
+        rec = Record(**_record_kwargs(weburl="/path/to/doc"))
+        ctx = rec.to_llm_context(frontend_url="https://app.example.com")
+        assert "https://app.example.com/path/to/doc" in ctx
+
+    def test_to_llm_context_weburl_without_http_no_frontend(self):
+        """Weburl not starting with http without frontend_url uses raw."""
+        rec = Record(**_record_kwargs(weburl="/path/to/doc"))
+        ctx = rec.to_llm_context(frontend_url=None)
+        assert "/path/to/doc" in ctx
+
+
+# ============================================================================
+# TicketRecord.to_llm_context with Enum values (lines 850-879)
+# ============================================================================
+
+
+class TestTicketRecordToLlmContextEnum:
+    def test_with_enum_status_and_priority(self):
+        """Enum values should have .value extracted."""
+        from app.models.entities import DeliveryStatus, ItemType, Priority, Status
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+            status=Status.IN_PROGRESS,
+            priority=Priority.HIGH,
+            type=ItemType.BUG,
+            delivery_status=DeliveryStatus.ON_TRACK,
+            assignee="John",
+            assignee_email="john@test.com",
+            reporter_name="Jane",
+            reporter_email="jane@test.com",
+            creator_name="Admin",
+            creator_email="admin@test.com",
+        ))
+        ctx = rec.to_llm_context()
+        assert "IN_PROGRESS" in ctx
+        assert "HIGH" in ctx
+        assert "BUG" in ctx
+        assert "ON_TRACK" in ctx
+        assert "Assignee" in ctx
+        assert "Reporter" in ctx
+        assert "Creator" in ctx
+
+
+# ============================================================================
+# LinkRecord.to_llm_context all branches (lines 654-671)
+# ============================================================================
+
+
+class TestLinkRecordToLlmContextBranches:
+    def test_with_all_fields(self):
+        """All link-specific fields should appear."""
+        rec = LinkRecord(**_record_kwargs(
+            record_type=RecordType.LINK,
+            url="https://example.com",
+            title="Example",
+            is_public=LinkPublicStatus.TRUE,
+            linked_record_id="rec-linked-1",
+        ))
+        ctx = rec.to_llm_context()
+        assert "URL" in ctx
+        assert "Title" in ctx
+        assert "Public Access" in ctx
+        assert "Linked Record ID" in ctx
+
+    def test_without_optional_fields(self):
+        """Without title, linked_record_id -- those should not appear."""
+        rec = LinkRecord(**_record_kwargs(
+            record_type=RecordType.LINK,
+            url="https://example.com",
+            is_public=LinkPublicStatus.FALSE,
+        ))
+        ctx = rec.to_llm_context()
+        assert "URL" in ctx
+        assert "Title" not in ctx
+        assert "Linked Record ID" not in ctx
