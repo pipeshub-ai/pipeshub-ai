@@ -27,6 +27,8 @@ from app.models.entities import FileRecord, RecordType
 
 def _make_connector():
     """Build an RSSConnector with all dependencies mocked."""
+    from app.models.entities import AppMetadata
+    
     logger = MagicMock()
     data_entities_processor = MagicMock()
     data_entities_processor.org_id = "org-1"
@@ -34,7 +36,24 @@ def _make_connector():
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
+    data_entities_processor.get_app_by_id = AsyncMock(return_value=AppMetadata(
+        connector_id="rss-conn-1",
+        name="RSS Feed",
+        type="rss",
+        app_group="RSS",
+        scope="PERSONAL",
+        created_by="user-1",
+        created_at_timestamp=1234567890,
+        updated_at_timestamp=1234567890,
+    ))
+    
     data_store_provider = MagicMock()
+    mock_tx = MagicMock()
+    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
+    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
+    mock_tx.__aexit__ = AsyncMock(return_value=None)
+    data_store_provider.transaction.return_value = mock_tx
+    
     config_service = AsyncMock()
     connector_id = "rss-conn-1"
     connector = RSSConnector(

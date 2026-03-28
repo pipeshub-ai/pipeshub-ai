@@ -14958,19 +14958,22 @@ class TestGetKnowledgeHubBreadcrumbs:
 class TestGetUserAppIds:
     @pytest.mark.asyncio
     async def test_success(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=["app1", "app2"])
+        connected_provider.get_user_apps = AsyncMock(return_value=[
+            {"_key": "app1", "id": "app1"},
+            {"_key": "app2", "id": "app2"}
+        ])
         result = await connected_provider.get_user_app_ids("uk1")
         assert result == ["app1", "app2"]
 
     @pytest.mark.asyncio
     async def test_empty(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        connected_provider.get_user_apps = AsyncMock(return_value=[])
         result = await connected_provider.get_user_app_ids("uk1")
         assert result == []
 
     @pytest.mark.asyncio
     async def test_none(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=None)
+        connected_provider.get_user_apps = AsyncMock(return_value=None)
         result = await connected_provider.get_user_app_ids("uk1")
         assert result == []
 

@@ -183,6 +183,16 @@ def _build_container(config_service=None, *, has_connectors_map=False, connector
     return container
 
 
+def _build_graph_provider(scope="personal", created_by="user-1"):
+    """Build a mock graph_provider for update_connector_instance_config tests."""
+    gp = AsyncMock()
+    gp.get_document = AsyncMock(return_value={
+        "scope": scope,
+        "createdBy": created_by,
+    })
+    return gp
+
+
 def _instance(
     *,
     auth_type: str = "OAUTH",
@@ -236,7 +246,8 @@ class TestUpdateConfigOAuthWithConfigId:
             },
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         cfg = result["config"]
@@ -410,7 +421,8 @@ class TestUpdateConfigRedirectUri:
             },
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         # Trailing slash should be stripped, then /oauth/callback appended
@@ -438,7 +450,8 @@ class TestUpdateConfigRedirectUri:
             },
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         assert result["config"]["auth"]["redirectUri"] == "https://from-endpoints.example.com/oauth/callback"
@@ -477,7 +490,8 @@ class TestUpdateConfigRedirectUri:
             },
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         # Empty redirect URI stays empty (the `if redirect_uri:` guard prevents building it)
@@ -511,7 +525,8 @@ class TestUpdateConfigOAuthAdminConsent:
             },
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider(scope="team")
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         cfg = result["config"]["auth"]
@@ -596,7 +611,8 @@ class TestUpdateConfigFiltersOnly:
             body={"filters": {"sync": {"types": ["FILE", "FOLDER"]}}},
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         # Auth data preserved (not wiped)
@@ -630,7 +646,8 @@ class TestUpdateConfigFiltersOnly:
             body={"sync": {"interval": 120}},
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         assert result["config"]["sync"]["interval"] == 120
@@ -679,7 +696,8 @@ class TestUpdateConfigCleanup:
             },
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         # Connector was popped from map
@@ -721,7 +739,8 @@ class TestUpdateConfigCleanup:
         )
 
         # Should NOT raise despite cleanup failure
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -744,7 +763,8 @@ class TestUpdateConfigCleanup:
             },
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -771,7 +791,8 @@ class TestUpdateConfigCleanup:
             },
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -801,7 +822,8 @@ class TestUpdateConfigCleanup:
             },
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
         assert result["success"] is True
 
 
@@ -944,7 +966,8 @@ class TestUpdateConfigSectionMerge:
             body={"auth": {"apiToken": "my-token"}},
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         assert result["config"]["auth"]["apiToken"] == "my-token"
@@ -974,7 +997,8 @@ class TestUpdateConfigSectionMerge:
             body={"filters": {"sync": {"types": ["FILE", "FOLDER"]}}},
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         filters = result["config"]["filters"]
@@ -1008,7 +1032,8 @@ class TestUpdateConfigSectionMerge:
             body={"filters": {"sync": {"types": ["FILE"]}}},
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         assert result["config"]["filters"]["sync"]["types"] == ["FILE"]
@@ -1038,7 +1063,8 @@ class TestUpdateConfigNonOAuthAuthType:
             body={"auth": {"apiToken": "secret-token"}},
         )
 
-        result = await update_connector_instance_config("conn1", request)
+        graph_provider = _build_graph_provider()
+        result = await update_connector_instance_config("conn1", request, graph_provider)
 
         assert result["success"] is True
         # No OAuth URLs should be present

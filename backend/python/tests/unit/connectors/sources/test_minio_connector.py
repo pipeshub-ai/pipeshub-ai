@@ -19,6 +19,8 @@ def mock_logger():
 
 @pytest.fixture()
 def mock_data_entities_processor():
+    from app.models.entities import AppMetadata
+    
     proc = MagicMock()
     proc.org_id = "org-minio-1"
     proc.on_new_app_users = AsyncMock()
@@ -26,6 +28,16 @@ def mock_data_entities_processor():
     proc.on_new_records = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.base_console_url = "http://localhost:9000"
+    proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
+        connector_id="minio-conn-1",
+        name="MinIO Connector",
+        type="minio",
+        app_group="STORAGE",
+        scope="PERSONAL",
+        created_by="user-1",
+        created_at_timestamp=1234567890,
+        updated_at_timestamp=1234567890,
+    ))
     return proc
 
 

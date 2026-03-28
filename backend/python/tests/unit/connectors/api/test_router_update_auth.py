@@ -573,7 +573,8 @@ class TestConnectorScopeMissing:
 
         assert result["success"] is True
         assert result["config"]["auth"]["connectorScope"] == "organization"
-        graph_provider.get_document.assert_called_once_with(
+        assert graph_provider.get_document.call_count == 2
+        graph_provider.get_document.assert_called_with(
             "conn1", CollectionNames.APPS.value
         )
 
