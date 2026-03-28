@@ -1,0 +1,21 @@
+{
+  "all": true,
+  "src": ["src"],
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "src/**/*.d.ts",
+    "src/index.ts",
+    "src/app.ts",
+    "src/integrations/**",
+    "src/modules/mcp/**",
+    "src/modules/api-docs/docs.routes.ts"
+  ],
+  "reporter": ["text", "lcov", "html"],
+  "report-dir": "coverage",
+  "check-coverage": true,
+  "lines": 90,
+  "functions": 90,
+  "branches": 80,
+  "statements": 90,
+  "temp-directory": ".c8_output"
+}

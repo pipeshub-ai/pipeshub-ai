@@ -1,0 +1,144 @@
+name: weekly-coverage-nodejs
+
+on:
+  schedule:
+    # Runs every Monday at 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+
+jobs:
+  coverage-check:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [20]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd backend/nodejs/apps
+          npm ci
+
+      - name: Run unit tests with 90% coverage threshold
+        id: run-tests
+        run: |
+          cd backend/nodejs/apps
+          npm run test:coverage-check
+
+      - name: Collect coverage summary for email
+        id: coverage-email
+        if: always()
+        working-directory: backend/nodejs/apps
+        run: |
+          SUMMARY="coverage/coverage-summary.json"
+          if [ -f "$SUMMARY" ]; then
+            LINES_PCT=$(jq -r 'if .total.lines.pct != null then "\(.total.lines.pct)%" else "N/A" end' "$SUMMARY")
+            STMT_PCT=$(jq -r 'if .total.statements.pct != null then "\(.total.statements.pct)%" else "N/A" end' "$SUMMARY")
+            FUNC_PCT=$(jq -r 'if .total.functions.pct != null then "\(.total.functions.pct)%" else "N/A" end' "$SUMMARY")
+            BRANCH_PCT=$(jq -r 'if .total.branches.pct != null then "\(.total.branches.pct)%" else "N/A" end' "$SUMMARY")
+            echo "LINES_PCT=$LINES_PCT" >> "$GITHUB_OUTPUT"
+            echo "STMT_PCT=$STMT_PCT" >> "$GITHUB_OUTPUT"
+            echo "FUNC_PCT=$FUNC_PCT" >> "$GITHUB_OUTPUT"
+            echo "BRANCH_PCT=$BRANCH_PCT" >> "$GITHUB_OUTPUT"
+            {
+              echo "SUMMARY_NOTE<<EOF"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "LINES_PCT=N/A" >> "$GITHUB_OUTPUT"
+            echo "STMT_PCT=N/A" >> "$GITHUB_OUTPUT"
+            echo "FUNC_PCT=N/A" >> "$GITHUB_OUTPUT"
+            echo "BRANCH_PCT=N/A" >> "$GITHUB_OUTPUT"
+            {
+              echo "SUMMARY_NOTE<<EOF"
+              echo '<p><strong>Note:</strong> Coverage summary (<code>coverage/coverage-summary.json</code>) was not found; see the workflow log and any attachment below.</p>'
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Zip coverage folder
+        if: always()
+        working-directory: backend/nodejs/apps
+        run: |
+          zip -r coverage-report.zip coverage/
+
+      - name: Send email report
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_HOST }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "Weekly Node.js Coverage — ${{ steps.run-tests.outcome == 'success' && 'passed' || 'failed' }} (${{ github.ref_name }})"
+          to: ${{ secrets.PIPESHUB_ENG_GROUP_EMAIL }}
+          from: PipesHub CI <${{ secrets.SMTP_FROM_EMAIL }}>
+          html_body: |
+            <h2>Weekly Node.js Coverage Report</h2>
+            <p>Summary of the scheduled Node.js unit test and coverage run.</p>
+
+            <h3>Run details</h3>
+            <ul>
+              <li><strong>Trigger:</strong> ${{ github.event_name == 'schedule' && 'Weekly schedule (Monday 06:00 UTC)' || 'Manual workflow dispatch' }}</li>
+              <li><strong>Branch:</strong> ${{ github.ref_name }}</li>
+              <li><strong>Commit:</strong> <code>${{ github.sha }}</code></li>
+              <li><strong>Actor:</strong> <a href="https://github.com/${{ github.actor }}">@${{ github.actor }}</a></li>
+              <li><strong>Tests / coverage job:</strong> ${{ steps.run-tests.outcome }}</li>
+            </ul>
+
+            <h3>Coverage summary</h3>
+            <p>Thresholds (c8 <code>--check-coverage</code>): lines <strong>90%</strong>, statements <strong>90%</strong>, functions <strong>90%</strong>, branches <strong>80%</strong>.</p>
+            <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse;">
+              <tr style="background-color: #f2f2f2;">
+                <th>Metric</th>
+                <th>Coverage</th>
+                <th>Threshold</th>
+              </tr>
+              <tr>
+                <td>Lines</td>
+                <td align="center">${{ steps.coverage-email.outputs.LINES_PCT }}</td>
+                <td align="center">90%</td>
+              </tr>
+              <tr>
+                <td>Statements</td>
+                <td align="center">${{ steps.coverage-email.outputs.STMT_PCT }}</td>
+                <td align="center">90%</td>
+              </tr>
+              <tr>
+                <td>Functions</td>
+                <td align="center">${{ steps.coverage-email.outputs.FUNC_PCT }}</td>
+                <td align="center">90%</td>
+              </tr>
+              <tr>
+                <td>Branches</td>
+                <td align="center">${{ steps.coverage-email.outputs.BRANCH_PCT }}</td>
+                <td align="center">80%</td>
+              </tr>
+            </table>
+
+            ${{ steps.coverage-email.outputs.SUMMARY_NOTE }}
+
+            <p>${{ steps.run-tests.outcome == 'success' && '🎉 Tests and coverage thresholds passed.' || '⚠️ Tests failed or coverage fell below threshold. See the workflow log and attached HTML report.' }}</p>
+
+            <p>The full HTML coverage report (and related artifacts) are attached as <code>coverage-report.zip</code>. After unzipping, open <code>index.html</code> in your browser.</p>
+
+            <p>
+              <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View workflow run on GitHub →</a>
+            </p>
+
+            <p style="color: #888; font-size: 12px;">This email was sent automatically by PipesHub CI.</p>
+

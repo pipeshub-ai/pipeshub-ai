@@ -394,6 +394,7 @@ class ToolsetRegistry:
             'app.agents.actions.clickup.clickup',
             'app.agents.actions.github.github',
             'app.agents.actions.mariadb.mariadb',
+            'app.agents.actions.redshift.redshift',
             # 'app.agents.actions.gitlab.gitlab',
             # 'app.agents.actions.linear.linear',
             # 'app.agents.actions.notion.notion',
@@ -413,6 +414,7 @@ class ToolsetRegistry:
             # 'app.agents.actions.evernote.evernote',
             # 'app.agents.actions.freshdesk.freshdesk',
             # 'app.agents.actions.bookstack.bookstack',
+            'app.agents.actions.zoom.zoom',
         ]
         self.discover_toolsets(standard_paths)
         logger.info(f"Auto-discovered {len(self._toolsets)} toolsets with in-memory registry")

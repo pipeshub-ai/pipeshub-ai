@@ -25,6 +25,9 @@ interface SidebarCategoryProps {
   onConfigureClick?: () => void;
   onDragAttempt?: () => void;
   dragData?: Record<string, any>;
+  configureTooltip?: React.ReactNode;
+  configureIcon?: any;
+  configureIconColor?: string;
   children?: React.ReactNode;
 }
 
@@ -41,6 +44,9 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
   onConfigureClick,
   onDragAttempt,
   dragData,
+  configureTooltip,
+  configureIcon,
+  configureIconColor,
   children,
 }) => {
   const theme = useTheme();
@@ -180,7 +186,7 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
           
           {/* Configure Icon */}
           {showConfigureIcon && onConfigureClick && (
-            <Tooltip title="Configure toolset" placement="right">
+            <Tooltip title={configureTooltip || 'Configure toolset'} placement="right">
               <IconButton
                 size="small"
                 onClick={(e) => {
@@ -189,13 +195,13 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
                 }}
                 sx={{
                   ml: 0.5,
-                  color: theme.palette.error.main,
+                  color: configureIconColor || theme.palette.error.main,
                   '&:hover': {
-                    backgroundColor: alpha(theme.palette.error.main, 0.1),
+                    backgroundColor: alpha((configureIconColor || theme.palette.error.main), 0.1),
                   },
                 }}
               >
-                <Icon icon={UI_ICONS.settings} width={16} height={16} />
+                <Icon icon={configureIcon || UI_ICONS.settings} width={16} height={16} />
               </IconButton>
             </Tooltip>
           )}

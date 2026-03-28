@@ -68,7 +68,6 @@ export const dropLegacyThreadBotIndex = async (): Promise<void> => {
     }
 
   } catch (error) {
-    console.error('Error checking/dropping legacy index:', error);
-    // Don't throw - we don't want to block app startup if index check fails
+    console.warn('Error checking/dropping legacy index/the index does not exist');
   }
 };

@@ -49,11 +49,6 @@ export const OAuthScopeNames = Object.freeze({
   CONFIG_READ: 'config:read',
   CONFIG_WRITE: 'config:write',
 
-  // Storage/Documents
-  DOCUMENT_READ: 'document:read',
-  DOCUMENT_WRITE: 'document:write',
-  DOCUMENT_DELETE: 'document:delete',
-
   // Crawling
   CRAWL_READ: 'crawl:read',
   CRAWL_WRITE: 'crawl:write',

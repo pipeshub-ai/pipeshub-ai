@@ -64,6 +64,7 @@ import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/k
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
+import { SamlController } from './modules/auth/controller/saml.controller';
 
 const loggerConfig = {
   service: 'Application',
@@ -254,6 +255,7 @@ export class Application {
       });
 
       this.logger.info('Application initialized successfully');
+      await this.updateSamlStrategies()
     } catch (error: any) {
       this.logger.error(
         `Failed to initialize application: ${error.message}`,
@@ -319,7 +321,7 @@ export class Application {
     // CORS - ensure this matches your frontend domain
     this.app.use(
       cors({
-        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'], // Be more specific than '*'
+        origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
         exposedHeaders: ['x-session-token', 'content-disposition'],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
@@ -647,5 +649,17 @@ export class Application {
       });
     }
   }
+  async updateSamlStrategies(): Promise<void> {
+    try {
+      const samlController = this.authServiceContainer.get<SamlController>('SamlController');
+      samlController.updateSamlStrategiesWithCallback()
+      this.logger.info('SSO SAML passport strategies updated successfully')
+    } catch (error) {
+      this.logger.warn('Failed to update passport strategies', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
 }
+
 

@@ -6,7 +6,7 @@ S3 Connector – Full Lifecycle Integration Test (test.pipeshub.com)
 
 Ordered test class exercising the complete S3 connector lifecycle:
 
-  1. Create S3 bucket                →  storage SDK
+  1. Create S3 bucket (fixed name)   →  storage SDK
   2. Upload sample data              →  storage SDK
   3. Create connector instance       →  Pipeshub API
   4. Enable sync (init + test conn)  →  Pipeshub API  →  graph validation
@@ -51,8 +51,8 @@ from storage_helpers import S3StorageHelper  # type: ignore[import-not-found]  #
 
 logger = logging.getLogger("s3-lifecycle-test")
 
-# Unique bucket name to avoid clashes across test runs
-_BUCKET_NAME = f"pipeshub-inttest-s3-{uuid.uuid4().hex[:8]}"
+# Shared integration bucket (IAM must allow only this bucket)
+_BUCKET_NAME = "pipeshub-integration-tests"
 _CONNECTOR_NAME = f"s3-lifecycle-test-{uuid.uuid4().hex[:8]}"
 
 # Shared state across ordered tests
@@ -140,8 +140,8 @@ class TestS3FullLifecycle:
     def test_04_test_connection(self, pipeshub_client: PipeshubClient) -> None:
         """Enable sync which internally calls init() + test_connection_and_access()."""
         connector_id = _state["connector_id"]
-        result = pipeshub_client.toggle_sync(connector_id, enable=True)
-        logger.info("✅ Sync enabled (connection tested): %s", result)
+        pipeshub_client.toggle_sync(connector_id, enable=True)
+        logger.info("✅ Sync enabled (connection tested)")
 
     # ------------------------------------------------------------------ #
     # 5. Full sync + graph validation
@@ -276,7 +276,7 @@ class TestS3FullLifecycle:
         # Store for move test
         _state["move_source_key"] = new_key
         _state["move_source_name"] = new_name
-        logger.info("✅ Rename validated: %s → %s", old_name, new_name)
+        logger.info("✅ Rename validated (connector %s)", connector_id)
 
     # ------------------------------------------------------------------ #
     # 8. Move file + graph validation
@@ -327,7 +327,7 @@ class TestS3FullLifecycle:
         groups = count_record_groups(neo4j_driver, connector_id)
         assert groups >= 2, f"Expected at least 2 record groups after move, found {groups}"
 
-        logger.info("✅ Move validated: %s → moved-folder/", move_name)
+        logger.info("✅ Move validated (connector %s)", connector_id)
 
     # ------------------------------------------------------------------ #
     # 9. Disable connector
