@@ -4,7 +4,7 @@ services:
     restart: always
     build:
       context: ../../
-      dockerfile: deployment/docker-compose/Dockerfile.dev
+      dockerfile: Dockerfile
       args:
         BUILDKIT_INLINE_CACHE: "1"
       shm_size: 4gb
@@ -128,12 +128,6 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
-      # Vite frontend dev server
-      - DOCKER_DEV=true
-      - VITE_BACKEND_URL=http://localhost:3000
-      
-      # Frontend memory optimization - limit Node.js heap to 2GB
-      - NODE_OPTIONS=--max-old-space-size=2048
     depends_on:
       qdrant:
         condition: service_healthy
@@ -149,15 +143,6 @@ services:
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
-      # ── Hot Reload: bind-mount source code so watchers pick up file saves ──
-      - ./scripts/dev_process_monitor.sh:/app/dev_process_monitor.sh
-      - ../../backend/python/app:/app/python/app
-      # Mount entire source directories — picks up all config file additions automatically
-      - ../../backend/nodejs/apps:/app/backend
-      - ../../frontend:/app/frontend
-      # Anonymous volumes protect container node_modules from being overwritten by host
-      - /app/backend/node_modules
-      - /app/frontend/node_modules
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
