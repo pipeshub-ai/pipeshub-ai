@@ -128,7 +128,7 @@ spec:
             
             # Redis config
             - name: REDIS_HOST
-              value: "{{ include "pipeshub-ai.fullname" . }}-redis-master"
+              value: "{{ include "pipeshub-ai.fullname" . }}-redis"
             - name: REDIS_PORT
               value: "6379"
             {{- if .Values.redis.auth.enabled }}
@@ -138,12 +138,12 @@ spec:
                   name: {{ include "pipeshub-ai.fullname" . }}-secrets
                   key: redis-password
             - name: REDIS_URL
-              value: "redis://:$(REDIS_PASSWORD)@{{ include "pipeshub-ai.fullname" . }}-redis-master:6379"
+              value: "redis://:$(REDIS_PASSWORD)@{{ include "pipeshub-ai.fullname" . }}-redis:6379"
             {{- else }}
             - name: REDIS_PASSWORD
               value: ""
             - name: REDIS_URL
-              value: "redis://{{ include "pipeshub-ai.fullname" . }}-redis-master:6379"
+              value: "redis://{{ include "pipeshub-ai.fullname" . }}-redis:6379"
             {{- end }}
             
             # MongoDB config
