@@ -1401,9 +1401,14 @@ class ToolExecutor:
     def _process_retrieval_output(result: dict[str, Any] | str | tuple[bool, str] | list[Any] | None, state: ChatState, log: logging.Logger) -> str:
         """Process retrieval tool output and update state (accumulates results from multiple retrieval calls)"""
         try:
+            # Fast path: tool already wrote to state and returned pre-formatted content
+            if isinstance(result, str) and "<record>" in result:
+                log.info("📚 Retrieval returned pre-formatted content (state already updated by tool)")
+                return result
+
             from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
 
-            # Try to parse as RetrievalToolOutput
+            # Legacy/fallback path: parse JSON and extract data
             retrieval_output = None
 
             if isinstance(result, dict) and "content" in result and "final_results" in result:
@@ -7192,8 +7197,14 @@ def check_for_error(state: ChatState) -> Literal["error", "continue"]:
 def _process_retrieval_output(result: object, state: ChatState, log: logging.Logger) -> str:
     """Process retrieval tool output (accumulates results from multiple retrieval calls)"""
     try:
+        # Fast path: tool already wrote to state and returned pre-formatted content
+        if isinstance(result, str) and "<record>" in result:
+            log.info("Retrieval returned pre-formatted content (state already updated by tool)")
+            return result
+
         from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
 
+        # Legacy/fallback path: parse JSON and extract data
         retrieval_output = None
 
         if isinstance(result, dict) and "content" in result and "final_results" in result:
@@ -7490,15 +7501,7 @@ async def react_agent_node(
 
                 # Process retrieval tool results to extract final_results
                 if "retrieval" in tool_name.lower():
-                    try:
-                        if isinstance(result_content, str):
-                            parsed = json.loads(result_content)
-                            _process_retrieval_output(parsed, state, log)
-                        elif isinstance(result_content, dict):
-                            _process_retrieval_output(result_content, state, log)
-                    except Exception as e:
-                        log.warning(f"Failed to process retrieval output: {e}")
-                        _process_retrieval_output(result_content, state, log)
+                    _process_retrieval_output(result_content, state, log)
 
                 # Detect actual tool success/failure from result content
                 tool_status = _detect_tool_result_status(result_content)

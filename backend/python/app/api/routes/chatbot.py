@@ -268,10 +268,6 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
 
-
-
-
-
 async def _iter_prepare_chat_queries_for_retrieval(
     llm: BaseChatModel,
     query_info: ChatQuery,
@@ -342,8 +338,11 @@ async def askAIStream(
 
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
-
-                query_info.mode = "simple"
+                
+                if config.get("provider").lower() == "ollama":
+                    query_info.mode = "no_tools"
+                else:
+                    query_info.mode = "simple"
 
                 all_queries: list[str] = []
                 async for kind, payload in _iter_prepare_chat_queries_for_retrieval(

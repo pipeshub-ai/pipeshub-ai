@@ -644,7 +644,7 @@ async def execute_tool_calls(
                 flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,from_tool=True)
                 final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
 
-                message_contents = get_message_content_for_tool(final_tool_results, virtual_record_id_to_result,final_results)
+                message_contents = get_message_content_for_tool(final_tool_results, virtual_record_id_to_result)
                 logger.debug(
                     "execute_tool_calls: prepared message_contents=%d",
                     len(message_contents)
@@ -1444,7 +1444,7 @@ async def stream_llm_response_with_tools(
     tools: Optional[List] = None,
     tool_runtime_kwargs: Optional[Dict[str, Any]] = None,
     target_words_per_chunk: int = 1,
-    mode: Optional[str] = "json",
+    mode: Optional[str] = "simple",
     is_agent: bool = False,  # Use is_agent flag instead of schema
     conversation_id: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -1472,8 +1472,7 @@ async def stream_llm_response_with_tools(
     )
     records = []
 
-    # Handle tool calls first if tools are provided (only in JSON mode)
-    if tools and tool_runtime_kwargs:
+    if tools and tool_runtime_kwargs and mode != "no_tools":
         # Execute tools and get updated messages
         final_messages = messages.copy()
         tools_were_called = False
@@ -1793,40 +1792,6 @@ async def call_aiter_llm_stream(
             logger.info("tool_calls detected, returning")
             return
 
-    # Chatbot path (is_agent=False): parse natural text with confidence delimiter
-    # if not is_agent:
-    #     try:
-    #         raw_answer = state.full_json_buf if isinstance(state.full_json_buf, str) else state.answer_buf or ""
-    #         # Try JSON parse first for backward compatibility (e.g., some models may still produce JSON)
-    #         try:
-    #             parsed_json = json.loads(cleanup_content(raw_answer)) if raw_answer.strip().startswith('{') else None
-    #             if parsed_json and "answer" in parsed_json:
-    #                 final_answer = parsed_json["answer"]
-    #                 confidence = parsed_json.get("confidence")
-    #             else:
-    #                 parsed_json = None
-    #         except Exception:
-    #             parsed_json = None
-
-    #         if not parsed_json:
-    #             final_answer, confidence = parse_confidence_from_answer(raw_answer)
-
-    #         normalized, c = normalize_citations_and_chunks(final_answer, final_results, records)
-    #         yield {
-    #             "event": "complete",
-    #             "data": {
-    #                 "answer": normalized,
-    #                 "citations": c,
-    #                 "reason": None,
-    #                 "confidence": confidence,
-    #             },
-    #         }
-    #     except Exception as e:
-    #         logger.error("Error in call_aiter_llm_stream (chatbot path)", exc_info=True)
-    #         yield {"event": "error", "data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
-    #     return
-
-    # Agent path (is_agent=True): parse structured JSON output
     try:
         response_text = state.full_json_buf
         if  isinstance(response_text, str):

@@ -188,16 +188,18 @@ Query: {{ query }}
 <context>
 {% for chunk in chunks %}
 - Record Name: {{ chunk.metadata.recordName }}
-- Block {{ loop.index }}: {{ chunk.metadata.blockText }}
+- Block Web URL: {{ chunk.metadata.block_web_url }}
+- Block Content: {{ chunk.metadata.blockText }}
 {% endfor %}
 </context>
 <instructions>
 - Use only the provided context to answer the query.
-- While referencing block numbers in your answer, use the ISO 8061 format of the block number like Block [2].
-- Include citations using [1], [2], etc., based on the block number referenced.
-- Format citations in square brackets, with one block number per bracket: [1], [2], etc. Formats like [1, 2] or [1-2] are not valid citation formats.
-- Ensure your answer is clear and adheres to the instructions above.
-- CROSS VERIFY THAT THE CITATION FORMAT FOLLOWS THE SPECIFIED FORMAT OF ONE BLOCK NUMBER PER BRACKET.
+- Every factual claim MUST include a citation.
+- Cite by embedding the block's web URL as a markdown link: [source](Block Web URL).
+- Place citations immediately after the relevant claim.
+- Reuse the same link if citing the same block again.
+- Do NOT number citations manually — just use [source](url) format.
+- Ensure your answer is clear, well-structured, and adheres to the instructions above.
 </instructions>
 Your answer: """
 

@@ -1,11 +1,9 @@
 """
-Internal Knowledge Retrieval Tool — OPTION B IMPLEMENTATION
+Internal Knowledge Retrieval Tool
 
-OPTION B: Skip get_message_content() in individual retrieval calls.
-- Returns raw final_results without formatting
-- Block numbering happens ONCE after all parallel calls are merged
-- Prevents R-number collisions from multiple independent calls
-- Cleaner architecture for multi-call agent flow
+- Writes results directly to state (accumulates for parallel calls)
+- Returns properly formatted <record> tool messages (same as chatbot)
+- Block numbering (R-labels) happens ONCE after all parallel calls are merged
 """
 
 import json
@@ -22,7 +20,7 @@ from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.chat_helpers import get_flattened_results
+from app.utils.chat_helpers import get_flattened_results, get_message_content_for_tool
 
 logger = logging.getLogger(__name__)
 
@@ -276,42 +274,55 @@ class Retrieval:
             final_results = final_results[:adjusted_limit]
 
             # ================================================================
-            # OPTION B: Return raw results without formatting.
+            # Write results directly to state (accumulate for parallel calls)
+            # and return properly formatted tool message like the chatbot.
             #
-            # Block numbering will happen ONCE after all parallel retrieval
+            # Block numbering (R-labels) still happens ONCE after all parallel
             # calls are merged in nodes.py (merge_and_number_retrieval_results()).
-            # This prevents R-number collisions from multiple independent calls.
-            #
-            # The content field is just a summary for the tool result display.
-            # Actual formatting happens in build_internal_context_for_response()
-            # after merge and numbering.
+            # But the ToolMessage content the LLM sees during planning/ReAct
+            # is now properly formatted with <record> XML blocks instead of
+            # raw JSON dumps.
             # ================================================================
 
-            # Simple summary for tool result (not used for LLM context)
-            agent_content = (
-                f"Retrieved {len(final_results)} knowledge blocks from "
-                f"{len(virtual_record_id_to_result)} documents. "
-                f"Results will be formatted and numbered after merge."
+            # --- Accumulate results in state (same pattern as _process_retrieval_output) ---
+            existing_final_results = self.state.get("final_results", [])
+            if not isinstance(existing_final_results, list):
+                existing_final_results = []
+            self.state["final_results"] = existing_final_results + final_results
+
+            existing_virtual_map = self.state.get("virtual_record_id_to_result", {})
+            if not isinstance(existing_virtual_map, dict):
+                existing_virtual_map = {}
+            self.state["virtual_record_id_to_result"] = {**existing_virtual_map, **virtual_record_id_to_result}
+
+            existing_tool_records = self.state.get("tool_records", [])
+            if not isinstance(existing_tool_records, list):
+                existing_tool_records = []
+            new_tool_records = list(virtual_record_id_to_result.values())
+            existing_record_ids = {r.get("_id") for r in existing_tool_records if isinstance(r, dict) and "_id" in r}
+            unique_new = [r for r in new_tool_records if not (isinstance(r, dict) and r.get("_id") in existing_record_ids)]
+            self.state["tool_records"] = existing_tool_records + unique_new
+
+            # --- Format results like the chatbot does ---
+            sorted_results = sorted(
+                final_results,
+                key=lambda x: (x.get("virtual_record_id", ""), x.get("block_index", 0))
+            )
+            formatted_records = get_message_content_for_tool(
+                sorted_results, virtual_record_id_to_result
             )
 
             logger_instance.info(
-                f"✅ Retrieved {len(final_results)} raw blocks from "
+                f"✅ Retrieved {len(final_results)} blocks from "
                 f"{len(virtual_record_id_to_result)} documents "
-                f"(will be merged and numbered after all calls complete)"
+                f"(state updated, formatted as tool message)"
             )
 
-            output = RetrievalToolOutput(
-                content=agent_content,
-                final_results=final_results,
-                virtual_record_id_to_result=virtual_record_id_to_result,
-                metadata={
-                    "query": search_query,
-                    "limit": limit,
-                    "result_count": len(final_results),
-                    "record_count": len(virtual_record_id_to_result)
-                }
+            summary = (
+                f"Retrieved {len(final_results)} knowledge blocks from "
+                f"{len(virtual_record_id_to_result)} documents.\n\n"
             )
-            return json.dumps(output.model_dump(), ensure_ascii=False)
+            return summary + "\n".join(formatted_records)
 
         except Exception as e:
             logger_instance = self.state.get("logger", logger) if self.state else logger
